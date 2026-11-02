@@ -33,9 +33,9 @@ afterEach(async () => {
 describe("a Slack message with a picture", () => {
   it("tells Lead that the picture is there and how to open it", async () => {
     const shot = slack.addFile("screenshot.png", "image/png", PNG);
-    const received = (await hub.receive("slack", slack.dm("U0NINA", "我这个要填公司的吗", { files: [shot] }))).items[0]!;
+    const received = (await hub.receive("slack", slack.dm("U0NINA", "这个表单要填部门吗", { files: [shot] }))).items[0]!;
     await hub.idle();
-    expect(getEvent(db, received.seq!)!.payload.text).toBe(`我这个要填公司的吗\n[图片 screenshot.png，文件编号 slack:${shot.id}]`);
+    expect(getEvent(db, received.seq!)!.payload.text).toBe(`这个表单要填部门吗\n[图片 screenshot.png，文件编号 slack:${shot.id}]`);
   });
 
   it("keeps a message that is only a picture, without text", async () => {

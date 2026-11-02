@@ -170,6 +170,13 @@ export const UI_ACTION_INPUT_SCHEMAS = {
       seq: Type.Optional(Type.Integer({ minimum: 1 })),
       remove: Type.Optional(Type.Boolean()),
     }),
+    // 改一条用户自己的账号发的消息（你本人或者 Lead 发的，2026-11-02）。ref：消息在来源里的编号（read_channel_conversation 的消息上有）。
+    // text 换掉原来的文字；words 和 send_message 一样定署名。
+    edit_message: StrictObject({
+      ref: Type.String({ minLength: 1, maxLength: 64 }),
+      text: Type.String({ minLength: 1, maxLength: CHANNEL_CARD_TEXT_MAX }),
+      words: Type.Union([Type.Literal("user"), Type.Literal("assistant")]),
+    }),
   },
   // 设置 → 消息通道 → 自动代你处理（channel-confidence.ts）。update 和 tighten 的输入是改完以后的一整份。
   channel_policy: {

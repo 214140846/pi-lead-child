@@ -192,7 +192,17 @@ export interface ChannelConversationRead {
   conversation: string;
   label: string;
   objectKey: string;
-  messages: Array<{ at: string; seq: number | null; role: "them" | "me" | "assistant"; sender: string; text: string }>;
+  // ref：这条消息在来源里的编号。Lead 改消息（editMessage）时用它指定哪一条。
+  messages: Array<{ at: string; ref: string; seq: number | null; role: "them" | "me" | "assistant"; sender: string; text: string }>;
+}
+
+/** 改过的一条消息（ChannelHub.editMessage，2026-11-02）：在哪个对话、哪一条，现在的文字。 */
+export interface ChannelEditedMessage {
+  conversation: string;
+  label: string;
+  objectKey: string;
+  ref: string;
+  text: string;
 }
 
 /** 最近有动静的一个对话（ChannelHub.recentConversations）：只有结构化的事实，没有原文。 */
@@ -243,6 +253,8 @@ export interface ChannelHistoryMessage {
   role: "them" | "me" | "assistant";
   sender: { id: string; name: string };
   text: string;
+  // 改这条消息时出站动作的目标（edit，2026-11-02），例如 Slack 的 { channel, ts }。来源不能改消息时没有。
+  target?: Record<string, string>;
 }
 
 /**

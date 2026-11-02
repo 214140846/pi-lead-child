@@ -1357,6 +1357,7 @@ export function createSlackChannelAdapter(options: SlackChannelOptions): Channel
           role: ours ? "assistant" : mine ? "me" : "them",
           sender: { id, name: mine ? "你" : isString(message.user) ? await userName(message.user, context) : id },
           text: (await displayText(slackMessageText(message), context)).slice(0, MESSAGE_TEXT_MAX),
+          target: { channel, ts: message.ts! },
         });
       }
       return out;

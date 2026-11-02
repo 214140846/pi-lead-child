@@ -4220,6 +4220,7 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
       canSend: (source) => hub.canSendMessage(source),
       send: (conversationId, input) => hub.sendMessage(conversationId, input),
       react: (conversationId, input) => hub.react(conversationId, input),
+      edit: (conversationId, input) => hub.editMessage(conversationId, input),
       openCards: () => hub.openCards(),
     };
     // 设置 → 消息通道 → 自动代你处理的「测一条消息」：要快模型和来源的上下文（2026-10-23）。

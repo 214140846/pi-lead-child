@@ -684,6 +684,41 @@ describe("channel conversations", () => {
     });
   });
 
+  // 2026-11-02 用户：要能改用户或者 Lead 发出去的消息。和发消息一样在哪一轮都能做；不在用户这一轮里改的，hub 写 auto-reply 署名。
+  it("lets Lead edit a message in any turn, as its own edit or for the user, and says when the source cannot edit", async () => {
+    const edits: Array<[string, unknown]> = [];
+    const { channelMessages } = fakeMessages();
+    const withEdit: ChannelMessageService = {
+      ...channelMessages,
+      edit: async (conversationId, input) => {
+        edits.push([conversationId, input]);
+        return { conversation: conversationId, label: "oliver.z的私信", objectKey: "slack:D0OLIVER:main", ref: input.ref, text: input.text };
+      },
+    };
+    const target = { type: "channel_conversation", id: "slack:@U0OLIVER" };
+    const input = { ref: "1792000000.000100", text: "demo 的地址改成 demo2.example.com 了", words: "assistant" };
+    await runUiAction(db, {
+      target, action: "edit_message", input, reason: "跟进到点：上一条里的地址写错了", caller: { kind: "lead", turnId: null },
+      services: { channelMessages: withEdit },
+    });
+    expect(edits).toEqual([["slack:@U0OLIVER", { ...input, by: "lead", forUser: false }]]);
+    expect(ledger().at(-1)).toMatchObject({
+      entityKey: "channel_conversation:slack:@U0OLIVER", action: "edit_message", actor: "lead", authority: "lead",
+      detail: { conversation: "slack:@U0OLIVER", objectKey: "slack:D0OLIVER:main", ref: input.ref, words: "assistant" },
+    });
+    const { turnId } = userTurn();
+    const outcome = await runUiAction(db, {
+      target, action: "edit_message", input: { ...input, words: "user" }, reason: "用户说把刚才那条改一下", caller: { kind: "lead", turnId },
+      services: { channelMessages: withEdit },
+    });
+    expect(edits.at(-1)).toEqual(["slack:@U0OLIVER", { ...input, words: "user", by: `lead for user via turn:${turnId}`, forUser: true }]);
+    expect(outcome.forLead).toEqual({ edited: expect.objectContaining({ ref: input.ref }) });
+    // 来源不能改消息时说清楚。
+    await expect(runUiAction(db, {
+      target, action: "edit_message", input, reason: "改一下", caller: { kind: "lead", turnId }, services: { channelMessages },
+    })).rejects.toMatchObject({ code: "unavailable" });
+  });
+
   it("checks the id, the input and the source before sending", async () => {
     const { channelMessages, sends } = fakeMessages();
     const { turnId } = userTurn();

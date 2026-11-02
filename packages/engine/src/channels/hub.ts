@@ -135,7 +135,7 @@ import { CHANNEL_URGENCY_TIMEOUT_MS, channelUrgencyNotAsked, judgeChannelUrgency
 import type {
   ChannelAdapter, ChannelAdapterContext, ChannelCredential, ChannelCredentialSource, ChannelDelivery,
   ChannelConversationCandidate, ChannelInbound, ChannelInboundRole, ChannelInterest, ChannelOpenCard, ChannelOpenLane, ChannelReaction,
-  ChannelConversationRead, ChannelFile, ChannelMarkPreview, ChannelRecentConversation, ChannelSentMessage,
+  ChannelConversationRead, ChannelEditedMessage, ChannelFile, ChannelMarkPreview, ChannelRecentConversation, ChannelSentMessage,
   ChannelTransportContext,
 } from "./types.js";
 import { ChannelFileNotFoundError } from "./types.js";
@@ -1993,6 +1993,63 @@ export class ChannelHub {
   }
 
   /**
+   * 改对话里的一条消息（2026-11-02，用户：要能改用户或者 Lead 发出去的消息）。ref 是这条消息在来源里的编号
+   * （read_channel_conversation 的消息上有）。先从来源里取这一条：只能改用户自己的账号发的（role 是 me 或 assistant）。
+   * 新的文字和 sendMessage 一样带署名：words=user 是用户的原话，不加署名；words=assistant 在用户这一轮里带「confirmed by」，
+   * 别的轮次带「auto-reply」。邮箱先脱敏。卡不跟着变。
+   * 文字是空的、是别人的消息时抛 invalid_action；对话、消息找不到时抛 not_found；来源不能改消息时抛 unavailable；
+   * 来源拒绝（例如过了能改的时间）时抛 outbound_failed。
+   */
+  async editMessage(
+    conversationId: string, input: { ref: string; text: string; words: "user" | "assistant"; by: string; forUser: boolean },
+  ): Promise<ChannelEditedMessage> {
+    const text = input.text.trim();
+    if (!text) throw new ChannelActionError("invalid_action", "新的文字是空的");
+    const source = conversationId.split(":")[0] ?? "";
+    const adapter = this.options.registry.get(source);
+    if (!adapter?.capabilities.edit || !adapter.history || !adapter.capabilities.history || !adapter.resolveConversation) {
+      throw new ChannelActionError("unavailable", `来源 ${source} 不能改消息`);
+    }
+    const context = await this.context(adapter);
+    if (!context) throw new ChannelActionError("unavailable", `来源 ${source} 现在没有接上`);
+    let place;
+    try {
+      place = await adapter.resolveConversation(conversationId, context);
+    } catch (error) {
+      throw new ChannelActionError("not_found", errorText(error));
+    }
+    let found;
+    try {
+      found = (await adapter.history({ objectKey: place.objectKey, ref: input.ref, limit: 1 }, context))
+        .find((message) => message.ref === input.ref);
+    } catch (error) {
+      throw new ChannelActionError("not_found", `${place.label}里没有读到消息 ${input.ref}：${errorText(error)}`);
+    }
+    if (!found?.target) throw new ChannelActionError("not_found", `${place.label}里没有消息 ${input.ref}`);
+    if (found.role === "them") {
+      throw new ChannelActionError("invalid_action", `消息 ${input.ref} 是 ${found.sender.name} 发的：只能改用户自己的账号发的消息（用户本人或者 Lead 发的）`);
+    }
+    const signed = !input.forUser ? autoReplyDisclosure(this.assistantFor(adapter), this.ownerNameFor(adapter), text)
+      : input.words === "assistant" ? confirmedDraftDisclosure(this.assistantFor(adapter), this.ownerNameFor(adapter), text) : null;
+    const message = signed ? maskOutgoing({ ...signed, key: "", fromDraft: true, by: input.forUser ? "user" : "auto" }) : { text, masked: 0 };
+    if (message.masked) this.log(`[channels] ${adapter.id}: masked ${message.masked} email address(es) in an edit in ${place.objectKey}`);
+    const outcome = await this.outbox.perform(adapter, context, {
+      key: `edit:${place.objectKey}:${input.ref}:${randomUUID()}`, purpose: input.forUser ? "user_reply" : "auto_reply", cardId: null,
+      request: {
+        action: "edit", objectKey: place.objectKey, target: found.target, text: message.text,
+        ...("parts" in message && message.parts ? { parts: message.parts } : {}),
+      },
+    });
+    if (outcome.status === "failed") {
+      throw new ChannelActionError("outbound_failed", outcome.targetGone
+        ? `消息 ${input.ref} 改不了了（被删了、不是用户的账号发的，或者过了工作区允许改的时间）：${outcome.error ?? "未知原因"}`
+        : `没有改成：${outcome.error ?? "未知原因"}`);
+    }
+    this.log(`[channels] ${adapter.id}: edited message ${input.ref} in ${place.objectKey} (${input.by})`);
+    return { conversation: conversationId, label: place.label, objectKey: place.objectKey, ref: input.ref, text: message.text };
+  }
+
+  /**
    * 代你在一条消息上回表情（2026-10-26）。缺省回对方在这个对话里最新的一条；seq 指定一条（事件编号）。
    * 回的是这个对话里等你的卡上最新的一条、你说话时见过它：卡结束成「已处理」。表情名不对时抛 invalid_action；
    * 对话、消息找不到时抛 not_found；发不出去时抛 outbound_failed。
@@ -2088,6 +2145,7 @@ export class ChannelHub {
       conversation: conversationId, label: place.label, objectKey: place.objectKey,
       messages: messages.map((message) => ({
         at: message.at,
+        ref: message.ref,
         seq: (seqOf.get(adapter.id, place.objectKey, message.ref) as { seq: number } | undefined)?.seq ?? null,
         role: message.role, sender: message.sender.name, text: clipEventText(message.text, TEXT_MAX),
       })),

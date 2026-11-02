@@ -20,7 +20,7 @@ import {
 } from "../coordinator/workspace-actions.js";
 import { ackReminder } from "../ticket-actions/lifecycle.js";
 import { channelCalibration, confidenceParamsFrom, judgePolicyCase } from "../channels/policy.js";
-import type { ChannelReaction, ChannelSentMessage } from "../channels/types.js";
+import type { ChannelEditedMessage, ChannelReaction, ChannelSentMessage } from "../channels/types.js";
 import type { InterventionActor } from "../coordinator/interventions.js";
 import { createCoordinator } from "../coordinator/service.js";
 import type { ActionAttribution } from "../ticket-actions/attribution.js";
@@ -526,6 +526,32 @@ const CHANNEL_CONVERSATION_ACTIONS = {
     detail: (run, result) => ({
       conversation: run.target.id, seq: (result as ChannelReaction).seq, emoji: (result as ChannelReaction).emoji,
       removed: (run.input as { remove?: boolean }).remove === true, card: (result as ChannelReaction).card,
+    }),
+  },
+  // 改消息（2026-11-02，用户：要能改用户或者 Lead 发出去的消息）。和发消息一样在哪一轮都能做，署名的规则也一样。
+  edit_message: {
+    target: "channel_conversation", id: "edit_message", label: "改消息", scope: "tickets:create",
+    permission: "user_only", changesRules: false, external: true, irreversible: false,
+    where: "在来源里自己改（例如 Slack）",
+    hint: "改这个对话里一条用户自己的账号发的消息：用户本人发的，或者你以前用用户的身份发的。别人的消息改不了。"
+      + "ref 是这条消息的编号（read_channel_conversation 的消息上有 ref）；text 换掉原来的文字。"
+      + "words 和 send_message 一样：user 是用户逐字给出的原话，原样替换，不加署名；assistant 是你组织的话，"
+      + "在用户这一轮里开头带「confirmed by 用户」的署名，别的轮次带「auto-reply」的署名。"
+      + "来源不让改（例如过了工作区允许改的时间）时会说原因，这时可以另发一条更正。",
+    defaultReason: "在来源里改消息",
+    available: (target, env) => (channelMessages(env).canSend(target.source) && channelMessages(env).edit
+      ? AVAILABLE
+      : unavailable(`来源 ${target.source} 现在不能改消息。`)),
+    run: (run) => {
+      const input = run.input as UiActionInputOf<"channel_conversation", "edit_message">;
+      return channelMessages(run.env).edit!(run.target.id, {
+        ref: input.ref, text: input.text, words: input.words, by: conversationBy(run), forUser: forUserOf(run),
+      });
+    },
+    forLead: (_run, result) => ({ edited: result }),
+    detail: (run, result) => ({
+      conversation: run.target.id, objectKey: (result as ChannelEditedMessage).objectKey, ref: (result as ChannelEditedMessage).ref,
+      words: (run.input as { words: string }).words,
     }),
   },
 } satisfies Record<string, UiActionDefinition<ChannelConversationTarget, any>>;

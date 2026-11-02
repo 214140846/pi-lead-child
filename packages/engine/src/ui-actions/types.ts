@@ -11,7 +11,7 @@ import type {
   SetFastChainRequest, TimerOrigin, UiActionTargetType, UserActionRequest,
 } from "@pi-lead-child/protocol";
 import type { Db, OwnerActionInput } from "@pi-lead-child/store";
-import type { ChannelOpenCard, ChannelReaction, ChannelSentMessage } from "../channels/types.js";
+import type { ChannelEditedMessage, ChannelOpenCard, ChannelReaction, ChannelSentMessage } from "../channels/types.js";
 import type { ActionAttribution } from "../ticket-actions/attribution.js";
 import type { SmartTextComplete } from "../smart-model/types.js";
 import type { TicketActionHost } from "../ticket-actions/lifecycle.js";
@@ -204,6 +204,11 @@ export interface ChannelMessageService {
   }): Promise<ChannelSentMessage>;
   // 回一个表情（缺省回对方最后一条）。出错时抛带 code 的 ChannelActionError（invalid_action：表情名不对；not_found；outbound_failed）。
   react(conversationId: string, input: { emoji: string; seq?: number; remove?: boolean; by: string; seenBefore?: number | null }): Promise<ChannelReaction>;
+  // 改一条用户自己的账号发的消息（engine 的 ChannelHub.editMessage，2026-11-02）。出错时抛带 code 的 ChannelActionError
+  // （invalid_action：文字是空的、是别人的消息；not_found；unavailable；outbound_failed）。没有时不能改消息。
+  edit?(conversationId: string, input: {
+    ref: string; text: string; words: "user" | "assistant"; by: string; forUser: boolean;
+  }): Promise<ChannelEditedMessage>;
   // 还在等你的卡（Lead 发完消息自查用）。
   openCards(): ChannelOpenCard[];
 }
