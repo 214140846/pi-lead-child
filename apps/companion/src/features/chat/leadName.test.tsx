@@ -66,11 +66,11 @@ describe('the name of Lead in the conversation', () => {
     const identity = screen.getByTestId('lead-identity');
     expect(identity.textContent).toContain('Jarvis');
     expect(identity.textContent).not.toContain('Paimon');
-    expect(screen.getByTestId('lead-status-dot').getAttribute('aria-label')).toBe('Jarvis 在线');
-    expect(screen.getByPlaceholderText('给 Jarvis 发消息')).toBeTruthy();
-    expect(screen.getByText(`Jarvis · ${formatConversationTime(reply.updatedAt)}`)).toBeTruthy();
+    expect(screen.getByTestId('lead-status-dot').getAttribute('aria-label')).toBe('Jarvis is online');
+    expect(screen.getByPlaceholderText('Message Jarvis')).toBeTruthy();
+    expect(screen.getByText(`Jarvis · ${formatConversationTime(reply.updatedAt, undefined, 'en')}`)).toBeTruthy();
     // Lead 自己发起的回合也只写 Lead 的名字（方案 A）。
-    expect(screen.getByText(`Jarvis · ${formatConversationTime(proactive.updatedAt)}`)).toBeTruthy();
+    expect(screen.getByText(`Jarvis · ${formatConversationTime(proactive.updatedAt, undefined, 'en')}`)).toBeTruthy();
     expect(screen.queryByText(/Paimon|Lead ·/)).toBeNull();
   });
 
@@ -79,15 +79,15 @@ describe('the name of Lead in the conversation', () => {
     expect(onNoticeSurface(screen.getByText('今天有三件事。'))).toBe(false);
     expect(onNoticeSurface(screen.getByText('#66 的核查通过了。'))).toBe(false);
     // daemon 自己写的通知照旧是系统通知。
-    expect(screen.getByText(`系统通知 · 安全 · ${formatConversationTime(alert.updatedAt)}`)).toBeTruthy();
+    expect(screen.getByText(`System notice · security · ${formatConversationTime(alert.updatedAt, undefined, 'en')}`)).toBeTruthy();
     expect(onNoticeSurface(screen.getByText('有人绕过 API 改了账本里的设置。'))).toBe(true);
   });
 
   it('says Paimon before the profile arrives', () => {
     render(null);
     expect(screen.getByTestId('lead-identity').textContent).toContain('Paimon');
-    expect(screen.getByPlaceholderText('给 Paimon 发消息')).toBeTruthy();
-    expect(screen.getByText(`Paimon · ${formatConversationTime(reply.updatedAt)}`)).toBeTruthy();
+    expect(screen.getByPlaceholderText('Message Paimon')).toBeTruthy();
+    expect(screen.getByText(`Paimon · ${formatConversationTime(reply.updatedAt, undefined, 'en')}`)).toBeTruthy();
     expect(onNoticeSurface(screen.getByText('今天有三件事。'))).toBe(false);
   });
 });

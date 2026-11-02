@@ -7,14 +7,15 @@ import { useEffect, useState } from 'react';
 
 import { leadAvatarSource } from '@/components/leadAvatarSource';
 import { AvatarImageError, canPickAvatar, pickAvatarFile, prepareAvatarImage } from '@/data/avatarImagePicker';
+import { useLocale } from '@/i18n';
 import { useCompanionRuntime, useControlPlaneStore } from '@/state/CompanionStateProvider';
 import { useLeadAvatar, useLeadName } from '@/state/hooks';
 
 import {
-  LEAD_AVATAR_FAIRY_EYE_NOTE, LEAD_AVATAR_SLOT_LABELS, LEAD_AVATAR_SLOT_LOOKS, SLACK_EMOJI_HELP, SLACK_EMOJI_INVALID,
-  leadAvatarFootnote, leadAvatarSlotStatus, slackEmojiPreviewNote, slackEmojiSourceNote,
+  LEAD_AVATAR_SLOT_LOOKS, leadAvatarFootnote, leadAvatarSlotLabels, leadAvatarSlotStatus, slackEmojiPreviewNote, slackEmojiSourceNote,
 } from './leadAvatarModel';
 import { memoryErrorText } from './memoryModel';
+import { profileMessages } from './profile.messages';
 
 // 预览的格子：64 的图放在 80 的浅灰圆角底上（主题 11.15，组件规格）。
 const PREVIEW_SIZE = 64;
@@ -36,28 +37,32 @@ const PREVIEW_DELAY_MS = 300;
 export function LeadAvatarSection() {
   const { leadAvatar, images, resource } = useLeadAvatar();
   const supported = useControlPlaneStore((state) => state.capabilities.includes(LEAD_AVATAR_CAPABILITY));
+  const locale = useLocale();
+  const m = profileMessages(locale).avatar;
   if (!supported) {
-    return <Text testID="lead-avatar-unsupported" size="note" tone="muted">这个 daemon 还不能设置形象，更新以后再来。</Text>;
+    return <Text testID="lead-avatar-unsupported" size="note" tone="muted">{m.unsupported}</Text>;
   }
   if (!leadAvatar) {
     return (
       <Text testID="lead-avatar-loading" size="note" tone={resource?.state === 'error' ? 'danger-dark' : 'muted'}>
-        {resource?.state === 'error' ? `读不到形象：${resource.error ? memoryErrorText(resource.error) : '这个设置还没有启动'}` : '正在读取形象…'}
+        {resource?.state === 'error'
+          ? m.loadFailed(resource.error ? memoryErrorText(resource.error, locale) : profileMessages(locale).notStarted)
+          : m.loading}
       </Text>
     );
   }
   return (
     <Card testID="lead-avatar-section" rounded="xl" p="page-card" gap="form-field">
       <Column gap="text-stack">
-        <Text size="card-title" weight="extrabold">形象</Text>
+        <Text size="card-title" weight="extrabold">{m.title}</Text>
         {leadAvatar.fairyEye ? (
-          <Text testID="lead-avatar-fairy-eye-note" size="note" tone="secondary">{LEAD_AVATAR_FAIRY_EYE_NOTE}</Text>
+          <Text testID="lead-avatar-fairy-eye-note" size="note" tone="secondary">{m.fairyEyeNote}</Text>
         ) : null}
       </Column>
       <Row gap="side-item" flexWrap="wrap">
         {LEAD_AVATAR_SLOTS.map((slot) => <AvatarSlotTile key={slot} slot={slot} avatar={leadAvatar} images={images} />)}
       </Row>
-      <Text size="note" tone="muted">{leadAvatarFootnote(canPickAvatar)}</Text>
+      <Text size="note" tone="muted">{leadAvatarFootnote(canPickAvatar, locale)}</Text>
       <Box borderTopWidth={1} borderColor="border-soft" />
       <SlackBylineEmojiField avatar={leadAvatar} />
     </Card>
@@ -67,24 +72,26 @@ export function LeadAvatarSection() {
 function AvatarSlotTile({ slot, avatar, images }: { slot: LeadAvatarSlot; avatar: LeadAvatarDto; images: Record<string, string> }) {
   const runtime = useCompanionRuntime();
   const name = useLeadName();
+  const locale = useLocale();
+  const m = profileMessages(locale).avatar;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const look = LEAD_AVATAR_SLOT_LOOKS[slot];
   // 预览画的是素材：FairyEye 开着时，这里上传的图要等关掉以后才显示，但先给你看它的样子。
   const source = leadAvatarSource({ ...avatar, fairyEye: false }, images, look);
-  const label = LEAD_AVATAR_SLOT_LABELS[slot];
+  const label = leadAvatarSlotLabels(locale)[slot];
 
   const run = (work: () => Promise<unknown>) => {
     setBusy(true);
     setError(null);
     work()
-      .catch((reason: unknown) => setError(reason instanceof AvatarImageError ? reason.message : memoryErrorText(reason)))
+      .catch((reason: unknown) => setError(reason instanceof AvatarImageError ? reason.message : memoryErrorText(reason, locale)))
       .finally(() => setBusy(false));
   };
   const upload = () => run(async () => {
     const file = await pickAvatarFile();
     if (!file) return;
-    await runtime.uploadLeadAvatarSlot(slot, await prepareAvatarImage(file));
+    await runtime.uploadLeadAvatarSlot(slot, await prepareAvatarImage(file, locale));
   });
   const reset = () => run(() => runtime.clearLeadAvatarSlot(slot));
 
@@ -102,14 +109,14 @@ function AvatarSlotTile({ slot, avatar, images }: { slot: LeadAvatarSlot; avatar
       </Box>
       <Column gap="text-stack">
         <Text size="label" weight="bold">{label}</Text>
-        <Text testID={`lead-avatar-status-${slot}`} size="meta" tone="secondary">{leadAvatarSlotStatus(avatar, slot)}</Text>
+        <Text testID={`lead-avatar-status-${slot}`} size="meta" tone="secondary">{leadAvatarSlotStatus(avatar, slot, locale)}</Text>
       </Column>
       <Row items="center" gap="inline-item" flexWrap="wrap">
         {canPickAvatar ? (
           <Button
             testID={`lead-avatar-upload-${slot}`}
-            label="上传"
-            accessibilityLabel={`上传${label}的图`}
+            label={m.upload}
+            accessibilityLabel={m.uploadLabel(label)}
             variant="outline"
             tone="neutral"
             size="xs"
@@ -120,8 +127,8 @@ function AvatarSlotTile({ slot, avatar, images }: { slot: LeadAvatarSlot; avatar
         {avatar.slots[slot] ? (
           <Button
             testID={`lead-avatar-reset-${slot}`}
-            label="恢复"
-            accessibilityLabel={`${label}恢复成${slot === 'default' ? '系统素材' : '默认图'}`}
+            label={m.reset}
+            accessibilityLabel={slot === 'default' ? m.resetToSystem(label) : m.resetToDefault(label)}
             variant="link"
             tone="neutral"
             size="xs"
@@ -137,6 +144,8 @@ function AvatarSlotTile({ slot, avatar, images }: { slot: LeadAvatarSlot; avatar
 
 function SlackBylineEmojiField({ avatar }: { avatar: LeadAvatarDto }) {
   const runtime = useCompanionRuntime();
+  const locale = useLocale();
+  const m = profileMessages(locale).avatar;
   // 没动过输入框时跟着服务端的值走（别的设备或 Lead 改了以后跟着变）。
   const [draft, setDraft] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -152,9 +161,9 @@ function SlackBylineEmojiField({ avatar }: { avatar: LeadAvatarDto }) {
     runtime.setLeadAvatarSlackEmoji(request)
       .then(() => {
         setDraft(null);
-        setMessage({ text: '已保存。下一条发到 Slack 的消息就用它。', error: false });
+        setMessage({ text: m.saved, error: false });
       })
-      .catch((reason: unknown) => setMessage({ text: memoryErrorText(reason), error: true }))
+      .catch((reason: unknown) => setMessage({ text: memoryErrorText(reason, locale), error: true }))
       .finally(() => setSaving(false));
   };
 
@@ -162,7 +171,7 @@ function SlackBylineEmojiField({ avatar }: { avatar: LeadAvatarDto }) {
     <Column testID="slack-byline-emoji" gap="form-field">
       <Row gap="form-field" flexWrap="wrap" items="flex-start">
         <Column flex={1} minW={SLACK_INPUT_MIN_WIDTH} gap="field">
-          <Text size="label" weight="bold" tone="secondary">Slack 署名 emoji</Text>
+          <Text size="label" weight="bold" tone="secondary">{m.slackEmoji}</Text>
           <TextField
             testID="slack-byline-emoji-input"
             value={value}
@@ -174,19 +183,19 @@ function SlackBylineEmojiField({ avatar }: { avatar: LeadAvatarDto }) {
             autoCapitalize="none"
             autoCorrect={false}
           />
-          <Text size="note" tone="muted">{SLACK_EMOJI_HELP}</Text>
+          <Text size="note" tone="muted">{m.slackEmojiHelp}</Text>
         </Column>
         <Column flex={1} minW={SLACK_PREVIEW_MIN_WIDTH} gap="field">
-          <Text size="label" weight="bold" tone="secondary">Slack 里的样子</Text>
+          <Text size="label" weight="bold" tone="secondary">{m.slackPreview}</Text>
           <SlackBylinePreview preview={preview} invalid={code === null} />
         </Column>
       </Row>
       <Row items="center" gap="field" flexWrap="wrap">
-        <Button testID="slack-byline-emoji-save" label="保存" size="sm" disabled={saving || !changed} onPress={() => save({ emoji: code ?? '' })} />
+        <Button testID="slack-byline-emoji-save" label={m.save} size="sm" disabled={saving || !changed} onPress={() => save({ emoji: code ?? '' })} />
         {avatar.slackEmojiSource === 'settings' ? (
           <Button
             testID="slack-byline-emoji-reset"
-            label="恢复缺省"
+            label={m.resetDefault}
             variant="link"
             tone="neutral"
             size="sm"
@@ -195,7 +204,7 @@ function SlackBylineEmojiField({ avatar }: { avatar: LeadAvatarDto }) {
           />
         ) : null}
         <Text testID="slack-byline-emoji-message" size="note" tone={message?.error ? 'danger-dark' : 'secondary'}>
-          {message?.text ?? slackEmojiSourceNote(avatar)}
+          {message?.text ?? slackEmojiSourceNote(avatar, locale)}
         </Text>
       </Row>
     </Column>
@@ -204,9 +213,11 @@ function SlackBylineEmojiField({ avatar }: { avatar: LeadAvatarDto }) {
 
 // 照 Slack 的上下文行画：16 的 emoji，后面是署名文字。没写 emoji 时只有文字；查不到图时照 Slack 的样子写短代码原文。
 function SlackBylinePreview({ preview, invalid }: { preview: SlackEmojiPreview | null; invalid: boolean }) {
-  if (invalid) return <Text testID="slack-byline-preview-note" size="note" tone="danger-dark">{SLACK_EMOJI_INVALID}</Text>;
-  if (!preview) return <Text testID="slack-byline-preview-loading" size="note" tone="muted">正在生成预览…</Text>;
-  const note = slackEmojiPreviewNote(preview);
+  const locale = useLocale();
+  const m = profileMessages(locale).avatar;
+  if (invalid) return <Text testID="slack-byline-preview-note" size="note" tone="danger-dark">{m.slackEmojiInvalid}</Text>;
+  if (!preview) return <Text testID="slack-byline-preview-loading" size="note" tone="muted">{m.previewLoading}</Text>;
+  const note = slackEmojiPreviewNote(preview, locale);
   return (
     <Column gap="text-stack">
       <Row testID="slack-byline-preview" items="center" gap="icon-label" minH={SLACK_PREVIEW_MIN_HEIGHT} px="inset-x" rounded="md" bg="surface-subtle">

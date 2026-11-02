@@ -84,7 +84,7 @@ describe('a turn the Lead started itself', () => {
     expect(leadSenderLabel('paired:companion')).toBe('Paimon');
     expect(leadSenderLabel('live')).toBe('Paimon');
     expect(leadSenderLabel(undefined)).toBe('Paimon');
-    expect(leadSenderLabel('system:fallback-notice')).toBe('系统通知');
+    expect(leadSenderLabel('system:fallback-notice')).toBe('System notice');
   });
 });
 

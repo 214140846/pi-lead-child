@@ -1,11 +1,15 @@
 import { runtimesDescription, RuntimesSection } from '@/features/settings/RuntimesSection';
+import { settingsMessages } from '@/features/settings/settings.messages';
 import { SettingsPage } from '@/features/settings/SettingsPage';
+import { useLocale, useMessages } from '@/i18n';
 import { useLeadName } from '@/state/hooks';
 
 export default function RuntimesRoute() {
+  const m = useMessages(settingsMessages);
   const leadName = useLeadName();
+  const locale = useLocale();
   return (
-    <SettingsPage title="执行器" description={runtimesDescription(leadName)}>
+    <SettingsPage title={m.items.runtimes} description={runtimesDescription(leadName, locale)}>
       <RuntimesSection />
     </SettingsPage>
   );

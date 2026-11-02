@@ -49,7 +49,7 @@ describe('the memory switch card', () => {
 
     await act(async () => { fireEvent.click(screen.getByTestId('surface-memory-switch-approve')); });
     expect((client as any).confirmMemorySwitch).toHaveBeenCalledWith(SWITCH_ID, true);
-    expect(screen.getByTestId('surface-memory-switch-result').textContent).toBe('已切换，索引在后台重建');
+    expect(screen.getByTestId('surface-memory-switch-result').textContent).toBe('Switched. The index is rebuilding in the background.');
     expect(screen.queryByTestId('surface-memory-switch-approve')).toBeNull();
   });
 
@@ -61,7 +61,7 @@ describe('the memory switch card', () => {
     await act(async () => { renderWithRuntime(<SurfaceView surface={surface()} />, runtime); });
     await act(async () => { fireEvent.click(screen.getByTestId('surface-memory-switch-reject')); });
     expect((client as any).confirmMemorySwitch).toHaveBeenCalledWith(SWITCH_ID, false);
-    expect(screen.getByTestId('surface-memory-switch-result').textContent).toBe('没有切换，记忆照旧');
+    expect(screen.getByTestId('surface-memory-switch-result').textContent).toBe('Not switched. Memory stays the same.');
   });
 
   it('words the result from the parts the switch waited for', async () => {
@@ -74,9 +74,9 @@ describe('the memory switch card', () => {
       confirmMemorySwitch: vi.fn(async () => ({ memory: {}, switch: { ...rerankOnly, state: 'applied' } })),
     });
     await act(async () => { renderWithRuntime(<SurfaceView surface={surface()} />, runtime); });
-    expect(screen.getByTestId('surface-memory-switch-hint').textContent).toBe('不切换时，重排改为「不用」。以后也可以在设置 → Paimon → 记忆里改。');
+    expect(screen.getByTestId('surface-memory-switch-hint').textContent).toBe('If you do not switch: Reranking changes to "Off". You can also change this later in Settings → Paimon → Memory.');
     await act(async () => { fireEvent.click(screen.getByTestId('surface-memory-switch-approve')); });
-    expect(screen.getByTestId('surface-memory-switch-result').textContent).toBe('已切换，重排改用决策模型');
+    expect(screen.getByTestId('surface-memory-switch-result').textContent).toBe('Switched. Reranking now uses the decision model.');
   });
 
   it('says what a rejected switch leaves when both parts waited', async () => {
@@ -86,9 +86,9 @@ describe('the memory switch card', () => {
       confirmMemorySwitch: vi.fn(async () => ({ memory: {}, switch: { ...both, state: 'rejected' } })),
     });
     await act(async () => { renderWithRuntime(<SurfaceView surface={surface()} />, runtime); });
-    expect(screen.getByTestId('surface-memory-switch-hint').textContent).toBe('不切换时，embedding 照旧，重排改为「不用」。以后也可以在设置 → Paimon → 记忆里改。');
+    expect(screen.getByTestId('surface-memory-switch-hint').textContent).toBe('If you do not switch: Embedding stays the same. Reranking changes to "Off". You can also change this later in Settings → Paimon → Memory.');
     await act(async () => { fireEvent.click(screen.getByTestId('surface-memory-switch-reject')); });
-    expect(screen.getByTestId('surface-memory-switch-result').textContent).toBe('没有切换，embedding 照旧，重排改为「不用」');
+    expect(screen.getByTestId('surface-memory-switch-result').textContent).toBe('Not switched. Embedding stays the same. Reranking changes to "Off".');
   });
 
   it('shows the current state when the switch was handled elsewhere', async () => {
@@ -101,7 +101,7 @@ describe('the memory switch card', () => {
     read.mockResolvedValue(memorySwitch({ state: 'superseded' }));
     await act(async () => { fireEvent.click(screen.getByTestId('surface-memory-switch-approve')); });
     expect(read).toHaveBeenCalledTimes(2);
-    expect(screen.getByTestId('surface-memory-switch-result').textContent).toBe('设置又变了，这个切换作废');
+    expect(screen.getByTestId('surface-memory-switch-result').textContent).toBe('The settings changed again. This switch is void.');
     expect(screen.queryByTestId('surface-memory-switch-approve')).toBeNull();
   });
 
@@ -110,6 +110,6 @@ describe('the memory switch card', () => {
       memorySwitch: vi.fn(async () => { throw new ControlPlaneClientError('没有这个切换', 'not_found', 404); }),
     });
     await act(async () => { renderWithRuntime(<SurfaceView surface={surface()} />, runtime); });
-    expect(screen.getByTestId(`surface-memory-switch-${SWITCH_ID}`).textContent).toBe('这个记忆切换已经处理过了。');
+    expect(screen.getByTestId(`surface-memory-switch-${SWITCH_ID}`).textContent).toBe('This memory switch is already handled.');
   });
 });

@@ -12,6 +12,7 @@ import {
   scoreTestMessage,
 } from "../src/index.js";
 import { scriptedSmartModel } from "../testing/index.js";
+import { updateDesignPreferences } from "../src/design-preferences.js";
 
 let db: Db;
 
@@ -164,8 +165,13 @@ describe("the channel_policy actions", () => {
   });
 
   it("refuses thresholds that go down from one tier to the next", async () => {
-    await expect(runUiAction(db, { target, action: "update", input: withConfidence({ tiers: [0.8, 0.75, 0.9, 0.95] }), caller: { kind: "user" } }))
-      .rejects.toMatchObject({ code: "invalid_input" });
+    const descending = withConfidence({ tiers: [0.8, 0.75, 0.9, 0.95] });
+    await expect(runUiAction(db, { target, action: "update", input: descending, caller: { kind: "user" } }))
+      .rejects.toMatchObject({ code: "invalid_input", message: "The threshold of L2 cannot be lower than the threshold of L1." });
+    // 设置页直接显示这句话：按用户选的语言写。
+    updateDesignPreferences(db, { request: { locale: "zh" }, caller: { kind: "user" } });
+    await expect(runUiAction(db, { target, action: "update", input: descending, caller: { kind: "user" } }))
+      .rejects.toMatchObject({ code: "invalid_input", message: "L2 的门槛不能低于 L1 的" });
   });
 
   it("does not count a loosening that no trusted version ever had", () => {

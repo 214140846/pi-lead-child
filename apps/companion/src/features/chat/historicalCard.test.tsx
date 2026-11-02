@@ -53,9 +53,9 @@ function render(current: TicketSummary) {
 describe('a historical checkpoint card', () => {
   it('states its own moment and puts the later state in a separate 现在 chip', () => {
     const card = render(ticket({ stage: 'done' }));
-    expect(card.textContent).not.toContain('当前工单');
-    expect(within(card).getByText('已提交复核')).toBeTruthy();
-    expect(within(card).getByTestId('checkpoint-now-chip').textContent).toBe('现在：完成');
+    expect(card.textContent).not.toContain('Current ticket');
+    expect(within(card).getByText('Sent for review')).toBeTruthy();
+    expect(within(card).getByTestId('checkpoint-now-chip').textContent).toBe('Now: Done');
   });
 
   it('shows no chip while the ticket is still where the event left it', () => {
@@ -63,8 +63,8 @@ describe('a historical checkpoint card', () => {
       stage: 'review',
       reviewState: { state: 'independent_review', label: '独立核查中', reviewerAttemptId: null, verdict: null, reason: null, reviewProgress: 'running' },
     }));
-    expect(card.textContent).not.toContain('当前工单');
-    expect(within(card).getByText('已提交复核')).toBeTruthy();
+    expect(card.textContent).not.toContain('Current ticket');
+    expect(within(card).getByText('Sent for review')).toBeTruthy();
     expect(within(card).queryByTestId('checkpoint-now-chip')).toBeNull();
   });
 
@@ -73,7 +73,7 @@ describe('a historical checkpoint card', () => {
       stage: 'review',
       reviewState: { state: 'review_failed', label: '核查不通过，等你决定', reviewerAttemptId: 43, verdict: 'fail', reason: 'tests failed' },
     }));
-    expect(within(card).getByTestId('checkpoint-now-chip').textContent).toBe('现在：核查不通过，等你决定');
+    expect(within(card).getByTestId('checkpoint-now-chip').textContent).toBe('Now: 核查不通过，等你决定');
   });
 });
 
@@ -113,8 +113,8 @@ describe('a historical run-failure card', () => {
     }, 'replace');
     renderUI(<CompanionRuntimeProvider runtime={runtime}><LeadConversation /></CompanionRuntimeProvider>);
     const card = screen.getByTestId('checkpoint-card-95');
-    expect(card.textContent).not.toContain('等 Lead 恢复');
-    expect(card.textContent).not.toContain('Lead 会判断');
-    expect(card.textContent).toContain('工单 #47 的 Codex 运行出错 · 现在：完成');
+    expect(card.textContent).not.toContain('Waits for Lead');
+    expect(card.textContent).not.toContain('Lead decides');
+    expect(card.textContent).toContain('The Codex of ticket #47 had a run error · Now: Done');
   });
 });

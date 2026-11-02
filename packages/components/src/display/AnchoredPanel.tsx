@@ -4,6 +4,8 @@ import { Modal, Platform, ScrollView, StyleSheet, View } from 'react-native';
 import { useBreakpoint } from '../platform';
 import { Pressable } from '../primitives/Pressable';
 import { Box, Column } from '../primitives/layout';
+import { useMessages } from '../i18n';
+import { displayMessages } from './display.messages';
 
 export type AnchoredPanelProps = {
   /** 收着时在页面里的内容（例如一张一行的卡片）。浮层打开时它留在原位，高度不变。 */
@@ -31,6 +33,7 @@ const DEFAULT_MAX_HEIGHT = 440;
 //   · 点外面、按 Esc（web）或返回键（Android）关闭；
 //   · 用 React Native 的 Modal：web 上渲染到 body，不被滚动区裁掉，页面也不因为它变高、跳动。
 export function AnchoredPanel({ children, open, onClose, header, body, label, maxHeight = DEFAULT_MAX_HEIGHT, testID }: AnchoredPanelProps) {
+  const m = useMessages(displayMessages);
   const anchorRef = useRef<View>(null);
   const [anchor, setAnchor] = useState<Anchor | null>(null);
   const breakpoint = useBreakpoint();
@@ -71,7 +74,7 @@ export function AnchoredPanel({ children, open, onClose, header, body, label, ma
         animationType={Platform.OS === 'web' ? 'none' : sheet ? 'slide' : 'fade'}
       >
         {/* 手机上是底部面板，后面压暗一层（和「依据」浮层一样）；宽屏时不压暗，浮层就是那张卡片变出来的。 */}
-        <Pressable aria-label="收起" feedback="none" cursor="default" onPress={onClose} style={[StyleSheet.absoluteFill, sheet ? styles.dim : null]} />
+        <Pressable aria-label={m.collapse} feedback="none" cursor="default" onPress={onClose} style={[StyleSheet.absoluteFill, sheet ? styles.dim : null]} />
         <View style={position} pointerEvents="box-none">
           <PanelFrame testID={testID ? `${testID}-panel` : undefined} label={label} sheet={sheet} upward={upward} maxHeight={height}>
             {/* 只有头的浮层：头放进能滚动的区域里，打开时焦点落在它上面，不落在头里第一个按钮上（不会画一圈焦点框）。 */}

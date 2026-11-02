@@ -11,21 +11,21 @@ describe('the receipt of your latest action', () => {
       { actor: 'user', kind: 'decision', payload: { decision: 'review_requested_by_user' }, createdAt: '2026-10-14T10:10:53.000Z' },
       { actor: 'lead', kind: 'comment', payload: { content: '分类' }, createdAt: '2026-10-14T10:11:00.000Z' },
     ], 'Paimon');
-    expect(receipt).toEqual({ title: '你派发了独立核查', createdAt: '2026-10-14T10:10:53.000Z' });
+    expect(receipt).toEqual({ title: 'You requested an independent review', createdAt: '2026-10-14T10:10:53.000Z' });
   });
 
   it('counts your own transitions and ignores the system ones', () => {
     expect(latestUserAction([
       { actor: 'user', kind: 'transition', payload: { from: 'review', to: 'done' }, createdAt: '2026-10-14T10:00:00.000Z' },
       { actor: 'system', kind: 'transition', payload: { from: 'active', to: 'blocked' }, createdAt: '2026-10-14T11:00:00.000Z' },
-    ], 'Paimon')).toEqual({ title: '你验收通过了这张工单', createdAt: '2026-10-14T10:00:00.000Z' });
+    ], 'Paimon')).toEqual({ title: 'You accepted this ticket', createdAt: '2026-10-14T10:00:00.000Z' });
     expect(latestUserAction([], 'Paimon')).toBeNull();
   });
 
   it('calls Lead by its name in the receipt', () => {
     expect(latestUserAction([
       { actor: 'user', kind: 'decision', payload: { decision: 'delegation_preflight_accepted' }, createdAt: '2026-10-14T10:00:00.000Z' },
-    ], 'Jarvis')).toEqual({ title: '你授权了 Jarvis 托管', createdAt: '2026-10-14T10:00:00.000Z' });
+    ], 'Jarvis')).toEqual({ title: 'You delegated the ticket to Jarvis', createdAt: '2026-10-14T10:00:00.000Z' });
   });
 });
 
@@ -36,8 +36,8 @@ describe('the progress of the run in flight', () => {
 
   it('regression #66: says a review run that has been starting for minutes may be stuck', () => {
     const progress = liveRunProgress([reviewer], new Map(), at(13 * 60_000));
-    expect(progress).toMatchObject({ runId: 73, label: '核查 Run #73 · 正在准备', phase: 'starting', stalled: true });
-    expect(elapsedText(progress!.elapsedMs)).toBe('已 13 分钟');
+    expect(progress).toMatchObject({ runId: 73, label: 'Review Run #73 · Preparing', phase: 'starting', stalled: true });
+    expect(elapsedText(progress!.elapsedMs)).toBe('13 min so far');
   });
 
   it('does not call a run stuck in its first minute', () => {
@@ -46,7 +46,7 @@ describe('the progress of the run in flight', () => {
 
   it('names a running conversation as answering', () => {
     const chat = { id: 72, role: 'executor' as const, purpose: 'conversation' as const, state: 'running' as const, startedAt };
-    expect(liveRunProgress([chat], new Map(), at(20_000))).toMatchObject({ label: '对话 Run #72 · 正在回答', stalled: false });
+    expect(liveRunProgress([chat], new Map(), at(20_000))).toMatchObject({ label: 'Conversation Run #72 · Answering', stalled: false });
   });
 
   it('takes the newest run when several are live, and none when all have ended', () => {
@@ -56,8 +56,9 @@ describe('the progress of the run in flight', () => {
   });
 
   it('writes elapsed time in words', () => {
-    expect(elapsedText(40_000)).toBe('已 40 秒');
-    expect(elapsedText(68 * 60_000)).toBe('已 1 小时 8 分钟');
-    expect(elapsedText(120 * 60_000)).toBe('已 2 小时');
+    expect(elapsedText(40_000)).toBe('40 sec so far');
+    expect(elapsedText(68 * 60_000)).toBe('1 h 8 min so far');
+    expect(elapsedText(120 * 60_000)).toBe('2 h so far');
+    expect(elapsedText(68 * 60_000, 'zh')).toBe('已 1 小时 8 分钟');
   });
 });

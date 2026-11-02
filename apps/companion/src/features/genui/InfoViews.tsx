@@ -1,5 +1,5 @@
 import {
-  Badge, BarChart, DataTable, Pressable, Progress, Row, Stats, Steps, Text, Timeline,
+  Badge, BarChart, DataTable, Pressable, Progress, Row, Sparkline, Stats, Steps, Text, Timeline,
   dataToneBadge, estimatedTextWidth, formatNumber, isNumericColumn, tableColumnWidth,
 } from '@pi-lead-child/components';
 import type { UiStepState, UiTableCell, UiTone } from '@pi-lead-child/protocol';
@@ -23,6 +23,15 @@ export type StatsProps = {
 export type StepsProps = { items: Array<{ label: string; state: UiStepState; detail?: string }> };
 export type ProgressProps = { label: string; value?: number; caption?: string; tone?: UiTone };
 export type TimelineProps = { items: Array<{ at: string; text: string; tone?: UiTone }> };
+export type SparklineProps = {
+  points: number[];
+  label?: string;
+  unit?: string;
+  tone?: UiTone;
+  baseline?: number;
+  start?: string;
+  end?: string;
+};
 export type BarChartProps = {
   bars: Array<{ label: string; value: number; tone?: UiTone }>;
   unit?: string;
@@ -109,6 +118,10 @@ export function ProgressView({ id, label, value, caption, tone }: ProgressProps 
 
 export function TimelineView({ id, items }: TimelineProps & { id: string }) {
   return <Timeline testID={`surface-timeline-${id}`} items={items} />;
+}
+
+export function SparklineView({ id, ...props }: SparklineProps & { id: string }) {
+  return <Sparkline testID={`surface-sparkline-${id}`} {...props} />;
 }
 
 export function BarChartView({ id, bars, unit, orientation, max }: BarChartProps & { id: string }) {

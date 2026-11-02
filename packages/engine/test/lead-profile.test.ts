@@ -9,6 +9,7 @@ import {
   completeTurn, createLoopbackBinding, createTurn, getLeadProfile, leadDisplayName, listEvents, openDb, revokeBinding,
   type Db,
 } from "@pi-lead-child/store";
+import { updateDesignPreferences } from "../src/design-preferences.js";
 import { LeadProfileError, revertLeadProfile, updateLeadProfile } from "../src/lead-profile.js";
 
 let db: Db;
@@ -52,7 +53,8 @@ describe("updateLeadProfile", () => {
     expect(performed()).toHaveLength(1);
     expect(performed()[0]!.payload).toMatchObject({
       action: "lead.profile",
-      summary: "把助手的名字从「Paimon」改成「Jarvis」，改了 Jarvis 和你的互动风格",
+      target: { label: "Identity and style of Jarvis" },
+      summary: 'Changed the assistant name from "Paimon" to "Jarvis", changed how Jarvis interacts with you',
       detail: { fields: ["name", "interactionStyle"] },
       undo: {
         kind: "lead_profile",
@@ -84,8 +86,9 @@ describe("updateLeadProfile", () => {
       }
       return null;
     };
-    expect(attempt({ name: "   " })).toMatchObject({ code: "invalid_input", message: "名字不能是空的" });
-    expect(attempt({})).toMatchObject({ code: "invalid_input", message: "没有要改的内容" });
+    expect(attempt({ name: "   " })).toMatchObject({ code: "invalid_input", message: "The name cannot be empty." });
+    expect(attempt({})).toMatchObject({ code: "invalid_input", message: "Nothing to change." });
+    expect(attempt({ name: 7 })).toMatchObject({ message: "You can change only name, persona and interactionStyle. Each value must be text." });
     expect(attempt({ name: 7 })).toBeInstanceOf(LeadProfileError);
     expect(attempt({ avatar: "x" })).toBeInstanceOf(LeadProfileError);
     expect(getLeadProfile(db).updatedAt).toBeNull();
@@ -120,13 +123,30 @@ describe("updateLeadProfile", () => {
       level: "interrupt",
       payload: {
         action: "lead.profile",
-        summary: "Jarvis 代你把助手的名字从「Paimon」改成「Jarvis」",
+        summary: 'Jarvis changed the assistant name from "Paimon" to "Jarvis" for you',
         detail: { sourceTurnId: "turn-user" },
         credential: { bindingId: binding.id },
         source: { client: "lead" },
         delivery: "push",
       },
     });
+  });
+});
+
+describe("updateLeadProfile in Chinese", () => {
+  it("writes the errors and the owner action in the language the user chose", () => {
+    updateDesignPreferences(db, { request: { locale: "zh" }, caller: { kind: "user" } });
+    const binding = web();
+    updateLeadProfile(db, {
+      request: { name: "Jarvis", persona: "管家" }, caller: { kind: "user", credential: binding, source: SOURCE },
+    });
+    expect(performed()[0]!.payload).toMatchObject({
+      target: { label: "Jarvis 的身份与风格" },
+      summary: "把助手的名字从「Paimon」改成「Jarvis」，改了 Jarvis 的人格",
+    });
+    expect(() => updateLeadProfile(db, { request: { name: "   " }, caller: { kind: "user" } })).toThrow("名字不能是空的");
+    expect(() => updateLeadProfile(db, { request: { name: 7 } as never, caller: { kind: "user" } }))
+      .toThrow("只能改 name、persona、interactionStyle，值是文字");
   });
 });
 

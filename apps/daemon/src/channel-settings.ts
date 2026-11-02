@@ -22,7 +22,8 @@ import {
   type ChannelSourceAccount,
   type ChannelSourceStatus,
 } from "@pi-lead-child/protocol";
-import type { Db } from "@pi-lead-child/store";
+import { getLocale, type Db } from "@pi-lead-child/store";
+import { channelSettingsMessages } from "./channel-settings.messages.js";
 import type { ChannelSourceStatusUpdate } from "./channels.js";
 import { SealedSecrets } from "./sealed-secrets.js";
 
@@ -89,6 +90,11 @@ export class ChannelSettings implements ChannelSettingsService {
   constructor(private readonly options: ChannelSettingsOptions) {
     this.sealed = new SealedSecrets(options.db, options.vault);
     this.now = options.now ?? (() => new Date());
+  }
+
+  // 给用户看的文字按用户现在选的语言（channel-settings.messages.ts）。
+  private m() {
+    return channelSettingsMessages(getLocale(this.options.db));
   }
 
   /** 通道接好以后（startChannels）交过来：有哪些来源，怎样热重连。 */
@@ -170,7 +176,7 @@ export class ChannelSettings implements ChannelSettingsService {
           return;
         case "error":
           state.status = "error";
-          state.lastError = this.scrubFor(source, update.error).slice(0, 500) || "连不上";
+          state.lastError = this.scrubFor(source, update.error).slice(0, 500) || this.m().cannotConnect;
           return;
       }
     });
@@ -191,7 +197,7 @@ export class ChannelSettings implements ChannelSettingsService {
 
   private adapter(source: string): ChannelAdapter {
     const adapter = this.settingsAdapters().find((candidate) => candidate.id === source);
-    if (!adapter) throw new ChannelSettingsError("not_found", "没有这个通道");
+    if (!adapter) throw new ChannelSettingsError("not_found", this.m().noChannel);
     return adapter;
   }
 
@@ -228,7 +234,7 @@ export class ChannelSettings implements ChannelSettingsService {
   private checkNames(adapter: ChannelAdapter, secrets: Readonly<Record<string, string>>): void {
     const declared = new Set(adapter.settings!.secrets.map((spec) => spec.name));
     if (Object.keys(secrets).some((name) => !declared.has(name))) {
-      throw new ChannelSettingsError("invalid_request", "请求里有这个通道没有声明的密钥名");
+      throw new ChannelSettingsError("invalid_request", this.m().undeclaredSecret);
     }
   }
 
@@ -254,17 +260,18 @@ export class ChannelSettings implements ChannelSettingsService {
     const scrub = (text: string) => scrubSecretValues(text, values);
     const log = (line: string) => this.options.log(`[channel-settings] ${adapter.id}: ${scrub(line)}`);
     const timeoutMs = this.options.testTimeoutMs ?? DEFAULT_TEST_TIMEOUT_MS;
+    const m = this.m();
     let result: ChannelSecretsTestResult;
     try {
       result = await withTimeout(adapter.settings!.test(secrets, { log }), timeoutMs);
     } catch (error) {
       const detail = error instanceof TestTimeout
-        ? `${adapter.label} 没有在 ${Math.round(timeoutMs / 1000)} 秒内回答，没有检查完。`
-        : `检查出错：${errorText(error)}`;
+        ? m.timedOut(adapter.label, Math.round(timeoutMs / 1000))
+        : m.checkFailed(errorText(error));
       log(`settings test failed: ${error instanceof TestTimeout ? "timed out" : errorText(error)}`);
-      result = { ok: false, checks: [{ id: "test", label: "检查", pass: false, detail }], account: null, missingScopes: [] };
+      result = { ok: false, checks: [{ id: "test", label: m.checkLabel, pass: false, detail }], account: null, missingScopes: [] };
     }
-    return sanitizeResult(result, scrub);
+    return sanitizeResult(result, scrub, m.checkLabel);
   }
 
   /** 用请求里的密钥试一次（没给的用现在的）。不保存。 */
@@ -295,7 +302,7 @@ export class ChannelSettings implements ChannelSettingsService {
 
   private async reload(adapter: ChannelAdapter): Promise<void> {
     this.options.forgetKeychain?.(adapter.settings!.secrets.map((spec) => spec.name));
-    if (!this.sources) throw new ChannelSettingsError("unavailable", "消息通道还没有启动");
+    if (!this.sources) throw new ChannelSettingsError("unavailable", this.m().notStarted);
     await this.sources.reload(adapter.id);
   }
 
@@ -357,10 +364,10 @@ export class ChannelSettings implements ChannelSettingsService {
 }
 
 // 来源插件给的检查结果：去掉密钥，按线上契约的长度和个数截断；ok 要所有检查都通过。
-function sanitizeResult(result: ChannelSecretsTestResult, scrub: (text: string) => string): ChannelSecretsTestResult {
+function sanitizeResult(result: ChannelSecretsTestResult, scrub: (text: string) => string, checkLabel: string): ChannelSecretsTestResult {
   const clip = (text: unknown, max: number) => scrub(typeof text === "string" ? text : "").slice(0, max);
   const checks: ChannelSecretCheck[] = (Array.isArray(result?.checks) ? result.checks : []).slice(0, 20).map((item) => ({
-    id: clip(item?.id, 60) || "check", label: clip(item?.label, 100) || "检查", pass: item?.pass === true, detail: clip(item?.detail, 500),
+    id: clip(item?.id, 60) || "check", label: clip(item?.label, 100) || checkLabel, pass: item?.pass === true, detail: clip(item?.detail, 500),
   }));
   const account = result?.account
     ? {

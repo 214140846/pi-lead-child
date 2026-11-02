@@ -143,7 +143,7 @@ describe("the Lead avatar routes", () => {
       expect(await refused("POST", "/v1/lead/avatar/slots/default", { ...upload(PNG), fairyEye: true })).toContain("mimeType");
       expect(await refused("POST", "/v1/lead/avatar/slots/default", { mimeType: "image/png", data: "%%%" })).toContain("base64");
       expect(await refused("POST", "/v1/lead/avatar/slots/..%2F..%2Fx/clear")).toContain("状态只能是");
-      expect(await refused("GET", "/v1/lead/avatar/images/..%2F..%2Flead.profile")).toBe("图的 id 不对");
+      expect(await refused("GET", "/v1/lead/avatar/images/..%2F..%2Flead.profile")).toBe("The image id is not valid");
       expect((await call(token, "GET", "/v1/lead/avatar/images/av_000000000000000000000000")).status).toBe(404);
 
       const tooBig = await call(token, "POST", "/v1/lead/avatar/slots/default", { mimeType: "image/png", data: "A".repeat(LEAD_AVATAR_UPLOAD_MAX_BODY_BYTES) });

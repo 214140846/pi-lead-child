@@ -3,24 +3,27 @@
 // 以前这些原文直接画在会话里：每次心跳巡检一个 503 红框，「Run crashed」是一张键值表。
 import {
   classifyLeadModelError, isLeadRestartInterruption, isSystemTurnOrigin, leadModelFailureReason, leadTurnFailureSentence,
-  leadTurnWaitingSentence, SYSTEM_TURN_ORIGINS,
+  leadTurnWaitingSentence,
   type ConversationToolCall, type KernelCheckpoint, type LeadStatus,
 } from '@pi-lead-child/protocol';
 
+import type { Locale } from '@/i18n';
+
 import { leadNameNow } from '../../state/leadName';
 import type { MessageFailure } from '../../state/types';
+import { failureMessages } from './failure.messages';
 import { itemOperationDoneWords } from './itemOperationWords';
 
 export type FailureAction = 'resend' | 'retry' | 'remove' | 'refresh' | 'open-ticket';
 
-/** 失败卡片上动作按钮的文字。会话和工单对话共用。 */
-export const FAILURE_ACTION_LABELS: Record<FailureAction, string> = {
-  resend: '重发',
-  retry: '重试',
-  remove: '删除',
-  refresh: '刷新确认',
-  'open-ticket': '打开工单',
-};
+/** 失败卡片上动作按钮的文字，按界面语言。会话和工单对话共用。 */
+export function failureActionLabels(locale: Locale): Record<FailureAction, string> {
+  return failureMessages(locale).actions;
+}
+
+
+// 点开以后的几行事实的种类：卡片按种类找「原因」「接下来」，不按标签文字找。
+export type FailureFactKey = 'done' | 'reason' | 'next';
 
 export type FailurePresentation = {
   headline: string;
@@ -43,12 +46,13 @@ export type FailurePresentation = {
   // 在等自动重试时要说会自动再试。缺省为 null。
   summary?: string | null;
   // 点开以后的几行：做过、原因、接下来。原文另放在 details。
-  facts: Array<{ label: string; value: string }>;
+  facts: Array<{ key: FailureFactKey; label: string; value: string }>;
 };
 
 // 点开以后的几行事实。空的不写。
-function facts(entries: Array<[string, string | null | undefined]>): Array<{ label: string; value: string }> {
-  return entries.flatMap(([label, value]) => value ? [{ label, value }] : []);
+function factsOf(locale: Locale, entries: Array<[FailureFactKey, string | null | undefined]>): Array<{ key: FailureFactKey; label: string; value: string }> {
+  const labels = failureMessages(locale).facts;
+  return entries.flatMap(([key, value]) => value ? [{ key, label: labels[key], value }] : []);
 }
 
 // daemon 自己写的两句（packages/store 的 EMPTY_ASSISTANT_REPLY_ERROR，以及中断时的说明）。它们是用来认的标记，不随名字变。
@@ -57,13 +61,14 @@ const EMPTY_REPLY = 'Lead 未生成回复，请重试。';
 const ABORTED = 'Lead 回复被中断，请重试。';
 const DAEMON_AUTH = 'Lead 模型连接认证失败，请重试。';
 
-const SYSTEM_WORK: Record<string, string> = {
-  [SYSTEM_TURN_ORIGINS.heartbeat]: '这次心跳巡检没有完成',
-  [SYSTEM_TURN_ORIGINS.digest]: '这一批摘要没有处理完',
-  [SYSTEM_TURN_ORIGINS.notification]: '这条通知还没播报出去',
-  [SYSTEM_TURN_ORIGINS.blocker]: '这次没能处理新的 blocker',
-  [SYSTEM_TURN_ORIGINS.precipitate]: '这次整理笔记没有完成',
-};
+// Lead 自己发起的一轮没完成时说的那件事（failure.messages.ts 的 systemWork，按来源）。
+function systemWorkOf(originKind: string, name: string, locale: Locale): { work: string; label: string } {
+  const m = failureMessages(locale);
+  const known = (m.systemWork as Record<string, { work: string; label: string } | undefined>)[originKind];
+  if (known) return known;
+  const work = m.systemWorkFallback(name);
+  return { work, label: work };
+}
 
 type ModelFailure = 'network' | 'unavailable' | 'busy' | 'auth' | 'config' | 'context' | 'empty' | 'aborted' | 'restart' | 'unknown';
 
@@ -76,17 +81,19 @@ function modelFailure(raw: string): ModelFailure {
   return classifyLeadModelError(text);
 }
 
-function reasonOf(kind: ModelFailure, name: string): string {
-  if (kind === 'empty') return `${name} 这次没有给出回答`;
-  if (kind === 'aborted') return `${name} 的回复被中断了`;
-  if (kind === 'restart') return `${name} 的回复被重启打断了`;
-  return leadModelFailureReason(kind, name);
+function reasonOf(kind: ModelFailure, name: string, locale: Locale): string {
+  const m = failureMessages(locale).reason;
+  if (kind === 'empty') return m.empty(name);
+  if (kind === 'aborted') return m.aborted(name);
+  if (kind === 'restart') return m.restart(name);
+  return leadModelFailureReason(kind, name, locale);
 }
 
-function systemRecovery(lead: LeadStatus | undefined, clock: (value: string) => string): string {
-  if (!lead || lead.state === 'online') return '模型现在已经恢复';
-  if (lead.nextAttemptAt) return `系统会在 ${clock(lead.nextAttemptAt)} 自动再试`;
-  return '系统会在下一次需要时再试';
+function systemRecovery(lead: LeadStatus | undefined, clock: (value: string) => string, locale: Locale): string {
+  const m = failureMessages(locale).recovery;
+  if (!lead || lead.state === 'online') return m.recovered;
+  if (lead.nextAttemptAt) return m.at(clock(lead.nextAttemptAt));
+  return m.later;
 }
 
 // 这一轮的工具调用里改变了什么，用白话说（「提醒 #83 已创建」）。认得的是改日程和工单的那几个 Lead 工具；
@@ -123,15 +130,17 @@ function toolItemId(tool: TurnTool): string | null {
   return /#(\d+)/.exec(resultText(tool.result?.preview))?.[1] ?? null;
 }
 
-function completedWork(tools: readonly TurnTool[]): string | null {
+function completedWork(tools: readonly TurnTool[], locale: Locale): string | null {
+  const m = failureMessages(locale).work;
   const done = tools.filter((tool) => tool.state === 'completed' && tool.name !== 'render_ui');
   const named = done.flatMap((tool) => {
-    const words = itemOperationDoneWords(tool.name, toolItemId(tool));
+    const words = itemOperationDoneWords(tool.name, toolItemId(tool), locale);
     return words ? [words] : [];
   });
   const others = done.length - named.length;
-  if (!named.length) return others ? `${others} 个操作已完成` : null;
-  return others ? `${[...new Set(named)].join('、')}，另有 ${others} 个操作已完成` : [...new Set(named)].join('、');
+  if (!named.length) return others ? m.others(others) : null;
+  const list = [...new Set(named)].join(m.separator);
+  return others ? m.namedAndOthers(list, others) : list;
 }
 
 export function presentTurnFailure(input: {
@@ -146,29 +155,34 @@ export function presentTurnFailure(input: {
   tools?: readonly TurnTool[];
   // 这一轮被重启打断以后，会话里已经有 Lead 接着回复的一轮。
   continued?: boolean;
+  // 界面语言。
+  locale: Locale;
 }): FailurePresentation {
   const { failure, originKind, ticketId, userText, lead, clock } = input;
+  const { locale } = input;
+  const m = failureMessages(locale);
+  const facts = (entries: Array<[FailureFactKey, string | null | undefined]>) => factsOf(locale, entries);
   const name = leadNameNow();
   const details = failure.message.trim() || null;
   const tools = (input.tools ?? []).filter((tool) => tool.name !== 'render_ui');
-  const work = completedWork(tools);
+  const work = completedWork(tools, locale);
   const canResend = Boolean(userText?.trim()) && tools.length === 0;
   const quote = userText?.trim() || null;
   if (failure.kind === 'timeout-unknown') {
     return {
-      headline: '发送结果未知，消息已保留；刷新后确认是否已送达。', actions: ['refresh'], details: null, groupKey: null, tone: 'danger',
-      form: 'absence', label: '不知道发出去没有', quote, facts: facts([['接下来', '消息已保留；刷新后确认是否已送达。']]),
+      headline: m.timeoutUnknown.headline, actions: ['refresh'], details: null, groupKey: null, tone: 'danger',
+      form: 'absence', label: m.timeoutUnknown.label, quote, facts: facts([['next', m.timeoutUnknown.next]]),
     };
   }
   // 在等那一次自动重试：不是失败，不给「重发」（再发一次会多出一轮）。
   if (failure.kind === 'retry-pending') {
-    const headline = leadTurnWaitingSentence(failure.message, failure.code === 'network' ? 'network' : 'model', name);
-    return { headline, actions: [], details, groupKey: null, tone: 'warning', form: 'absence', label: '正在重试', quote, summary: headline, facts: [] };
+    const headline = leadTurnWaitingSentence(failure.message, failure.code === 'network' ? 'network' : 'model', name, locale);
+    return { headline, actions: [], details, groupKey: null, tone: 'warning', form: 'absence', label: m.retrying, quote, summary: headline, facts: [] };
   }
   if (failure.kind === 'rejected') {
     return {
-      headline: '发送失败：这条消息没有发出去。你可以点「重试」，或者「删除」它。', actions: ['retry', 'remove'], details, groupKey: null, tone: 'danger',
-      form: 'absence', label: '没有发出去', quote, facts: facts([['接下来', '你可以点「重试」，或者「删除」它。']]),
+      headline: m.rejected.headline, actions: ['retry', 'remove'], details, groupKey: null, tone: 'danger',
+      form: 'absence', label: m.rejected.label, quote, facts: facts([['next', m.rejected.next]]),
     };
   }
   const kind = modelFailure(failure.message);
@@ -176,106 +190,90 @@ export function presentTurnFailure(input: {
   // 排在工单对话的说法前面：在工单里发给 Lead 的话被打断，也是这一句。
   if (kind === 'restart') {
     const headline = isSystemTurnOrigin(originKind)
-      ? leadTurnFailureSentence(failure.message, { system: true, name })!
-      : `${work ? `${work}；` : ''}回复被重启打断，${input.continued ? `${name} 已接着回复。` : `${name} 会接着回复你。`}`;
+      ? leadTurnFailureSentence(failure.message, { system: true, name, locale })!
+      : m.restart.headline(work ?? '', name, Boolean(input.continued));
     const system = isSystemTurnOrigin(originKind);
     return {
       headline, actions: [], details, groupKey: null, tone: 'warning',
       form: system ? 'system' : 'tail',
-      label: system ? headline : `重启打断，${input.continued ? '已接着回复' : '会接着回复'}`,
-      quote, facts: facts([['做过', work]]),
+      label: system ? headline : m.restart.label(Boolean(input.continued)),
+      quote, facts: facts([['done', work]]),
     };
   }
   if (ticketId !== null) {
     return {
       form: 'absence',
-      label: tools.length ? '没有回答完' : '没有回答',
+      label: tools.length ? m.answerNotComplete : m.noAnswer,
       quote,
       facts: facts([
-        ['做过', work],
-        ['原因', `工单 #${ticketId} 的 agent 没能回答${tools.length ? '完' : ''}这条消息${tools.length ? '' : '，工单本身没有变化'}`],
-        ['接下来', tools.length ? '它已经做过的事不会重做，你可以在工单里接着说。' : canResend ? null : '你可以在工单里再问一次。'],
+        ['done', work],
+        ['reason', m.ticket.reason(ticketId, tools.length > 0)],
+        ['next', tools.length ? m.ticket.nextPartial : canResend ? null : m.ticket.nextAskAgain],
       ]),
-      headline: tools.length
-        ? `工单 #${ticketId} 的 agent 没能回答完这条消息；它已经做过的事不会重做，你可以在工单里接着说。`
-        : `工单 #${ticketId} 的 agent 没能回答这条消息，工单本身没有变化；`
-          + (canResend ? '你可以点「重发」再问一次。' : '你可以在工单里再问一次。'),
+      headline: tools.length ? m.ticket.headlinePartial(ticketId) : m.ticket.headlineNone(ticketId, canResend),
       actions: canResend ? ['resend'] : [],
       details,
       groupKey: null,
       tone: 'danger',
     };
   }
-  const reason = reasonOf(kind, name);
+  const reason = reasonOf(kind, name, locale);
+  const what = kind === 'auth' ? m.account : m.configuration;
   if (isSystemTurnOrigin(originKind)) {
-    const work = SYSTEM_WORK[originKind!] ?? `${name} 这次主动处理没有完成`;
+    const { work, label } = systemWorkOf(originKind!, name, locale);
     const headline = kind === 'auth' || kind === 'config'
-      ? `${reason}，${work}；系统没法自己恢复，请检查 ${name} 的模型${kind === 'auth' ? '账号' : '配置'}。`
+      ? m.system.needsUser(reason, work, name, what)
       : kind === 'network'
-        ? `${reason}，${work}；网络恢复后系统会继续，你不需要操作。`
-        : `${reason}，${work}；${systemRecovery(lead, clock)}，你不需要操作。`;
+        ? m.system.network(reason, work)
+        : m.system.other(reason, work, systemRecovery(lead, clock, locale));
     return {
       headline, actions: [], details, groupKey: turnFailureGroupKey(failure, originKind), tone: 'warning',
-      form: 'system', label: work.replace(/^这(次|一批|条)/u, ''), quote: null,
+      form: 'system', label, quote: null,
       // 接下来写系统自己会怎样，不写「你不需要操作」：系统信息行本来就不给按钮。
-      facts: facts([['原因', reason], ['接下来', kind === 'auth' || kind === 'config'
-        ? `系统没法自己恢复，请检查 ${name} 的模型${kind === 'auth' ? '账号' : '配置'}`
-        : kind === 'network' ? '网络恢复后系统会继续' : systemRecovery(lead, clock)]]),
+      facts: facts([['reason', reason], ['next', kind === 'auth' || kind === 'config'
+        ? m.system.nextNeedsUser(name, what)
+        : kind === 'network' ? m.system.nextNetwork : systemRecovery(lead, clock, locale)]]),
     };
   }
   // 这一轮已经做了事：先说做了什么，再说回复没完成。不给「重发」，让用户直接告诉 Lead 接着做。
   if (tools.length) {
-    const cause = kind === 'unknown' || kind === 'empty' || kind === 'aborted' ? '' : `${reason}，`;
+    const cause = kind === 'unknown' || kind === 'empty' || kind === 'aborted' ? '' : reason;
     // 认证、配置的失败再试也一样：先说要检查什么（发布评审 3688968）。
-    const next = kind === 'auth' || kind === 'config'
-      ? `请先检查 ${name} 的模型${kind === 'auth' ? '账号' : '配置'}，再告诉 ${name} 接着做；做过的事不会重做。`
-      : `做过的事不会重做；要继续的话，直接告诉 ${name}。`;
+    const next = kind === 'auth' || kind === 'config' ? m.partial.nextNeedsUser(name, what) : m.partial.next(name);
     return {
-      headline: `${work ? `${work}；` : ''}${cause}回复没有完成。${next}`,
+      headline: m.partial.headline(work ?? '', cause, next),
       actions: [],
       details,
       groupKey: null,
       tone: 'danger',
       form: 'absence',
-      label: '没有回答完',
+      label: m.answerNotComplete,
       quote,
-      facts: facts([['做过', work], ['原因', cause ? reason : null], ['接下来', next]]),
+      facts: facts([['done', work], ['reason', cause ? reason : null], ['next', next]]),
     };
   }
-  const resend = canResend ? '点「重发」' : '再发一次';
+  const resend = canResend ? m.plain.tapResend : m.plain.sendAgain;
   const headline = kind === 'network' || kind === 'unavailable' || kind === 'busy'
-    ? `${reason}，这条消息没有得到回答；系统不会自动重发，你可以${resend}。`
+    ? m.plain.unreachable(reason, resend)
     : kind === 'auth' || kind === 'config'
-      ? `${reason}，这条消息没有得到回答；请先检查 ${name} 的模型${kind === 'auth' ? '账号' : '配置'}，再${resend}。`
+      ? m.plain.needsUser(reason, name, what, resend)
       : kind === 'unknown'
-        ? `${name} 这次没有完成回复；你可以${resend}再试一次。`
-        : `${reason}；你可以${resend}再问一次。`;
+        ? m.plain.unknown(name, resend)
+        : m.plain.other(reason, resend);
   const next = kind === 'auth' || kind === 'config'
-    ? `请先检查 ${name} 的模型${kind === 'auth' ? '账号' : '配置'}，再${resend}。`
-    : kind === 'network' || kind === 'unavailable' || kind === 'busy' ? `系统不会自动重发，你可以${resend}。` : canResend ? null : `你可以${resend}。`;
+    ? m.plain.nextNeedsUser(name, what, resend)
+    : kind === 'network' || kind === 'unavailable' || kind === 'busy' ? m.plain.nextUnreachable(resend) : canResend ? null : m.plain.nextOther(resend);
   return {
     headline, actions: canResend ? ['resend'] : [], details, groupKey: null, tone: 'danger',
-    form: 'absence', label: '没有回答', quote,
-    summary: kind === 'auth' || kind === 'config' ? `请先检查 ${name} 的模型${kind === 'auth' ? '账号' : '配置'}，再${canResend ? '重发' : '发一次'}` : null,
-    facts: facts([['原因', kind === 'unknown' ? `${name} 这次没有完成回复` : reason], ['接下来', next]]),
+    form: 'absence', label: m.noAnswer, quote,
+    summary: kind === 'auth' || kind === 'config' ? m.plain.summaryNeedsUser(name, what, canResend ? m.plain.resendShort : m.plain.sendOnce) : null,
+    facts: facts([['reason', kind === 'unknown' ? m.reason.unknown(name) : reason], ['next', next]]),
   };
 }
 
 // ── Run 失败的检查点 ──────────────────────────────────────────────────────────
 
-const CATEGORY_PHRASE: Record<string, string> = {
-  model_capacity: '遇到模型满载',
-  provider_unavailable: '连不上模型服务',
-  run_interrupted: '运行被中断',
-  authentication: '认证失败',
-  account_quota: '账号余额不足',
-  // 用量额度用完、在等重置（usage_limited）：不用充值，等重置或者换模型。
-  usage_limit: '用量额度用完，在等重置',
-  model_unsupported: '不支持这个模型',
-  runtime_unavailable: '没能启动',
-  runtime_configuration: '配置有误',
-  host_defect: '遇到宿主代码出错',
-};
+// 失败类别的说法在 failure.messages.ts 的 run.category。
 
 export type RunFailureCheckpointPresentation = {
   label: string;
@@ -302,8 +300,10 @@ function fact(checkpoint: KernelCheckpoint, label: string): string | null {
 export function presentRunFailureCheckpoint(
   checkpoint: KernelCheckpoint,
   context: { lead?: LeadStatus; settled?: boolean; leadHandling?: boolean; escalated?: boolean } = {},
+  locale: Locale = 'en',
 ): RunFailureCheckpointPresentation | null {
   const { lead, settled = false, leadHandling = false, escalated = false } = context;
+  const m = failureMessages(locale).run;
   const name = leadNameNow();
   const category = fact(checkpoint, 'Failure category');
   if (category === null || checkpoint.source !== 'system_derived') return null;
@@ -311,8 +311,9 @@ export function presentRunFailureCheckpoint(
   const scope = fact(checkpoint, 'Failure scope');
   const needs = fact(checkpoint, 'Needs');
   const next = checkpoint.nextStep ?? '';
-  const phrase = CATEGORY_PHRASE[category] ?? '运行出错';
-  const subject = `工单 #${checkpoint.ticketId} 的 ${agent} ${phrase}`;
+  const phrase = m.category[category] ?? m.categoryFallback;
+  const subject = m.subject(checkpoint.ticketId, agent, phrase);
+  // 认的是 nextStep 原文里的字样（英文和旧版 daemon 写的中文），不是界面文字。
   const exhausted = /exhausted|已经自动重试|停止自动重试|重试已耗尽|已用尽/i.test(next);
   const details = [
     checkpoint.title,
@@ -320,44 +321,44 @@ export function presentRunFailureCheckpoint(
     ...checkpoint.keyFacts.map((item) => `${item.label}: ${item.value}`),
     checkpoint.nextStep ? `Next: ${checkpoint.nextStep}` : null,
   ].filter(Boolean).join('\n');
-  if (settled) return { label: '运行失败', tone: 'warning', headline: `${subject}。`, needsUser: false, details };
+  if (settled) return { label: m.runFailed, tone: 'warning', headline: m.settled(subject), needsUser: false, details };
   if (leadHandling) {
-    return { label: `${name} 处理中`, tone: 'warning', headline: `${subject}，${name} 正在处理；需要你时它会告诉你。`, needsUser: false, details };
+    return { label: m.handlingLabel(name), tone: 'warning', headline: m.handlingHeadline(subject, name), needsUser: false, details };
   }
-  let label = '需要你处理';
+  let label = m.needsYou;
   let tone: RunFailureCheckpointPresentation['tone'] = 'danger';
   let needsUser = true;
   let rest: string;
   if (checkpoint.kind === 'progress') {
-    label = '自动重试中';
+    label = m.autoRetrying;
     tone = 'warning';
     needsUser = false;
-    rest = '系统会自动重试；你不需要操作。';
+    rest = m.progress;
   } else if (needs === 'login') {
-    rest = `系统暂停了派发；需要你重新登录 ${agent}。`;
+    rest = m.login(agent);
   } else if (needs === 'refill') {
-    rest = `系统暂停了派发；需要给 ${agent} 的账号充值。`;
+    rest = m.refill(agent);
   } else if (needs === 'config') {
-    rest = `系统暂停了派发；需要修正 ${agent} 的配置。`;
+    rest = m.config(agent);
   } else if (needs === 'code_fix') {
-    rest = '系统停止了这张工单；需要修复宿主代码。';
+    rest = m.codeFix;
   } else if (exhausted) {
-    rest = '自动重试已经用完；需要你决定下一步。';
+    rest = m.exhausted;
   } else if ((scope === 'task' || scope === 'unknown' || scope === null) && escalated) {
-    rest = `${name} 没能处理它；需要你看一下。`;
+    rest = m.escalated(name);
   } else if ((scope === 'task' || scope === 'unknown' || scope === null) && lead?.state === 'degraded') {
-    label = `等 ${name} 恢复`;
+    label = m.waitLabel(name);
     tone = 'warning';
-    rest = `${name} 现在连不上模型，恢复后会判断能不能安全重试；着急的话可以打开工单自己处理。`;
+    rest = m.waitRest(name);
   } else if (scope === 'task' || scope === 'unknown' || scope === null) {
-    label = `${name} 处理中`;
+    label = m.handlingLabel(name);
     tone = 'warning';
     needsUser = false;
-    rest = `${name} 会判断能不能安全重试；需要你决定时它会告诉你。`;
+    rest = m.judge(name);
   } else {
-    rest = '系统不会自动重试这次运行；你可以稍后在工单里重试。';
+    rest = m.noRetry;
   }
-  return { label, tone, headline: `${subject}，${rest}`, needsUser, details };
+  return { label, tone, headline: m.headline(subject, rest), needsUser, details };
 }
 
 /** 连着出现时能合成一张卡片的失败：Lead 自己发起的回合，同一个来源、同一种原因。其他失败返回 null。 */
@@ -372,13 +373,13 @@ export function turnFailureGroupKey(failure: MessageFailure | null, originKind: 
 //
 // 2026-10-27 用户：「系统更新」那张大卡（整块灰底、英文标题、写给 Lead 的下一步）按模式「系统信息行」重画：
 // 居中一行中文；要你处理时带一个按钮；原文点开再看。
-// 引擎和 daemon 写的这几种检查点标题是代码里的常量（写给 Lead 看的英文），按原文对照成给人看的中文，不按意思猜。
-const SYSTEM_CHECKPOINT_WORDS: Record<string, (ticket: number) => string> = {
-  'Run reclaimed after daemon restart': (ticket) => `工单 #${ticket} 的 Run 在 daemon 重启时被收回`,
-  'Run recovered after daemon restart': (ticket) => `工单 #${ticket} 的 Run 被收回以后，系统接着派发了`,
-  'Run recovered after dispatch interruption': (ticket) => `工单 #${ticket} 的 Run 被收回以后，系统接着派发了`,
-  'Run dispatch failed': (ticket) => `工单 #${ticket} 的 Run 没能启动`,
-  'Run stopped after repeated daemon restarts': (ticket) => `工单 #${ticket} 的 Run 反复被 daemon 重启打断，系统停掉了它`,
+// 引擎和 daemon 写的这几种检查点标题是代码里的常量（写给 Lead 看的英文），按原文对照成给人看的话，不按意思猜。
+const SYSTEM_CHECKPOINT_WORDS: Record<string, 'reclaimed' | 'recovered' | 'dispatchFailed' | 'stopped'> = {
+  'Run reclaimed after daemon restart': 'reclaimed',
+  'Run recovered after daemon restart': 'recovered',
+  'Run recovered after dispatch interruption': 'recovered',
+  'Run dispatch failed': 'dispatchFailed',
+  'Run stopped after repeated daemon restarts': 'stopped',
 };
 
 export type SystemCheckpointPresentation = {
@@ -400,8 +401,10 @@ export type SystemCheckpointPresentation = {
 export function presentSystemCheckpoint(
   checkpoint: KernelCheckpoint,
   context: { lead?: LeadStatus; settled?: boolean; leadHandling?: boolean; escalated?: boolean; nowLabel?: string | null } = {},
+  locale: Locale = 'en',
 ): SystemCheckpointPresentation | null {
   if (checkpoint.source !== 'system_derived' || checkpoint.actionRef) return null;
+  const m = failureMessages(locale).checkpoint;
   const name = leadNameNow();
   const details = [
     checkpoint.title,
@@ -410,17 +413,18 @@ export function presentSystemCheckpoint(
     checkpoint.nextStep ? `Next: ${checkpoint.nextStep}` : null,
   ].filter(Boolean).join('\n');
   // 带失败类别的 Run 失败：说法已经在 presentRunFailureCheckpoint 里（哪个 agent、为什么、系统在做什么）。
-  const failure = presentRunFailureCheckpoint(checkpoint, context);
+  const failure = presentRunFailureCheckpoint(checkpoint, context, locale);
   if (failure) {
-    const text = failure.headline.replace(/[。；]$/u, '');
+    const text = failure.headline.replace(/[。；.]$/u, '');
     return { text: context.settled && context.nowLabel ? `${text} · ${context.nowLabel}` : text, needsUser: failure.needsUser, ok: false, details };
   }
-  const words = SYSTEM_CHECKPOINT_WORDS[checkpoint.title]?.(checkpoint.ticketId) ?? `工单 #${checkpoint.ticketId}：${checkpoint.title}`;
+  const known = SYSTEM_CHECKPOINT_WORDS[checkpoint.title];
+  const words = known ? m[known](checkpoint.ticketId) : m.generic(checkpoint.ticketId, checkpoint.title);
   if (checkpoint.kind !== 'blocked') return { text: words, needsUser: false, ok: true, details };
   // 卡住了：工单后来变了就说现在怎样；有要你行动的 blocker 就要你处理；Lead 在处理就说它在处理；
   // 都不是时，这件事先交给 Lead（2026-10-15 用户决定：异常先交给 Lead，除非需要用户介入）。
   if (context.settled) return { text: context.nowLabel ? `${words} · ${context.nowLabel}` : words, needsUser: false, ok: false, details };
-  if (context.escalated) return { text: `${words} · ${name} 没能处理，需要你看一下`, needsUser: true, ok: false, details };
-  if (context.leadHandling) return { text: `${words} · ${name} 在处理`, needsUser: false, ok: false, details };
-  return { text: `${words} · ${name} 会判断要不要重新派发`, needsUser: false, ok: false, details };
+  if (context.escalated) return { text: m.escalated(words, name), needsUser: true, ok: false, details };
+  if (context.leadHandling) return { text: m.handling(words, name), needsUser: false, ok: false, details };
+  return { text: m.judge(words, name), needsUser: false, ok: false, details };
 }

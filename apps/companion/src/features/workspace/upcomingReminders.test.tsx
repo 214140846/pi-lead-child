@@ -27,12 +27,12 @@ describe('waiting reminders in the tray', () => {
       />,
     );
     const tray = within(screen.getByTestId('reminder-upcoming'));
-    expect(tray.getByText('等待中的提醒')).toBeTruthy();
+    expect(tray.getByText('Waiting reminders')).toBeTruthy();
     const first = within(screen.getByTestId('reminder-upcoming-5'));
     expect(first.getByText('09:00')).toBeTruthy();
     expect(first.getByText('抢票')).toBeTruthy();
-    expect(first.getByText('重要')).toBeTruthy();
-    expect(within(screen.getByTestId('reminder-upcoming-6')).queryByText('重要')).toBeNull();
+    expect(first.getByText('Important')).toBeTruthy();
+    expect(within(screen.getByTestId('reminder-upcoming-6')).queryByText('Important')).toBeNull();
   });
 
   // 外部的人要求设的定时器（统一的消息事件 spec D16，工单 12）：写明是谁要求的；「取消」收在每行右边的「⋯」里。
@@ -57,14 +57,14 @@ describe('waiting reminders in the tray', () => {
       />,
     );
     const external = within(screen.getByTestId('reminder-upcoming-follow_up:9'));
-    expect(external.getByText('Ethan 要求')).toBeTruthy();
+    expect(external.getByText('Asked by Ethan')).toBeTruthy();
     // 自己的提醒不写来源，也没有「⋯」。
-    expect(within(screen.getByTestId('reminder-upcoming-6')).queryByText(/要求/)).toBeNull();
+    expect(within(screen.getByTestId('reminder-upcoming-6')).queryByText(/Asked by/)).toBeNull();
     expect(screen.queryByTestId('reminder-upcoming-6-more')).toBeNull();
 
     fireEvent.click(screen.getByTestId('reminder-upcoming-follow_up:9-more'));
     const panel = within(await screen.findByTestId('reminder-upcoming-follow_up:9-more-panel'));
-    expect(panel.getByText(/Slack 里 Ethan 要求设的/)).toBeTruthy();
+    expect(panel.getByText(/Ethan asked for it in Slack/)).toBeTruthy();
     await act(async () => { fireEvent.click(screen.getByTestId('reminder-upcoming-follow_up:9-cancel')); });
     expect(onCancelTimer).toHaveBeenCalledWith('follow_up:9');
   });
@@ -111,14 +111,14 @@ describe('background checks in the tray', () => {
     expect(row.getByText('09:03')).toBeTruthy();
     expect(row.getByText('盯 clime 登录')).toBeTruthy();
     expect(row.getByText('每 10 秒查一次，最晚到 10-28 14:38')).toBeTruthy();
-    expect(row.getByText('你让 Fairy 设的')).toBeTruthy();
-    expect(row.getByText('上次没通过')).toBeTruthy();
+    expect(row.getByText('You asked Fairy')).toBeTruthy();
+    expect(row.getByText('Last check failed')).toBeTruthy();
 
     fireEvent.click(screen.getByTestId('reminder-upcoming-watch:3-more'));
     const panel = within(await screen.findByTestId('reminder-upcoming-watch:3-more-panel'));
-    expect(panel.getByText('你让 Fairy 设的后台检查')).toBeTruthy();
-    expect(panel.getByText('每 10 秒查一次，最晚到 10-28 14:38。上次 08:59 查过，没通过。下次 09:03 查。')).toBeTruthy();
-    expect(panel.getByText('不再检查，也不会再叫醒 Fairy')).toBeTruthy();
+    expect(panel.getByText('Background check that you asked Fairy to set')).toBeTruthy();
+    expect(panel.getByText('每 10 秒查一次，最晚到 10-28 14:38. The last check at 08:59 failed. The next check is at 09:03.')).toBeTruthy();
+    expect(panel.getByText('Stop the checks. Fairy is not woken again.')).toBeTruthy();
     await act(async () => { fireEvent.click(screen.getByTestId('reminder-upcoming-watch:3-cancel')); });
     expect(onCancelTimer).toHaveBeenCalledWith('watch:3');
   });
@@ -130,14 +130,14 @@ describe('background checks in the tray', () => {
       watchReminder(watch(4, { setBy: 'external', requester: { name: '', sourceLabel: 'Slack' }, lastStatus: 'error' })),
     ]);
     const lead = within(screen.getByTestId('reminder-upcoming-watch:1'));
-    expect(lead.getByText('Fairy 设的')).toBeTruthy();
-    expect(lead.getByText('正在查')).toBeTruthy();
+    expect(lead.getByText('Set by Fairy')).toBeTruthy();
+    expect(lead.getByText('Checking')).toBeTruthy();
     const ethan = within(screen.getByTestId('reminder-upcoming-watch:2'));
-    expect(ethan.getByText('Ethan（Slack）要求的')).toBeTruthy();
-    expect(ethan.getByText('上次通过')).toBeTruthy();
+    expect(ethan.getByText('Asked by Ethan (Slack)')).toBeTruthy();
+    expect(ethan.getByText('Last check passed')).toBeTruthy();
     const unnamed = within(screen.getByTestId('reminder-upcoming-watch:4'));
-    expect(unnamed.getByText('来自 Slack')).toBeTruthy();
-    expect(unnamed.getByText('上次出错')).toBeTruthy();
+    expect(unnamed.getByText('From Slack')).toBeTruthy();
+    expect(unnamed.getByText('Last check had an error')).toBeTruthy();
   });
 
   // 同时最多 20 个后台检查（spec D5）：卡里只露出 3 个，其余收成一行，点开的浮层里一个一行，也能取消。提醒不受影响。
@@ -149,7 +149,7 @@ describe('background checks in the tray', () => {
     for (const id of [1, 2, 3]) expect(screen.getByTestId(`reminder-upcoming-watch:${id}`)).toBeTruthy();
     expect(screen.getByTestId('reminder-upcoming-6')).toBeTruthy();
     expect(screen.queryByTestId('reminder-upcoming-watch:4')).toBeNull();
-    expect(within(screen.getByTestId('reminder-upcoming')).getByText('还有 2 个后台检查')).toBeTruthy();
+    expect(within(screen.getByTestId('reminder-upcoming')).getByText('2 more background checks')).toBeTruthy();
 
     fireEvent.click(screen.getByTestId('reminder-upcoming-watches-more'));
     const panel = within(await screen.findByTestId('reminder-upcoming-watches-more-panel'));

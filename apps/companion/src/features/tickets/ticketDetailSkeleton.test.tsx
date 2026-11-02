@@ -9,6 +9,8 @@ import type {
 import { act, cleanup, fireEvent, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { DesignPreferencesProvider } from '@pi-lead-child/components';
+
 import { ticketSummaryToTicket } from '@/features/workspace/model';
 import { CompanionRuntimeProvider } from '@/state/CompanionStateProvider';
 import { createCompanionStateRuntime, type CompanionRuntimeDependencies } from '@/state/runtime';
@@ -83,7 +85,7 @@ function summary(overrides: Partial<TicketSummary>): TicketSummary {
   });
 }
 
-function renderThread(ticket: TicketSummary, props: Partial<TicketThreadProps> = {}) {
+function renderThread(ticket: TicketSummary, props: Partial<TicketThreadProps> = {}, locale: 'en' | 'zh' = 'en') {
   const runtime = createCompanionStateRuntime({
     client: {} as CompanionRuntimeDependencies['client'],
     credentials: {} as CompanionRuntimeDependencies['credentials'],
@@ -92,6 +94,7 @@ function renderThread(ticket: TicketSummary, props: Partial<TicketThreadProps> =
   runtime.control.setState({ phase: 'ready', connectionState: 'connected' });
   renderUI(
     <CompanionRuntimeProvider runtime={runtime}>
+      <DesignPreferencesProvider value={{ locale }}>
       <TicketThread
         ticket={ticketSummaryToTicket(ticket)}
         onClose={() => {}}
@@ -106,6 +109,7 @@ function renderThread(ticket: TicketSummary, props: Partial<TicketThreadProps> =
         executionPlan={plan}
         {...props}
       />
+      </DesignPreferencesProvider>
     </CompanionRuntimeProvider>,
   );
   return screen.getByTestId('ticket-thread');
@@ -138,15 +142,15 @@ describe('the ticket detail skeleton', () => {
   it('runs the sections in one order while the ticket runs, with execution open and delivery one line', () => {
     const thread = renderThread(summary({ stage: 'active', status: 'active' }), {
       attempts: [{
-        id: 118, runtime: 'claude', model: 'sonnet', recordedModel: 'sonnet', effort: 'high', choice: 'Claude Code · sonnet · high', purposeLabel: '执行',
-        startedAt: '2026-10-21T07:03:04.000Z', endedAt: null, durationMs: null, result: '在跑', resultTone: 'running',
+        id: 118, runtime: 'claude', model: 'sonnet', recordedModel: 'sonnet', effort: 'high', choice: 'Claude Code · sonnet · high', purposeLabel: 'Execution',
+        startedAt: '2026-10-21T07:03:04.000Z', endedAt: null, durationMs: null, result: 'Running', resultTone: 'running',
         failurePreview: null, failureFull: null, failureTruncated: false,
       }],
     });
 
     expect(sectionOrder(thread)).toEqual(['relations', 'task', 'criteria', 'info', 'execution', 'delivery', 'history']);
     for (const kind of ['task', 'criteria', 'info', 'execution', 'history']) expect(expanded(thread, kind)).toBe(true);
-    expect(within(thread).getByTestId('ticket-section-delivery').textContent).toContain('还没交付。');
+    expect(within(thread).getByTestId('ticket-section-delivery').textContent).toContain('Not delivered yet.');
     expect(within(thread).getByTestId('ticket-execution-now')).toBeTruthy();
     expect(within(thread).getByTestId('ticket-run-118').textContent).toContain('#118');
   });
@@ -168,7 +172,7 @@ describe('the ticket detail skeleton', () => {
     expect(expanded(thread, 'execution')).toBe(false);
     // 折叠后标题行右边有一句摘要。
     expect(within(thread).getByTestId('ticket-section-execution-toggle').textContent)
-      .toContain('Claude Code · 约 598 万 token · $2.58');
+      .toContain('Claude Code · about 6M tokens · $2.58');
   });
 
   it('opens only the delivery once the ticket is done', () => {
@@ -195,25 +199,25 @@ describe('the ticket detail skeleton', () => {
     const thread = renderThread(summary({ stage: 'active', status: 'active' }));
     const header = (kind: string) => within(thread).getByTestId(`ticket-section-${kind}-toggle`).textContent;
 
-    expect(header('task')).toContain('Paimon 写的');
-    expect(header('criteria')).toContain('Paimon 写的');
-    expect(header('info')).toContain('系统记录');
-    expect(within(thread).getByTestId('ticket-execution-usage').textContent).toContain('系统记录');
-    expect(within(thread).getByTestId('ticket-execution-plan').textContent).toContain('执行 agent 自述');
-    expect(within(thread).getByTestId('ticket-execution-runs').textContent).toContain('系统记录');
-    expect(within(thread).getByTestId('ticket-history-story').textContent).toContain('系统记录');
+    expect(header('task')).toContain('Written by Paimon');
+    expect(header('criteria')).toContain('Written by Paimon');
+    expect(header('info')).toContain('System record');
+    expect(within(thread).getByTestId('ticket-execution-usage').textContent).toContain('System record');
+    expect(within(thread).getByTestId('ticket-execution-plan').textContent).toContain('Executor agent report');
+    expect(within(thread).getByTestId('ticket-execution-runs').textContent).toContain('System record');
+    expect(within(thread).getByTestId('ticket-history-story').textContent).toContain('System record');
   });
 
   it('has no 这张工单 heading and calls the relation entry 关联工单', () => {
     const thread = renderThread(summary({ stage: 'active', status: 'active' }), {
-      actions: [ticketAction('link', { label: '关联工单' })],
+      actions: [ticketAction('link', { label: 'Link ticket' })],
     });
 
     expect(within(thread).queryByText('这张工单')).toBeNull();
-    expect(thread.textContent).not.toContain('建立关系');
+    expect(thread.textContent).not.toContain('New relation');
     const relations = within(thread).getByTestId('ticket-section-relations');
-    expect(within(relations).getByTestId('ticket-link-open').textContent).toBe('关联工单');
-    expect(within(relations).getByTestId('ticket-split-request').textContent).toBe('拆成子工单');
+    expect(within(relations).getByTestId('ticket-link-open').textContent).toBe('Link ticket');
+    expect(within(relations).getByTestId('ticket-split-request').textContent).toBe('Split into child tickets');
   });
 
   it('asks Lead to split the ticket by prefilling the ticket chat', () => {
@@ -223,7 +227,7 @@ describe('the ticket detail skeleton', () => {
 
     fireEvent.click(within(thread).getByTestId('ticket-split-request'));
 
-    expect(onPrefillChat).toHaveBeenCalledWith('请把 #102 拆成几张子工单：');
+    expect(onPrefillChat).toHaveBeenCalledWith('Split #102 into child tickets:');
     expect(onChatExpandedChange).toHaveBeenCalledWith(true);
   });
 
@@ -253,15 +257,15 @@ describe('the ticket detail skeleton', () => {
     const thread = renderThread(summary({ stage: 'active', status: 'active' }));
     const planBlock = within(thread).getByTestId('ticket-execution-plan');
 
-    expect(within(planBlock).getByLabelText('进行中')).toBeTruthy();
+    expect(within(planBlock).getByLabelText('In progress')).toBeTruthy();
     expect(planBlock.textContent).toContain('1/2 ·');
-    expect(planBlock.textContent).toContain('跳过：宿主架构层已经做对');
+    expect(planBlock.textContent).toContain('Skipped: 宿主架构层已经做对');
   });
 
   it('says so when the executing agent submitted no plan', () => {
     const thread = renderThread(summary({ stage: 'active', status: 'active' }), { executionPlan: null });
 
-    expect(within(thread).getByTestId('ticket-execution-plan').textContent).toContain('执行 agent 没有提交计划');
+    expect(within(thread).getByTestId('ticket-execution-plan').textContent).toContain('The executor agent did not submit a plan.');
   });
 
   it('lets you confirm a criterion only when the action list allows it', () => {
@@ -295,7 +299,7 @@ describe('the ticket detail skeleton', () => {
       actions: [
         ticketAction('set_priority', { label: '改优先级' }),
         ticketAction('set_project', { label: '改项目', available: false, reason: '这张工单是子工单，项目跟着父工单。' }),
-        ticketAction('link', { label: '关联工单' }),
+        ticketAction('link', { label: 'Link ticket' }),
       ],
     });
 
@@ -313,7 +317,7 @@ describe('the ticket detail skeleton', () => {
     const thread = renderThread(summary({ stage: 'done', status: 'done' }), { delivery: delivery('unmerged') });
     fireEvent.click(within(thread).getByTestId('ticket-section-execution-toggle'));
     const workspace = within(thread).getByTestId('ticket-execution-workspace');
-    const label = within(workspace).getByText('还没合并');
+    const label = within(workspace).getByText('Not merged');
 
     // 中性徽章：灰底、次要文字色（Badge 的 neutral）。
     expect(getComputedStyle(label).color).toBe('var(--c-text-secondary)');
@@ -324,7 +328,7 @@ describe('the ticket detail skeleton', () => {
     const thread = renderThread(summary({ stage: 'active', status: 'active' }), { delivery: delivery('unmerged') });
 
     expect(within(thread).getByTestId('ticket-execution-workspace').textContent).toContain('plc/item-102-d2d16749');
-    expect(within(thread).queryByText('还没合并')).toBeNull();
+    expect(within(thread).queryByText('Not merged')).toBeNull();
   });
 
   it('cancelled: keeps the order, opens only the delivery, and says there is nothing to do', () => {
@@ -332,14 +336,14 @@ describe('the ticket detail skeleton', () => {
 
     expect(sectionOrder(thread)).toEqual(['relations', 'task', 'criteria', 'info', 'execution', 'delivery', 'history']);
     for (const kind of ['task', 'criteria', 'info', 'execution', 'history']) expect(expanded(thread, kind)).toBe(false);
-    expect(within(thread).getByTestId('ticket-section-delivery').textContent).toContain('工单已取消，没有交付。');
-    expect(within(thread).getByTestId('ticket-action-bar').textContent).toContain('工单已取消，不需要你');
+    expect(within(thread).getByTestId('ticket-section-delivery').textContent).toContain('The ticket is cancelled. There is no delivery.');
+    expect(within(thread).getByTestId('ticket-action-bar').textContent).toContain('The ticket is cancelled. You do not need to do anything');
   });
 
   it('draft: opens what the ticket is about and starts it with 确认开跑', () => {
     const onRunAction = vi.fn();
     const thread = renderThread(summary({ stage: 'draft', status: 'draft', hasRun: false }), {
-      actions: [ticketAction('confirm', { label: '确认开跑' }), ticketAction('cancel', { label: '取消工单' })],
+      actions: [ticketAction('confirm', { label: '确认开跑' }), ticketAction('cancel', { label: 'Cancel ticket' })],
       onRunAction,
     });
 
@@ -362,14 +366,14 @@ describe('the ticket detail after the review', () => {
     stage: 'review',
     status: 'review',
     reviewState: {
-      state: 'review_failed', label: '核查不通过', reviewerAttemptId: 120, verdict: 'fail', reason: '第 2 条没做到。',
+      state: 'review_failed', label: 'Review failed', reviewerAttemptId: 120, verdict: 'fail', reason: '第 2 条没做到。',
       deliveryRunId: 118, canRequestReview: true, reviewProgress: null,
     } as TicketSummary['reviewState'],
   });
   const reviewActions = () => [
     ticketAction('complete', { label: '验收' }),
-    ticketAction('rework', { label: '打回返工' }),
-    ticketAction('cancel', { label: '取消工单' }),
+    ticketAction('rework', { label: 'Send back for rework' }),
+    ticketAction('cancel', { label: 'Cancel ticket' }),
   ];
 
   async function openMore(thread: HTMLElement) {
@@ -383,12 +387,12 @@ describe('the ticket detail after the review', () => {
     const bar = within(thread).getByTestId('ticket-action-bar');
 
     expect(within(bar).queryByTestId('ticket-bar-complete')).toBeNull();
-    expect(within(bar).getByTestId('ticket-bar-rework').textContent).toBe('打回返工');
+    expect(within(bar).getByTestId('ticket-bar-rework').textContent).toBe('Send back for rework');
     const menu = await openMore(thread);
     fireEvent.click(within(menu).getByTestId('ticket-bar-menu-complete'));
     expect(onRunAction).not.toHaveBeenCalled();
     const confirm = within(thread).getByTestId('ticket-confirm');
-    expect(confirm.textContent).toContain('核查没有通过，仍要验收？');
+    expect(confirm.textContent).toContain('The review did not pass. Accept anyway?');
 
     fireEvent.click(within(confirm).getByText('验收'));
     expect(onRunAction).toHaveBeenCalledWith('complete', {});
@@ -403,12 +407,12 @@ describe('the ticket detail after the review', () => {
       onRunAction,
     });
     const menu = await openMore(thread);
-    expect(within(menu).getByTestId('ticket-bar-menu-merge').textContent).toContain('核查没有通过。做之前会再问你一次。');
+    expect(within(menu).getByTestId('ticket-bar-menu-merge').textContent).toContain('The review did not pass. You must confirm again before it runs.');
     fireEvent.click(within(menu).getByTestId('ticket-bar-menu-merge'));
 
     expect(onRunAction).not.toHaveBeenCalled();
     const confirm = within(thread).getByTestId('ticket-confirm');
-    expect(confirm.textContent).toContain('核查没有通过，仍要验收并合并？');
+    expect(confirm.textContent).toContain('The review did not pass. Accept and merge anyway?');
     fireEvent.click(within(confirm).getByText('合并到原分支'));
     expect(onRunAction).toHaveBeenCalledWith('merge', { input: { expectedHead: 'a'.repeat(40), expectedTarget: 'aishx/task-model-routing' } });
   });
@@ -426,7 +430,7 @@ describe('the ticket detail after the review', () => {
     return screen.findByTestId('ticket-bar-menu').then((menu) => {
       fireEvent.click(within(menu).getByTestId('ticket-bar-menu-merge'));
       expect(onRunAction).not.toHaveBeenCalled();
-      expect(within(thread).getByTestId('ticket-confirm').textContent).toContain('不等核查，直接验收并合并？');
+      expect(within(thread).getByTestId('ticket-confirm').textContent).toContain('Accept and merge without waiting for the review?');
     });
   });
 
@@ -440,20 +444,20 @@ describe('the ticket detail after the review', () => {
     });
     fireEvent.click(within(await openMore(thread)).getByTestId('ticket-bar-menu-widen_grant'));
 
-    expect(onPrefillChat).toHaveBeenCalledWith('放宽 #102 的子 agent 的权限：');
+    expect(onPrefillChat).toHaveBeenCalledWith('Widen the permissions of the child agent of #102: ');
     expect(onRunAction).not.toHaveBeenCalled();
   });
 
   it('says so when this connection cannot read the action list', () => {
     const thread = renderThread(summary({ stage: 'active', status: 'active' }), { actions: [], actionsStatus: 'unsupported' });
 
-    expect(within(thread).getByTestId('ticket-action-bar').textContent).toContain('这个连接读不了工单能做的操作');
+    expect(within(thread).getByTestId('ticket-action-bar').textContent).toContain('This connection cannot read the ticket actions');
   });
 
   it('fix 2: grants delegation from the action list, with the reason when it cannot', () => {
     const onRunAction = vi.fn();
     const thread = renderThread(summary({ stage: 'active', status: 'active' }), {
-      actions: [ticketAction('delegate', { label: '授权托管' })],
+      actions: [ticketAction('delegate', { label: 'Delegate' })],
       onRunAction,
     });
     fireEvent.click(within(thread).getByTestId('lead-delegation-grant'));
@@ -461,7 +465,7 @@ describe('the ticket detail after the review', () => {
     cleanup();
 
     const locked = renderThread(summary({ stage: 'active', status: 'active' }), {
-      actions: [ticketAction('delegate', { label: '授权托管', available: false, reason: '核查员都不能用，托管不起作用。' })],
+      actions: [ticketAction('delegate', { label: 'Delegate', available: false, reason: '核查员都不能用，托管不起作用。' })],
       onRunAction,
     });
     expect(within(locked).getByTestId('lead-delegation-grant').getAttribute('aria-disabled')).toBe('true');
@@ -488,14 +492,14 @@ describe('the ticket detail after the review', () => {
     const bar = within(thread).getByTestId('ticket-action-bar');
 
     expect(bar.textContent).toContain('派发失败');
-    expect(bar.textContent).not.toContain('现在不需要你');
+    expect(bar.textContent).not.toContain('You do not need to do anything');
   });
 
   it('fix 4: unlinks a related ticket from its row, as the action list allows', () => {
     const onRunAction = vi.fn();
     const related = {
       ticketId: 42, kind: 'relates_to', sourceTicketId: 102, targetTicketId: 42, relationId: 7, source: 'ticket_relations', active: true,
-      title: '相关的那张', relatedStage: 'active', label: '相关', group: 'related', groupLabel: '相关', stateLabel: '有效', meta: '', detail: null,
+      title: '相关的那张', relatedStage: 'active', label: 'Related', group: 'related', groupLabel: 'Related', stateLabel: 'Active', meta: '', detail: null,
     } as unknown as NonNullable<TicketThreadProps['relations']>[number];
     const thread = renderThread(summary({ stage: 'active', status: 'active' }), {
       relations: [related],
@@ -504,7 +508,7 @@ describe('the ticket detail after the review', () => {
     });
 
     fireEvent.click(within(thread).getByTestId('ticket-relation-42-action'));
-    expect(onRunAction).toHaveBeenCalledWith('unlink', { input: { relationId: 7 }, reason: '在工单详情里解除关联' });
+    expect(onRunAction).toHaveBeenCalledWith('unlink', { input: { relationId: 7 }, reason: 'Removed the link in ticket details' });
     cleanup();
 
     const locked = renderThread(summary({ stage: 'active', status: 'active' }), {
@@ -521,7 +525,7 @@ describe('the ticket detail after the review', () => {
       actions: [
         ticketAction('merge', { label: '合并到原分支' }),
         ticketAction('open_pr', { label: '开草稿 PR', external: true }),
-        ticketAction('rework', { label: '打回返工' }),
+        ticketAction('rework', { label: 'Send back for rework' }),
         ticketAction('restore', { label: '恢复' }),
         ticketAction('set_due', { label: '设置截止' }),
         ticketAction('abandon', { label: '放弃改动', irreversible: true }),
@@ -538,13 +542,13 @@ describe('the ticket detail after the review', () => {
 
   it('says when the action list is still loading, and offers to retry when it cannot be read', () => {
     const loading = renderThread(summary({ stage: 'active', status: 'active' }), { actions: [], actionsStatus: 'loading' });
-    expect(within(loading).getByTestId('ticket-action-bar').textContent).toContain('正在读取这张工单能做的操作。');
+    expect(within(loading).getByTestId('ticket-action-bar').textContent).toContain('Reading the actions for this ticket.');
     cleanup();
 
     const onRetryActions = vi.fn();
     const failedList = renderThread(summary({ stage: 'active', status: 'active' }), { actions: [], actionsStatus: 'error', onRetryActions });
     const bar = within(failedList).getByTestId('ticket-action-bar');
-    expect(bar.textContent).toContain('读不到这张工单能做的操作。');
+    expect(bar.textContent).toContain('Cannot read the actions for this ticket.');
     fireEvent.click(within(bar).getByTestId('ticket-actions-retry'));
     expect(onRetryActions).toHaveBeenCalled();
   });
@@ -559,7 +563,7 @@ describe('the ticket detail after the review', () => {
     const bar = within(thread).getByTestId('ticket-action-bar');
 
     expect(within(bar).getByTestId('ticket-bar-merge').getAttribute('aria-disabled')).toBe('true');
-    expect(bar.textContent).toContain('正在读取这次交付。');
+    expect(bar.textContent).toContain('Reading this delivery.');
     fireEvent.click(within(bar).getByTestId('ticket-bar-merge'));
     expect(onRunAction).not.toHaveBeenCalled();
   });
@@ -567,13 +571,13 @@ describe('the ticket detail after the review', () => {
   describe('confirmations', () => {
     it('cancel: asks before cancelling the ticket', async () => {
       const onRunAction = vi.fn();
-      const thread = renderThread(summary({ stage: 'active', status: 'active' }), { actions: [ticketAction('cancel', { label: '取消工单' })], onRunAction });
+      const thread = renderThread(summary({ stage: 'active', status: 'active' }), { actions: [ticketAction('cancel', { label: 'Cancel ticket' })], onRunAction });
       fireEvent.click(within(await openMore(thread)).getByTestId('ticket-bar-menu-cancel'));
       const confirm = within(thread).getByTestId('ticket-confirm');
 
-      expect(confirm.textContent).toContain('取消这张工单？');
+      expect(confirm.textContent).toContain('Cancel this ticket?');
       expect(onRunAction).not.toHaveBeenCalled();
-      fireEvent.click(within(confirm).getByText('取消工单'));
+      fireEvent.click(within(confirm).getByText('Cancel ticket'));
       expect(onRunAction).toHaveBeenCalledWith('cancel', {});
     });
 
@@ -582,7 +586,7 @@ describe('the ticket detail after the review', () => {
       const thread = renderThread(summary({ stage: 'active', status: 'active' }), { actions: [ticketAction('stop_run', { label: '停下' })], onRunAction });
       fireEvent.click(within(await openMore(thread)).getByTestId('ticket-bar-menu-stop_run'));
 
-      expect(within(thread).getByTestId('ticket-confirm').textContent).toContain('停下正在跑的这次运行？');
+      expect(within(thread).getByTestId('ticket-confirm').textContent).toContain('Stop the current run?');
       fireEvent.click(within(within(thread).getByTestId('ticket-confirm')).getByText('停下'));
       expect(onRunAction).toHaveBeenCalledWith('stop_run', {});
     });
@@ -597,8 +601,8 @@ describe('the ticket detail after the review', () => {
       fireEvent.click(within(await openMore(thread)).getByTestId('ticket-bar-menu-abandon'));
       const confirm = within(thread).getByTestId('ticket-confirm');
 
-      expect(confirm.textContent).toContain('放弃这次的改动？');
-      expect(confirm.textContent).toContain('做了就收不回。');
+      expect(confirm.textContent).toContain('Discard the changes of this delivery?');
+      expect(confirm.textContent).toContain('You cannot undo this.');
       fireEvent.click(within(confirm).getByText('放弃改动'));
       expect(onRunAction).toHaveBeenCalledWith('abandon', {
         input: { expectedHead: 'a'.repeat(40), expectedTarget: 'aishx/task-model-routing' },
@@ -610,7 +614,7 @@ describe('the ticket detail after the review', () => {
       const thread = renderThread(failed(), { actions: reviewActions(), onRunAction });
       fireEvent.click(within(thread).getByTestId('ticket-bar-rework'));
       fireEvent.change(within(thread).getByTestId('ticket-rework-reason'), { target: { value: '第 2 条要改配置。' } });
-      fireEvent.click(within(within(thread).getByTestId('ticket-confirm')).getByText('打回返工'));
+      fireEvent.click(within(within(thread).getByTestId('ticket-confirm')).getByText('Send back for rework'));
 
       expect(onRunAction).toHaveBeenCalledWith('rework', { reason: '第 2 条要改配置。' });
     });
@@ -625,7 +629,7 @@ describe('the ticket detail after the review', () => {
       fireEvent.click(within(thread).getByTestId('ticket-bar-complete'));
       const confirm = within(thread).getByTestId('ticket-confirm');
 
-      expect(confirm.textContent).toContain('不等核查，直接验收？');
+      expect(confirm.textContent).toContain('Accept without waiting for the review?');
       fireEvent.click(within(confirm).getByText('验收'));
       expect(onRunAction).toHaveBeenCalledWith('complete', {});
     });
@@ -637,7 +641,7 @@ describe('ticketDetailSections', () => {
     ticketAction('pause_run', { label: '暂停', available: false, reason: '没有正在运行的 Run 可以暂停。' }),
     ticketAction('resume_run', { label: '继续' }),
     ticketAction('stop_run', { label: '停下' }),
-    ticketAction('cancel', { label: '取消工单' }),
+    ticketAction('cancel', { label: 'Cancel ticket' }),
     ticketAction('abandon', { label: '放弃改动', available: false, reason: '没有改动。' }),
   ];
 
@@ -693,7 +697,7 @@ describe('ticketDetailSections', () => {
 
   it('never paints 还没合并 with a warning or danger tone, and hangs no badge before delivery', () => {
     for (const stage of ['review', 'done', 'cancelled'] as const) {
-      expect(integrationBadge(stage, 'unmerged')).toEqual({ label: '还没合并', tone: 'neutral' });
+      expect(integrationBadge(stage, 'unmerged')).toEqual({ label: 'Not merged', tone: 'neutral' });
     }
     expect(integrationBadge('running', 'unmerged')).toBeNull();
     expect(integrationBadge('running', 'conflict')?.tone).toBe('danger');
@@ -717,7 +721,7 @@ describe('ticketDetailSections', () => {
       stage: 'running' as const, ticket: { status: 'active' as const }, agentName: 'Claude Code', paused: false,
       decisionHeadline: '派发失败', integration: null, pullRequestUrl: null,
     };
-    expect(nextStepText({ ...input, stuck: false })).toBe('Claude Code 继续做，现在不需要你');
+    expect(nextStepText({ ...input, stuck: false })).toBe('Claude Code continues. You do not need to do anything now');
     expect(nextStepText({ ...input, stuck: true })).toBe('派发失败');
   });
 });
@@ -753,9 +757,9 @@ describe('legacy actions (not in the action list yet)', () => {
     fireEvent.click(within(menu).getByTestId('ticket-bar-menu-restore'));
     const confirm = within(thread).getByTestId('ticket-confirm');
 
-    expect(confirm.textContent).toContain('恢复这张工单？');
+    expect(confirm.textContent).toContain('Restore this ticket?');
     expect(onLegacyAction).not.toHaveBeenCalled();
-    fireEvent.click(within(confirm).getByText('恢复'));
+    fireEvent.click(within(confirm).getByText('Restore'));
     expect(onLegacyAction).toHaveBeenCalledWith('restore', { restoreMode: 'review_tree' });
   });
 
@@ -767,5 +771,18 @@ describe('legacy actions (not in the action list yet)', () => {
     fireEvent.click(within(await screen.findByTestId('ticket-bar-menu')).getByTestId('ticket-bar-menu-start'));
 
     expect(onLegacyAction).toHaveBeenCalledWith('start');
+  });
+});
+
+// 界面语言（2026-11-01）：缺省英文；外观偏好选了中文时，工单详情整页按中文写。
+describe('the ticket detail in Chinese', () => {
+  it('writes the section titles, the sources and the next step in Chinese', () => {
+    const thread = renderThread(summary({ stage: 'active', status: 'active' }), {}, 'zh');
+    const header = (kind: string) => within(thread).getByTestId(`ticket-section-${kind}-toggle`).textContent;
+
+    expect(header('task')).toContain('任务说明');
+    expect(header('task')).toContain('Paimon 写的');
+    expect(header('history')).toContain('经过与记录');
+    expect(within(thread).getByTestId('ticket-action-bar').textContent).toContain('Claude Code 继续做，现在不需要你');
   });
 });

@@ -2,18 +2,65 @@
 // 投递方式、代查的剧本名。常设指令的规则参数（standing-orders.ts 的 channel.delivery、channel.delegate、channel.lookup、
 // channel.reply）、档位判断（standing-order-tiers.ts）和 engine 的闸门都用这里的名字。这里不出现任何具体来源的名字。
 import type { LookupPlaybook } from "./channel-lookup.ts";
+import { DEFAULT_LOCALE, defineMessages, type Locale } from "./i18n.ts";
+
+// 下面各项给人看的名字。界面按用户的语言取（channelPolicyLabels(locale)）；
+// Lead 的提示词、engine 的卡片和摘要还是中文，用各个 *_LABELS（就是 zh 这一份）。
+export const channelPolicyLabels = defineMessages({
+  en: {
+    delegationCategory: {
+      schedule_fact: "Facts about the schedule", acknowledgement: "Confirm receipt",
+      routing: "Send them to the right person", sourced_fact: "Simple facts with a source",
+    } satisfies Record<DelegationCategory, string>,
+    senderTrust: {
+      trusted: "People you trust", colleague: "Colleagues", external: "External people", customer: "External customers", unknown: "Unknown people",
+    } satisfies Record<SenderTrust, string>,
+    sensitiveTopic: {
+      commitment: "Commitments", money: "Money", personnel: "Personnel", legal: "Legal", emotional: "Emotionally sensitive",
+    } satisfies Record<SensitiveTopic, string>,
+    intent: {
+      code_review: "Code review", approve: "Approval request", knowledge: "Business or technical question", progress: "Project progress",
+      closing: "Closing", meeting: "Meeting", secret: "Confidential", other: "Other",
+    } satisfies Record<ChannelIntent, string>,
+    ruleChange: {
+      permissions: "the permissions of the assistant", auto_reply: "the list for auto-replies and notifications",
+      instructions: "the standing orders of the assistant", settings: "the system settings",
+    } satisfies Record<ChannelRuleChangeKind, string>,
+    ruleChangeNotice: (what: readonly string[]) =>
+      `The sender asked to change ${what.length ? what.join(", ") : "the rules of the assistant or the system"}. The assistant did not do it.`,
+    permission: {
+      auto: "Do it for you", remind: "Only remind you", refuse: "Decline with a fixed reply", ask: "Ask you",
+    } satisfies Record<ChannelIntentPermission, string>,
+    delivery: {
+      push_card: "Push and conversation card", card: "Conversation card", digest: "Digest", record: "Record only",
+    } satisfies Record<ChannelDeliveryMode, string>,
+    playbook: {
+      lookup: "Answer questions that can be looked up", review: "PR review (comments only)",
+    } satisfies Record<LookupPlaybook, string>,
+  },
+  zh: {
+    delegationCategory: { schedule_fact: "日程上的事实", acknowledgement: "确认收到", routing: "转给对的人", sourced_fact: "有出处的简单事实" },
+    senderTrust: { trusted: "你信任的人", colleague: "同事", external: "外部的人", customer: "外部客户", unknown: "认不出的人" },
+    sensitiveTopic: { commitment: "承诺", money: "钱", personnel: "人事", legal: "法律", emotional: "情绪敏感" },
+    intent: {
+      code_review: "代码 review", approve: "请你 approve", knowledge: "业务或技术咨询", progress: "项目进度", closing: "收尾",
+      meeting: "会议", secret: "涉密", other: "别的",
+    },
+    ruleChange: { permissions: "助手的权限", auto_reply: "自动回复和通知的名单", instructions: "助手的常设指令", settings: "系统的设置" },
+    ruleChangeNotice: (what) => `对方要求修改${what.join("、") || "助手或系统的规则"}，没有照做`,
+    permission: { auto: "替你做", remind: "只提醒你", refuse: "用固定的话拒绝", ask: "问你" },
+    delivery: { push_card: "推送加会话卡", card: "会话卡", digest: "摘要", record: "只记录" },
+    playbook: { lookup: "回答能查到的问题", review: "PR review（只留评论）" },
+  },
+});
+const channelPolicyZh = () => channelPolicyLabels("zh");
 
 // 能代你回复的类别（白名单）。代回的闸门第 1 条：类别要在这里，并且在常设指令 channel.delegate 的 openCategories 里。
 //   schedule_fact 日程上的事实；acknowledgement 确认收到；routing 转给对的人；sourced_fact 有出处的简单事实。
 export const DELEGATION_CATEGORIES = ["schedule_fact", "acknowledgement", "routing", "sourced_fact"] as const;
 export type DelegationCategory = typeof DELEGATION_CATEGORIES[number];
 
-export const DELEGATION_CATEGORY_LABELS: Record<DelegationCategory, string> = {
-  schedule_fact: "日程上的事实",
-  acknowledgement: "确认收到",
-  routing: "转给对的人",
-  sourced_fact: "有出处的简单事实",
-};
+export const DELEGATION_CATEGORY_LABELS: Record<DelegationCategory, string> = channelPolicyZh().delegationCategory;
 
 export function isDelegationCategory(value: unknown): value is DelegationCategory {
   return typeof value === "string" && (DELEGATION_CATEGORIES as readonly string[]).includes(value);
@@ -26,9 +73,7 @@ export const SENDER_TRUST_LEVELS = ["trusted", "colleague", "external", "custome
 export type SenderTrust = typeof SENDER_TRUST_LEVELS[number];
 export const NEVER_DELEGATED_TRUST: readonly SenderTrust[] = ["customer"];
 
-export const SENDER_TRUST_LABELS: Record<SenderTrust, string> = {
-  trusted: "你信任的人", colleague: "同事", external: "外部的人", customer: "外部客户", unknown: "认不出的人",
-};
+export const SENDER_TRUST_LABELS: Record<SenderTrust, string> = channelPolicyZh().senderTrust;
 
 export function isSenderTrust(value: unknown): value is SenderTrust {
   return typeof value === "string" && (SENDER_TRUST_LEVELS as readonly string[]).includes(value);
@@ -38,9 +83,7 @@ export function isSenderTrust(value: unknown): value is SenderTrust {
 export const SENSITIVE_TOPICS = ["commitment", "money", "personnel", "legal", "emotional"] as const;
 export type SensitiveTopic = typeof SENSITIVE_TOPICS[number];
 
-export const SENSITIVE_TOPIC_LABELS: Record<SensitiveTopic, string> = {
-  commitment: "承诺", money: "钱", personnel: "人事", legal: "法律", emotional: "情绪敏感",
-};
+export const SENSITIVE_TOPIC_LABELS: Record<SensitiveTopic, string> = channelPolicyZh().sensitiveTopic;
 
 // 对方的意图（请求 A 的 ask_kind，第 4 版，2026-10-22 用户定的原则）。授权表按它写「能替你做什么」：
 //   code_review 请你 review 代码（包括改了以后再看）；approve 请你 approve PR；knowledge 问业务知识、需求实现细节、技术细节；
@@ -49,10 +92,7 @@ export const SENSITIVE_TOPIC_LABELS: Record<SensitiveTopic, string> = {
 export const CHANNEL_INTENTS = ["code_review", "approve", "knowledge", "progress", "closing", "meeting", "secret", "other"] as const;
 export type ChannelIntent = typeof CHANNEL_INTENTS[number];
 
-export const CHANNEL_INTENT_LABELS: Record<ChannelIntent, string> = {
-  code_review: "代码 review", approve: "请你 approve", knowledge: "业务或技术咨询", progress: "项目进度", closing: "收尾",
-  meeting: "会议", secret: "涉密", other: "别的",
-};
+export const CHANNEL_INTENT_LABELS: Record<ChannelIntent, string> = channelPolicyZh().intent;
 
 export function isChannelIntent(value: unknown): value is ChannelIntent {
   return typeof value === "string" && (CHANNEL_INTENTS as readonly string[]).includes(value);
@@ -65,9 +105,7 @@ export function isChannelIntent(value: unknown): value is ChannelIntent {
 export const CHANNEL_RULE_CHANGE_KINDS = ["permissions", "auto_reply", "instructions", "settings"] as const;
 export type ChannelRuleChangeKind = typeof CHANNEL_RULE_CHANGE_KINDS[number];
 
-export const CHANNEL_RULE_CHANGE_LABELS: Record<ChannelRuleChangeKind, string> = {
-  permissions: "助手的权限", auto_reply: "自动回复和通知的名单", instructions: "助手的常设指令", settings: "系统的设置",
-};
+export const CHANNEL_RULE_CHANGE_LABELS: Record<ChannelRuleChangeKind, string> = channelPolicyZh().ruleChange;
 
 /** 要求改规则的概率不低于它时，算「对方要求改规则」：卡上和 Lead 的输入里写明没有照做。 */
 export const CHANNEL_RULE_CHANGE_FLAG = 0.5;
@@ -76,10 +114,13 @@ export function isChannelRuleChangeKind(value: unknown): value is ChannelRuleCha
   return typeof value === "string" && (CHANNEL_RULE_CHANGE_KINDS as readonly string[]).includes(value);
 }
 
-/** 卡上和 Lead 的输入里的那句话：「对方要求修改助手的权限、自动回复和通知的名单，没有照做」。不知道是哪一类时写「规则」。 */
-export function channelRuleChangeNotice(kinds: readonly ChannelRuleChangeKind[]): string {
-  const what = kinds.map((kind) => CHANNEL_RULE_CHANGE_LABELS[kind]).join("、") || "助手或系统的规则";
-  return `对方要求修改${what}，没有照做`;
+/**
+ * 卡上和 Lead 的输入里的那句话：「对方要求修改助手的权限、自动回复和通知的名单，没有照做」。不知道是哪一类时写「规则」。
+ * 界面按用户的语言取；Lead 的输入是中文，传 "zh"。
+ */
+export function channelRuleChangeNotice(kinds: readonly ChannelRuleChangeKind[], locale: Locale = DEFAULT_LOCALE): string {
+  const m = channelPolicyLabels(locale);
+  return m.ruleChangeNotice(kinds.map((kind) => m.ruleChange[kind]));
 }
 
 /** 要干活的意图：要查、要回内容（以后交给 Lead 派工单）。 */
@@ -90,9 +131,7 @@ export const CHANNEL_WORK_INTENTS: readonly ChannelIntent[] = ["code_review", "a
 export const CHANNEL_INTENT_PERMISSIONS = ["auto", "remind", "refuse", "ask"] as const;
 export type ChannelIntentPermission = typeof CHANNEL_INTENT_PERMISSIONS[number];
 
-export const CHANNEL_INTENT_PERMISSION_LABELS: Record<ChannelIntentPermission, string> = {
-  auto: "替你做", remind: "只提醒你", refuse: "用固定的话拒绝", ask: "问你",
-};
+export const CHANNEL_INTENT_PERMISSION_LABELS: Record<ChannelIntentPermission, string> = channelPolicyZh().permission;
 
 /** 越大越放开：问你、提醒你都不替你发东西；拒绝只发一句固定的话；替你做发的最多。 */
 export const CHANNEL_INTENT_PERMISSION_RANK: Readonly<Record<ChannelIntentPermission, number>> = { ask: 0, remind: 0, refuse: 1, auto: 2 };
@@ -135,9 +174,7 @@ export type ChannelReactionEmoji = typeof CHANNEL_REACTION_EMOJIS[number];
 export const CHANNEL_DELIVERY_MODES = ["push_card", "card", "digest", "record"] as const;
 export type ChannelDeliveryMode = typeof CHANNEL_DELIVERY_MODES[number];
 
-export const CHANNEL_DELIVERY_LABELS: Record<ChannelDeliveryMode, string> = {
-  push_card: "推送加会话卡", card: "会话卡", digest: "摘要", record: "只记录",
-};
+export const CHANNEL_DELIVERY_LABELS: Record<ChannelDeliveryMode, string> = channelPolicyZh().delivery;
 
 const DELIVERY_RANK: Record<ChannelDeliveryMode, number> = { record: 0, digest: 1, card: 2, push_card: 3 };
 
@@ -147,7 +184,5 @@ export function strongerDelivery(a: ChannelDeliveryMode, b: ChannelDeliveryMode)
 }
 
 // 代查的剧本（代查与按信心代回 spec D2，剧本本身在 channel-lookup.ts 的 LOOKUP_PLAYBOOKS）给人看的名字。
-export const LOOKUP_PLAYBOOK_LABELS: Record<LookupPlaybook, string> = {
-  lookup: "回答能查到的问题",
-  review: "PR review（只留评论）",
-};
+export const LOOKUP_PLAYBOOK_LABELS: Record<LookupPlaybook, string> = channelPolicyZh().playbook;
+

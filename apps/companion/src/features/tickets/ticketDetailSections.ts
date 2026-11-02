@@ -7,6 +7,7 @@
 //   不判断能不能做：清单里没有的操作不画，清单说不能做的画成不能点，并写出原因。
 import type { BadgeTone, ChecklistItem, DataTone, StatItem, StepItem, StepState, TimelineItem } from '@pi-lead-child/components';
 import type {
+  Locale,
   PlanStepStatus,
   TicketAcceptanceCriteria,
   TicketAction,
@@ -17,6 +18,7 @@ import type {
 
 import type { Ticket, TicketStatus } from '@/features/workspace/model';
 
+import { ticketDetailMessages, ticketTimeMessages } from './ticketDetail.messages';
 import type { TicketStoryEntry, TicketStoryTone } from './ticketStory';
 
 // ── 阶段 ────────────────────────────────────────────────────────────────────────────
@@ -47,15 +49,9 @@ export function detailStage(status: TicketStatus): DetailStage {
 export const DETAIL_SECTIONS = ['relations', 'task', 'criteria', 'info', 'execution', 'delivery', 'history'] as const;
 export type DetailSectionKind = typeof DETAIL_SECTIONS[number];
 
-export const DETAIL_SECTION_TITLES: Record<DetailSectionKind, string> = {
-  relations: '关系',
-  task: '任务说明',
-  criteria: '验收标准',
-  info: '工单信息',
-  execution: '执行',
-  delivery: '交付与验收',
-  history: '经过与记录',
-};
+export function detailSectionTitles(locale: Locale = 'en'): Record<DetailSectionKind, string> {
+  return ticketDetailMessages(locale).sections;
+}
 
 // 默认展开哪几块（4.0）：
 // - 执行中：执行展开，交付与验收只有一句话。
@@ -78,38 +74,35 @@ export function sectionCollapsed(stage: DetailStage, kind: DetailSectionKind, re
   return remembered[kind] ?? !EXPANDED_BY_STAGE[stage].includes(kind);
 }
 
-// 五种出处（原则 5）。每块标题旁写一种，一眼能分开。Lead 写的那一种用你给 Lead 起的名字（sourceLabels）。
-export const SOURCE_LABELS = {
-  lead: 'Lead 写的',
-  child: '执行 agent 自述',
-  system: '系统记录',
-  reviewer: '核查员',
-  user: '你的操作',
-} as const;
+// 五种出处（原则 5）：lead、child、system、reviewer、user。每块标题旁写一种，一眼能分开。
+type SourceKind = 'lead' | 'child' | 'system' | 'reviewer' | 'user';
 
 type Writer = 'user' | 'lead' | 'child' | 'system';
 
 /** 出处的名字：Lead 写的那一种写成「Paimon 写的」这样，用你给 Lead 起的名字。 */
-export function sourceLabels(leadName: string): Record<keyof typeof SOURCE_LABELS, string> {
-  return { ...SOURCE_LABELS, lead: `${leadName} 写的` };
+export function sourceLabels(leadName: string, locale: Locale = 'en'): Record<SourceKind, string> {
+  const m = ticketDetailMessages(locale).sources;
+  return { lead: m.lead(leadName), child: m.child, system: m.system, reviewer: m.reviewer, user: m.user };
 }
 
 /** 文字是谁写的：任务说明、验收标准都可能是 Lead、你或执行 agent 写的。 */
-export function writerLabel(writer: Writer | null | undefined, leadName: string): string {
+export function writerLabel(writer: Writer | null | undefined, leadName: string, locale: Locale = 'en'): string {
+  const m = ticketDetailMessages(locale);
   switch (writer ?? 'lead') {
-    case 'user': return '你写的';
-    case 'child': return '执行 agent 写的';
-    case 'system': return SOURCE_LABELS.system;
-    default: return `${leadName} 写的`;
+    case 'user': return m.writer.user;
+    case 'child': return m.writer.child;
+    case 'system': return m.sources.system;
+    default: return m.sources.lead(leadName);
   }
 }
 
 /** 验收标准的出处：每一条可能是不同的人写的。都是同一个人时写他，混着时写「Paimon 和你写的」这类。 */
-export function criteriaSourceLabel(criteria: TicketAcceptanceCriteria | null, leadName: string): string {
+export function criteriaSourceLabel(criteria: TicketAcceptanceCriteria | null, leadName: string, locale: Locale = 'en'): string {
   const writers = [...new Set((criteria?.criteria ?? []).map((criterion) => criterion.writtenBy))];
-  if (writers.length <= 1) return writerLabel(writers[0] ?? 'lead', leadName);
-  const names: Record<Writer, string> = { lead: leadName, user: '你', child: '执行 agent', system: '系统' };
-  return `${writers.map((writer) => names[writer]).join('和')}写的`;
+  if (writers.length <= 1) return writerLabel(writers[0] ?? 'lead', leadName, locale);
+  const m = ticketDetailMessages(locale);
+  const names: Record<Writer, string> = { lead: leadName, ...m.writerNames };
+  return m.writtenBy(writers.map((writer) => names[writer]));
 }
 
 // ── 任务说明 ─────────────────────────────────────────────────────────────────────────
@@ -144,7 +137,8 @@ export type CriteriaPresentation = {
 };
 
 // 核查员的逐条结论由工单 10 填（verdict 现在总是 null），这一列先显示「还没有结论」。
-export function criteriaPresentation(criteria: TicketAcceptanceCriteria | null): CriteriaPresentation {
+export function criteriaPresentation(criteria: TicketAcceptanceCriteria | null, locale: Locale = 'en'): CriteriaPresentation {
+  const m = ticketDetailMessages(locale).criteria;
   const list = criteria?.criteria ?? [];
   const compare = criteria?.delivery != null;
   const items = list.map((criterion): ChecklistItem => ({
@@ -153,10 +147,10 @@ export function criteriaPresentation(criteria: TicketAcceptanceCriteria | null):
     ...(compare ? { verdicts: [null], checked: criterion.confirmation?.state === 'confirmed' } : {}),
   }));
   const summary = list.length === 0
-    ? '没有结构化的验收标准'
+    ? m.none
     : compare
-      ? `${list.length} 条 · 已确认 ${criteria?.confirmed ?? 0}/${list.length}`
-      : `${list.length} 条 · 交付后，核查员和你逐条对照`;
+      ? m.confirmed(list.length, criteria?.confirmed ?? 0)
+      : m.beforeDelivery(list.length);
   return { items, compare, summary, empty: list.length === 0 };
 }
 
@@ -171,22 +165,21 @@ const STEP_STATE: Record<PlanStepStatus, StepState> = {
   blocked: 'blocked',
 };
 
-const STEP_NOTE_PREFIX: Partial<Record<PlanStepStatus, string>> = { skipped: '跳过：', blocked: '受阻：' };
-
-export function planSteps(plan: TicketExecutionPlan | null | undefined): StepItem[] {
+export function planSteps(plan: TicketExecutionPlan | null | undefined, locale: Locale = 'en'): StepItem[] {
+  const prefix: Partial<Record<PlanStepStatus, string>> = ticketDetailMessages(locale).stepNote;
   return (plan?.steps ?? []).map((step, index) => ({
     label: `${index + 1}. ${step.title}`,
     state: STEP_STATE[step.status],
-    ...(step.note ? { detail: `${STEP_NOTE_PREFIX[step.status] ?? ''}${step.note}` } : {}),
+    ...(step.note ? { detail: `${prefix[step.status] ?? ''}${step.note}` } : {}),
   }));
 }
 
 /** 「4/5 · 15:18 更新」：跳过的步骤不算进分母（和 engine 的 executionPlanText 一样）。 */
-export function planSummary(plan: TicketExecutionPlan | null | undefined, now: Date = new Date()): string | null {
+export function planSummary(plan: TicketExecutionPlan | null | undefined, now: Date = new Date(), locale: Locale = 'en'): string | null {
   if (!plan) return null;
   const counted = plan.steps.filter((step) => step.status !== 'skipped');
   const done = counted.filter((step) => step.status === 'done').length;
-  return `${done}/${counted.length} · ${clockText(plan.updatedAt, now)} 更新`;
+  return ticketDetailMessages(locale).planUpdated(done, counted.length, clockText(plan.updatedAt, now, locale));
 }
 
 // ── 用量 ──────────────────────────────────────────────────────────────────────────────
@@ -199,47 +192,51 @@ export type UsageInput = {
 };
 
 // 三个数：耗时、token、成本（4.4）。token 按 ADR 0001 的口径：输入（含缓存读写）加输出，就是服务端的 totalTokens。
-export function usageStats(input: UsageInput): StatItem[] {
+export function usageStats(input: UsageInput, locale: Locale = 'en'): StatItem[] {
+  const m = ticketDetailMessages(locale).usage;
   return [
-    { label: input.running ? '已执行' : '耗时', value: durationText(input.activeExecutionMs) ?? '还没开始' },
-    { label: 'Token', value: input.totalTokens ? tokenText(input.totalTokens) : '没有记录' },
-    { label: '成本', value: input.totalCostUsd ? costText(input.totalCostUsd) : '没有记录' },
+    { label: input.running ? m.ran : m.duration, value: durationText(input.activeExecutionMs, locale) ?? m.notStarted },
+    { label: m.tokens, value: input.totalTokens ? tokenText(input.totalTokens, locale) : m.noRecord },
+    { label: m.cost, value: input.totalCostUsd ? costText(input.totalCostUsd) : m.noRecord },
   ];
 }
 
-export function usageCaption(running: boolean): string {
-  return running ? '含缓存读写，跑的时候会涨。' : '所有运行合计，含缓存读写。';
+export function usageCaption(running: boolean, locale: Locale = 'en'): string {
+  const m = ticketDetailMessages(locale).usage;
+  return running ? m.captionRunning : m.captionTotal;
 }
 
 /** 执行这一块折叠后的摘要：「Claude Code · 15 分 51 秒 · 约 598 万 token · $2.58」。 */
-export function executionSummary(agent: string | null, input: UsageInput): string {
+export function executionSummary(agent: string | null, input: UsageInput, locale: Locale = 'en'): string {
+  const m = ticketDetailMessages(locale).usage;
   return [
     agent,
-    durationText(input.activeExecutionMs),
-    input.totalTokens ? `${tokenText(input.totalTokens)} token` : null,
+    durationText(input.activeExecutionMs, locale),
+    input.totalTokens ? m.tokenCount(tokenText(input.totalTokens, locale)) : null,
     input.totalCostUsd ? costText(input.totalCostUsd) : null,
-  ].filter(Boolean).join(' · ') || '还没开跑';
+  ].filter(Boolean).join(' · ') || m.notRun;
 }
 
-// 一万以上写「约 598 万」，以下照写。
-export function tokenText(tokens: number): string {
+// 一万以上写「约 598 万」（英文写「about 5.98M」这类），以下照写。
+export function tokenText(tokens: number, locale: Locale = 'en'): string {
   if (tokens < 10_000) return tokens.toLocaleString('en-US');
-  return `约 ${Math.round(tokens / 10_000).toLocaleString('en-US')} 万`;
+  return ticketDetailMessages(locale).tokens(tokens);
 }
 
 export function costText(costUsd: number): string {
   return `$${costUsd.toFixed(2)}`;
 }
 
-export function durationText(ms: number | null | undefined): string | null {
+export function durationText(ms: number | null | undefined, locale: Locale = 'en'): string | null {
   if (!ms || ms <= 0) return null;
+  const m = ticketDetailMessages(locale).duration;
   const seconds = Math.round(ms / 1000);
   const hours = Math.floor(seconds / 3600);
   const minutes = Math.floor((seconds % 3600) / 60);
   const rest = seconds % 60;
-  if (hours > 0) return `${hours} 小时 ${minutes} 分`;
-  if (minutes > 0) return rest > 0 ? `${minutes} 分 ${rest} 秒` : `${minutes} 分钟`;
-  return `${rest} 秒`;
+  if (hours > 0) return m.hoursMinutes(hours, minutes);
+  if (minutes > 0) return rest > 0 ? m.minutesSeconds(minutes, rest) : m.minutes(minutes);
+  return m.seconds(rest);
 }
 
 // ── 核查员 ────────────────────────────────────────────────────────────────────────────
@@ -247,14 +244,9 @@ export function durationText(ms: number | null | undefined): string | null {
 // 核查员的六种状态（4.4）。
 export type ReviewerStatus = 'after_delivery' | 'queued' | 'suspended' | 'running' | 'done' | 'failed';
 
-export const REVIEWER_STATUS_LABELS: Record<ReviewerStatus, string> = {
-  after_delivery: '交付后开始',
-  queued: '排队',
-  suspended: '挂起',
-  running: '在跑',
-  done: '完成',
-  failed: '没做成',
-};
+export function reviewerStatusLabels(locale: Locale = 'en'): Record<ReviewerStatus, string> {
+  return ticketDetailMessages(locale).reviewerStatus;
+}
 
 /** 不要求独立核查的工单没有核查员这一行（返回 null）。 */
 export function reviewerStatus(
@@ -281,20 +273,20 @@ export function reviewerStatus(
 export function integrationBadge(
   stage: DetailStage,
   integration: NonNullable<TicketDelivery['workspace']>['integration'],
+  locale: Locale = 'en',
 ): { label: string; tone: BadgeTone } | null {
   const ended = stage === 'done' || stage === 'cancelled';
   if ((stage === 'draft' || stage === 'running') && integration !== 'conflict') return null;
+  const label = ticketDetailMessages(locale).integration[integration];
   switch (integration) {
     case 'merged':
-      return { label: '已合并', tone: 'success' };
+      return { label, tone: 'success' };
     case 'abandoned':
-      return { label: '已放弃', tone: 'neutral' };
     case 'no_changes':
-      return { label: '没有改动', tone: 'neutral' };
-    case 'conflict':
-      return { label: '有冲突', tone: ended ? 'neutral' : 'danger' };
     case 'unmerged':
-      return { label: '还没合并', tone: 'neutral' };
+      return { label, tone: 'neutral' };
+    case 'conflict':
+      return { label, tone: ended ? 'neutral' : 'danger' };
   }
 }
 
@@ -302,12 +294,13 @@ export function integrationBadge(
 
 const STORY_TONE: Record<TicketStoryTone, DataTone | undefined> = { success: 'success', danger: 'danger', accent: 'info', neutral: undefined };
 
-export function historyItems(story: readonly TicketStoryEntry[], now: Date = new Date()): TimelineItem[] {
+export function historyItems(story: readonly TicketStoryEntry[], now: Date = new Date(), locale: Locale = 'en'): TimelineItem[] {
+  const m = ticketDetailMessages(locale);
   return story.map((entry) => {
     const tone = STORY_TONE[entry.tone];
     return {
-      at: clockText(entry.at, now),
-      text: entry.detail ? `${entry.title}。${entry.detail}` : `${entry.title}。`,
+      at: clockText(entry.at, now, locale),
+      text: m.sentence(entry.title, entry.detail),
       ...(tone ? { tone } : {}),
     };
   });
@@ -317,19 +310,23 @@ export function historyItems(story: readonly TicketStoryEntry[], now: Date = new
 
 export type ChildStage = 'done' | 'running' | 'blocked' | 'waiting' | 'cancelled' | 'review';
 
-export const CHILD_BADGES: Record<ChildStage, { label: string; tone: BadgeTone }> = {
-  done: { label: '已完成', tone: 'success' },
-  running: { label: '执行中', tone: 'accent' },
-  blocked: { label: '受阻', tone: 'danger' },
-  waiting: { label: '等待中', tone: 'neutral' },
-  cancelled: { label: '已取消', tone: 'muted' },
+const CHILD_TONES: Record<ChildStage, BadgeTone> = {
+  done: 'success',
+  running: 'accent',
+  blocked: 'danger',
+  waiting: 'neutral',
+  cancelled: 'muted',
   // 需要你处理的那一行要突出（4.2）。
-  review: { label: '等你验收', tone: 'warning' },
+  review: 'warning',
 };
 
+export function childBadge(stage: ChildStage, locale: Locale = 'en'): { label: string; tone: BadgeTone } {
+  return { label: ticketDetailMessages(locale).child[stage], tone: CHILD_TONES[stage] };
+}
+
 /** 「拆成子工单」打开工单对话，预填一句请 Lead 来拆的话（D9）。 */
-export function splitRequestText(ticketDisplayId: string): string {
-  return `请把 #${ticketDisplayId} 拆成几张子工单：`;
+export function splitRequestText(ticketDisplayId: string, locale: Locale = 'en'): string {
+  return ticketDetailMessages(locale).splitRequest(ticketDisplayId);
 }
 
 // ── 底部操作栏和两个「更多」 ──────────────────────────────────────────────────────────────
@@ -408,11 +405,11 @@ export function findAction(actions: readonly TicketAction[], id: string): Ticket
 }
 
 /** 底部栏下一步下面那行小字：主按钮不能点时写原因（清单给的原话）。 */
-export function barCaption(bar: DetailActionBar, criteria: TicketAcceptanceCriteria | null): string | undefined {
+export function barCaption(bar: DetailActionBar, criteria: TicketAcceptanceCriteria | null, locale: Locale = 'en'): string | undefined {
   const blocked = [bar.primary, bar.secondary].find((action) => action && !action.available);
   if (blocked?.reason) return blocked.reason;
   if (criteria?.delivery && criteria.criteria.length > 0) {
-    return `已确认 ${criteria.confirmed}/${criteria.criteria.length} 条验收标准`;
+    return ticketDetailMessages(locale).criteriaConfirmed(criteria.confirmed, criteria.criteria.length);
   }
   return undefined;
 }
@@ -429,38 +426,41 @@ export type NextStepInput = {
   decisionHeadline: string;
   integration: NonNullable<TicketDelivery['workspace']>['integration'] | null;
   pullRequestUrl: string | null;
+  /** 界面语言。不给时按英文。 */
+  locale?: Locale;
 };
 
 /** 底部栏的「下一步」：这张工单现在要你做什么。 */
 export function nextStepText(input: NextStepInput): string {
   const { stage, ticket } = input;
-  if ((ticket.pendingDecisionCount ?? 0) > 0) return '先回答这张工单上的决定';
+  const m = ticketDetailMessages(input.locale ?? 'en').next;
+  if ((ticket.pendingDecisionCount ?? 0) > 0) return m.decision;
   switch (stage) {
     case 'draft':
-      return '你确认以后才开跑';
+      return m.draft;
     case 'running':
       // 停住了就写停在哪里（和收件箱同一句），不能说「继续做，现在不需要你」。
       if (ticket.status === 'blocked' || input.stuck) return input.decisionHeadline;
-      if (input.paused) return '已暂停。点继续，接着做';
-      return `${input.agentName ?? '执行 agent'} 继续做，现在不需要你`;
+      if (input.paused) return m.paused;
+      return m.continues(input.agentName);
     case 'review':
       return input.decisionHeadline;
     case 'done':
-      if (input.pullRequestUrl) return '你在 GitHub 上审阅草稿 PR';
-      if (input.integration === 'unmerged') return '你决定代码怎么处理';
-      return '工单已完成，不需要你';
+      if (input.pullRequestUrl) return m.reviewPullRequest;
+      if (input.integration === 'unmerged') return m.decideCode;
+      return m.done;
     case 'cancelled':
-      return '工单已取消，不需要你';
+      return m.cancelled;
   }
 }
 
 // ── 时间 ──────────────────────────────────────────────────────────────────────────────
 
 /** 今天的事写「15:18」，更早的写「10月21日 15:18」。 */
-export function clockText(iso: string, now: Date = new Date()): string {
+export function clockText(iso: string, now: Date = new Date(), locale: Locale = 'en'): string {
   const at = new Date(iso);
   if (Number.isNaN(at.getTime())) return iso;
   const hm = `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`;
   const sameDay = at.getFullYear() === now.getFullYear() && at.getMonth() === now.getMonth() && at.getDate() === now.getDate();
-  return sameDay ? hm : `${at.getMonth() + 1}月${at.getDate()}日 ${hm}`;
+  return sameDay ? hm : `${ticketTimeMessages(locale).monthDay(at.getMonth() + 1, at.getDate())} ${hm}`;
 }

@@ -12,8 +12,9 @@ import {
   type ActionPermission, type OwnerActionSource, type UiActionPerformedPayload, type UiActionTargetType,
 } from "@pi-lead-child/protocol";
 import {
-  activePairedUserTurn, appendEvent, getBinding, leadDisplayName, recordOwnerAction, UserTurnScopeError, type Db,
+  activePairedUserTurn, appendEvent, getBinding, getLocale, leadDisplayName, recordOwnerAction, UserTurnScopeError, type Db,
 } from "@pi-lead-child/store";
+import { engineOwnerActionMessages } from "../owner-actions.messages.js";
 import type { TSchema } from "typebox";
 import { Value } from "typebox/value";
 import type { ActionAttribution } from "../ticket-actions/attribution.js";
@@ -474,7 +475,8 @@ export async function runUiAction(db: Db, request: UiActionRequest): Promise<UiA
       if (input) {
         ownerActionEventId = recordOwnerAction(db, {
           ...input,
-          summary: by.actor === "lead" ? `${leadDisplayName(db)} 代你${input.summary}` : input.summary,
+          // 摘要按写入时用户选的语言写（input.summary 也是）。
+          summary: by.actor === "lead" ? engineOwnerActionMessages(getLocale(db)).byLead(leadDisplayName(db), input.summary) : input.summary,
           detail: { ...input.detail, ...(by.actor === "lead" && by.onBehalfOf ? { sourceTurnId: by.onBehalfOf.sourceTurnId } : {}) },
           undo: { ...input.undo },
           credential: owner.credential,

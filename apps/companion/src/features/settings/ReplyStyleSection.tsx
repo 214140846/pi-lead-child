@@ -5,12 +5,14 @@ import {
 } from '@pi-lead-child/protocol';
 import { useEffect, useState } from 'react';
 
+import { useLocale } from '@/i18n';
 import { useCompanionRuntime } from '@/state/CompanionStateProvider';
 import { useLeadName } from '@/state/hooks';
 
+import { replyStyleMessages } from './replyStyle.messages';
 import {
-  REPLY_STYLE_DAY_OPTIONS, REPLY_STYLE_PLACEHOLDER, replyStyleAppendedLength, replyStyleAppendProblem, replyStyleBasisLine,
-  replyStyleChanged, replyStyleCountLine, replyStyleErrorText,
+  replyStyleAppendedLength, replyStyleAppendProblem, replyStyleBasisLine,
+  replyStyleChanged, replyStyleCountLine, replyStyleDayOptions, replyStyleErrorText,
 } from './replyStyleModel';
 
 // 设置 → 消息通道 → 代回复风格（2026-10-28，.scratch/channel-reply-style/spec.md）。
@@ -24,6 +26,8 @@ type Message = { text: string; error: boolean };
 
 export function ReplyStyleSection() {
   const runtime = useCompanionRuntime();
+  const locale = useLocale();
+  const m = replyStyleMessages(locale);
   const [style, setStyle] = useState<ReplyStyleDto | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -31,14 +35,14 @@ export function ReplyStyleSection() {
     let live = true;
     runtime.replyStyle()
       .then((dto) => live && setStyle(dto))
-      .catch((reason: unknown) => live && setLoadError(replyStyleErrorText(reason)));
+      .catch((reason: unknown) => live && setLoadError(replyStyleErrorText(reason, locale)));
     return () => {
       live = false;
     };
-  }, [runtime]);
+  }, [runtime, locale]);
 
-  if (loadError) return <Text testID="reply-style-error" size="note" tone="danger-dark">{`读不到代回复风格：${loadError}`}</Text>;
-  if (!style) return <Text testID="reply-style-loading" size="note" tone="muted">正在读取代回复风格…</Text>;
+  if (loadError) return <Text testID="reply-style-error" size="note" tone="danger-dark">{m.loadFailed(loadError)}</Text>;
+  if (!style) return <Text testID="reply-style-loading" size="note" tone="muted">{m.loading}</Text>;
   return <Panel current={style} onSaved={setStyle} />;
 }
 
@@ -46,6 +50,8 @@ export function ReplyStyleSection() {
 function Panel({ current, onSaved }: { current: ReplyStyleDto; onSaved: (next: ReplyStyleDto) => void }) {
   const runtime = useCompanionRuntime();
   const leadName = useLeadName();
+  const locale = useLocale();
+  const m = replyStyleMessages(locale);
   const [draft, setDraft] = useState(current.text);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<Message | null>(null);
@@ -62,8 +68,8 @@ function Panel({ current, onSaved }: { current: ReplyStyleDto; onSaved: (next: R
     setSaving(true);
     setMessage(null);
     runtime.updateReplyStyle({ mode: 'replace', text: draft })
-      .then((next) => saved(next, `已保存。${leadName} 从下一轮起按新的风格代你写。`))
-      .catch((reason: unknown) => setMessage({ text: replyStyleErrorText(reason), error: true }))
+      .then((next) => saved(next, m.saved(leadName)))
+      .catch((reason: unknown) => setMessage({ text: replyStyleErrorText(reason, locale), error: true }))
       .finally(() => setSaving(false));
   };
 
@@ -71,9 +77,9 @@ function Panel({ current, onSaved }: { current: ReplyStyleDto; onSaved: (next: R
     <Column testID="reply-style-section" gap="card-section">
       <Column gap="card-section">
         <Column gap="text-stack">
-          <Text size="label" weight="bold">代回复风格</Text>
+          <Text size="label" weight="bold">{m.title}</Text>
           <Text size="secondary" tone="secondary">
-            {`${leadName} 和它派出的子 agent 以你的名义写给别人的话，都按这段写：长短、语气、称呼、emoji、怎样收尾。所有消息通道共用这一份。`}
+            {m.description(leadName)}
           </Text>
         </Column>
         <Column gap="field">
@@ -81,24 +87,24 @@ function Panel({ current, onSaved }: { current: ReplyStyleDto; onSaved: (next: R
             testID="reply-style-text"
             value={draft}
             onChangeText={setDraft}
-            placeholder={REPLY_STYLE_PLACEHOLDER}
+            placeholder={m.placeholder}
             variant="filled"
             size="sm"
             multiline
             height={160}
             maxLength={REPLY_STYLE_TEXT_MAX_LENGTH}
-            accessibilityLabel="代回复风格"
+            accessibilityLabel={m.label}
           />
-          <Text testID="reply-style-count" size="meta" tone="muted">{`${replyStyleCountLine(draft)}。保存以后，下一轮起生效。`}</Text>
+          <Text testID="reply-style-count" size="meta" tone="muted">{m.countNote(replyStyleCountLine(draft, locale))}</Text>
         </Column>
-        <Text size="note" tone="secondary">{`它只管写法。权限、纪律和安全规则不受它影响；里面要 ${leadName} 做事、放开限制的话，${leadName} 不照做。`}</Text>
+        <Text size="note" tone="secondary">{m.boundary(leadName)}</Text>
         <Row items="center" gap="field" flexWrap="wrap">
-          <Button testID="reply-style-save" label={saving ? '正在保存…' : '保存'} size="sm" disabled={saving || !changed} onPress={save} />
+          <Button testID="reply-style-save" label={saving ? m.saving : m.save} size="sm" disabled={saving || !changed} onPress={save} />
           {message ? <Text testID="reply-style-message" size="note" tone={message.error ? 'danger-dark' : 'secondary'}>{message.text}</Text> : null}
         </Row>
       </Column>
       <Box borderTopWidth={1} borderColor="border-soft" />
-      <ExtractSegment current={current} dirty={changed} onAppended={(next) => saved(next, '已追加。')} />
+      <ExtractSegment current={current} dirty={changed} onAppended={(next) => saved(next, m.appended)} />
     </Column>
   );
 }
@@ -106,6 +112,8 @@ function Panel({ current, onSaved }: { current: ReplyStyleDto; onSaved: (next: R
 function ExtractSegment({ current, dirty, onAppended }: { current: ReplyStyleDto; dirty: boolean; onAppended: (next: ReplyStyleDto) => void }) {
   const runtime = useCompanionRuntime();
   const leadName = useLeadName();
+  const locale = useLocale();
+  const m = replyStyleMessages(locale);
   const [days, setDays] = useState(String(REPLY_STYLE_EXTRACT_DEFAULT_DAYS));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -121,12 +129,12 @@ function ExtractSegment({ current, dirty, onAppended }: { current: ReplyStyleDto
         setResult(next);
         setProposal(next.proposal);
       })
-      .catch((reason: unknown) => setError(replyStyleErrorText(reason)))
+      .catch((reason: unknown) => setError(replyStyleErrorText(reason, locale)))
       .finally(() => setBusy(false));
   };
 
   const now = new Date();
-  const problem = result && proposal.trim() ? replyStyleAppendProblem(current, proposal, result.label, now) : null;
+  const problem = result && proposal.trim() ? replyStyleAppendProblem(current, proposal, result.label, now, locale) : null;
   const total = result && proposal.trim() ? replyStyleAppendedLength(current, proposal, result.label, now) : null;
   const append = () => {
     if (!result || !proposal.trim() || problem || dirty) return;
@@ -138,22 +146,21 @@ function ExtractSegment({ current, dirty, onAppended }: { current: ReplyStyleDto
         setResult(null);
         setProposal('');
       })
-      .catch((reason: unknown) => setError(replyStyleErrorText(reason)))
+      .catch((reason: unknown) => setError(replyStyleErrorText(reason, locale)))
       .finally(() => setAppending(false));
   };
 
   return (
     <Column testID="reply-style-extract" gap="card-section">
       <Column gap="text-stack">
-        <Text size="label" weight="bold">从我最近的 Slack 提炼</Text>
+        <Text size="label" weight="bold">{m.extractTitle}</Text>
         <Text size="secondary" tone="secondary">
-          {`只读你本人发的消息，不读 ${leadName} 代你发的，也不读别人的话。只写风格特征，不抄原文，不写人名。`
-            + `用 ${leadName} 的便宜模型提炼。结果先给你看，你改完点「追加」才写进上面的框。`}
+          {m.extractDescription(leadName)}
         </Text>
       </Column>
       <Row items="center" gap="actions" flexWrap="wrap">
-        <Box w={240}><SegmentedControl options={REPLY_STYLE_DAY_OPTIONS} value={days} onChange={setDays} size="sm" /></Box>
-        <Button testID="reply-style-extract-run" label={busy ? '正在提炼…' : '提炼'} variant="outline" tone="neutral" size="sm" disabled={busy} onPress={extract} />
+        <Box w={240}><SegmentedControl options={replyStyleDayOptions(locale)} value={days} onChange={setDays} size="sm" /></Box>
+        <Button testID="reply-style-extract-run" label={busy ? m.extracting : m.extract} variant="outline" tone="neutral" size="sm" disabled={busy} onPress={extract} />
       </Row>
       {error ? <Text testID="reply-style-extract-error" size="note" tone="danger-dark">{error}</Text> : null}
       {result ? (
@@ -161,15 +168,15 @@ function ExtractSegment({ current, dirty, onAppended }: { current: ReplyStyleDto
           {result.note ? <Text testID="reply-style-preview-note" size="note" tone="secondary">{result.note}</Text> : null}
           {result.conflicts.length ? (
             <Column testID="reply-style-conflicts" gap="text-stack">
-              <Text size="label" weight="semibold">和框里不一致的地方</Text>
+              <Text size="label" weight="semibold">{m.conflicts}</Text>
               {result.conflicts.map((conflict, index) => (
-                <Text key={index} size="note" tone="secondary">{`框里写的是「${conflict.existing}」，最近的消息里是：${conflict.observed}`}</Text>
+                <Text key={index} size="note" tone="secondary">{m.conflict(conflict.existing, conflict.observed)}</Text>
               ))}
             </Column>
           ) : null}
           {result.status === 'ok' && result.proposal ? (
             <Column gap="field">
-              <Text size="label" weight="semibold">提炼出的风格（可以改）</Text>
+              <Text size="label" weight="semibold">{m.proposal}</Text>
               <TextField
                 testID="reply-style-proposal"
                 value={proposal}
@@ -179,28 +186,30 @@ function ExtractSegment({ current, dirty, onAppended }: { current: ReplyStyleDto
                 multiline
                 height={120}
                 maxLength={REPLY_STYLE_TEXT_MAX_LENGTH}
-                accessibilityLabel="提炼出的风格"
+                accessibilityLabel={m.proposal}
               />
               <Text testID="reply-style-basis" size="meta" tone="muted">
-                {`${replyStyleBasisLine(result)}${total !== null ? `追加以后共 ${total} / ${REPLY_STYLE_TEXT_MAX_LENGTH} 字。` : ''}`}
+                {total !== null
+                  ? `${replyStyleBasisLine(result, locale)}${m.sentenceGap}${m.totalAfterAppend(total, REPLY_STYLE_TEXT_MAX_LENGTH)}`
+                  : replyStyleBasisLine(result, locale)}
               </Text>
             </Column>
           ) : (
-            <Text size="meta" tone="muted">{replyStyleBasisLine(result)}</Text>
+            <Text size="meta" tone="muted">{replyStyleBasisLine(result, locale)}</Text>
           )}
           {problem ? <Text testID="reply-style-append-problem" size="note" tone="danger-dark">{problem}</Text> : null}
-          {dirty ? <Text testID="reply-style-append-dirty" size="note" tone="secondary">上面的框有没保存的修改：先保存，再追加。</Text> : null}
+          {dirty ? <Text testID="reply-style-append-dirty" size="note" tone="secondary">{m.dirty}</Text> : null}
           <Row items="center" gap="actions" flexWrap="wrap">
             {result.status === 'ok' && result.proposal ? (
               <Button
                 testID="reply-style-append"
-                label={appending ? '正在追加…' : '追加到代回复风格'}
+                label={appending ? m.appending : m.append}
                 size="sm"
                 disabled={appending || !proposal.trim() || problem !== null || dirty}
                 onPress={append}
               />
             ) : null}
-            <Button testID="reply-style-discard" label="不要" variant="ghost" tone="neutral" size="sm" onPress={() => { setResult(null); setProposal(''); }} />
+            <Button testID="reply-style-discard" label={m.discard} variant="ghost" tone="neutral" size="sm" onPress={() => { setResult(null); setProposal(''); }} />
           </Row>
         </Column>
       ) : null}

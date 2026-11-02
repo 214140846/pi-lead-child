@@ -45,14 +45,14 @@ describe('the checklist card', () => {
     expect(screen.getByTestId('setup-row-brain').textContent).toContain('brain 好了');
     expect(screen.queryByTestId('setup-open-brain')).toBeNull();
     // 文字里的 {lead} 换成用户给 Lead 起的名字。
-    expect(screen.getByTestId('setup-row-memory').textContent).toContain('没配时 Paimon 只能按关键词回想');
+    expect(screen.getByTestId('setup-row-memory').textContent).toContain('Without it, Paimon can only recall by keyword');
     fireEvent.click(screen.getByTestId('setup-open-jira'));
     expect(onOpen).toHaveBeenCalledWith('jira');
   });
 
   it('folds into one line once everything is set up', () => {
     renderUI(<SetupChecklistCardView card={checklist([...SETUP_ITEM_KEYS])} leadName="Paimon" onOpen={() => {}} />);
-    expect(screen.getByTestId('setup-checklist-done').textContent).toBe('准备好了：7 项关键设置都配好了');
+    expect(screen.getByTestId('setup-checklist-done').textContent).toBe('Ready: all 7 key settings are set up');
     expect(screen.queryByTestId('setup-checklist-count')).toBeNull();
   });
 });
@@ -61,23 +61,24 @@ describe('the hint card', () => {
   it('suggests one item with a way there', () => {
     const onOpen = vi.fn();
     renderUI(<SetupHintCardView card={hint('open')} leadName="Paimon" onOpen={onOpen} onAction={() => {}} />);
-    expect(screen.getByTestId('setup-hint-title').textContent).toBe('建议连上 Jira');
-    expect(screen.getByTestId('setup-hint-1').textContent).toContain('连上以后，Paimon 能查工单');
+    expect(screen.getByTestId('setup-hint-title').textContent).toBe('Connect Jira');
+    expect(screen.getByTestId('setup-hint-1').textContent).toContain('After you connect it, Paimon can look up issues');
     fireEvent.click(screen.getByTestId('setup-hint-1-open'));
     expect(onOpen).toHaveBeenCalledWith('jira');
-    expect(setupHintTitle('memory')).toBe('建议给记忆接上 embedding');
+    expect(setupHintTitle('memory', 'en')).toBe('Add embedding to memory');
+    expect(setupHintTitle('memory', 'zh')).toBe('建议给记忆接上 embedding');
   });
 
   it('becomes one line after 以后再说, 不用再提, or once the item is set up', () => {
     const first = renderUI(<SetupHintCardView card={hint('snoozed', 2)} leadName="Paimon" onOpen={() => {}} onAction={() => {}} />);
-    expect(screen.getByTestId('setup-hint-line').textContent).toBe('好，「Jira」7 天内不再提');
+    expect(screen.getByTestId('setup-hint-line').textContent).toBe('OK. No more reminders about "Jira" for 7 days.');
     expect(screen.queryByTestId('setup-hint-1-open')).toBeNull();
     first.unmount();
     const second = renderUI(<SetupHintCardView card={hint('dismissed', 3)} leadName="Paimon" onOpen={() => {}} onAction={() => {}} />);
-    expect(screen.getByTestId('setup-hint-line').textContent).toBe('好，以后不再提「Jira」');
+    expect(screen.getByTestId('setup-hint-line').textContent).toBe('OK. No more reminders about "Jira".');
     second.unmount();
     renderUI(<SetupHintCardView card={hint('ready', 4)} leadName="Paimon" onOpen={() => {}} onAction={() => {}} />);
-    expect(screen.getByTestId('setup-hint-line').textContent).toBe('「Jira」配好了');
+    expect(screen.getByTestId('setup-hint-line').textContent).toBe('"Jira" is set up');
   });
 });
 

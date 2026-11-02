@@ -37,7 +37,7 @@ describe('ChatDock', () => {
     expect(toggle.getAttribute('aria-controls')).toBeNull();
     expect(toggle.textContent).toContain('工单对话');
     expect(toggle.textContent).toContain('8');
-    expect(toggle.textContent).toContain('展开');
+    expect(toggle.textContent).toContain('Expand');
   });
 
   it('keeps its content height while collapsed instead of collapsing to a line', () => {
@@ -63,7 +63,7 @@ describe('ChatDock', () => {
     expect(screen.getByText('全部对话')).toBeTruthy();
     expect(screen.getByText('输入框')).toBeTruthy();
     expect(screen.queryByTestId('dock-preview')).toBeNull();
-    expect(toggle.textContent).toContain('收起');
+    expect(toggle.textContent).toContain('Collapse');
     fireEvent.click(toggle);
     expect(onExpandedChange).toHaveBeenCalledWith(false);
   });
@@ -172,7 +172,7 @@ describe('animating the chat dock', () => {
     // 动画中：按钮马上说「收起」，对话已经在（从 0 高长出来），预览还在（淡出）。主体还看得见，但无障碍服务不再读它。
     const toggle = screen.getByTestId('dock-toggle');
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
-    expect(toggle.textContent).toContain('收起');
+    expect(toggle.textContent).toContain('Collapse');
     expect(screen.getByText('全部对话')).toBeTruthy();
     expect(screen.getByTestId('dock-preview')).toBeTruthy();
     const main = screen.getByTestId('panel-main');

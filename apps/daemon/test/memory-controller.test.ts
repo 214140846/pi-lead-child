@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { tempDir } from "@pi-lead-child/core/testing";
 import { loadPlcConfig, writePlcConfig } from "@pi-lead-child/core";
 import { Vault } from "@pi-lead-child/connections";
-import { HindsightBackend, type MemoryBackend, type NotesMemory } from "@pi-lead-child/engine";
+import { HindsightBackend, updateDesignPreferences, type MemoryBackend, type NotesMemory } from "@pi-lead-child/engine";
 import { listInbox, openDb, type Db } from "@pi-lead-child/store";
 import { readServiceFile, type HindsightSecrets } from "@pi-lead-child/supervisor";
 import { MemorySwitchSchema } from "@pi-lead-child/protocol";
@@ -50,9 +50,15 @@ afterEach(() => {
   controllers = [];
 });
 
-function setup(existing?: { dataDir: string; db: Db; vault: Vault; harness: MemoryHarness }, hooks: MemoryControllerHooks = {}) {
+// 设置页上的文字按用户选的语言写。这个文件的断言大多是中文：新建的账本缺省设成中文，
+// 英文的另有一组（「in English」）。
+function setup(
+  existing?: { dataDir: string; db: Db; vault: Vault; harness: MemoryHarness }, hooks: MemoryControllerHooks = {},
+  options: { locale?: "en" | "zh" } = {},
+) {
   const dataDir = existing?.dataDir ?? tempDir("plc-memory-");
   const db = existing?.db ?? openDb(join(dataDir, "plc.db"));
+  if (!existing) updateDesignPreferences(db, { request: { locale: options.locale ?? "zh" }, caller: { kind: "user" } });
   const vault = existing?.vault ?? new Vault(randomBytes(32));
   const harness = existing?.harness ?? memoryHarness(dataDir);
   const notes = new FakeNotes();
@@ -651,5 +657,50 @@ describe("MemoryController: summary models", () => {
     // 刚重启：正在启动，召回改用 SQLite；健康检查通了以后召回回到 Hindsight。
     expect(t.notes.unavailable).toContain("记忆服务正在启动");
     await vi.waitFor(() => expect(t.notes.unavailable.at(-1)).toBeNull());
+  });
+});
+
+// 设置页显示的文字按用户选的语言写（2026-11-01）。缺省是英文。
+describe("MemoryController in English", () => {
+  it("writes the switch and the errors in English", async () => {
+    const t = setup(undefined, {}, { locale: "en" });
+    await runningLocal(t);
+    t.notes.index = { notes: 12, indexed: 12 };
+    const pending = (await t.controller.update({ embedding: { ...REMOTE, apiKey: "sk-test-123" } })).pendingSwitch!;
+    expect(pending.summary).toMatch(/^switch embedding to /);
+    expect(pending.reason).toBe(
+      "All 12 notes will go to api.example.com; The index must be rebuilt for 12 notes: one LLM call for each note. "
+        + "Until the rebuild is complete, recall by meaning is incomplete",
+    );
+    await expect(t.controller.confirmSwitch("msw_nope", true, "user via web")).rejects.toMatchObject({
+      code: "not_found", message: "This switch does not exist.",
+    });
+    await expect(t.controller.update({ embedding: { ...REMOTE, baseUrl: "https://user:pass@api.example.com/v1" } }))
+      .rejects.toMatchObject({ code: "invalid_url", message: expect.stringMatching(/user name or password/) });
+  });
+
+  it("writes the summary model results and the write problems in English", async () => {
+    const t = setup(undefined, {}, { locale: "en" });
+    await runningLocal(t);
+    const change = await t.controller.setSummaryModel({ slot: "consolidation", model: "anthropic/claude-sonnet-5-5" });
+    expect(change).toEqual({
+      summary: "The model that consolidates observations is set to anthropic/claude-sonnet-5-5",
+      note: "The memory service is restarting. For a few seconds, recall uses only full-text search.",
+    });
+    t.notes.writes = { notes: 4, completed: 2, pending: 1, failed: 1, lastError: "Error code: 401" };
+    expect(t.controller.get().service.message).toBe(
+      "1 note is not in Hindsight (Error code: 401). Recall by meaning cannot find it.",
+    );
+    expect(await t.controller.retryFailedWrites()).toEqual({
+      summary: "Queued 1 failed note again", note: "Hindsight processes them again. If the cause is not fixed, they fail again.",
+    });
+  });
+
+  it("tests the remote embedding in English", async () => {
+    const t = setup(undefined, {}, { locale: "en" });
+    await t.controller.start();
+    await expect(t.controller.test()).rejects.toMatchObject({ code: "invalid_request", message: "No remote embedding is configured." });
+    await t.controller.update({ embedding: { ...REMOTE, apiKey: "sk-test-123" } });
+    expect(await t.controller.test()).toMatchObject({ ok: true, message: "Returned a vector with 3 dimensions." });
   });
 });

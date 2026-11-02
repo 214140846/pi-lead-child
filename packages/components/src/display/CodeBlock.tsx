@@ -5,6 +5,8 @@ import { canCopyText, copyText } from '../platform';
 import { Box, Column, Row } from '../primitives/layout';
 import { ScrollArea } from '../primitives/ScrollArea';
 import { Text } from '../primitives/Text';
+import { useMessages } from '../i18n';
+import { displayMessages } from './display.messages';
 
 export type CodeBlockProps = {
   code: string;
@@ -35,6 +37,7 @@ const DIFF_STYLE = {
 // 右上角是复制按钮；长行在块里横向滚动，不撑宽页面。
 // diff 按行着色：+ 行绿、- 行红、@@ 行淡蓝，和 GitHub 一样。
 export function CodeBlock({ code, language, testID }: CodeBlockProps) {
+  const m = useMessages(displayMessages);
   const [copied, setCopied] = useState(false);
   const reset = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => {
@@ -54,7 +57,7 @@ export function CodeBlock({ code, language, testID }: CodeBlockProps) {
       <Row items="center" gap="inline-item" pl="card" pr={4} minH={32} borderBottomWidth={1} borderBottomColor="border-soft">
         <Text flex={1} minW={0} size="meta" mono weight="semibold" tone="muted" numberOfLines={1}>{language ?? ''}</Text>
         {canCopyText ? (
-          <IconButton icon={copied ? 'check' : 'copy'} label={copied ? '已复制' : '复制代码'} onPress={() => void copy()} variant="ghost" size="xs" />
+          <IconButton icon={copied ? 'check' : 'copy'} label={copied ? m.copied : m.copyCode} onPress={() => void copy()} variant="ghost" size="xs" />
         ) : null}
       </Row>
       <ScrollArea testID={testID ? `${testID}-scroll` : undefined} horizontal flex={0} showsScrollIndicator>

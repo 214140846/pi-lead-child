@@ -14,6 +14,7 @@ import {
   CHANNEL_AUTHORITY_DEFAULTS, CHANNEL_CLOSING_KINDS, CHANNEL_INTENT_PERMISSIONS, CHANNEL_INTENTS, SENDER_TRUST_LEVELS,
   type ChannelAuthorityTable,
 } from "./channel-policy.ts";
+import { DEFAULT_LOCALE, defineMessages, type Locale } from "./i18n.ts";
 
 const StrictObject = <T extends TProperties>(properties: T) => Type.Object(properties, { additionalProperties: false });
 const Literals = <T extends readonly string[]>(values: T) =>
@@ -68,11 +69,18 @@ export const CHANNEL_CONFIDENCE_DEFAULTS: ChannelConfidenceParams = {
 /** 开关没写时的样子：开着（2026-10-23 用户：部署以后维持现状）。 */
 export const CHANNEL_AUTO_REPLY_DEFAULT = true;
 
-/** 参数合不合格，schema 以外的检查：各档的门槛从低到高。返回问题；空数组表示可以用。 */
-export function channelConfidenceProblems(params: ChannelConfidenceParams): string[] {
+// 参数检查的问题，给设置页看。engine 的操作层暂时传 "zh"。
+const confidenceMessages = defineMessages({
+  en: { tierBelow: (upper: number, lower: number) => `The threshold of L${upper} cannot be lower than the threshold of L${lower}.` },
+  zh: { tierBelow: (upper, lower) => `L${upper} 的门槛不能低于 L${lower} 的` },
+});
+
+/** 参数合不合格，schema 以外的检查：各档的门槛从低到高。返回问题（按 locale 的语言）；空数组表示可以用。 */
+export function channelConfidenceProblems(params: ChannelConfidenceParams, locale: Locale = DEFAULT_LOCALE): string[] {
+  const m = confidenceMessages(locale);
   const problems: string[] = [];
   for (let index = 1; index < params.tiers.length; index++) {
-    if (params.tiers[index]! < params.tiers[index - 1]!) problems.push(`L${index + 1} 的门槛不能低于 L${index} 的`);
+    if (params.tiers[index]! < params.tiers[index - 1]!) problems.push(m.tierBelow(index + 1, index));
   }
   return problems;
 }

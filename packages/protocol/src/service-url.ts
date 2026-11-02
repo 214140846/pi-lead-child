@@ -8,14 +8,15 @@
 // - 不带用户名和密码；
 // - 查询参数的名字不像密钥（key、token、api_key 一类）。
 import { isSensitiveFieldName } from "./redaction.ts";
+import { serviceUrlMessages } from "./service-url.messages.ts";
+
+export { serviceUrlMessages } from "./service-url.messages.ts";
 
 export type ServiceUrlProblem = "invalid_url" | "userinfo" | "secret_query";
 
-export const SERVICE_URL_MESSAGES: Record<ServiceUrlProblem, string> = {
-  invalid_url: "地址不是合法的 URL",
-  userinfo: "地址里不能带用户名或密码",
-  secret_query: "地址的查询参数里不能带 key、token 一类的值",
-};
+// 地址问题的说明按界面语言（2026-11-01），在 service-url.messages.ts。
+/** 兼容旧的调用方（daemon）：中文的说明。界面用 serviceUrlMessages(locale)。 */
+export const SERVICE_URL_MESSAGES: Record<ServiceUrlProblem, string> = serviceUrlMessages("zh");
 
 const LOOPBACK = new Set(["127.0.0.1", "localhost", "[::1]"]);
 // 未指定地址：监听时表示「所有地址」，不是一个服务的地址（new URL 把 https://0/ 也解析成 0.0.0.0）。

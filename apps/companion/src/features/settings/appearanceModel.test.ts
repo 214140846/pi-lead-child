@@ -17,19 +17,22 @@ describe('appearance form', () => {
   });
 
   it('reports a color below the readability floor before saving', () => {
-    expect(appearanceFormProblem({ colors: { accent: '#9DB8FF' } })).toContain('主色太浅');
-    expect(appearanceFormProblem({ radius: 'round' })).toBeNull();
+    expect(appearanceFormProblem({ colors: { accent: '#9DB8FF' } }, 'zh')).toContain('主色太浅');
+    expect(appearanceFormProblem({ colors: { accent: '#9DB8FF' } }, 'en')).toContain('The accent color is too light');
+    expect(appearanceFormProblem({ radius: 'round' }, 'en')).toBeNull();
   });
 
-  it('resets everything except the notes', () => {
-    const custom = { ...saved, radius: 'round' as const, notes: '留着' };
+  it('resets everything except the notes and the language', () => {
+    const custom = { ...saved, radius: 'round' as const, notes: '留着', locale: 'zh' as const };
     expect(appearanceResetRequest(custom)).toEqual({ radius: 'soft' });
     expect(appearanceResetRequest({ ...saved, notes: '留着' })).toBeNull();
   });
 
   it('says who changed it last', () => {
-    expect(appearanceUpdatedLine(DEFAULT_DESIGN_PREFERENCES, 'Paimon', new Date())).toBeNull();
-    const line = appearanceUpdatedLine({ ...DEFAULT_DESIGN_PREFERENCES, updatedAt: '2026-10-22T07:00:00.000Z', updatedBy: 'lead' }, 'Paimon', new Date('2026-10-22T09:00:00.000Z'));
-    expect(line).toContain('Paimon 在对话里按你的要求改的');
+    expect(appearanceUpdatedLine(DEFAULT_DESIGN_PREFERENCES, 'Paimon', new Date(), 'en')).toBeNull();
+    const changed = { ...DEFAULT_DESIGN_PREFERENCES, updatedAt: '2026-10-22T07:00:00.000Z', updatedBy: 'lead' as const };
+    const now = new Date('2026-10-22T09:00:00.000Z');
+    expect(appearanceUpdatedLine(changed, 'Paimon', now, 'zh')).toContain('Paimon 在对话里按你的要求改的');
+    expect(appearanceUpdatedLine(changed, 'Paimon', now, 'en')).toMatch(/^Last changed: Today \d\d:\d\d, by Paimon at your request in the conversation\.$/u);
   });
 });

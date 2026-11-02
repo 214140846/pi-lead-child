@@ -32,8 +32,8 @@ import { join } from "node:path";
 import {
   normalizeServiceUrl,
   redactSecretText,
-  SERVICE_URL_MESSAGES,
   serviceUrlHost,
+  serviceUrlMessages,
   serviceUrlProblem,
   type DecisionModelDto,
   type DecisionModelSettingsRequest,
@@ -55,7 +55,7 @@ import {
   type DecisionModelCredentials, type MemorySettingsChange, type MemorySettingsService, type MemorySettingsSummary, type NotesMemory,
 } from "@pi-lead-child/engine";
 import type { SecretVault } from "@pi-lead-child/connections";
-import { addInbox, type Db } from "@pi-lead-child/store";
+import { addInbox, getLocale, type Db } from "@pi-lead-child/store";
 import {
   describeEmbedding, describeReranker, embeddingFingerprint, ensureHindsightService, findUvx, hindsightDir, ModelDownloads,
   readServiceFile, uninstallHindsightService,
@@ -64,6 +64,7 @@ import {
 } from "@pi-lead-child/supervisor";
 import type { DecisionModelService, MemoryService } from "@pi-lead-child/gateway";
 import type { SummaryModelChoice, SummaryModels, SummaryModelSettings } from "./memory-backend.js";
+import { memoryControllerMessages } from "./memory-controller.messages.js";
 import { SealedSecrets } from "./sealed-secrets.js";
 import {
   DEFAULT_DECISION_BASE_URL, decisionEntryInputs, decisionKeyFor, decisionSecretName, loadDecisionModels, primaryDecision,
@@ -186,7 +187,6 @@ function llmTargets(models: SummaryModels | null): { default: HindsightLlmTarget
   const consolidation = models?.consolidation.source === "settings" ? target(models.consolidation) : null;
   return { default: fallback, consolidation: fallback && consolidation && json(consolidation) !== json(fallback) ? consolidation : null };
 }
-const SLOT_LABEL: Record<SummaryModelSlot, string> = { default: "缺省摘要模型", consolidation: "整理观察的模型" };
 
 export class MemoryController implements MemoryService {
   private readonly secrets: SealedSecrets<SecretName>;
@@ -207,6 +207,11 @@ export class MemoryController implements MemoryService {
   private loggedBackendSetting = false;
   // 同一时刻只做一次切换：设置、下载完成、确认可能同时来。
   private queue: Promise<unknown> = Promise.resolve();
+
+  // 给用户看的文字按用户现在选的语言（memory-controller.messages.ts）。
+  private m() {
+    return memoryControllerMessages(getLocale(this.options.db));
+  }
 
   constructor(private readonly options: MemoryControllerOptions) {
     this.env = options.env ?? process.env;
@@ -269,7 +274,7 @@ export class MemoryController implements MemoryService {
 
   private decision(): DecisionConfig {
     const { entry, inChain } = this.decisionEntry();
-    if (!inChain) return { baseUrl: null, host: null, model: entry.model, problem: "直觉没有主用（设置 → 模型）" };
+    if (!inChain) return { baseUrl: null, host: null, model: entry.model, problem: this.m().noPrimaryDecision };
     return { baseUrl: entry.baseUrl, host: entry.host, model: entry.model, problem: entry.problem };
   }
 
@@ -282,7 +287,10 @@ export class MemoryController implements MemoryService {
     const remote = this.config().embedding?.remote;
     if (!remote) return { embedding: null, host: null, problem: null };
     const problem = typeof remote.baseUrl === "string" ? serviceUrlProblem(remote.baseUrl) : "invalid_url";
-    if (problem) return { embedding: null, host: null, problem: `config.json 的远程 embedding 地址：${SERVICE_URL_MESSAGES[problem]}` };
+    if (problem) {
+      const locale = getLocale(this.options.db);
+      return { embedding: null, host: null, problem: memoryControllerMessages(locale).remoteEmbeddingUrl(serviceUrlMessages(locale)[problem]) };
+    }
     return {
       embedding: { provider: "openai", baseUrl: normalizeServiceUrl(remote.baseUrl)!, model: remote.model, dimensions: remote.dimensions ?? null },
       host: serviceUrlHost(remote.baseUrl),
@@ -404,7 +412,9 @@ export class MemoryController implements MemoryService {
   }
 
   // 这次切换要不要用户确认，以及为什么。null 表示不用确认。
+  // 原因存进待确认的切换，确认卡上显示：按写入时用户选的语言写。
   private confirmation(next: Desired): Confirmation | null {
+    const m = this.m();
     const reasons: string[] = [];
     const current = this.applied?.embedding ?? null;
     const target = next.embedding;
@@ -413,30 +423,31 @@ export class MemoryController implements MemoryService {
     if (current && target && !sameEmbedding(current, target)) {
       const { notes, indexed } = this.options.memory.progress();
       const embeddingFlow = flows.find((flow) => flow.kind === "embedding");
-      if (embeddingFlow) reasons.push(`全部 ${notes} 条笔记会发给 ${embeddingFlow.host}`);
-      if (indexed > 0) reasons.push(`要为 ${notes} 条笔记重建索引：每条一次 LLM 调用，重建完之前按意思召回不完整`);
+      if (embeddingFlow) reasons.push(m.reasonSendNotes(notes, embeddingFlow.host));
+      if (indexed > 0) reasons.push(m.reasonReindex(notes));
       embeddingPart = reasons.length > 0;
     }
     const rerank = flows.find((flow) => flow.kind === "rerank");
     if (rerank) {
-      reasons.push(`每次召回会把查询和最多 ${rerank.maxCandidates} 条记忆片段发给 ${rerank.host}。`
-        + "要停止：在设置页把 reranker 设为「不用」或「本地」");
+      reasons.push(m.reasonRerank(rerank.maxCandidates ?? 0, rerank.host));
     }
     if (!reasons.length) return null;
     // 第一次启用远程 embedding 不用确认：地址是用户自己填的。只列出确实要确认的外发。
     const dataFlows = flows.filter((flow) => flow.kind === "rerank" || embeddingPart);
-    return { reason: reasons.join("；"), dataFlows, embeddingPart };
+    return { reason: m.joinReasons(reasons), dataFlows, embeddingPart };
   }
 
+  // 存进待确认的切换（确认卡上显示）：按写入时用户选的语言写。
   private summary(next: Desired): string {
+    const m = this.m();
     const parts: string[] = [];
     if (!sameEmbedding(next.embedding, this.applied?.embedding ?? null)) {
-      parts.push(next.embedding ? `embedding 换成${describeEmbedding(next.embedding)}` : "关掉 Hindsight，记忆只用全文检索");
+      parts.push(next.embedding ? m.embeddingTo(describeEmbedding(next.embedding)) : m.hindsightOff);
     }
     if (next.embedding && json(next.reranker) !== json(this.applied?.reranker ?? null)) {
-      parts.push(`reranker 换成${describeReranker(next.reranker)}`);
+      parts.push(m.rerankerTo(describeReranker(next.reranker)));
     }
-    return parts.join("，") || "更新了记忆服务用的密钥";
+    return m.joinParts(parts) || m.keysUpdated;
   }
 
   // 让 Hindsight 处在期望状态：一样时什么也不做；要确认时记下待切换并告诉 Lead；否则马上切换。
@@ -620,7 +631,8 @@ export class MemoryController implements MemoryService {
     } catch (error) {
       // 服务没起来：状态说「停了」和原因，不再往旧索引推笔记，健康检查接着重试（2026-10-26）。
       const reason = redactSecretText(error instanceof Error ? error.message : String(error));
-      const message = `记忆服务没有起来：${reason}。每 ${Math.round(this.healthIntervalMs() / 1000)} 秒自动重试一次，现在只用全文检索`;
+      const m = this.m();
+      const message = m.serviceDownRetry(reason, Math.round(this.healthIntervalMs() / 1000));
       if (message !== this.serviceMessage) this.options.log(`[memory] Hindsight did not start: ${reason}; retrying`);
       this.retry = next;
       this.options.memory.setBackend(null);
@@ -628,13 +640,13 @@ export class MemoryController implements MemoryService {
       this.serviceState = "down";
       this.serviceMessage = message;
       this.options.publish("memory");
-      throw new MemoryError("unavailable", `记忆服务没有起来：${reason}`);
+      throw new MemoryError("unavailable", m.serviceDown(reason));
     }
     this.retry = null;
     if (!endpoint) {
       this.applied = null;
       this.serviceState = "off";
-      this.serviceMessage = "没有找到 uv（uvx），Hindsight 起不来。装上 uv 之后重启 daemon。";
+      this.serviceMessage = this.m().noUv;
       this.options.memory.setBackend(null);
       this.options.memory.setUnavailable("没有找到 uv（uvx），Hindsight 起不来");
       this.options.publish("memory");
@@ -690,7 +702,7 @@ export class MemoryController implements MemoryService {
       void this.serial(() => this.reconcile("download")).catch((error: unknown) => {
         const message = redactSecretText(error instanceof Error ? error.message : String(error));
         this.options.log(`[memory] switching after the download of ${repo} failed: ${message}`);
-        this.serviceMessage = `${repo} 下好了，但切换失败：${message}`;
+        this.serviceMessage = this.m().switchFailedAfterDownload(repo, message);
         this.options.publish("memory");
       });
     } else if (state.state === "failed") {
@@ -732,10 +744,11 @@ export class MemoryController implements MemoryService {
       ? { host: rerankHost(plan.reranker) ?? decision.host ?? "", maxCandidates: plan.reranker.maxCandidates }
       : null;
     const writes = this.options.memory.writeStatus();
+    const m = this.m();
     const problems = [
       this.serviceMessage, remote.problem, reranker.mode !== "none" ? decision.problem : null,
-      writes.failed ? `${writes.failed} 条笔记没写进 Hindsight（${writes.lastError ?? "原因不明"}），按意思召回不到它们` : null,
-    ].filter(Boolean);
+      writes.failed ? m.failedWrites(writes.failed, writes.lastError ?? null) : null,
+    ].filter((problem): problem is string => Boolean(problem));
     return {
       embedding: {
         mode: embedding.mode ?? "unset",
@@ -760,7 +773,7 @@ export class MemoryController implements MemoryService {
         embedding: applied?.embedding ? describeEmbedding(applied.embedding) : null,
         reranker: applied ? describeReranker(applied.reranker) : null,
         index: this.options.memory.progress(),
-        message: problems.length ? problems.join("；") : null,
+        message: problems.length ? m.joinProblems(problems) : null,
         backend: this.off() ? "sqlite" : "hindsight",
       },
       pendingSwitch: pending && pending.state === "pending" ? pendingDto as MemorySwitch : null,
@@ -810,7 +823,7 @@ export class MemoryController implements MemoryService {
   // 校验并规范化一个地址。不合法时抛 invalid_url，消息和设置页客户端的检查用同一句话。
   private checkedUrl(raw: string): string {
     const problem = serviceUrlProblem(raw);
-    if (problem) throw new MemoryError("invalid_url", SERVICE_URL_MESSAGES[problem]);
+    if (problem) throw new MemoryError("invalid_url", serviceUrlMessages(getLocale(this.options.db))[problem]);
     return normalizeServiceUrl(raw)!;
   }
 
@@ -841,10 +854,11 @@ export class MemoryController implements MemoryService {
   async test(): Promise<MemoryTestResponse> {
     const remote = this.remote();
     if (remote.problem) throw new MemoryError("invalid_url", remote.problem);
-    if (!remote.embedding) throw new MemoryError("invalid_request", "还没有配置远程 embedding");
+    const m = this.m();
+    if (!remote.embedding) throw new MemoryError("invalid_request", m.noRemoteEmbedding);
     const stored = this.secrets.get("memory.embedding.apiKey");
     if (stored && stored.host !== remote.host) {
-      throw new MemoryError("key_host_mismatch", `存的 key 属于 ${stored.host}，不会发给 ${remote.host}。先保存，或者重新粘贴 key。`);
+      throw new MemoryError("key_host_mismatch", m.keyHostMismatch(stored.host, remote.host));
     }
     const { baseUrl, model, dimensions } = remote.embedding;
     const started = Date.now();
@@ -853,21 +867,22 @@ export class MemoryController implements MemoryService {
       async (res) => {
         const body = await res.json() as { data?: Array<{ embedding?: unknown }> };
         const vector = body.data?.[0]?.embedding;
-        if (!Array.isArray(vector)) return { ok: false, message: "响应里没有 embedding", latencyMs: Date.now() - started };
-        return { ok: true, message: `返回 ${vector.length} 维向量`, latencyMs: Date.now() - started };
+        if (!Array.isArray(vector)) return { ok: false, message: m.noEmbeddingInResponse, latencyMs: Date.now() - started };
+        return { ok: true, message: m.vectorReturned(vector.length), latencyMs: Date.now() - started };
       });
   }
 
   confirmSwitch(id: string, approve: boolean, resolvedBy: string): Promise<MemorySwitchConfirmResponse> {
     return this.serial(async () => {
+      const m = this.m();
       const pending = this.pending();
-      if (!pending || pending.id !== id) throw new MemoryError("not_found", "没有这个待切换");
-      if (pending.state === "superseded") throw new MemoryError("not_pending", "设置已经变了，这个切换作废");
-      if (pending.state !== "pending") throw new MemoryError("not_pending", "这个切换已经处理过了");
+      if (!pending || pending.id !== id) throw new MemoryError("not_found", m.noPendingSwitch);
+      if (pending.state === "superseded") throw new MemoryError("not_pending", m.switchSuperseded);
+      if (pending.state !== "pending") throw new MemoryError("not_pending", m.switchHandled);
       if (json(this.desired()) !== json(pending.desired)) {
         // 卡片发出之后设置又变了：这张卡作废，按新设置重新判断。
         await this.reconcile("settings");
-        throw new MemoryError("not_pending", "设置已经变了，这个切换作废");
+        throw new MemoryError("not_pending", m.switchSuperseded);
       }
       this.savePending({ ...pending, state: approve ? "applied" : "rejected" });
       if (approve) {
@@ -892,7 +907,7 @@ export class MemoryController implements MemoryService {
 
   getSwitch(id: string): MemorySwitch {
     const stored = this.pending();
-    if (!stored || stored.id !== id) throw new MemoryError("not_found", "没有这个切换：daemon 只记最近的一个");
+    if (!stored || stored.id !== id) throw new MemoryError("not_found", this.m().noSwitch);
     return switchDto(stored);
   }
 
@@ -1000,21 +1015,22 @@ export class MemoryController implements MemoryService {
 
   // 测一条直觉（设置 → 模型的「测试」，model-settings.ts）：用它存的 key 发一次很小的判断。key 只发给它绑定的主机。
   async testDecisionEntry(id: string): Promise<MemoryTestResponse> {
+    const m = this.m();
     const entry = loadDecisionModels(this.options.dataDir).entries.find((candidate) => candidate.id === id);
-    if (!entry) throw new MemoryError("not_found", `没有这条决策模型：${id}`);
-    if (!entry.baseUrl) throw new MemoryError("invalid_url", entry.problem ?? "决策模型的地址不合法");
+    if (!entry) throw new MemoryError("not_found", m.noDecisionEntry(id));
+    if (!entry.baseUrl) throw new MemoryError("invalid_url", entry.problem ?? m.decisionUrlInvalid);
     const key = decisionKeyFor(entry, this.secrets, this.options.externalSecret);
     if (!key) {
       const stored = this.secrets.get(decisionSecretName(entry.id));
       if (stored && stored.host !== entry.host) {
-        throw new MemoryError("key_host_mismatch", `存的 key 属于 ${stored.host}，不会发给 ${entry.host}。先保存，或者重新粘贴 key。`);
+        throw new MemoryError("key_host_mismatch", m.keyHostMismatch(stored.host, entry.host));
       }
-      throw new MemoryError("invalid_request", `${entry.name} 还没有 key`);
+      throw new MemoryError("invalid_request", m.noKey(entry.name));
     }
     const started = Date.now();
     return this.probe(`${entry.baseUrl}/v1/systemone`, key.value,
       { state: "This is a connection test.", model: entry.model, questions: { ok: { type: "noul", instructions: "Is this a connection test?" } } },
-      async () => ({ ok: true, message: "决策模型可用", latencyMs: Date.now() - started }));
+      async () => ({ ok: true, message: m.decisionWorks, latencyMs: Date.now() - started }));
   }
 
   // —— 摘要模型和写入（MemorySettingsService，操作层的 memory_settings）——
@@ -1025,7 +1041,7 @@ export class MemoryController implements MemoryService {
       const choice = models?.[slot];
       return choice
         ? { slot, model: choice.spec, source: choice.source, setting: choice.setting, problem: choice.problem }
-        : { slot, model: null, source: "none" as const, setting: settings[slot] ?? null, problem: models ? null : "还没有算出摘要模型（读不到 Lead 的模型目录）" };
+        : { slot, model: null, source: "none" as const, setting: settings[slot] ?? null, problem: models ? null : this.m().noSummaryModels };
     });
   }
 
@@ -1049,11 +1065,12 @@ export class MemoryController implements MemoryService {
   // 然后按新的期望状态重启记忆服务（reconcile 比较 llmTargets）。
   setSummaryModel(request: SetSummaryModelRequest): Promise<MemorySettingsChange> {
     return this.serial(async () => {
+      const m = this.m();
       if (request.model !== null) {
         const models = await this.options.summaryModels({ ...(this.config().llm ?? {}), [request.slot]: request.model });
         const choice = models[request.slot];
         if (choice.source !== "settings" && choice.source !== "env") {
-          throw new UiActionError("invalid_input", choice.problem ?? `${request.model} 用不了`);
+          throw new UiActionError("invalid_input", choice.problem ?? m.modelNotUsable(request.model));
         }
       }
       const file = loadPlcConfig(this.options.dataDir);
@@ -1064,43 +1081,45 @@ export class MemoryController implements MemoryService {
       await this.reconcile("settings");
       const models = this.lastModels;
       const restarted = this.applied !== null && before !== null && this.applied.llmTargets !== before;
-      const label = SLOT_LABEL[request.slot];
+      const label = m.slot[request.slot];
       const summary = request.model === null
-        ? `${label}改回${request.slot === "default" ? "自动（最新的 haiku）" : "跟缺省一样"}`
-        : `${label}改成 ${request.model}`;
+        ? m.slotReset(label, request.slot === "default")
+        : m.slotSet(label, request.model);
       const notes = [
-        restarted ? "记忆服务正在重启，几秒里召回只用全文检索" : null,
-        this.off() ? "记忆后端现在不是 Hindsight：选择存下了，启用 Hindsight 后生效" : null,
+        restarted ? m.noteRestarting : null,
+        this.off() ? m.noteNotHindsight : null,
         models?.[request.slot].source === "env" || (request.slot === "default" && this.env.PLC_HINDSIGHT_LLM?.trim())
-          ? "daemon 的环境变量 PLC_HINDSIGHT_LLM 盖住了缺省槽的选择" : null,
-      ].filter(Boolean);
+          ? m.noteEnvOverride : null,
+      ].filter((note): note is string => Boolean(note));
       this.options.log(`[memory] summary model: ${summary}`);
       this.options.publish("memory");
-      return { summary, note: notes.length ? notes.join("；") : null };
+      return { summary, note: notes.length ? m.joinNotes(notes) : null };
     });
   }
 
   // 测一个槽现在用的摘要模型：用它的服务商发一次很小的补全（OpenAI 兼容的 /chat/completions）。key 只发给这个服务商。
   async testSummaryModel(slot: SummaryModelSlot): Promise<MemoryTestResponse> {
+    const m = this.m();
     const models = await this.modelsSafely();
     const llm = models?.[slot].llm;
-    if (!llm) throw new UiActionError("unavailable", `${SLOT_LABEL[slot]}现在没有可用的模型`);
+    if (!llm) throw new UiActionError("unavailable", m.slotUnavailable(m.slot[slot]));
     const started = Date.now();
     return this.probe(`${llm.baseUrl.replace(/\/+$/, "")}/chat/completions`, llm.apiKey,
       { model: llm.model, messages: [{ role: "user", content: "Reply with OK." }], max_tokens: 5 },
       async (res) => {
         const body = await res.json() as { choices?: unknown };
-        if (!Array.isArray(body.choices)) return { ok: false, message: "响应里没有 choices", latencyMs: Date.now() - started };
-        return { ok: true, message: `${llm.provider}/${llm.model} 可用`, latencyMs: Date.now() - started };
+        if (!Array.isArray(body.choices)) return { ok: false, message: m.noChoicesInResponse, latencyMs: Date.now() - started };
+        return { ok: true, message: m.modelWorks(`${llm.provider}/${llm.model}`), latencyMs: Date.now() - started };
       });
   }
 
   async retryFailedWrites(): Promise<MemorySettingsChange> {
+    const m = this.m();
     const count = this.options.memory.retryFailed();
     this.options.publish("memory");
     return count
-      ? { summary: `${count} 条写入失败的笔记重新排队`, note: "Hindsight 会重新处理它们；原因没修好时还会失败" }
-      : { summary: "没有写入失败的笔记", note: null };
+      ? { summary: m.writesRequeued(count), note: m.writesRequeuedNote }
+      : { summary: m.noFailedWrites, note: null };
   }
 
   memorySettingsService(): MemorySettingsService {

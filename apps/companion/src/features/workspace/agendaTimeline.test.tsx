@@ -59,6 +59,12 @@ describe('buildTimelineView', () => {
   // 实机截图（2026-10-15）：「之后」只写时刻不写日期，看不出是哪天。之后的每一天各成一节。
   it('lists today, tomorrow and each later day, with the kind of each date and who set it', () => {
     const view = buildTimelineView(timeline, now);
+    expect(view.sections.map((section) => section.label)).toEqual(['Today · Thu 15', 'Tomorrow · Fri 16', 'Tue · 10/20']);
+    expect(view.sections[1]!.rows[0]).toMatchObject({ tag: { label: '提测' }, sub: 'Noted by Paimon' });
+  });
+
+  it('writes the agenda in Chinese when the interface language is Chinese', () => {
+    const view = buildTimelineView(timeline, now, undefined, 'zh');
     expect(view.sections.map((section) => [section.label, section.rows.map((row) => row.id)])).toEqual([
       ['今天 · 周四 15', ['fire:41', 'reminder:90']],
       ['明天 · 周五 16', ['milestone:12']],
@@ -78,19 +84,19 @@ describe('buildTimelineView', () => {
   it('puts overdue items on top with their date and how long ago', () => {
     const view = buildTimelineView(timeline, now);
     expect(view.overdue.map((row) => [row.time, row.title, row.sub])).toEqual([
-      ['10/13', '#66 成果快照与登记机制', '过期 1 天 · 原来的截止'],
-      ['7/29', 'Working Session 会议', '已触发，未确认'],
+      ['10/13', '#66 成果快照与登记机制', 'Overdue by 1 day · Original due date'],
+      ['7/29', 'Working Session 会议', 'Fired, not acknowledged'],
     ]);
   });
 
   it('writes the same facts as a sentence when Lead has not written one today', () => {
     expect(buildTimelineView(timeline, now).note).toEqual({
-      text: '今天还剩 1 件：16:30 周会前看 #66 的核查结论。明天 18:00 #72 提测，但工单还阻塞。另有 2 件已过期。',
+      text: '1 item left today: 16:30 周会前看 #66 的核查结论. Tomorrow 18:00 #72 提测: 工单还阻塞. 2 more items are overdue.',
       when: null,
       byLead: false,
     });
     const written = { ...timeline, leadNote: { text: '今天还剩 1 件：16:30 看 #66 的核查结论。', at: '2026-10-15T07:30:00.000Z' } };
-    expect(buildTimelineView(written, now).note).toEqual({ text: '今天还剩 1 件：16:30 看 #66 的核查结论。', when: '15:30 更新', byLead: true });
+    expect(buildTimelineView(written, now).note).toEqual({ text: '今天还剩 1 件：16:30 看 #66 的核查结论。', when: 'Updated 15:30', byLead: true });
     // 昨天写的不算：显示今天的事实。
     const stale = { ...timeline, leadNote: { text: '昨天的话', at: '2026-10-14T07:30:00.000Z' } };
     expect(buildTimelineView(stale, now).note.byLead).toBe(false);
@@ -108,13 +114,14 @@ describe('buildTimelineView', () => {
     expect(view.sections[1]!.rows.map((row) => row.id)).toContain('routine:3:2026-10-16T01:00:00.000Z');
     const later = view.sections.slice(2).flatMap((section) => section.rows).filter((row) => row.title === '每日站会摘要');
     expect(later.map((row) => [row.id, row.sub])).toEqual([
-      ['routine:3:2026-10-19T01:00:00.000Z', '汇总昨天的进展 · 之后还有 2 次'],
+      ['routine:3:2026-10-19T01:00:00.000Z', '汇总昨天的进展 · 2 more times'],
     ]);
   });
 
   it('shows one day when you pick it in the week strip', () => {
     const view = buildTimelineView(timeline, now, '2026-10-20');
-    expect(view.sections.map((section) => [section.label, section.rows.map((row) => row.id)])).toEqual([['周二 20日', ['milestone:13']]]);
+    expect(view.sections.map((section) => [section.label, section.rows.map((row) => row.id)])).toEqual([['Tue 20', ['milestone:13']]]);
+    expect(buildTimelineView(timeline, now, '2026-10-20', 'zh').sections[0]!.label).toBe('周二 20日');
   });
 });
 
@@ -165,7 +172,7 @@ describe('the agenda tab', () => {
 
   it('shows the sentence, the overdue items on top, and the risk next to a date', () => {
     render();
-    expect(within(screen.getByTestId('agenda-note')).getByText(/今天还剩 1 件/)).toBeTruthy();
+    expect(within(screen.getByTestId('agenda-note')).getByText(/1 item left today/)).toBeTruthy();
     const overdue = screen.getByTestId('agenda-overdue');
     expect(within(overdue).getByText('#66 成果快照与登记机制')).toBeTruthy();
     expect(within(screen.getByTestId('agenda-row-milestone:12')).getByText('工单还阻塞')).toBeTruthy();

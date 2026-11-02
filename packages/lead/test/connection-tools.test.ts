@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import { tempDir } from "@pi-lead-child/core/testing";
 import { openDb } from "@pi-lead-child/store";
 import { ConnectionHub, Vault } from "@pi-lead-child/connections";
-import { FakeVendor } from "@pi-lead-child/connections/testing";
+import { FAKE_GH_TOKEN, FakeGithub, FakeVendor } from "@pi-lead-child/connections/testing";
 import { estimateTokens } from "@pi-lead-child/core";
 import {
   CONNECTION_QUIET_TOOLS, connectionResultBudget, createConnectionTools, type ConnectionResultBudget,
@@ -65,6 +65,41 @@ describe("Lead's connection tools", () => {
       ok: false, error: "not_connected", connection: "notion", next: expect.stringContaining("UserAction"),
       user_action: { kind: "authorize", target: "connection:notion", title: expect.stringContaining("连接"), reason: expect.any(String) },
     });
+  });
+});
+
+// 2026-10-30：守卫拒绝 APPROVE 时，Lead 拿到的是「GitHub 拒绝了」和「告诉用户可以在设置里改」。
+// 两句都不对：拒绝来自 plc 自己的守卫，设置里也没有能改它的选项。守卫的拒绝带上自己的下一步。
+describe("a refusal from a connection guard", () => {
+  async function github() {
+    const db = openDb(join(tempDir("plc-lead-conn-gh-"), "plc.db"));
+    const gh = new FakeGithub();
+    gh.addPullRequest({
+      owner: "Acme", repo: "x", number: 7, title: "t", body: "b", headSha: "a".repeat(40), diff: "",
+      checkRuns: [{ name: "test", status: "completed", conclusion: "failure" }], statuses: [],
+    });
+    const hub = new ConnectionHub({
+      db, vault: new Vault(randomBytes(32)), config: { clients: {} }, redirectUri: () => "http://127.0.0.1:1/cb",
+      fetch: gh.fetch, gh: { token: async () => FAKE_GH_TOKEN }, ghInstalled: () => true,
+    });
+    await hub.start("github");
+    // daemon 把连接的写入设成直接执行（2026-10-28），这里照做。
+    hub.relaxWritePolicyOnce();
+    const tools = Object.fromEntries(createConnectionTools(hub).map((tool) => [tool.name, tool]));
+    return async (params: Record<string, unknown>) =>
+      JSON.parse((await (tools.call_connection_tool as any).execute("call-1", params, undefined, undefined, {})).content[0].text);
+  }
+
+  it("names the plc guard and tells Lead what to do next instead of sending the user to settings", async () => {
+    const call = await github();
+    const result = await call({
+      connection: "github", tool: "pull_request_review_write",
+      arguments: { owner: "Acme", repo: "x", pullNumber: 7, method: "create", event: "APPROVE", body: "LGTM", commitID: "a".repeat(40) },
+    });
+    expect(result).toMatchObject({ ok: false, error: "forbidden", message: expect.stringContaining("plc 的 GitHub 守卫拒绝了这次调用") });
+    expect(result.message).toContain("检查没通过：test");
+    expect(result.next).toContain("设置里改不了");
+    expect(result.next).not.toContain("可以在设置里改");
   });
 });
 

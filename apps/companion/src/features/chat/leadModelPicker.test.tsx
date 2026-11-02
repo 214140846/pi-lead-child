@@ -90,15 +90,15 @@ describe('the model picker in the composer', () => {
   it('lists the models by account and source, marks the chosen one, and shows a blocked account', async () => {
     setup();
     await open();
-    expect(groupTitles()).toEqual(['as1 · Anthropic', 'as4 · Anthropic', 'Anthropic · 不指定账号', 'Antigravity']);
+    expect(groupTitles()).toEqual(['as1 · Anthropic', 'as4 · Anthropic', 'Anthropic · Any account', 'Antigravity']);
     expect(screen.getByTestId('lead-model-option-vibeproxy/as4/claude-sonnet-5').getAttribute('aria-pressed')).toBe('true');
-    expect(screen.getByTestId('lead-model-option-vibeproxy/as1/claude-sonnet-5').textContent).toContain('额度用完');
+    expect(screen.getByTestId('lead-model-option-vibeproxy/as1/claude-sonnet-5').textContent).toContain('Quota used up');
     // 只标出不能看图的模型。
-    expect(screen.getByTestId('lead-model-option-vibeproxy/gemini-3.8-flash-high').textContent).toContain('不能看图');
-    expect(screen.getByTestId('lead-model-option-vibeproxy/as4/claude-sonnet-5').textContent).not.toContain('看图');
+    expect(screen.getByTestId('lead-model-option-vibeproxy/gemini-3.8-flash-high').textContent).toContain('Cannot read images');
+    expect(screen.getByTestId('lead-model-option-vibeproxy/as4/claude-sonnet-5').textContent).not.toContain('read images');
     expect(screen.getByTestId('lead-model-effort-high').getAttribute('aria-pressed')).toBe('true');
     // 最上面写着正在用的是哪个账号的哪个模型。
-    expect(screen.getByTestId('lead-model-selected').textContent).toBe('正在用：as4 · Anthropic · claude-sonnet-5 high');
+    expect(screen.getByTestId('lead-model-selected').textContent).toBe('In use: as4 · Anthropic · claude-sonnet-5 high');
   });
 
   it('switches to another model, keeping the effort when it supports it, and closes', async () => {
@@ -116,7 +116,7 @@ describe('the model picker in the composer', () => {
     await act(async () => { fireEvent.click(screen.getByTestId('lead-model-option-vibeproxy/gemini-3.8-flash-high')); });
     expect(switched).toEqual([{ model: 'vibeproxy/gemini-3.8-flash-high', effort: null }]);
     // Lead 正在回答：浮层留着，说这一轮结束后换。
-    await waitFor(() => expect(screen.getByTestId('lead-model-notice').textContent).toContain('这一轮回答结束后换上'));
+    await waitFor(() => expect(screen.getByTestId('lead-model-notice').textContent).toContain('starts after this answer ends'));
     expect(screen.getByTestId('lead-model-pending')).toBeTruthy();
   });
 

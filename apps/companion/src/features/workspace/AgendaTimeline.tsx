@@ -4,6 +4,9 @@ import {
 import type { MilestoneState, TimelineResponse } from '@pi-lead-child/protocol';
 import { Fragment, useState } from 'react';
 
+import { useLocale, useMessages } from '@/i18n';
+
+import { agendaMessages } from './agenda.messages';
 import { buildWeek, localDateKey } from './model';
 import {
   buildTimelineView,
@@ -35,6 +38,7 @@ function TimelineRow({ row, onOpenTicket, onUpdateMilestone }: {
   onOpenTicket?: (ticketId: number) => void;
   onUpdateMilestone?: (milestoneId: number, patch: MilestonePatch) => Promise<void>;
 }) {
+  const m = useMessages(agendaMessages);
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState('');
   const [pending, setPending] = useState(false);
@@ -58,7 +62,7 @@ function TimelineRow({ row, onOpenTicket, onUpdateMilestone }: {
   const save = () => {
     const at = parseMilestoneInput(value, row.at, new Date());
     if (!at) {
-      setError('写成「10/17 18:00」或「2026-10-17 18:00」');
+      setError(m.invalidDate);
       return;
     }
     void submit({ at });
@@ -99,7 +103,7 @@ function TimelineRow({ row, onOpenTicket, onUpdateMilestone }: {
                     feedback="opacity"
                   >
                     {/* spacing-exempt: 链接字号 */}
-                    <Text size="11" weight="bold" color="accent">{editing ? '收起' : '改'}</Text>
+                    <Text size="11" weight="bold" color="accent">{editing ? m.close : m.edit}</Text>
                   </Pressable>
                 ) : null}
                 {row.risk ? (
@@ -124,12 +128,12 @@ function TimelineRow({ row, onOpenTicket, onUpdateMilestone }: {
             size="sm"
             variant="outline"
             onSubmit={save}
-            accessibilityLabel="新的日期和时间"
+            accessibilityLabel={m.newDateLabel}
           />
           <Row gap="actions" flexWrap="wrap">
-            <Button testID={`agenda-edit-save-${row.id}`} label={pending ? '正在保存…' : '改期'} size="xs" tone="accent" disabled={pending} onPress={save} />
-            <Button testID={`agenda-edit-done-${row.id}`} label="标为完成" size="xs" variant="outline" tone="neutral" disabled={pending} onPress={() => { void submit({ state: 'done' }); }} />
-            <Button testID={`agenda-edit-cancel-${row.id}`} label="取消这个节点" size="xs" variant="ghost" tone="neutral" disabled={pending} onPress={() => { void submit({ state: 'cancelled' }); }} />
+            <Button testID={`agenda-edit-save-${row.id}`} label={pending ? m.saving : m.reschedule} size="xs" tone="accent" disabled={pending} onPress={save} />
+            <Button testID={`agenda-edit-done-${row.id}`} label={m.markDone} size="xs" variant="outline" tone="neutral" disabled={pending} onPress={() => { void submit({ state: 'done' }); }} />
+            <Button testID={`agenda-edit-cancel-${row.id}`} label={m.cancelMilestone} size="xs" variant="ghost" tone="neutral" disabled={pending} onPress={() => { void submit({ state: 'cancelled' }); }} />
           </Row>
           {error ? <Text size="secondary" color="danger-dark">{error}</Text> : null}
         </Column>
@@ -159,17 +163,19 @@ function RowsCard({ rows, testID, ...handlers }: {
 
 // 日程 tab（阶段 3，方向 A）：一句话、周条、已过期、今天、明天、之后。
 export function AgendaTimeline({ timeline, onOpenTicket, onUpdateMilestone }: AgendaTimelineProps) {
+  const m = useMessages(agendaMessages);
+  const locale = useLocale();
   const now = new Date();
   const today = localDateKey(now);
   const [selectedDate, setSelectedDate] = useState(today);
-  const week = buildWeek(today);
-  const view = buildTimelineView(timeline, now, selectedDate);
+  const week = buildWeek(today, locale);
+  const view = buildTimelineView(timeline, now, selectedDate, locale);
   const handlers = { onOpenTicket, onUpdateMilestone };
 
   if (timeline === null) {
     return (
       <Column testID="agenda-timeline" px="section-label-x" py="banner-y">
-        <Text size="secondary" tone="muted">正在读取日程</Text>
+        <Text size="secondary" tone="muted">{m.loading}</Text>
       </Column>
     );
   }
@@ -217,7 +223,7 @@ export function AgendaTimeline({ timeline, onOpenTicket, onUpdateMilestone }: Ag
       </Row>
       {view.overdue.length > 0 ? (
         <Column testID="agenda-overdue" gap="group-label">
-          <Text size="eyebrow" weight="extrabold" color="danger-dark" px="section-label-x">{`已过期 ${view.overdue.length}`}</Text>
+          <Text size="eyebrow" weight="extrabold" color="danger-dark" px="section-label-x">{m.overdue(view.overdue.length)}</Text>
           <RowsCard rows={view.overdue} {...handlers} />
         </Column>
       ) : null}
@@ -228,7 +234,7 @@ export function AgendaTimeline({ timeline, onOpenTicket, onUpdateMilestone }: Ag
             {selectedDate !== today ? (
               <Pressable testID="agenda-back-to-today" onPress={() => setSelectedDate(today)} feedback="opacity">
                 {/* spacing-exempt: 链接字号 */}
-                <Text size="11" weight="bold" color="accent">回到今天</Text>
+                <Text size="11" weight="bold" color="accent">{m.backToToday}</Text>
               </Pressable>
             ) : null}
           </Row>
@@ -236,7 +242,7 @@ export function AgendaTimeline({ timeline, onOpenTicket, onUpdateMilestone }: Ag
             <RowsCard rows={section.rows} {...handlers} />
           ) : (
             <Card rounded="xl" p="card">
-              <Text size="secondary" tone="faint" align="center">这天没有安排</Text>
+              <Text size="secondary" tone="faint" align="center">{m.emptyDay}</Text>
             </Card>
           )}
         </Column>

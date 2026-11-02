@@ -1,13 +1,16 @@
 import { Box, Column, Icon, Pressable, Row, Text, type IconName } from '@pi-lead-child/components';
 
+import { useMessages } from '@/i18n';
 import type { CompactDestination } from '@/state/types';
 
-const destinations: { id: CompactDestination; label: string; icon: IconName }[] = [
-  { id: 'conversation', label: '对话', icon: 'chat' },
-  { id: 'inbox', label: '收件箱', icon: 'inbox' },
-  { id: 'tickets', label: '工单', icon: 'tickets' },
-  { id: 'projects', label: '项目', icon: 'folder' },
-  { id: 'agenda', label: '日程', icon: 'calendar' },
+import { railMessages } from './rail.messages';
+
+const destinations: { id: CompactDestination; icon: IconName }[] = [
+  { id: 'conversation', icon: 'chat' },
+  { id: 'inbox', icon: 'inbox' },
+  { id: 'tickets', icon: 'tickets' },
+  { id: 'projects', icon: 'folder' },
+  { id: 'agenda', icon: 'calendar' },
 ];
 
 // 窄屏工作台的导航：对话、收件箱、工单、项目、日程。
@@ -22,6 +25,7 @@ export function CompactWorkspaceNav({
   onSelect: (destination: CompactDestination) => void;
   placement?: 'top' | 'bottom';
 }) {
+  const m = useMessages(railMessages);
   return (
     <Row
       testID="compact-nav"
@@ -60,7 +64,7 @@ export function CompactWorkspaceNav({
                   ) : null}
                 </Row>
                 <Text size="label" weight={selected ? 'extrabold' : 'bold'} tone={selected ? 'accent' : 'secondary'} align="center">
-                  {destination.label}
+                  {m.views[destination.id]}
                 </Text>
               </Column>
             </Pressable>

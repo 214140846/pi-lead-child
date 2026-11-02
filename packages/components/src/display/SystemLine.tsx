@@ -7,6 +7,8 @@ import { Text } from '../primitives/Text';
 import { AnchoredPanel } from './AnchoredPanel';
 import { Icon } from './Icon';
 import type { IconName } from './icons';
+import { useMessages } from '../i18n';
+import { displayMessages } from './display.messages';
 
 export type SystemLineProps = {
   /** 600 的开头：「心跳巡检没有完成」。 */
@@ -26,8 +28,14 @@ export type SystemLineProps = {
   separator?: string;
   /** 时间「10:46」：写在说明后面，说明太长被截断时它也不会被挤走。 */
   time?: string | null;
-  /** 点开以后看的原文（报错、写给 Lead 的说明），或者一组明细（GroupList）。有它时行尾一个展开箭头，点开从原位置撑开成浮层。 */
-  details?: ReactNode;
+  /**
+   * 点开以后看的原文（报错、写给 Lead 的说明），或者一组明细（GroupList）。有它时行尾一个展开箭头，点开从原位置撑开成浮层。
+   * 函数：浮层里放一个完整的对象（例如外来消息卡），对象自己管边距；对象上的操作做完时调 close 收起浮层（P2.4）。
+   */
+  details?: ReactNode | ((close: () => void) => ReactNode);
+  /** 展开箭头的无障碍名称里写的东西：「看原文」「收起原文」。缺省是「原文」；浮层里是一张卡时写它是什么，例如「消息」。
+   *  英文放在「Show …」「Hide …」后面，写小写，例如 message。 */
+  detailsLabel?: string;
   testID?: string;
 };
 
@@ -36,6 +44,7 @@ export type SystemLineProps = {
 // 通常不给按钮；别的凭证做的操作行尾有「不是我」，只有图标和这个按钮是红色（主题 11.6、C-16）。
 // 有原文时行尾一个展开箭头：点开从原位置撑开成浮层（会话列表不跳），浮层里是同一行加上原文。
 export function SystemLine(props: SystemLineProps) {
+  const m = useMessages(displayMessages);
   const [open, setOpen] = useState(false);
   if (!props.details) return <SystemLineRow {...props} />;
   const toggle = { open, onPress: () => setOpen(!open) };
@@ -43,9 +52,11 @@ export function SystemLine(props: SystemLineProps) {
     <AnchoredPanel
       open={open}
       onClose={() => setOpen(false)}
-      label={[props.lead, props.text].filter(Boolean).join(' · ') || '系统信息'}
+      label={[props.lead, props.text].filter(Boolean).join(' · ') || m.systemMessage}
       header={<Box py="card-row"><SystemLineRow {...props} testID={props.testID ? `${props.testID}-open` : undefined} toggle={{ ...toggle, open: true }} /></Box>}
-      body={(
+      body={typeof props.details === 'function' ? (
+        <Column testID={props.testID ? `${props.testID}-details` : undefined}>{props.details(() => setOpen(false))}</Column>
+      ) : (
         <Column testID={props.testID ? `${props.testID}-details` : undefined} px="card" py="card-row">
           {typeof props.details === 'string' ? <Text size="code" mono tone="secondary">{props.details}</Text> : props.details}
         </Column>
@@ -56,9 +67,13 @@ export function SystemLine(props: SystemLineProps) {
   );
 }
 
-function SystemLineRow({ lead, text, time, icon, iconTone = 'secondary', repeated = false, action, struck = false, separator = ' · ', testID, toggle }: SystemLineProps & {
+function SystemLineRow({
+  lead, text, time, icon, iconTone = 'secondary', repeated = false, action, struck = false, separator = ' · ', detailsLabel: detailsLabelProp, testID, toggle,
+}: SystemLineProps & {
   toggle?: { open: boolean; onPress: () => void };
 }) {
+  const m = useMessages(displayMessages);
+  const detailsLabel = detailsLabelProp ?? m.detailsLabel;
   return (
     <Row testID={testID} w="100%" items="center" gap="icon-label" minW={0}>
       {/* 图标占 FairyMark 那么宽：和记录块的 Fairy 标记对齐在同一条竖线上（组件规格）。 */}
@@ -77,7 +92,7 @@ function SystemLineRow({ lead, text, time, icon, iconTone = 'secondary', repeate
         <Button testID={action.testID} label={action.label} onPress={action.onPress} variant="link" tone={action.tone ?? 'neutral'} size="xs" />
       ) : null}
       {toggle ? (
-        <Pressable aria-label={toggle.open ? '收起原文' : '看原文'} aria-expanded={toggle.open} onPress={toggle.onPress} feedback="none" shrink={0}
+        <Pressable aria-label={toggle.open ? m.hideDetails(detailsLabel) : m.showDetails(detailsLabel)} aria-expanded={toggle.open} onPress={toggle.onPress} feedback="none" shrink={0}
           testID={testID ? `${testID}-${toggle.open ? 'collapse' : 'expand'}` : undefined}>
           <Icon name={toggle.open ? 'chevron-up' : 'chevron-down'} size={11} color="text-secondary" weight="semibold" />
         </Pressable>

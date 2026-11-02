@@ -1,8 +1,10 @@
 import { Card, Column, Row, Text } from '@pi-lead-child/components';
 
+import { useLocale } from '@/i18n';
 import { useConnectionPhase, useConnectionState } from '@/state/hooks';
 
 import { bindingKindLabel } from './deviceModel';
+import { devicesMessages } from './devices.messages';
 import { PairedDeviceStatus } from './PairedDeviceStatus';
 import { isDevicePaired } from './settingsNav';
 import { UnpairedNotice } from './UnpairedNotice';
@@ -14,6 +16,8 @@ export function DeviceSection() {
   const paired = isDevicePaired(phase);
   const own = useOwnBinding(paired);
   const connectionState = useConnectionState();
+  const locale = useLocale();
+  const m = devicesMessages(locale);
 
   if (!paired) return <UnpairedNotice />;
 
@@ -23,11 +27,11 @@ export function DeviceSection() {
         details={(
           // spacing-exempt: 光学对齐
           <Column gap="card-row" py={4}>
-            <Fact label="名称" value={own.binding?.name ?? '正在读取…'} testID="device-name" />
-            <Fact label="类型" value={own.binding ? bindingKindLabel(own.binding.kind) : '正在读取…'} testID="device-kind" />
-            <Fact label="Daemon" value={connectionState === 'connected' ? '在线' : '离线'} testID="device-daemon" />
+            <Fact label={m.name} value={own.binding?.name ?? m.loading} testID="device-name" />
+            <Fact label={m.kind} value={own.binding ? bindingKindLabel(own.binding.kind, locale) : m.loading} testID="device-kind" />
+            <Fact label={m.daemon} value={connectionState === 'connected' ? m.online : m.offline} testID="device-daemon" />
             {own.error ? (
-              <Text size="secondary" tone="danger-dark">{`读不到这台设备的配对信息：${own.error}`}</Text>
+              <Text size="secondary" tone="danger-dark">{m.ownLoadFailed(own.error)}</Text>
             ) : null}
           </Column>
         )}

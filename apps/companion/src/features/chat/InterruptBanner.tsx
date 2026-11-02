@@ -2,9 +2,12 @@ import { Box, Button, Column, Icon, Row, Text } from '@pi-lead-child/components'
 import type { LeadInterrupt } from '@pi-lead-child/protocol';
 import { useMemo, useState } from 'react';
 
+import { intlLocale, useLocale, type Locale } from '@/i18n';
+
 import { useCompanionRuntime, useControlPlaneStore } from '../../state/CompanionStateProvider';
 import { openLeadInterrupts } from '../../state/control-plane/leadActivity';
 import { useLeadName } from '../../state/hooks';
+import { conversationMessages } from './conversation.messages';
 import { leadActivityBasisLine } from './LeadActivityBlock';
 import { useOpenTicket } from './useOpenTicket';
 
@@ -13,10 +16,11 @@ import { useOpenTicket } from './useOpenTicket';
 // 确认写回事件的处置（daemon 的 POST /v1/lead/interrupts/:seq/ack），别的客户端由推送收起。别处已处理的不再显示。
 // 和会话里的警告一样：白底、细描边，左边 3px 的色条和图标表示严重程度（见 components 的 NoticeRow）。
 
-function clock(value: string): string {
+// 两种语言都写 24 小时制（设计规范 P14.2）。
+function clock(value: string, locale: Locale): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '';
-  return new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }).format(date);
+  return new Intl.DateTimeFormat(intlLocale(locale), { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(date);
 }
 
 /** 横幅上的这件事是不是一条到点的提醒（工单 07）：是的话返回提醒的编号。 */
@@ -48,8 +52,10 @@ export function InterruptBannerView({
   onSnooze?: () => void;
   onOpenTicket?: (ticketId: number) => void;
 }) {
-  const basis = leadActivityBasisLine(interrupt, leadName);
-  const meta = [clock(interrupt.at), basis, more > 0 ? `还有 ${more} 条` : null].filter(Boolean).join(' · ');
+  const locale = useLocale();
+  const m = conversationMessages(locale).interrupt;
+  const basis = leadActivityBasisLine(interrupt, leadName, locale);
+  const meta = [clock(interrupt.at, locale), basis, more > 0 ? m.more(more) : null].filter(Boolean).join(' · ');
   // 提醒不是工单：横幅上不给「打开 #83」，给「10 分钟后再提醒」。
   const reminderId = interruptReminderId(interrupt);
   const ticketId = reminderId === null ? interrupt.ticketId : null;
@@ -79,16 +85,16 @@ export function InterruptBannerView({
             <Text size="secondary" tone="secondary" numberOfLines={2}>{interrupt.rootCause.message}</Text>
           ) : null}
           {meta ? <Text testID="interrupt-banner-meta" size="meta" tone="secondary" numberOfLines={1}>{meta}</Text> : null}
-          {error ? <Text size="note" tone="danger-dark">{`没有确认上：${error}`}</Text> : null}
+          {error ? <Text size="note" tone="danger-dark">{m.notAcknowledged(error)}</Text> : null}
         </Column>
         <Row items="center" gap="actions" shrink={0}>
           {ticketId && onOpenTicket ? (
-            <Button label={`打开 #${ticketId}`} onPress={() => onOpenTicket(ticketId)} variant="link" size="xs" />
+            <Button label={m.open(ticketId)} onPress={() => onOpenTicket(ticketId)} variant="link" size="xs" />
           ) : null}
           {reminderId !== null && onSnooze ? (
             <Button
               testID="interrupt-banner-snooze"
-              label="10 分钟后再提醒"
+              label={m.snooze}
               onPress={onSnooze}
               disabled={busy}
               variant="outline"
@@ -98,7 +104,7 @@ export function InterruptBannerView({
           ) : null}
           <Button
             testID="interrupt-banner-ack"
-            label="知道了"
+            label={m.acknowledge}
             onPress={onAcknowledge}
             disabled={busy}
             variant="solid"

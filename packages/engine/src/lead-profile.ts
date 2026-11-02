@@ -6,12 +6,13 @@
 // 「不是我」/「撤销」恢复成改之前的样子。没有变化时什么也不写。
 import {
   LEAD_PROFILE_RESOURCE, LeadProfileRequestSchema, leadProfileProblem, normalizeLeadProfileRequest,
-  type LeadProfileDto, type LeadProfileFields, type LeadProfileRequest, type OwnerActionSource,
+  type LeadProfileDto, type LeadProfileFields, type LeadProfileRequest, type Locale, type OwnerActionSource,
 } from "@pi-lead-child/protocol";
 import {
-  activePairedUserTurn, getBinding, getLeadProfile, leadProfileFields, recordOwnerAction, writeLeadProfile, type Db,
+  activePairedUserTurn, getBinding, getLeadProfile, getLocale, leadProfileFields, recordOwnerAction, writeLeadProfile, type Db,
 } from "@pi-lead-child/store";
 import { Value } from "typebox/value";
+import { leadProfileMessages } from "./lead-profile.messages.js";
 import type { ActionAttribution } from "./ticket-actions/attribution.js";
 import type { OwnerCredential } from "./ticket-actions/types.js";
 
@@ -43,17 +44,16 @@ export interface LeadProfileUpdateOutcome {
   ownerActionEventId: string | null;
 }
 
-const quote = (text: string) => `「${text}」`;
-
-/** 主人操作的一句话：改了什么。 */
-export function leadProfileChangeSummary(before: LeadProfileFields, after: LeadProfileFields): string {
+/** 主人操作的一句话：改了什么（按 locale 的语言）。 */
+export function leadProfileChangeSummary(before: LeadProfileFields, after: LeadProfileFields, locale: Locale): string {
+  const m = leadProfileMessages(locale);
   const parts: string[] = [];
-  if (before.name !== after.name) parts.push(`把助手的名字从${quote(before.name)}改成${quote(after.name)}`);
-  if (before.persona !== after.persona) parts.push(after.persona ? `改了 ${after.name} 的人格` : `清空了 ${after.name} 的人格`);
+  if (before.name !== after.name) parts.push(m.renamed(before.name, after.name));
+  if (before.persona !== after.persona) parts.push(after.persona ? m.personaChanged(after.name) : m.personaCleared(after.name));
   if (before.interactionStyle !== after.interactionStyle) {
-    parts.push(after.interactionStyle ? `改了 ${after.name} 和你的互动风格` : `清空了 ${after.name} 和你的互动风格`);
+    parts.push(after.interactionStyle ? m.styleChanged(after.name) : m.styleCleared(after.name));
   }
-  return parts.join("，");
+  return m.join(parts);
 }
 
 function sameFields(a: LeadProfileFields, b: LeadProfileFields): boolean {
@@ -96,10 +96,11 @@ function ownerOf(db: Db, caller: LeadProfileCaller, by: ActionAttribution): { cr
 /** 改名字、人格或互动风格。两个入口都调它。 */
 export function updateLeadProfile(db: Db, update: LeadProfileUpdateRequest): LeadProfileUpdateOutcome {
   if (!Value.Check(LeadProfileRequestSchema, update.request)) {
-    throw new LeadProfileError("invalid_input", "只能改 name、persona、interactionStyle，值是文字");
+    // 设置页直接显示这些错误，Lead 的工具也读它们：按用户现在的语言写。
+    throw new LeadProfileError("invalid_input", leadProfileMessages(getLocale(db)).invalidInput);
   }
   const patch = normalizeLeadProfileRequest(update.request);
-  const problem = leadProfileProblem(patch);
+  const problem = leadProfileProblem(patch, getLocale(db));
   if (problem) throw new LeadProfileError("invalid_input", problem);
   // 先认人，再动手。
   const by = authorize(db, update.caller);
@@ -114,12 +115,15 @@ export function updateLeadProfile(db: Db, update: LeadProfileUpdateRequest): Lea
   let ownerActionEventId: string | null = null;
   const owner = ownerOf(db, update.caller, by);
   if (owner) {
-    const summary = leadProfileChangeSummary(before, after);
+    // 记录按写入时用户选的语言写；以后换语言，旧记录不重写。
+    const locale = getLocale(db);
+    const m = leadProfileMessages(locale);
+    const summary = leadProfileChangeSummary(before, after, locale);
     try {
       ownerActionEventId = recordOwnerAction(db, {
         action: "lead.profile",
-        target: { key: "lead:profile", label: `${after.name} 的身份与风格`, ticketId: null },
-        summary: by.actor === "lead" ? `${after.name} 代你${summary}` : summary,
+        target: { key: "lead:profile", label: m.target(after.name), ticketId: null },
+        summary: by.actor === "lead" ? m.byLead(after.name, summary) : m.byYou(summary),
         detail: {
           fields: (["name", "persona", "interactionStyle"] as const).filter((field) => before[field] !== after[field]),
           ...(by.actor === "lead" && by.onBehalfOf ? { sourceTurnId: by.onBehalfOf.sourceTurnId } : {}),

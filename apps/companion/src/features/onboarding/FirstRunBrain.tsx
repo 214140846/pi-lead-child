@@ -5,11 +5,13 @@ import type { ModelProviderApi } from '@pi-lead-child/protocol';
 import { useState } from 'react';
 
 import { useLeadAvatarSource } from '@/components/useLeadAvatarSource';
+import { useLocale, useMessages } from '@/i18n';
 import { useLeadName, useModelSettings } from '@/state/hooks';
 import { useModelAction } from '@/features/settings/useModelAction';
 
+import { onboardingMessages } from './onboarding.messages';
 import {
-  connectedProvider, FIRST_RUN_PRESETS, firstRunModelList, firstRunModelMeta, firstRunPreset, firstRunProviderFacts, firstRunProviderRequest,
+  connectedProvider, firstRunPresets, firstRunModelList, firstRunModelMeta, firstRunPreset, firstRunProviderFacts, firstRunProviderRequest,
   modelEffort, recommendedBrainModel, type FirstRunPresetId,
 } from './firstRunModel';
 
@@ -28,9 +30,10 @@ const API_OPTIONS: Array<{ value: ModelProviderApi; label: string }> = [
 const MODEL_LIST_LIMIT = 4;
 
 function StepMark({ index, done, active }: { index: number; done: boolean; active: boolean }) {
+  const m = useMessages(onboardingMessages);
   if (done) {
     return (
-      <Box w={20} h={20} rounded="full" bg="success-soft" items="center" justify="center" aria-label="完成">
+      <Box w={20} h={20} rounded="full" bg="success-soft" items="center" justify="center" aria-label={m.done}>
         <Icon name="check" size={12} color="success-dark" />
       </Box>
     );
@@ -44,6 +47,8 @@ function StepMark({ index, done, active }: { index: number; done: boolean; activ
 
 export function FirstRunBrain({ onSkip }: { onSkip: () => void }) {
   const leadName = useLeadName();
+  const locale = useLocale();
+  const m = useMessages(onboardingMessages);
   const avatar = useLeadAvatarSource({ state: 'idle', tone: 'quiet' });
   const { modelSettings } = useModelSettings();
   const { busy, run } = useModelAction();
@@ -56,17 +61,17 @@ export function FirstRunBrain({ onSkip }: { onSkip: () => void }) {
   const [showAll, setShowAll] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
 
-  const facts = firstRunProviderFacts(connectedProvider(modelSettings, providerName));
+  const facts = firstRunProviderFacts(connectedProvider(modelSettings, providerName), locale);
   const { connected } = facts;
   const models = firstRunModelList(facts.models, showAll ? null : MODEL_LIST_LIMIT);
   const recommended = recommendedBrainModel(facts.models);
   const recommendedId = recommended ? recommended.model : null;
   const chosen = picked ?? recommendedId;
   const custom = preset === 'custom';
-  const presetInfo = firstRunPreset(preset);
+  const presetInfo = firstRunPreset(preset, locale);
 
   const connect = async () => {
-    const request = firstRunProviderRequest({ preset, apiKey, baseUrl, api }, (modelSettings?.brain.providers ?? []).map((entry) => entry.name));
+    const request = firstRunProviderRequest({ preset, apiKey, baseUrl, api }, (modelSettings?.brain.providers ?? []).map((entry) => entry.name), locale);
     if (!request.ok) {
       setProblem(request.problem);
       return;
@@ -96,25 +101,25 @@ export function FirstRunBrain({ onSkip }: { onSkip: () => void }) {
             <Column gap="card-row">
               <Row items="center" gap="icon-label">
                 <LeadAvatar source={avatar} size={32} tone="quiet" name={leadName} />
-                <Text size="label" weight="semibold" tone="secondary">{`${leadName} · 离线`}</Text>
+                <Text size="label" weight="semibold" tone="secondary">{m.offline(leadName)}</Text>
               </Row>
-              <Text testID="first-run-title" size="page-title" weight="bold">{`先给 ${leadName} 接一个大模型`}</Text>
+              <Text testID="first-run-title" size="page-title" weight="bold">{m.title(leadName)}</Text>
               <Text size="body" tone="secondary">
-                {`两步：接入一家模型服务商，再选一个模型当大脑。接好以后 ${leadName} 马上上线。记忆、Slack、连接这些设置，它会在空闲时带你一项一项配。`}
+                {m.intro(leadName)}
               </Text>
             </Column>
 
             <Card testID="first-run-step-provider" w="100%" rounded="xl" p="page-card" gap="card-section">
               <Row items="center" gap="inline-item">
                 <StepMark index={1} done={connected} active={!connected} />
-                <Text size="card-title" weight="semibold">接入服务商</Text>
+                <Text size="card-title" weight="semibold">{m.stepProvider}</Text>
                 {connected ? (
                   <>
                     <Text testID="first-run-provider-done" flex={1} minW={0} size="secondary" tone="secondary" numberOfLines={1}>
-                      {`${facts.name ?? ''} · 读到 ${facts.modelCount} 个模型`}
+                      {m.providerDone(facts.name ?? '', facts.modelCount)}
                     </Text>
-                    <Pressable testID="first-run-provider-change" aria-label="换一家服务商" onPress={() => setProviderName(null)}>
-                      <Text size="label" weight="semibold" color="accent-strong">改</Text>
+                    <Pressable testID="first-run-provider-change" aria-label={m.changeProvider} onPress={() => setProviderName(null)}>
+                      <Text size="label" weight="semibold" color="accent-strong">{m.change}</Text>
                     </Pressable>
                   </>
                 ) : null}
@@ -124,9 +129,9 @@ export function FirstRunBrain({ onSkip }: { onSkip: () => void }) {
                   <ChoiceGroup
                     testID="first-run-presets"
                     variant="radio"
-                    accessibilityLabel="接口类型"
+                    accessibilityLabel={m.apiType}
                     value={preset}
-                    options={FIRST_RUN_PRESETS.map((entry) => ({ id: entry.id, label: entry.label, description: entry.description }))}
+                    options={firstRunPresets(locale).map((entry) => ({ id: entry.id, label: entry.label, description: entry.description }))}
                     optionTestID={(id) => `first-run-preset-${id}`}
                     onSelect={(id) => { setPreset(id as FirstRunPresetId); setProblem(null); }}
                     disabled={busy}
@@ -134,23 +139,23 @@ export function FirstRunBrain({ onSkip }: { onSkip: () => void }) {
                   {custom ? (
                     <Column gap="card-row">
                       <Column gap="text-stack">
-                        <Text size="label" weight="semibold" tone="secondary">服务地址</Text>
+                        <Text size="label" weight="semibold" tone="secondary">{m.baseUrl}</Text>
                         <TextField testID="first-run-base-url" value={baseUrl} onChangeText={setBaseUrl} placeholder="http://127.0.0.1:8317/v1"
                           variant="filled" size="sm" mono keyboardType="url" autoComplete="off" autoCapitalize="none" autoCorrect={false} />
                       </Column>
                       <Column gap="text-stack">
-                        <Text size="label" weight="semibold" tone="secondary">接口格式</Text>
+                        <Text size="label" weight="semibold" tone="secondary">{m.apiFormat}</Text>
                         <SegmentedControl testID="first-run-api" options={API_OPTIONS} value={api} onChange={setApi} size="sm" />
                       </Column>
                     </Column>
                   ) : null}
                   <Column gap="text-stack">
-                    <Text size="label" weight="semibold" tone="secondary">{custom ? 'API key（本机代理通常不用填）' : 'API key'}</Text>
+                    <Text size="label" weight="semibold" tone="secondary">{custom ? m.apiKeyCustom : m.apiKey}</Text>
                     <TextField
                       testID="first-run-api-key"
                       value={apiKey}
                       onChangeText={setApiKey}
-                      placeholder={custom ? '可以留空' : `粘贴 ${presetInfo.label} 的 API key`}
+                      placeholder={custom ? m.apiKeyOptional : m.apiKeyPlaceholder(presetInfo.label)}
                       variant="filled"
                       size="sm"
                       secure
@@ -163,8 +168,8 @@ export function FirstRunBrain({ onSkip }: { onSkip: () => void }) {
                     <Text testID="first-run-problem" size="note" color="danger-dark">{catalogProblem ?? problem}</Text>
                   ) : null}
                   <Row items="center" gap="actions">
-                    <Text flex={1} size="note" tone="secondary">key 只保存在这台 Mac 上，只发给这家服务商。</Text>
-                    <Button testID="first-run-connect" label={busy ? '正在连接…' : '连接并读取模型'} size="sm" tone="accent" disabled={busy} onPress={() => void connect()} />
+                    <Text flex={1} size="note" tone="secondary">{m.keyNote}</Text>
+                    <Button testID="first-run-connect" label={busy ? m.connecting : m.connect} size="sm" tone="accent" disabled={busy} onPress={() => void connect()} />
                   </Row>
                 </Column>
               )}
@@ -173,31 +178,31 @@ export function FirstRunBrain({ onSkip }: { onSkip: () => void }) {
             <Card testID="first-run-step-model" w="100%" rounded="xl" p="page-card" gap="card-section">
               <Row items="center" gap="inline-item">
                 <StepMark index={2} done={false} active={connected} />
-                <Text size="card-title" weight="semibold" tone={connected ? 'default' : 'muted'}>选大脑模型</Text>
-                {connected ? null : <Text size="secondary" tone="muted">接好服务商后，这里列出它的模型</Text>}
+                <Text size="card-title" weight="semibold" tone={connected ? 'default' : 'muted'}>{m.stepModel}</Text>
+                {connected ? null : <Text size="secondary" tone="muted">{m.stepModelWaiting}</Text>}
               </Row>
               {connected ? (
                 <Column gap="card-row">
                   <ChoiceGroup
                     testID="first-run-models"
                     variant="radio"
-                    accessibilityLabel="大脑模型"
+                    accessibilityLabel={m.brainModel}
                     value={chosen}
                     {...(recommendedId ? { recommended: recommendedId } : {})}
-                    options={models.map((model) => ({ id: model.model, label: model.name ?? model.id, description: firstRunModelMeta(model) }))}
+                    options={models.map((model) => ({ id: model.model, label: model.name ?? model.id, description: firstRunModelMeta(model, locale) }))}
                     optionTestID={(id) => `first-run-model-${id}`}
                     onSelect={setPicked}
                     disabled={busy}
                   />
                   {!showAll && facts.modelCount > MODEL_LIST_LIMIT ? (
-                    <Pressable testID="first-run-show-all" aria-label="显示全部模型" onPress={() => setShowAll(true)}>
-                      <Text size="label" weight="semibold" color="accent-strong">{`显示全部 ${facts.modelCount} 个`}</Text>
+                    <Pressable testID="first-run-show-all" aria-label={m.showAllLabel} onPress={() => setShowAll(true)}>
+                      <Text size="label" weight="semibold" color="accent-strong">{m.showAll(facts.modelCount)}</Text>
                     </Pressable>
                   ) : null}
-                  <Text size="note" tone="secondary">直觉模型（打分、排序）先由它兼任。备用模型和别的服务商，以后在「设置 → 模型」里加。</Text>
+                  <Text size="note" tone="secondary">{m.modelNote}</Text>
                   {problem ? <Text testID="first-run-problem" size="note" color="danger-dark">{problem}</Text> : null}
                   <Row justify="flex-end">
-                    <Button testID="first-run-go" label={busy ? '正在上线…' : `让 ${leadName} 上线`} size="sm" tone="accent" disabled={busy || chosen === null}
+                    <Button testID="first-run-go" label={busy ? m.goingOnline : m.goOnline(leadName)} size="sm" tone="accent" disabled={busy || chosen === null}
                       onPress={() => void goOnline()} />
                   </Row>
                 </Column>
@@ -205,11 +210,11 @@ export function FirstRunBrain({ onSkip }: { onSkip: () => void }) {
             </Card>
 
             <Row justify="center" gap="icon-label">
-              <Text size="note" tone="secondary">不想现在配？</Text>
-              <Pressable testID="first-run-skip" aria-label="先进去看看" onPress={onSkip}>
-                <Text size="note" weight="semibold" color="accent-strong">先进去看看</Text>
+              <Text size="note" tone="secondary">{m.skipQuestion}</Text>
+              <Pressable testID="first-run-skip" aria-label={m.skip} onPress={onSkip}>
+                <Text size="note" weight="semibold" color="accent-strong">{m.skip}</Text>
               </Pressable>
-              <Text size="note" tone="secondary">{`${leadName} 会保持离线。`}</Text>
+              <Text size="note" tone="secondary">{m.staysOffline(leadName)}</Text>
             </Row>
           </Column>
         </Column>

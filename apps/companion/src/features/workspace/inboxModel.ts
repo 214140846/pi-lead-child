@@ -12,9 +12,11 @@ import {
   type WatchTimerDto,
 } from '@pi-lead-child/protocol';
 
+import { DEFAULT_LOCALE, type Locale } from '@/i18n';
 import { recommendedTicketOption, ticketDecision } from '@/features/tickets/ticketDecision';
 import type { TicketOptionId, TicketOptionPresentation } from '@/features/tickets/ticketState';
 
+import { inboxMessages } from './inbox.messages';
 import { ticketTitle, type Ticket } from './model';
 import { milestoneChip } from './timelineModel';
 
@@ -40,12 +42,13 @@ const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
 
 /** 等了多久，用最大的整单位：51 天、3 小时、12 分钟；不到一分钟是「刚刚」。 */
-export function waitedText(since: string, now: Date = new Date()): string {
+export function waitedText(since: string, now: Date = new Date(), locale: Locale = DEFAULT_LOCALE): string {
+  const m = inboxMessages(locale);
   const elapsed = now.getTime() - new Date(since).getTime();
-  if (!Number.isFinite(elapsed) || elapsed < MINUTE) return '刚刚';
-  if (elapsed >= DAY) return `${Math.floor(elapsed / DAY)} 天`;
-  if (elapsed >= HOUR) return `${Math.floor(elapsed / HOUR)} 小时`;
-  return `${Math.floor(elapsed / MINUTE)} 分钟`;
+  if (!Number.isFinite(elapsed) || elapsed < MINUTE) return m.justNow;
+  if (elapsed >= DAY) return m.days(Math.floor(elapsed / DAY));
+  if (elapsed >= HOUR) return m.hours(Math.floor(elapsed / HOUR));
+  return m.minutes(Math.floor(elapsed / MINUTE));
 }
 
 // 审批会过期，排在最前；其余的等得越久越靠前。
@@ -58,7 +61,9 @@ export function buildInboxCards(
   facts: readonly InboxTicketFact[],
   noticesByTicket: Readonly<Record<string | number, readonly number[]>>,
   now: Date = new Date(),
+  locale: Locale = DEFAULT_LOCALE,
 ): InboxCardView[] {
+  const m = inboxMessages(locale);
   const factsById = new Map(facts.map((fact) => [String(fact.ticketId), fact]));
   const waiting = items.filter((ticket): ticket is Ticket & { needsUser: TicketNeedsUserReason } => ticket.needsUser != null);
   return waiting
@@ -68,19 +73,19 @@ export function buildInboxCards(
       || Number(left.ticket.id) - Number(right.ticket.id))
     .map(({ ticket, fact }) => {
       const noticeIds = [...(noticesByTicket[ticket.id] ?? [])];
-      const recommended = recommendedTicketOption(ticketDecision({ ticket }));
+      const recommended = recommendedTicketOption(ticketDecision({ ticket, locale }));
       const meta = [
         `#${ticket.id}`,
-        ticketNeedsUserLabel(ticket.needsUser),
-        ...(fact ? [`等了 ${waitedText(fact.since, now)}`] : []),
-        ...(noticeIds.length > 0 ? [`${noticeIds.length} 条通知`] : []),
+        ticketNeedsUserLabel(ticket.needsUser, locale),
+        ...(fact ? [m.waited(waitedText(fact.since, now, locale))] : []),
+        ...(noticeIds.length > 0 ? [m.notices(noticeIds.length)] : []),
       ].join(' · ');
       return {
         ticketId: ticket.id,
         title: ticketTitle(ticket),
         meta,
         reason: fact?.reason ?? null,
-        milestone: ticket.nextMilestone ? milestoneChip(ticket.nextMilestone, now) : null,
+        milestone: ticket.nextMilestone ? milestoneChip(ticket.nextMilestone, now, locale) : null,
         action: recommended && ONE_TAP_OPTIONS.has(recommended.id) ? recommended : null,
         noticeIds,
       };

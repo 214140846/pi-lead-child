@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Value } from "typebox/value";
 import { tempDir } from "@pi-lead-child/core/testing";
 import { HttpErrorResponseSchema, TicketAcceptanceCriteriaResponseSchema, TicketActionsResponseSchema } from "@pi-lead-child/protocol";
+import { updateDesignPreferences } from "@pi-lead-child/engine";
 import { createControlPlaneService } from "../src/control-plane.js";
 import { startPairedServer } from "../src/paired-server.js";
 import { createUserActionService } from "../src/user-actions.js";
@@ -150,7 +151,13 @@ describe("GET /v1/tickets/:id/acceptance-criteria", () => {
       const auth = { authorization: `Bearer ${await token(server.base, ["tickets:view"])}` };
       const missing = await fetch(`${server.base}/v1/tickets/9999/acceptance-criteria`, { headers: auth });
       expect(missing.status).toBe(404);
-      expect(Value.Check(HttpErrorResponseSchema, await missing.json())).toBe(true);
+      const missingBody = await missing.json();
+      expect(Value.Check(HttpErrorResponseSchema, missingBody)).toBe(true);
+      // 错误按用户选的界面语言写（缺省英文）。
+      expect(missingBody.error.message).toBe("Ticket #9999 does not exist");
+      updateDesignPreferences(db, { request: { locale: "zh" }, caller: { kind: "user" } });
+      const missingZh = await fetch(`${server.base}/v1/tickets/9999/acceptance-criteria`, { headers: auth });
+      expect((await missingZh.json()).error.message).toBe("工单 #9999 不存在");
       expect((await fetch(`${path}?delivery=3`, { headers: auth })).status).toBe(404);
       const invalid = await fetch(`${path}?delivery=0`, { headers: auth });
       expect(invalid.status).toBe(400);

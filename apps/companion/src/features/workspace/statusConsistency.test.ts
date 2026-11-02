@@ -71,11 +71,11 @@ describe('cross-view ticket status consistency', () => {
 
     expect(presentation.status).toBe('review');
     expect(groupForTicket(presentation)).toBe('needs_intervention');
-    expect(ticketRailCaption(presentation)).toBe('#66 · 核查不通过，等你决定 · 需要处理');
+    expect(ticketRailCaption(presentation)).toBe('#66 · 核查不通过，等你决定 · Needs action');
     // 卡片写事件当时的状态；工单现在等你决定，另起一个「现在」标签，文字和列表里一致。
-    expect(checkpoint.kindLabel).toBe('已提交复核');
-    expect(checkpoint.nowLabel).toBe(`现在：${presentation.statusLabel}`);
-    expect(checkpoint.nowLabel).toBe('现在：核查不通过，等你决定');
+    expect(checkpoint.kindLabel).toBe('Sent for review');
+    expect(checkpoint.nowLabel).toBe(`Now: ${presentation.statusLabel}`);
+    expect(checkpoint.nowLabel).toBe('Now: 核查不通过，等你决定');
   });
 
   it('keeps done terminal in every view even if a historical blocker counter remains', () => {
@@ -88,9 +88,9 @@ describe('cross-view ticket status consistency', () => {
     const checkpoint = buildCheckpointCardViewModel(completedCheckpoint, ticket);
 
     expect(groupForTicket(presentation)).toBe('completed');
-    expect(ticketRailCaption(presentation)).toBe('#66 · 已完成');
-    expect(checkpoint.nowLabel).toBe(`现在：${presentation.statusLabel}`);
-    expect(checkpoint.nowLabel).toBe('现在：完成');
+    expect(ticketRailCaption(presentation)).toBe('#66 · Completed');
+    expect(checkpoint.nowLabel).toBe(`Now: ${presentation.statusLabel}`);
+    expect(checkpoint.nowLabel).toBe('Now: Done');
   });
 
   it('moves a blocked ticket into recovery while keeping the old crash historical', () => {
@@ -114,8 +114,8 @@ describe('cross-view ticket status consistency', () => {
     expect(groupForTicket(presentation)).toBe('running');
     expect(ticketRailCaption(presentation)).toBe('#66 · 正在恢复 · 启动中');
     expect(presentation.needsAttention).toBe(false);
-    expect(checkpoint.kindLabel).toBe('需要介入');
-    expect(checkpoint.nowLabel).toBe('现在：正在恢复 · 启动中');
+    expect(checkpoint.kindLabel).toBe('Needs your action');
+    expect(checkpoint.nowLabel).toBe('Now: 正在恢复 · 启动中');
   });
 
   // 2026-10-24 #117：换了账号后新的 Run 已经在跑，工单头还写「正在恢复」，Run 行写「执行中」。
@@ -143,6 +143,6 @@ describe('cross-view ticket status consistency', () => {
     expect(presentation.statusLabel).toBe('执行中');
     expect(ticketRailCaption(presentation)).toBe('#66 · 执行中');
     expect(presentation.needsAttention).toBe(false);
-    expect(checkpoint.nowLabel).toBe('现在：执行中');
+    expect(checkpoint.nowLabel).toBe('Now: 执行中');
   });
 });

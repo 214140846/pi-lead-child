@@ -20,14 +20,14 @@ describe('Steps', () => {
 
   it('names every state, including skipped and blocked', () => {
     renderUI(<Steps testID="plan" items={items} />);
-    for (const name of ['已完成', '进行中', '受阻', '已跳过', '未开始', '失败']) expect(screen.getByLabelText(name)).toBeTruthy();
+    for (const name of ['Done', 'In progress', 'Blocked', 'Skipped', 'Not started', 'Failed']) expect(screen.getByLabelText(name)).toBeTruthy();
     expect(screen.getByText('受阻：CI 排队超过 30 分钟')).toBeTruthy();
   });
 
   it('colours a blocked step amber, apart from a failed one', () => {
     renderUI(<Steps items={items} />);
-    expect(getComputedStyle(screen.getByLabelText('受阻')).backgroundColor).toBe('var(--c-warning)');
-    expect(getComputedStyle(screen.getByLabelText('失败')).backgroundColor).toBe('var(--c-danger)');
+    expect(getComputedStyle(screen.getByLabelText('Blocked')).backgroundColor).toBe('var(--c-warning)');
+    expect(getComputedStyle(screen.getByLabelText('Failed')).backgroundColor).toBe('var(--c-danger)');
   });
 
   it('draws the plan in the ticket detail with small light marks and no connecting line', () => {
@@ -38,10 +38,10 @@ describe('Steps', () => {
       </>,
     );
     const compact = screen.getByTestId('compact');
-    const done = compact.querySelector('[aria-label="已完成"]')!;
+    const done = compact.querySelector('[aria-label="Done"]')!;
     expect(getComputedStyle(done).width).toBe('18px');
     expect(getComputedStyle(done).backgroundColor).toBe('var(--c-success-soft)');
-    expect(getComputedStyle(compact.querySelector('[aria-label="受阻"]')!).backgroundColor).toBe('var(--c-warning-soft)');
+    expect(getComputedStyle(compact.querySelector('[aria-label="Blocked"]')!).backgroundColor).toBe('var(--c-warning-soft)');
     expect(compact.textContent).toContain('跳过：宿主架构层已经分好层。');
     // 聊天卡片的步骤之间有一条连线，执行计划没有。
     const line = (root: HTMLElement) => [...root.querySelectorAll('div')].filter((node) => getComputedStyle(node).width === '2px').length;
@@ -99,13 +99,13 @@ describe('Progress and BarChart', () => {
   it('says the progress is unknown when there is no value', () => {
     renderUI(<><Progress label="迁移文件" value={0.4} /><Progress label="等待 CI" /></>);
     expect(screen.getByText('40%')).toBeTruthy();
-    expect(screen.getByText('进度未知')).toBeTruthy();
+    expect(screen.getByText('Progress unknown')).toBeTruthy();
   });
 
   it('names each bar with its value and unit', () => {
     renderUI(<BarChart bars={[{ label: 'codex', value: 31 }, { label: 'claude', value: 1200 }]} unit="次" />);
-    expect(screen.getByLabelText('codex：31 次')).toBeTruthy();
-    expect(screen.getByLabelText('claude：1,200 次')).toBeTruthy();
+    expect(screen.getByLabelText('codex: 31 次')).toBeTruthy();
+    expect(screen.getByLabelText('claude: 1,200 次')).toBeTruthy();
   });
 });
 

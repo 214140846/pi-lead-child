@@ -78,24 +78,24 @@ describe('the first-run page', () => {
   it('connects a provider, recommends a model, and gives way to the app once the brain works', async () => {
     const { runtime, perform } = firstRunRuntime();
     renderWithRuntime(<RootTabs />, runtime);
-    expect(screen.getByTestId('first-run-title').textContent).toBe('先给 Paimon 接一个大模型');
+    expect(screen.getByTestId('first-run-title').textContent).toBe('Connect a model to Paimon');
     expect(screen.queryByTestId('app-slot')).toBeNull();
     expect(screen.queryByTestId('first-run-models')).toBeNull();
 
     // 预设只要 key；不填 key 不发请求。
     fireEvent.click(screen.getByTestId('first-run-connect'));
-    expect(screen.getByTestId('first-run-problem').textContent).toBe('填上 Anthropic 的 API key。');
+    expect(screen.getByTestId('first-run-problem').textContent).toBe('Enter the API key for Anthropic.');
     expect(perform).not.toHaveBeenCalled();
     fireEvent.change(screen.getByTestId('first-run-api-key'), { target: { value: 'sk-ant-test' } });
     fireEvent.click(screen.getByTestId('first-run-connect'));
-    await waitFor(() => expect(screen.getByTestId('first-run-provider-done').textContent).toBe('anthropic · 读到 3 个模型'));
+    await waitFor(() => expect(screen.getByTestId('first-run-provider-done').textContent).toBe('anthropic · 3 models found'));
     expect(perform.mock.calls[0]!.slice(0, 3)).toEqual(['model_settings', 'models', 'save_provider']);
     expect((perform.mock.calls[0]![3] as { input: unknown }).input).toEqual({
       name: 'anthropic', baseUrl: 'https://api.anthropic.com', api: 'anthropic-messages', apiKey: 'sk-ant-test',
     });
 
     // 第二步：推荐最新的、不是小模型的那个，排第一。
-    expect(screen.getByTestId('first-run-model-anthropic/claude-sonnet-5-5').textContent).toContain('推荐');
+    expect(screen.getByTestId('first-run-model-anthropic/claude-sonnet-5-5').textContent).toContain('Recommended');
     fireEvent.click(screen.getByTestId('first-run-go'));
     await waitFor(() => expect(screen.getByTestId('app-slot')).toBeTruthy());
     expect(perform.mock.calls[1]!.slice(0, 3)).toEqual(['model_settings', 'models', 'set_brain_chain']);

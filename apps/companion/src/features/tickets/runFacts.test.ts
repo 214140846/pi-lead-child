@@ -42,21 +42,21 @@ function outcomeOf(id: number) {
 
 describe('run facts for ticket #66', () => {
   it('names the reviewer run by its verdict, not by its exit code', () => {
-    expect(outcomeOf(43)).toEqual({ purposeLabel: '核查', result: '不通过', tone: 'danger' });
+    expect(outcomeOf(43)).toEqual({ purposeLabel: 'Review', result: 'Did not pass', tone: 'danger' });
   });
 
   it('names a run that ended without a terminal handoff as a handoff failure', () => {
-    expect(outcomeOf(48)).toEqual({ purposeLabel: '执行', result: '交接失败', tone: 'danger' });
+    expect(outcomeOf(48)).toEqual({ purposeLabel: 'Execution', result: 'Handoff failed', tone: 'danger' });
   });
 
   it('names a run that moved the ticket to review as a delivery', () => {
-    expect(outcomeOf(42)).toEqual({ purposeLabel: '执行', result: '已交付', tone: 'success' });
-    expect(outcomeOf(49)).toEqual({ purposeLabel: '执行', result: '已交付', tone: 'success' });
+    expect(outcomeOf(42)).toEqual({ purposeLabel: 'Execution', result: 'Delivered', tone: 'success' });
+    expect(outcomeOf(49)).toEqual({ purposeLabel: 'Execution', result: 'Delivered', tone: 'success' });
   });
 
   it('names conversation runs as conversations', () => {
-    expect(outcomeOf(51)).toEqual({ purposeLabel: '对话', result: '已回答', tone: 'success' });
-    expect(outcomeOf(71)).toEqual({ purposeLabel: '对话', result: '没有回答（exit 1）', tone: 'danger' });
+    expect(outcomeOf(51)).toEqual({ purposeLabel: 'Conversation', result: 'Answered', tone: 'success' });
+    expect(outcomeOf(71)).toEqual({ purposeLabel: 'Conversation', result: 'No answer (exit 1)', tone: 'danger' });
   });
 
   it('records which runs blocked the ticket', () => {
@@ -68,9 +68,9 @@ describe('run facts for ticket #66', () => {
   });
 
   it('keeps failures and stops as they are', () => {
-    expect(outcomeOf(44)).toEqual({ purposeLabel: '执行', result: '失败', tone: 'danger' });
-    expect(outcomeOf(47)).toEqual({ purposeLabel: '执行', result: '失败（exit 1）', tone: 'danger' });
-    expect(outcomeOf(45)).toEqual({ purposeLabel: '执行', result: '已停止', tone: 'neutral' });
+    expect(outcomeOf(44)).toEqual({ purposeLabel: 'Execution', result: 'Failed', tone: 'danger' });
+    expect(outcomeOf(47)).toEqual({ purposeLabel: 'Execution', result: 'Failed (exit 1)', tone: 'danger' });
+    expect(outcomeOf(45)).toEqual({ purposeLabel: 'Execution', result: 'Stopped', tone: 'neutral' });
   });
 });
 
@@ -90,12 +90,12 @@ describe('run facts', () => {
 
   it('does not claim success for a run whose result is unknown', () => {
     const settled: Attempt = { id: 9, role: 'executor', purpose: 'execution', state: 'settled', exitCode: 0 };
-    expect(runOutcome(settled)).toEqual({ purposeLabel: '执行', result: '已结束', tone: 'neutral' });
+    expect(runOutcome(settled)).toEqual({ purposeLabel: 'Execution', result: 'Ended', tone: 'neutral' });
   });
 
   it('infers the purpose from the role when the run has none', () => {
     const reviewer: Attempt = { id: 10, role: 'reviewer', purpose: null, state: 'running', exitCode: null };
-    expect(runOutcome(reviewer)).toEqual({ purposeLabel: '核查', result: '核查中', tone: 'running' });
+    expect(runOutcome(reviewer)).toEqual({ purposeLabel: 'Review', result: 'Reviewing', tone: 'running' });
   });
 
   it('ignores a verdict on a run that is not a review', () => {
@@ -113,10 +113,10 @@ describe('why a run of ticket #66 did not deliver', () => {
 
   it('reads the category the server classified, and the crash text for older runs', () => {
     // #44 和 #46 早于服务端分类，只有崩溃原文；#47 和 #73 有 runtime_failure_classified。
-    expect(reason(44)).toBe('模型满载');
-    expect(reason(46)).toBe('认证失败');
-    expect(reason(47)).toBe('认证失败');
-    expect(reason(73)).toBe('Codex 不支持模型 gpt-5.5');
+    expect(reason(44)).toBe('Model at capacity');
+    expect(reason(46)).toBe('Authentication failed');
+    expect(reason(47)).toBe('Authentication failed');
+    expect(reason(73)).toBe('Codex does not support model gpt-5.5');
   });
 
   // 2026-10-19 发布评审：用量额度用完不是余额不足（不用充值），原因要说对。
@@ -126,16 +126,16 @@ describe('why a run of ticket #66 did not deliver', () => {
       attempts,
       activities: [{ kind: 'decision', attemptId: 111, payload: { decision: 'runtime_failure_classified', category: 'usage_limit' } }],
     });
-    expect(runFailureReason({ state: 'crashed', runtime: 'pi', model: 'vibeproxy/claude-opus-4-6-thinking' }, classified.get(111)!)).toBe('用量额度用完');
+    expect(runFailureReason({ state: 'crashed', runtime: 'pi', model: 'vibeproxy/claude-opus-4-6-thinking' }, classified.get(111)!)).toBe('Usage limit reached');
   });
 
   it('says that you stopped the run to switch the agent', () => {
     expect(facts.get(45)).toMatchObject({ stoppedByUser: true, switchedTo: 'claude' });
-    expect(reason(45)).toBe('你换成 Claude Code');
+    expect(reason(45)).toBe('You switched to Claude Code');
   });
 
   it('names a handoff failure and gives no reason for runs that delivered or are in flight', () => {
-    expect(reason(48)).toBe('交接失败');
+    expect(reason(48)).toBe('Handoff failed');
     expect(reason(42)).toBeNull();
     expect(reason(43)).toBeNull();
     expect(reason(74)).toBeNull();
@@ -147,7 +147,7 @@ describe('why a run of ticket #66 did not deliver', () => {
       attempts,
       activities: [{ kind: 'crash', attemptId: 78, payload: { reason: 'daemon restart: orphaned run reclaimed', pid: null } }],
     });
-    expect(runFailureReason({ state: 'crashed', runtime: 'codex', model: 'gpt-5.5' }, reclaimed.get(78)!)).toBe('Run 被中断');
+    expect(runFailureReason({ state: 'crashed', runtime: 'codex', model: 'gpt-5.5' }, reclaimed.get(78)!)).toBe('Run interrupted');
   });
 
   it('falls back to the crash text when the server could not classify the failure', () => {

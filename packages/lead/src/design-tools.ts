@@ -4,7 +4,7 @@
 import { Type } from "typebox";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import {
-  DENSITY_LEVELS, DESIGN_NOTES_MAX_LENGTH, LINE_HEIGHT_LEVELS, RADIUS_LEVELS, TEXT_SCALE_LEVELS,
+  DENSITY_LEVELS, DESIGN_NOTES_MAX_LENGTH, LINE_HEIGHT_LEVELS, LOCALES, RADIUS_LEVELS, TEXT_SCALE_LEVELS,
   type DesignPreferencesRequest,
 } from "@pi-lead-child/protocol";
 import { DesignPreferencesError, updateDesignPreferences } from "@pi-lead-child/engine";
@@ -50,11 +50,12 @@ export function createDesignTools(deps: { db: Db; currentTurnId?: () => string |
           info: Hex("信息"),
         }, { additionalProperties: false })),
         notes: Type.Optional(Type.String({ maxLength: DESIGN_NOTES_MAX_LENGTH * 2, description: `用户对外观的描述，最多 ${DESIGN_NOTES_MAX_LENGTH} 个字` })),
+        locale: Literals(LOCALES, "界面语言：en 英文、zh 中文。用户说「界面换成中文」「switch to English」时改它"),
       }),
       execute: async (_id, params: {
         density?: DesignPreferencesRequest["density"]; radius?: DesignPreferencesRequest["radius"];
         line_height?: DesignPreferencesRequest["lineHeight"]; text_scale?: DesignPreferencesRequest["textScale"];
-        colors?: DesignPreferencesRequest["colors"]; notes?: string;
+        colors?: DesignPreferencesRequest["colors"]; notes?: string; locale?: DesignPreferencesRequest["locale"];
       }) => {
         const request: DesignPreferencesRequest = {
           ...(params.density !== undefined ? { density: params.density } : {}),
@@ -63,6 +64,7 @@ export function createDesignTools(deps: { db: Db; currentTurnId?: () => string |
           ...(params.text_scale !== undefined ? { textScale: params.text_scale } : {}),
           ...(params.colors !== undefined ? { colors: params.colors } : {}),
           ...(params.notes !== undefined ? { notes: params.notes } : {}),
+          ...(params.locale !== undefined ? { locale: params.locale } : {}),
         };
         let outcome;
         try {

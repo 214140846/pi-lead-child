@@ -31,7 +31,7 @@ describe('Section', () => {
     expect(screen.queryByText('执行者 Claude Code')).toBeNull();
     expect(screen.queryByTestId('exec-body')).toBeNull();
     expect(screen.getByText('Claude Code · 15 分 51 秒 · 约 598 万 token · $2.58')).toBeTruthy();
-    const toggle = screen.getByRole('button', { name: '执行，展开' });
+    const toggle = screen.getByRole('button', { name: '执行, expand' });
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
   });
 
@@ -42,7 +42,7 @@ describe('Section', () => {
         <Text>1. 现状剖析</Text>
       </Section>,
     );
-    fireEvent.click(screen.getByRole('button', { name: '执行计划，折叠' }));
+    fireEvent.click(screen.getByRole('button', { name: '执行计划, collapse' }));
     expect(onToggle).toHaveBeenCalledWith(true);
     // 调用方没有改 collapsed，内容还在。
     expect(screen.getByText('1. 现状剖析')).toBeTruthy();
@@ -60,9 +60,9 @@ describe('Section', () => {
     }
     renderUI(<Controlled />);
     expect(screen.queryByText('15:18 第 1 次交付，进入核查。')).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: '经过与记录，展开' }));
+    fireEvent.click(screen.getByRole('button', { name: '经过与记录, expand' }));
     expect(screen.getByText('15:18 第 1 次交付，进入核查。')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: '经过与记录，折叠' }));
+    fireEvent.click(screen.getByRole('button', { name: '经过与记录, collapse' }));
     expect(screen.queryByText('15:18 第 1 次交付，进入核查。')).toBeNull();
   });
 

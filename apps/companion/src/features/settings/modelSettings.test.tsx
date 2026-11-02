@@ -107,10 +107,13 @@ describe('the model rules', () => {
     expect(withSlot([1, 2], 2, 3)).toEqual([1, 2, 3]);
     expect(contextLabel(1_048_576)).toBe('1M');
     expect(contextLabel(500_000)).toBe('500K');
-    expect(releaseLabel({ at: '2026-11-02T08:00:00.000Z', source: 'first_seen' })).toMatch(/^首见 2026-11-0[23]$/);
-    expect(releaseLabel(null)).toBeNull();
-    expect(untilLabel('2026-11-02T08:00:00.000Z', new Date('2026-10-30T08:00:00.000Z'))).toMatch(/^周[一日] \d\d:00$/);
-    expect(brainRoles(settings(), 'vibeproxy/as4/claude-haiku-5-5')).toEqual(['备用 1', '直觉兜底']);
+    expect(releaseLabel({ at: '2026-11-02T08:00:00.000Z', source: 'first_seen' }, 'en')).toMatch(/^First seen 2026-11-0[23]$/);
+    expect(releaseLabel({ at: '2026-11-02T08:00:00.000Z', source: 'first_seen' }, 'zh')).toMatch(/^首见 2026-11-0[23]$/);
+    expect(releaseLabel(null, 'en')).toBeNull();
+    expect(untilLabel('2026-11-02T08:00:00.000Z', new Date('2026-10-30T08:00:00.000Z'), 'en')).toMatch(/^(Sun|Mon) \d\d:00$/);
+    expect(untilLabel('2026-11-02T08:00:00.000Z', new Date('2026-10-30T08:00:00.000Z'), 'zh')).toMatch(/^周[一日] \d\d:00$/);
+    expect(brainRoles(settings(), 'vibeproxy/as4/claude-haiku-5-5', 'en')).toEqual(['Backup 1', 'Intuition fallback']);
+    expect(brainRoles(settings(), 'vibeproxy/as4/claude-haiku-5-5', 'zh')).toEqual(['备用 1', '直觉兜底']);
   });
 
   it('shows the newest five of a provider plus every model in use, all of them when searching', () => {
@@ -131,8 +134,8 @@ describe('an older daemon', () => {
     const { runtime } = modelRuntime(new ControlPlaneClientError('not found', 'not_found', 404));
     renderWithRuntime(<ModelSection />, runtime);
     const notice = await screen.findByTestId('model-old-daemon');
-    expect(notice.textContent).toContain('daemon 还没更新');
-    expect(notice.textContent).toContain('重启');
+    expect(notice.textContent).toContain('daemon is not updated');
+    expect(notice.textContent).toContain('Restart the daemon');
     expect(screen.queryByText(/not found/)).toBeNull();
   });
 
@@ -145,7 +148,7 @@ describe('an older daemon', () => {
     }));
     renderWithRuntime(<ModelSection />, runtime);
     expect(screen.queryByTestId('model-old-daemon')).toBeNull();
-    expect(screen.getByTestId('model-loading').textContent).toBe('正在读取模型设置…');
+    expect(screen.getByTestId('model-loading').textContent).toBe('Loading the model settings…');
   });
 
   it('still shows the reason for any other failure', async () => {
@@ -161,21 +164,21 @@ describe('who is on duty', () => {
     const { runtime } = modelRuntime(settings());
     renderWithRuntime(<ModelSection />, runtime);
     expect(screen.getByTestId('model-brain-slot-0').textContent).toContain('Claude Sonnet 5.5 · as4');
-    expect(screen.getByTestId('model-brain-slot-0').textContent).toContain('推理 high');
-    expect(screen.getByTestId('model-brain-slot-0').textContent).toContain('在用');
-    expect(screen.getByTestId('model-brain-slot-1').textContent).not.toContain('在用');
-    expect(screen.getByTestId('model-brain-add').textContent).toContain('还能加 2 个');
+    expect(screen.getByTestId('model-brain-slot-0').textContent).toContain('Reasoning high');
+    expect(screen.getByTestId('model-brain-slot-0').textContent).toContain('In use');
+    expect(screen.getByTestId('model-brain-slot-1').textContent).not.toContain('In use');
+    expect(screen.getByTestId('model-brain-add').textContent).toContain('You can add 2 more');
     expect(screen.getByTestId('model-fast-slot-0').textContent).toContain('api.typesafe.ai · jev-latest');
     expect(screen.getByTestId('model-fallback').textContent).toContain('Claude Haiku 5.5 · as4');
-    expect(screen.getByTestId('model-fallback').textContent).toContain('系统选的');
+    expect(screen.getByTestId('model-fallback').textContent).toContain('Chosen by the system');
   });
 
   it('marks the backup in use while the primary waits for its quota', () => {
     const blocked = { ...vibeproxy, models: vibeproxy.models.map((entry) => (entry.id === 'as4/claude-sonnet-5-5' ? { ...entry, blockedUntil: '2026-11-02T08:00:00.000Z' } : entry)) };
     const { runtime } = modelRuntime(settings({ providers: [blocked, openai], current: { model: 'vibeproxy/as4/claude-haiku-5-5', effort: null } }));
     renderWithRuntime(<ModelSection />, runtime);
-    expect(screen.getByTestId('model-brain-slot-0').textContent).toContain('额度用尽');
-    expect(screen.getByTestId('model-brain-slot-1').textContent).toContain('在用');
+    expect(screen.getByTestId('model-brain-slot-0').textContent).toContain('Quota used up');
+    expect(screen.getByTestId('model-brain-slot-1').textContent).toContain('In use');
   });
 
   it('adds a backup from the dropdown and keeps the effort of the slots it did not touch', async () => {
@@ -184,7 +187,7 @@ describe('who is on duty', () => {
     fireEvent.click(screen.getByTestId('model-brain-add'));
     // 已经在分工里的模型不能再选。
     // 浮层量好卡片的位置以后才出现。
-    expect((await screen.findByTestId('model-brain-picker-add-option-vibeproxy/as4/claude-sonnet-5-5')).textContent).toContain('已是主用');
+    expect((await screen.findByTestId('model-brain-picker-add-option-vibeproxy/as4/claude-sonnet-5-5')).textContent).toContain('Already used as Primary');
     await act(async () => { fireEvent.click(screen.getByTestId('model-brain-picker-add-option-openai/gpt-5.5')); });
     expect(client.performUiAction).toHaveBeenCalledWith('model_settings', 'models', 'set_brain_chain', expect.anything());
     expect(inputOf(client.performUiAction)).toEqual({ models: [
@@ -193,7 +196,7 @@ describe('who is on duty', () => {
       { model: 'openai/gpt-5.5', effort: null },
     ] });
     expect(client.getModelSettings).toHaveBeenCalled();
-    await waitFor(() => expect(screen.getByTestId('model-brain-message').textContent).toBe('已保存。'));
+    await waitFor(() => expect(screen.getByTestId('model-brain-message').textContent).toBe('Saved.'));
   });
 
   it('has no add slot once there are three backups, and says how to swap one', () => {
@@ -203,7 +206,7 @@ describe('who is on duty', () => {
     ] }));
     renderWithRuntime(<ModelSection />, runtime);
     expect(screen.queryByTestId('model-brain-add')).toBeNull();
-    expect(screen.getByTestId('model-brain-full').textContent).toContain('备用最多 3 个');
+    expect(screen.getByTestId('model-brain-full').textContent).toContain('at most 3 backups');
   });
 
   it('removes a backup from its dropdown, and shows the daemon\'s reason when a change is refused', async () => {
@@ -235,10 +238,10 @@ describe('the model library', () => {
   it('opens the providers whose models are in use, folds the rest, and shows the rest of a long catalog on demand', () => {
     const { runtime } = modelRuntime(settings());
     renderWithRuntime(<ModelSection />, runtime);
-    expect(screen.getByTestId('model-row-vibeproxy/as4/claude-sonnet-5-5').textContent).toContain('主用');
-    expect(screen.getByTestId('model-row-vibeproxy/as4/claude-haiku-5-5').textContent).toContain('直觉兜底');
+    expect(screen.getByTestId('model-row-vibeproxy/as4/claude-sonnet-5-5').textContent).toContain('Primary');
+    expect(screen.getByTestId('model-row-vibeproxy/as4/claude-haiku-5-5').textContent).toContain('Intuition fallback');
     expect(screen.queryByTestId('model-row-openai/gpt-5.5')).toBeNull();
-    expect(screen.getByTestId('model-provider-sub-openai').textContent).toBe('api.openai.com · OpenAI 兼容 · key 已设置 · 共 2 个 · 最新 2026-10-02');
+    expect(screen.getByTestId('model-provider-sub-openai').textContent).toBe('api.openai.com · OpenAI compatible · Key is set · 2 models · Latest 2026-10-02');
     expect(screen.queryByTestId('model-row-vibeproxy/claude-3-7-sonnet')).toBeNull();
     fireEvent.click(screen.getByTestId('model-provider-more-vibeproxy'));
     expect(screen.getByTestId('model-row-vibeproxy/claude-3-7-sonnet')).toBeTruthy();
@@ -266,7 +269,7 @@ describe('the model library', () => {
     fireEvent.change(screen.getByTestId('model-provider-name'), { target: { value: 'Open AI' } });
     fireEvent.change(screen.getByTestId('model-provider-url'), { target: { value: 'https://api.openai.com/v1' } });
     fireEvent.click(screen.getByTestId('model-provider-save'));
-    expect(screen.getByTestId('model-provider-message').textContent).toContain('名字只能用小写字母');
+    expect(screen.getByTestId('model-provider-message').textContent).toContain('The name can use only lowercase letters');
     expect(client.performUiAction).not.toHaveBeenCalled();
     fireEvent.change(screen.getByTestId('model-provider-name'), { target: { value: 'corp' } });
     fireEvent.change(screen.getByTestId('model-provider-url'), { target: { value: 'https://llm.corp.example.com/v1' } });
@@ -283,7 +286,7 @@ describe('the model library', () => {
     renderWithRuntime(<ModelSection />, runtime);
     fireEvent.click(screen.getByTestId('model-provider-edit-vibeproxy'));
     expect(screen.getByTestId('model-provider-delete').getAttribute('aria-disabled')).toBe('true');
-    expect(screen.getByTestId('model-provider-form-vibeproxy').textContent).toContain('还在用 vibeproxy/as4/claude-sonnet-5-5');
+    expect(screen.getByTestId('model-provider-form-vibeproxy').textContent).toContain('still uses vibeproxy/as4/claude-sonnet-5-5');
   });
 
   it('adds a decision model, tests a saved one, and deletes one outside the chain after an inline confirmation', async () => {
@@ -296,7 +299,7 @@ describe('the model library', () => {
     fireEvent.click(screen.getByTestId('model-fast-add-entry'));
     fireEvent.change(screen.getByTestId('model-fast-name'), { target: { value: 'decision-2' } });
     fireEvent.change(screen.getByTestId('model-fast-url'), { target: { value: 'http://jev.corp.example.com' } });
-    expect(screen.getByTestId('model-fast-plaintext').textContent).toContain('明文');
+    expect(screen.getByTestId('model-fast-plaintext').textContent).toContain('plain text');
     fireEvent.change(screen.getByTestId('model-fast-key'), { target: { value: 'tsk-2' } });
     await act(async () => { fireEvent.click(screen.getByTestId('model-fast-save')); });
     expect(inputOf(perform)).toEqual({ name: 'decision-2', baseUrl: 'http://jev.corp.example.com', model: 'jev-latest', apiKey: 'tsk-2' });
@@ -304,7 +307,7 @@ describe('the model library', () => {
     fireEvent.click(screen.getByTestId('model-fast-row-decision-1'));
     await act(async () => { fireEvent.click(screen.getByTestId('model-fast-test')); });
     expect(inputOf(perform, 1)).toEqual({ id: 'decision-1' });
-    expect(screen.getByTestId('model-fast-tested').textContent).toBe('可用 · 410 ms');
+    expect(screen.getByTestId('model-fast-tested').textContent).toBe('Works · 410 ms');
     fireEvent.click(screen.getByTestId('model-fast-delete'));
     expect(perform).toHaveBeenCalledTimes(2);
     await act(async () => { fireEvent.click(screen.getByTestId('model-fast-delete-yes')); });
@@ -316,7 +319,7 @@ describe('the model library', () => {
     renderWithRuntime(<ModelSection />, runtime);
     fireEvent.click(screen.getByTestId('model-fast-row-decision-1'));
     fireEvent.change(screen.getByTestId('model-fast-url'), { target: { value: 'https://jev2.example.com' } });
-    expect(screen.getByTestId('model-fast-host-change').textContent).toContain('已保存的 key 属于 jev.example.com');
-    expect(screen.getByTestId('model-fast-data-note').textContent).toContain('发给 jev.example.com');
+    expect(screen.getByTestId('model-fast-host-change').textContent).toContain('The saved key belongs to jev.example.com');
+    expect(screen.getByTestId('model-fast-data-note').textContent).toContain('to jev.example.com');
   });
 });

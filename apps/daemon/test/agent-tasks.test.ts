@@ -116,11 +116,11 @@ describe("the agent task dispatcher", () => {
     });
     // 子 agent 交的结果：出处按读到的 diff 核实过。
     expect(outcome.result).toMatchObject({ replyDraft: "已在 PR 上留了 1 条评论。", sources: [{ verified: true }] });
-    expect(outcome.actions.filter((action) => action.visible).map((action) => action.summary)).toEqual(["在 Acme/x#101 上提交了 review（COMMENT）"]);
+    expect(outcome.actions.filter((action) => action.visible).map((action) => action.summary)).toEqual(["Submitted a review (COMMENT) on Acme/x#101"]);
     expect(outcome.actions.map((action) => action.summary)).toEqual([
-      "在 Acme/x#101 上建了一个没提交的 review",
-      "在 Acme/x#101 的 review 里加了一条行内评论（a.ts:2）",
-      "在 Acme/x#101 上提交了 review（COMMENT）",
+      "Created an unsubmitted review on Acme/x#101",
+      "Added a line comment to the review on Acme/x#101 (a.ts:2)",
+      "Submitted a review (COMMENT) on Acme/x#101",
     ]);
     expect(outcome.actions[2]!.url).toBe("https://github.com/Acme/x/pull/101");
     expect(outcome.reads.map((read) => read.path)).toEqual(["pull/101/get", "pull/101/get_diff", undefined]);

@@ -14,7 +14,7 @@ const entries = [
 describe('Group', () => {
   it('counts the entries itself and keeps them out of the list until opened', () => {
     renderUI(<Group testID="g" tag="已加" label="行内评论" entries={entries} range="10:29–10:30" />);
-    expect(screen.getByTestId('g-count').textContent).toBe('3 件 · 10:29–10:30');
+    expect(screen.getByTestId('g-count').textContent).toBe('3 items · 10:29–10:30');
     expect(screen.queryByText('skills/team/code-review/SKILL.md:57')).toBeNull();
   });
 
@@ -23,7 +23,7 @@ describe('Group', () => {
     fireEvent.click(screen.getByTestId('g-expand'));
     const panel = await screen.findByTestId('g-panel');
     expect(panel.getAttribute('role')).toBe('dialog');
-    expect(panel.getAttribute('aria-label')).toBe('行内评论 · 3 件');
+    expect(panel.getAttribute('aria-label')).toBe('行内评论 · 3 items');
     expect(screen.getByTestId('g-list').textContent).toContain('skills/team/code-review/SKILL.md:57');
     fireEvent.click(screen.getByTestId('g-collapse'));
     expect(screen.queryByTestId('g-panel')).toBeNull();

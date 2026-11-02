@@ -4,6 +4,8 @@ import { IconButton } from '../controls/Button';
 import { Box, Column, Row } from '../primitives/layout';
 import { Text } from '../primitives/Text';
 import { textLeading } from '../theme/tokens';
+import { useMessages } from '../i18n';
+import { displayMessages } from './display.messages';
 
 export type DetailHeaderProps = {
   /** 编号，等宽，例如 #102。没有编号的面板（例如视图面板）不给。 */
@@ -32,9 +34,12 @@ export type DetailHeaderProps = {
 // 详情页的头部（第四轮画板）：编号、完整标题、状态和项目，右边是「更多」和关闭。
 // 头部放在滚动区外，往下翻也知道在看哪一张；滚动以后由调用方传 compact，收成一行。
 export function DetailHeader({
-  id, title, badges, project, compact = false, more, onClose, closeLabel = '关闭', onBack, backLabel = '返回', dense = false,
+  id, title, badges, project, compact = false, more, onClose, closeLabel: closeLabelProp, onBack, backLabel: backLabelProp, dense = false,
   testID,
 }: DetailHeaderProps) {
+  const m = useMessages(displayMessages);
+  const closeLabel = closeLabelProp ?? m.close;
+  const backLabel = backLabelProp ?? m.back;
   const back = onBack ? (
     <IconButton testID={testID ? `${testID}-close` : undefined} icon="back" label={backLabel} onPress={onBack} variant="soft" size="xs" rounded="sm" iconSize={15} iconColor="text-secondary" />
   ) : null;

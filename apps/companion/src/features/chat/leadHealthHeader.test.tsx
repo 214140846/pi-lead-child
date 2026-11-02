@@ -69,8 +69,8 @@ function render(runtime: ReturnType<typeof runtimeWith>) {
 describe('the Lead status in the conversation header', () => {
   it('is online only when the connection is up and Lead model calls succeed', () => {
     render(runtimeWith(online));
-    expect(dotLabel()).toBe('Paimon 在线');
-    expect(screen.queryByText(/自动重试/)).toBeNull();
+    expect(dotLabel()).toBe('Paimon is online');
+    expect(screen.queryByText(/Tries again at/)).toBeNull();
   });
 
   it('is degraded while the model is unreachable, with the next automatic attempt', () => {
@@ -79,8 +79,8 @@ describe('the Lead status in the conversation header', () => {
     try {
       vi.setSystemTime(new Date('2026-10-14T12:30:00.000Z'));
       render(runtimeWith(degraded));
-      expect(dotLabel()).toBe('Paimon 降级：Lead 的模型服务暂时连不上');
-      expect(screen.getByText(`模型暂时连不上 · ${formatConversationTime(degraded.nextAttemptAt!)} 自动重试`)).toBeTruthy();
+      expect(dotLabel()).toBe('Paimon is degraded: Lead 的模型服务暂时连不上');
+      expect(screen.getByText(`Model not available · Tries again at ${formatConversationTime(degraded.nextAttemptAt!, undefined, 'en')}`)).toBeTruthy();
       expect(screen.queryByText(/503|upstream/)).toBeNull();
     } finally {
       vi.useRealTimers();
@@ -97,7 +97,7 @@ describe('the Lead status in the conversation header', () => {
         applyControlPlaneMutation(runtime.control, 'lead-session', mutation);
       }
     });
-    expect(dotLabel()).toBe('Paimon 降级：Lead 的模型服务暂时连不上');
+    expect(dotLabel()).toBe('Paimon is degraded: Lead 的模型服务暂时连不上');
   });
 
   it('does not promise an automatic retry for the proxy\'s 503 auth_unavailable around an upstream 403', () => {
@@ -106,8 +106,8 @@ describe('the Lead status in the conversation header', () => {
       + 'last upstream error: {\\n  \\"error\\": {\\n    \\"type\\": \\"forbidden\\",\\n    '
       + '\\"message\\": \\"Request not allowed\\"}}","type":"server_error"}';
     render(runtimeWith({ ...degraded, reason: 'Lead 的模型账号认证失败', detail: live }));
-    expect(screen.getByText('模型认证失败，需要检查配置')).toBeTruthy();
-    expect(screen.queryByText(/自动重试/)).toBeNull();
+    expect(screen.getByText('Model authentication failed. Check the configuration.')).toBeTruthy();
+    expect(screen.queryByText(/Tries again at/)).toBeNull();
   });
 
   it('says the network is down, not the model, and promises no time while it is', () => {
@@ -115,21 +115,21 @@ describe('the Lead status in the conversation header', () => {
       ...degraded, reason: '网络不可用',
       detail: '500 Internal Server Error: {"error":"dial tcp: lookup api.anthropic.com: no such host"}',
     }));
-    expect(screen.getByText('离线：网络不可用，恢复后继续')).toBeTruthy();
-    expect(dotLabel()).toBe('Paimon 离线：网络不可用');
-    expect(screen.queryByText(/自动重试|模型/)).toBeNull();
+    expect(screen.getByText('Offline: no network. It continues when the network comes back.')).toBeTruthy();
+    expect(dotLabel()).toBe('Paimon is offline: no network');
+    expect(screen.queryByText(/Tries again at|[Mm]odel/)).toBeNull();
   });
 
   it('does not promise an automatic retry for a failure that needs the user', () => {
     render(runtimeWith({ ...degraded, reason: 'Lead 的模型账号认证失败', detail: '401 Unauthorized' }));
-    expect(screen.getByText('模型认证失败，需要检查配置')).toBeTruthy();
-    expect(screen.queryByText(/自动重试/)).toBeNull();
+    expect(screen.getByText('Model authentication failed. Check the configuration.')).toBeTruthy();
+    expect(screen.queryByText(/Tries again at/)).toBeNull();
   });
 
   it('names a model configuration failure as needing the user too', () => {
     render(runtimeWith({ ...degraded, reason: 'Lead 的模型配置有误', detail: '404 {"error":"model not found: claude-sonnet-9"}' }));
-    expect(screen.getByText('模型配置有误，需要检查配置')).toBeTruthy();
-    expect(screen.queryByText(/自动重试/)).toBeNull();
+    expect(screen.getByText('Model configuration error. Check the configuration.')).toBeTruthy();
+    expect(screen.queryByText(/Tries again at/)).toBeNull();
   });
 
   it('stops showing a retry time once it has passed', () => {
@@ -137,10 +137,10 @@ describe('the Lead status in the conversation header', () => {
     try {
       vi.setSystemTime(new Date('2026-10-14T12:37:00.000Z'));
       render(runtimeWith({ ...degraded, nextAttemptAt: '2026-10-14T12:38:00.000Z' }));
-      expect(screen.getByText(`模型暂时连不上 · ${formatConversationTime(degraded.nextAttemptAt!)} 自动重试`)).toBeTruthy();
+      expect(screen.getByText(`Model not available · Tries again at ${formatConversationTime(degraded.nextAttemptAt!, undefined, 'en')}`)).toBeTruthy();
       act(() => { vi.advanceTimersByTime(61_000); });
-      expect(screen.queryByText(/自动重试/)).toBeNull();
-      expect(screen.getByText('模型暂时连不上 · 正在重试')).toBeTruthy();
+      expect(screen.queryByText(/Tries again at/)).toBeNull();
+      expect(screen.getByText('Model not available · Trying again')).toBeTruthy();
     } finally {
       vi.useRealTimers();
     }
@@ -148,18 +148,18 @@ describe('the Lead status in the conversation header', () => {
 
   it('says when it will retry if nothing automatic is scheduled', () => {
     render(runtimeWith({ ...degraded, nextAttemptAt: null }));
-    expect(screen.getByText('模型暂时连不上 · 你发消息时会再试')).toBeTruthy();
+    expect(screen.getByText('Model not available · It tries again when you send a message')).toBeTruthy();
   });
 
   it('shows the last quiet patrol in the header instead of a message in the conversation', () => {
     render(runtimeWith({ ...online, lastPatrolAt: '2026-10-14T11:05:00.000Z' }));
-    expect(dotLabel()).toBe('Paimon 在线');
-    expect(screen.getByText(`最近巡检 ${formatConversationTime('2026-10-14T11:05:00.000Z')}`)).toBeTruthy();
+    expect(dotLabel()).toBe('Paimon is online');
+    expect(screen.getByText(`Last check ${formatConversationTime('2026-10-14T11:05:00.000Z', undefined, 'en')}`)).toBeTruthy();
   });
 
   it('is offline when the daemon connection is down, whatever the last health was', () => {
     render(runtimeWith(online, 'reconnecting'));
-    expect(dotLabel()).toBe('Paimon 离线');
-    expect(screen.getByText('离线 · 正在重连')).toBeTruthy();
+    expect(dotLabel()).toBe('Paimon is offline');
+    expect(screen.getByText('Offline · Reconnecting')).toBeTruthy();
   });
 });

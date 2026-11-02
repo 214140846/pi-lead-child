@@ -15,14 +15,19 @@ describe("the Lead profile input", () => {
   });
 
   it("refuses an empty change, an empty or too long name, and too long text", () => {
-    expect(leadProfileProblem({})).toBe("没有要改的内容");
-    expect(leadProfileProblem({ name: "" })).toBe("名字不能是空的");
-    expect(leadProfileProblem({ name: "派".repeat(25) })).toBe("名字最多 24 个字");
-    expect(leadProfileProblem({ name: "派".repeat(24) })).toBeNull();
-    expect(leadProfileProblem({ persona: "x".repeat(1_201) })).toBe("人格最多 1200 个字");
-    expect(leadProfileProblem({ interactionStyle: "x".repeat(1_201) })).toBe("互动风格最多 1200 个字");
+    expect(leadProfileProblem({}, "zh")).toBe("没有要改的内容");
+    expect(leadProfileProblem({ name: "" }, "zh")).toBe("名字不能是空的");
+    expect(leadProfileProblem({ name: "派".repeat(25) }, "zh")).toBe("名字最多 24 个字");
+    expect(leadProfileProblem({ name: "派".repeat(24) }, "zh")).toBeNull();
+    expect(leadProfileProblem({ persona: "x".repeat(1_201) }, "zh")).toBe("人格最多 1200 个字");
+    expect(leadProfileProblem({ interactionStyle: "x".repeat(1_201) }, "zh")).toBe("互动风格最多 1200 个字");
     // 清空人格和互动风格是允许的。
-    expect(leadProfileProblem({ persona: "", interactionStyle: "" })).toBeNull();
+    expect(leadProfileProblem({ persona: "", interactionStyle: "" }, "zh")).toBeNull();
+  });
+
+  it("writes the problem in English by default", () => {
+    expect(leadProfileProblem({})).toBe("Nothing to change.");
+    expect(leadProfileProblem({ name: "派".repeat(25) })).toBe("The name can be at most 24 characters.");
   });
 
   it("puts the first letter of the name on the avatar", () => {

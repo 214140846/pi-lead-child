@@ -1,6 +1,9 @@
 import { Box, Column, Icon, Pressable, Row, Spinner, Text } from '@pi-lead-child/components';
 
+import { useMessages } from '@/i18n';
+
 import type { ToolDisplayProjection, ToolState } from '../../state/types';
+import { toolCallMessages } from './toolCall.messages';
 
 type ToolCallRowProps = {
   tool: string;
@@ -26,10 +29,11 @@ export function ToolCallRow({ tool, state, args, result, error, expanded, onTogg
   const failed = state === 'failed';
   const projection = result ?? args;
   const hasDetails = Boolean(projection?.preview || error);
+  const m = useMessages(toolCallMessages);
 
   return (
     <Column
-      aria-label={`${label ?? tool}，${toolStateLabel[state]}${hasDetails ? (expanded ? '，收起详情' : '，展开详情') : ''}`}
+      aria-label={m.rowLabel(label ?? tool, toolStateLabel[state], hasDetails ? (expanded ? 'collapse' : 'expand') : null)}
       borderBottomWidth={1}
       borderBottomColor={failed ? 'danger-border' : 'border-soft'}
     >
@@ -73,8 +77,8 @@ export function ToolCallRow({ tool, state, args, result, error, expanded, onTogg
         <Column gap="card-row" px={40} pt="row-y" pb="row-y">
           {error ? <Text size="note" weight="medium" tone="danger-dark">{error}</Text> : null}
           {projection?.preview ? <Text size="code" mono tone="secondary">{projection.preview}</Text> : null}
-          {projection?.redacted ? <Text size="note" weight="bold" tone="warning-dark">敏感字段已脱敏</Text> : null}
-          {projection?.truncated ? <Text size="note" weight="bold" tone="warning-dark">内容已截断</Text> : null}
+          {projection?.redacted ? <Text size="note" weight="bold" tone="warning-dark">{m.redacted}</Text> : null}
+          {projection?.truncated ? <Text size="note" weight="bold" tone="warning-dark">{m.truncated}</Text> : null}
           {projection?.artifactRefs.map((artifactId) => (
             <Text key={artifactId} size="code" mono weight="semibold" tone="accent">{`artifact · ${artifactId}`}</Text>
           ))}

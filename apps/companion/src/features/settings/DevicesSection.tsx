@@ -4,6 +4,7 @@ import {
 import type { AdminBinding, BindingDto } from '@pi-lead-child/protocol';
 import { useState, type ReactNode } from 'react';
 
+import { useLocale } from '@/i18n';
 import { useCompanionRuntime } from '@/state/CompanionStateProvider';
 import { useConnectionPhase, useConnectionState } from '@/state/hooks';
 
@@ -11,6 +12,7 @@ import { AddPhone } from './AddPhone';
 import {
   bindingKindLabel, canRevokeBinding, lastSeenLabel, reasonText, sortBindings,
 } from './deviceModel';
+import { devicesMessages } from './devices.messages';
 import { isDevicePaired } from './settingsNav';
 import { UnpairedNotice } from './UnpairedNotice';
 import { useBindingList, useOwnBinding } from './useDeviceData';
@@ -38,9 +40,10 @@ function DeviceList({ list }: { list: ReturnType<typeof useBindingList> }) {
   const own = useOwnBinding(true);
   const online = useConnectionState() === 'connected';
   const currentId = own.binding?.id ?? null;
+  const m = devicesMessages(useLocale());
 
   if (list.state === 'loading') {
-    return <Text size="body" tone="muted">正在读取已配对设备…</Text>;
+    return <Text size="body" tone="muted">{m.listLoading}</Text>;
   }
 
   if (list.state === 'forbidden') {
@@ -48,15 +51,15 @@ function DeviceList({ list }: { list: ReturnType<typeof useBindingList> }) {
       <Column gap="page-section">
         <Card testID="devices-list" rounded="2xl" overflow="hidden">
           {own.binding ? <CurrentDeviceRow binding={own.binding} online={online} /> : (
-            <Box px="row-x" py="row-y"><Text size="body" tone="muted">正在读取这台设备…</Text></Box>
+            <Box px="row-x" py="row-y"><Text size="body" tone="muted">{m.thisDeviceLoading}</Text></Box>
           )}
         </Card>
         <Text testID="devices-cli-hint" size="secondary" tone="secondary">
-          {'要查看或撤销别的设备，请在运行 daemon 的 Mac 上运行 '}
+          {m.cliHintBefore}
           <Code size="code">plc pair list</Code>
-          {' 和 '}
-          <Code size="code">{'plc pair revoke <编号>'}</Code>
-          {'。'}
+          {m.cliHintAnd}
+          <Code size="code">{m.cliHintId}</Code>
+          {m.cliHintAfter}
         </Text>
       </Column>
     );
@@ -65,8 +68,8 @@ function DeviceList({ list }: { list: ReturnType<typeof useBindingList> }) {
   if (list.state === 'error') {
     return (
       <Card testID="devices-error" p="page-card" rounded="2xl" gap="card-row">
-        <Text size="secondary" tone="danger-dark">{`读不到已配对设备：${list.error}`}</Text>
-        <Row><Button label="重试" variant="outline" tone="neutral" size="sm" onPress={list.reload} /></Row>
+        <Text size="secondary" tone="danger-dark">{m.listLoadFailed(list.error)}</Text>
+        <Row><Button label={m.retry} variant="outline" tone="neutral" size="sm" onPress={list.reload} /></Row>
       </Card>
     );
   }
@@ -100,12 +103,14 @@ function CurrentDeviceRow({ binding, online, lastSeenAt, first = true }: {
   lastSeenAt?: string | null;
   first?: boolean;
 }) {
+  const locale = useLocale();
+  const m = devicesMessages(locale);
   // 这台设备现在连着 daemon 时写「在线」；没连上时写上次在线的时间（列表里才有）。
-  const status = online ? '在线' : lastSeenAt === undefined ? '离线' : lastSeenLabel(lastSeenAt);
+  const status = online ? m.online : lastSeenAt === undefined ? m.offline : lastSeenLabel(lastSeenAt, locale);
   return (
     <DeviceRowFrame testID={`device-row-${binding.id}`} divider={!first} kind={binding.kind}>
-      <DeviceText name={binding.name} detail={`${bindingKindLabel(binding.kind)} · ${status}`} />
-      <Badge testID="device-current" label="本设备" tone="accent" />
+      <DeviceText name={binding.name} detail={`${bindingKindLabel(binding.kind, locale)} · ${status}`} />
+      <Badge testID="device-current" label={m.current} tone="accent" />
     </DeviceRowFrame>
   );
 }
@@ -120,6 +125,8 @@ function OtherDeviceRow({ binding, first, revocable, onRevoke }: {
   const [revoking, setRevoking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const revoked = binding.status === 'revoked';
+  const locale = useLocale();
+  const m = devicesMessages(locale);
 
   const revoke = async () => {
     setRevoking(true);
@@ -128,7 +135,7 @@ function OtherDeviceRow({ binding, first, revocable, onRevoke }: {
       await onRevoke();
       setConfirming(false);
     } catch (reason) {
-      setError(reasonText(reason));
+      setError(reasonText(reason, locale));
     } finally {
       setRevoking(false);
     }
@@ -139,14 +146,14 @@ function OtherDeviceRow({ binding, first, revocable, onRevoke }: {
       <DeviceRowFrame testID={`device-row-${binding.id}`} kind={binding.kind}>
         <DeviceText
           name={binding.name}
-          detail={`${bindingKindLabel(binding.kind)} · ${lastSeenLabel(binding.lastSeenAt)}`}
+          detail={`${bindingKindLabel(binding.kind, locale)} · ${lastSeenLabel(binding.lastSeenAt, locale)}`}
           muted={revoked}
         />
-        {revoked ? <Badge label="已撤销" tone="muted" /> : null}
+        {revoked ? <Badge label={m.revoked} tone="muted" /> : null}
         {revocable && !confirming ? (
           <Button
             testID={`device-revoke-${binding.id}`}
-            label="撤销"
+            label={m.revoke}
             variant="outline"
             tone="danger"
             size="sm"
@@ -158,18 +165,18 @@ function OtherDeviceRow({ binding, first, revocable, onRevoke }: {
       {confirming ? (
         // spacing-exempt: 确认面板内缩
         <Column testID={`device-revoke-confirm-${binding.id}`} mx={16} mb={14} px="inset-x" py="inset-y" gap="card-row" rounded="lg" bg="danger-surface">
-          <Text size="body">{`撤销以后，「${binding.name}」要重新配对才能再用。`}</Text>
-          {error ? <Text size="secondary" weight="semibold" tone="danger-dark">{`撤销没有完成：${error}`}</Text> : null}
+          <Text size="body">{m.revokeWarning(binding.name)}</Text>
+          {error ? <Text size="secondary" weight="semibold" tone="danger-dark">{m.revokeFailed(error)}</Text> : null}
           <Row gap="actions">
             <Button
               testID={`device-revoke-confirm-button-${binding.id}`}
-              label={revoking ? '正在撤销…' : '确认撤销'}
+              label={revoking ? m.revoking : m.confirmRevoke}
               tone="danger"
               size="sm"
               disabled={revoking}
               onPress={() => void revoke()}
             />
-            <Button label="取消" variant="ghost" tone="neutral" size="sm" disabled={revoking} onPress={() => setConfirming(false)} />
+            <Button label={m.cancel} variant="ghost" tone="neutral" size="sm" disabled={revoking} onPress={() => setConfirming(false)} />
           </Row>
         </Column>
       ) : null}

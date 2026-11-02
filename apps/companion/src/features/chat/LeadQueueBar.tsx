@@ -4,8 +4,11 @@ import {
 } from '@pi-lead-child/protocol';
 import { useState, type ReactNode } from 'react';
 
+import { intlLocale, useLocale, type Locale } from '@/i18n';
+
 import { useCompanionRuntime, useControlPlaneStore } from '../../state/CompanionStateProvider';
 import { ChannelCardSlot } from './ChannelMessageCard';
+import { composerMessages } from './composer.messages';
 
 // Lead 忙时排着的外部消息（统一消息事件 spec D6、D12，工单 10）。Lead 正在一轮里、有外部消息排着时，主对话输入框上方
 // 「插话/排队」那一行的右边显示一行状态，例如「排队 2 条：李雷、Kent」。那一行只在 Lead 忙时出现，状态栏不增加它的高度，
@@ -25,17 +28,18 @@ import { ChannelCardSlot } from './ChannelMessageCard';
 // 贴在点击区的右上角，位置和以前一样。这一行的内容比 44 高，所以行高不变；点击区整块在触发按钮里，三端都点得到。
 const MORE_TAP_AREA = 44;
 
-// 本地的「时:分」（P14.2）。
-function clock(value: string): string {
+// 本地的「时:分」，两种语言都是 24 小时制（P14.2）。
+export function queueClock(value: string, locale: Locale): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '';
-  return new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }).format(date);
+  return new Intl.DateTimeFormat(intlLocale(locale), { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(date);
 }
 
-export const ACTION_LABELS: Record<LeadQueueAction, { idle: string; busy: string; detail: string }> = {
-  move_next: { idle: '排到下一个', busy: '正在排…', detail: '这一轮结束以后先处理它' },
-  remove: { idle: '移出队列', busy: '正在移出…', detail: '你自己处理，卡结束' },
-};
+// 排队操作的名字（composer.messages.ts 的 queue）。ComposerQueueTray 也用。
+export function queueActionLabels(locale: Locale): Record<LeadQueueAction, { idle: string; busy: string; detail: string }> {
+  const queue = composerMessages(locale).queue;
+  return { move_next: queue.moveNext, remove: queue.remove };
+}
 
 // 状态栏那一行。收着时是状态栏，打开以后是浮层的头（压在原位置上），右边的箭头换成收起。
 function QueueLine({ summary, open }: { summary: string; open: boolean }) {
@@ -57,8 +61,11 @@ function QueueEntryRow({ entry, first, pending, error, onAction, onOpenCard }: {
   onAction: (action: LeadQueueAction) => void;
   onOpenCard: ((cardId: number) => void) | null;
 }) {
+  const locale = useLocale();
+  const m = composerMessages(locale).queue;
+  const ACTION_LABELS = queueActionLabels(locale);
   const cardId = entry.cardIds.at(-1) ?? null;
-  const who = entry.senders.join('、');
+  const who = entry.senders.join(m.separator);
   // 不给 flex：它在 Pressable（纵向）里，flex 1 会让它在 web 上高度变成 0。横向撑满由外面那一层给。
   const content = (
     <Column w="100%" minW={0} gap="card-row">
@@ -67,19 +74,19 @@ function QueueEntryRow({ entry, first, pending, error, onAction, onOpenCard }: {
           <Icon name="chat" size={16} color="text-secondary" />
           <Text size="card-title" weight="semibold" numberOfLines={1} shrink={1}>{who}</Text>
           <Text size="meta" tone="secondary" numberOfLines={1} shrink={1}>{entry.conversation}</Text>
-          <Text size="meta" tone="secondary" mono shrink={0}>{clock(entry.lastAt)}</Text>
+          <Text size="meta" tone="secondary" mono shrink={0}>{queueClock(entry.lastAt, locale)}</Text>
         </Row>
         <Row items="center" gap="icon-label" shrink={0}>
           <Dot color="accent" size={7} />
           <Text testID={`lead-queue-entry-${entry.key}-state`} size="label" weight="semibold" color="accent-strong">
-            {pending ? ACTION_LABELS[pending].busy : entry.next ? '下一个' : '排队中'}
+            {pending ? ACTION_LABELS[pending].busy : entry.next ? m.next : m.queued}
           </Text>
         </Row>
       </Row>
       <Row items="center" gap="icon-label">
         {entry.count > 1 ? (
           <Box px="pill-x" py="pill-y" rounded="full" bg="surface-muted" shrink={0}>
-            <Text size="meta" weight="semibold" tone="secondary">{`${entry.count} 条`}</Text>
+            <Text size="meta" weight="semibold" tone="secondary">{m.messages(entry.count)}</Text>
           </Box>
         ) : null}
         {/* 别人说话的气泡：圆角是气泡自己的规格（主题 R-5：左上 4，其余 14）。 */}
@@ -97,7 +104,7 @@ function QueueEntryRow({ entry, first, pending, error, onAction, onOpenCard }: {
           <Text testID={`lead-queue-entry-${entry.key}-excerpt`} size="body" numberOfLines={1}>{entry.excerpt}</Text>
         </Box>
       </Row>
-      {error ? <Text size="note" tone="danger-dark">{`没有做成：${error}`}</Text> : null}
+      {error ? <Text size="note" tone="danger-dark">{m.failed(error)}</Text> : null}
     </Column>
   );
   return (
@@ -113,7 +120,7 @@ function QueueEntryRow({ entry, first, pending, error, onAction, onOpenCard }: {
       {cardId !== null && onOpenCard ? (
         <Pressable
           testID={`lead-queue-entry-${entry.key}-open`}
-          aria-label={`打开${who}的卡`}
+          aria-label={m.openCard(who)}
           onPress={() => onOpenCard(cardId)}
           feedback="highlight"
           rounded="md"
@@ -127,8 +134,8 @@ function QueueEntryRow({ entry, first, pending, error, onAction, onOpenCard }: {
       {entry.actions.length ? (
         <Popover
           testID={`lead-queue-entry-${entry.key}-more`}
-          label={`更多：${entry.actions.map((action) => ACTION_LABELS[action].idle).join('、')}`}
-          title={`${who}的消息`}
+          label={m.more(entry.actions.map((action) => ACTION_LABELS[action].idle).join(m.separator))}
+          title={m.messagesOf(who)}
           width={260}
           trigger={(
             <Box
@@ -168,13 +175,15 @@ export function LeadQueueBarView({ queue, onAction, renderCard }: {
   // 「打开卡」：面板里换成这张卡本身。不给时没有「打开卡」。
   renderCard?: (cardId: number) => ReactNode;
 }) {
+  const locale = useLocale();
+  const m = composerMessages(locale).queue;
   const [open, setOpen] = useState(false);
   // 面板里打开的卡（详情层）。null 是在看排队。
   const [cardId, setCardId] = useState<number | null>(null);
   const [pending, setPending] = useState<{ key: string; action: LeadQueueAction } | null>(null);
   const [error, setError] = useState<{ key: string; message: string } | null>(null);
   if (!leadQueueVisible(queue)) return null;
-  const summary = leadQueueSummary(queue);
+  const summary = leadQueueSummary(queue, locale);
   const close = () => {
     setOpen(false);
     setCardId(null);
@@ -193,7 +202,7 @@ export function LeadQueueBarView({ queue, onAction, renderCard }: {
   const body = cardId !== null && renderCard ? (
     <Column testID="lead-queue-card" p="card" gap="card-row">
       <Row>
-        <Button testID="lead-queue-back" label="返回" icon="chevron-left" onPress={() => setCardId(null)} variant="link" size="xs" />
+        <Button testID="lead-queue-back" label={m.back} icon="chevron-left" onPress={() => setCardId(null)} variant="link" size="xs" />
       </Row>
       {renderCard(cardId)}
     </Column>
@@ -219,7 +228,7 @@ export function LeadQueueBarView({ queue, onAction, renderCard }: {
       onClose={close}
       label={summary}
       header={(
-        <Pressable testID="lead-queue-header" aria-label={`${summary}，收起`} onPress={close} feedback="none" py="banner-y">
+        <Pressable testID="lead-queue-header" aria-label={m.collapse(summary)} onPress={close} feedback="none" py="banner-y">
           <QueueLine summary={summary} open />
         </Pressable>
       )}
@@ -227,7 +236,7 @@ export function LeadQueueBarView({ queue, onAction, renderCard }: {
     >
       <Pressable
         testID="lead-queue-bar"
-        aria-label={`${summary}，展开`}
+        aria-label={m.expand(summary)}
         aria-expanded={open}
         onPress={() => setOpen(true)}
         feedback="highlight"

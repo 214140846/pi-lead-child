@@ -12,7 +12,9 @@ import { describe, expect, it, vi } from 'vitest';
 import { connectionsRuntime, renderWithRuntime, type FakeConnectionClient } from '../../../test/connections';
 import { proposal } from '../../../test/standingOrders';
 import { StandingOrdersSection } from './StandingOrdersSection';
-import { executionSubtitle, orderSubtitle, proposalOutcome, withLeadName } from './standingOrderModel';
+import {
+  executionSubtitle, orderSubtitle, proposalOutcome, proposalTitle, standingOrderErrorText, withLeadName,
+} from './standingOrderModel';
 
 vi.mock('expo-crypto', () => ({ getRandomBytesAsync: vi.fn(), digest: vi.fn(), CryptoDigestAlgorithm: {} }));
 vi.mock('expo-router', () => ({ useRouter: () => ({ push: vi.fn() }) }));
@@ -60,12 +62,12 @@ describe('the standing orders page', () => {
       decideStandingOrderProposal: vi.fn(async () => ({ proposal: proposal({ state: 'approved', appliedVersion: 2 }), order: v2 })),
     });
     await act(async () => { renderWithRuntime(<StandingOrdersSection />, runtime); });
-    expect(screen.getByTestId('standing-orders-section').textContent).toContain('全部指令（3）');
+    expect(screen.getByTestId('standing-orders-section').textContent).toContain('All orders (3)');
     expect(screen.getByTestId('standing-order-row-inbox.wake_lead').textContent).toContain('要叫醒 Paimon 的事告诉 Paimon');
-    expect(screen.getByTestId('standing-order-row-inbox.wake_lead').textContent).toContain('inbox.wake_lead · v1 · 系统写的 · 定为「单独告诉」');
-    expect(screen.getByTestId('standing-order-row-notification.batchable').textContent).toContain('你改过');
-    expect(screen.getByTestId('standing-order-row-run.failed_tell').textContent).toContain('Paimon新增');
-    expect(screen.getByTestId('standing-order-proposal-42').textContent).toContain('要你批准');
+    expect(screen.getByTestId('standing-order-row-inbox.wake_lead').textContent).toContain('inbox.wake_lead · v1 · Written by the system · Level: Tell separately');
+    expect(screen.getByTestId('standing-order-row-notification.batchable').textContent).toContain('Changed by you');
+    expect(screen.getByTestId('standing-order-row-run.failed_tell').textContent).toContain('Added by Paimon');
+    expect(screen.getByTestId('standing-order-proposal-42').textContent).toContain('Needs your approval');
   });
 
   it('opens an order: its content, the version history and the recent executions', async () => {
@@ -76,10 +78,10 @@ describe('the standing orders page', () => {
     expect(getStandingOrder).toHaveBeenCalledWith('inbox.wake_lead', expect.any(AbortSignal));
     const section = screen.getByTestId('standing-order-detail-inbox.wake_lead');
     expect(section.textContent).toContain('blocker 太多，先进摘要');
-    expect(screen.getByTestId('standing-order-version-inbox.wake_lead-2').textContent).toContain('Paimon写的 · 批准：user via test-web');
-    expect(screen.getByTestId('standing-order-version-inbox.wake_lead-2').textContent).toContain('现在');
+    expect(screen.getByTestId('standing-order-version-inbox.wake_lead-2').textContent).toContain('Written by Paimon · Approved by user via test-web');
+    expect(screen.getByTestId('standing-order-version-inbox.wake_lead-2').textContent).toContain('Current');
     expect(screen.getByTestId('standing-order-execution-7').textContent).toContain('工单 #77 的 Run 失败');
-    expect(screen.getByTestId('standing-order-execution-7').textContent).toContain('单独告诉');
+    expect(screen.getByTestId('standing-order-execution-7').textContent).toContain('Tell separately');
     expect(screen.getByTestId('standing-order-execution-8').textContent).toContain('v2');
   });
 
@@ -92,10 +94,10 @@ describe('the standing orders page', () => {
     await act(async () => { fireEvent.click(screen.getByTestId('standing-order-row-inbox.wake_lead')); });
     await act(async () => { fireEvent.click(screen.getByTestId('standing-order-rollback-inbox.wake_lead-1')); });
     expect(rollbackStandingOrder).not.toHaveBeenCalled();
-    expect(screen.getByTestId('standing-order-rollback-confirm-inbox.wake_lead').textContent).toContain('写一个新版本 v3，内容和 v1 一样？');
+    expect(screen.getByTestId('standing-order-rollback-confirm-inbox.wake_lead').textContent).toContain('Write a new version v3 with the same content as v1?');
     await act(async () => { fireEvent.click(screen.getByTestId('standing-order-rollback-yes-inbox.wake_lead')); });
     expect(rollbackStandingOrder).toHaveBeenCalledWith('inbox.wake_lead', 1);
-    expect(screen.getByTestId('standing-order-version-inbox.wake_lead-3').textContent).toContain('你写的');
+    expect(screen.getByTestId('standing-order-version-inbox.wake_lead-3').textContent).toContain('Written by you');
     expect(getStandingOrders).toHaveBeenCalledTimes(2);
   });
 
@@ -137,17 +139,17 @@ describe('the standing orders page', () => {
     runtime.control.setState({ leadProfile: jarvis });
     await act(async () => { renderWithRuntime(<StandingOrdersSection />, runtime); });
     const card = screen.getByTestId('standing-order-proposal-42');
-    expect(card.textContent).toContain('Jarvis 想修改「要叫醒 Jarvis 的事告诉 Jarvis」');
-    expect(screen.getByTestId('standing-order-proposal-42-reason').textContent).toBe('Jarvis 的原因：让 Lead 少被打断');
+    expect(card.textContent).toContain('Jarvis wants to change "要叫醒 Jarvis 的事告诉 Jarvis"');
+    expect(screen.getByTestId('standing-order-proposal-42-reason').textContent).toBe('Reason from Jarvis: 让 Lead 少被打断');
     expect(screen.getByTestId('standing-order-proposal-42-concern-0').textContent).toBe('· wakeWhen 可能收窄：有的 inbox 不再叫醒 Jarvis');
     expect(screen.getByTestId('standing-order-row-run.failed_tell').textContent).toContain('Run 失败单独告诉 Jarvis');
-    expect(screen.getByTestId('standing-order-row-run.failed_tell').textContent).toContain('Jarvis新增');
+    expect(screen.getByTestId('standing-order-row-run.failed_tell').textContent).toContain('Added by Jarvis');
     await act(async () => { fireEvent.click(screen.getByTestId('standing-order-row-inbox.wake_lead')); });
     const section = screen.getByTestId('standing-order-detail-inbox.wake_lead');
     // 系统写的说明换名字；Lead 写的 v2 的原因原样显示。
     expect(section.textContent).toContain('搬自 inbox.ts：blocker 总是叫醒 Jarvis');
-    expect(screen.getByTestId('standing-order-version-inbox.wake_lead-2').textContent).toContain('Jarvis写的');
-    expect(section.textContent).toContain('你回滚直接生效，Jarvis 会在下一轮知道。');
+    expect(screen.getByTestId('standing-order-version-inbox.wake_lead-2').textContent).toContain('Written by Jarvis');
+    expect(section.textContent).toContain('Your rollback takes effect at once. Jarvis learns about it in the next turn.');
     expect(section.textContent).not.toContain('Paimon');
   });
 
@@ -156,19 +158,30 @@ describe('the standing orders page', () => {
       getStandingOrders: vi.fn(async () => { throw new ControlPlaneClientError('missing scope: tickets:view', 'forbidden', 403); }),
     });
     await act(async () => { renderWithRuntime(<StandingOrdersSection />, runtime); });
-    expect(screen.getByTestId('standing-orders-error').textContent).toBe('读不到常设指令：missing scope: tickets:view');
+    expect(screen.getByTestId('standing-orders-error').textContent).toBe('Could not load the standing orders: missing scope: tickets:view');
   });
 });
 
 describe('standing order wording', () => {
   it('describes orders, executions and proposal outcomes', () => {
-    expect(orderSubtitle(order({ level: null, rule: 'run.transient_retry', author: 'lead', version: 3 }), 'Paimon'))
-      .toBe('inbox.wake_lead · v3 · Paimon写的 · 规则 run.transient_retry');
+    expect(orderSubtitle(order({ level: null, rule: 'run.transient_retry', author: 'lead', version: 3 }), 'Paimon', 'en'))
+      .toBe('inbox.wake_lead · v3 · Written by Paimon · Rule run.transient_retry');
     expect(executionSubtitle(execution({ ticketId: null, subject: 'attempt:91', effect: 'merged_root_cause' })))
       .toMatch(/^\d{2}-\d{2} \d{2}:\d{2} · inbox\.blocker · attempt:91 · v1 · merged_root_cause$/);
-    expect(proposalOutcome(proposal())).toBeNull();
-    expect(proposalOutcome(proposal({ state: 'expired', voidedReason: null }))?.label).toBe('过期了，没有生效');
-    expect(proposalOutcome(proposal({ state: 'expired', voidedReason: 'hard_rule' }))?.label).toBe('碰到硬性安全规则，不能生效');
+    expect(proposalOutcome(proposal(), 'en')).toBeNull();
+    expect(proposalOutcome(proposal({ state: 'expired', voidedReason: null }), 'en')?.label).toBe('The proposal expired and did not take effect.');
+    expect(proposalOutcome(proposal({ state: 'expired', voidedReason: 'hard_rule' }), 'en')?.label)
+      .toBe('The change breaks a hard safety rule, so it cannot take effect.');
+  });
+
+  it('keeps the Chinese wording when the interface language is Chinese', () => {
+    expect(orderSubtitle(order({ level: null, rule: 'run.transient_retry', author: 'lead', version: 3 }), 'Paimon', 'zh'))
+      .toBe('inbox.wake_lead · v3 · Paimon写的 · 规则 run.transient_retry');
+    expect(orderSubtitle(order(), 'Paimon', 'zh')).toBe('inbox.wake_lead · v1 · 系统写的 · 定为「单独告诉」');
+    expect(proposalTitle(proposal(), 'Paimon', 'zh')).toBe('Paimon 想修改「要叫醒 Paimon 的事告诉 Paimon」');
+    expect(proposalOutcome(proposal({ state: 'expired', voidedReason: 'hard_rule' }), 'zh')?.label).toBe('碰到硬性安全规则，不能生效');
+    expect(standingOrderErrorText(null, 'zh')).toBe('请求没有完成，请再试一次。');
+    expect(standingOrderErrorText(null)).toBe('The request did not complete. Try again.');
   });
 
   it('replaces the standalone word Lead with the name, and leaves identifiers alone', () => {

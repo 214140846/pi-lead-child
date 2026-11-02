@@ -1,15 +1,23 @@
 // 设置 → 设备 → 添加手机 的纯函数：设备名的校验、倒计时和地址的写法、错误的说明。
-import { reasonText } from './deviceModel';
+import type { Locale } from '@pi-lead-child/protocol';
 
-export const DEFAULT_PHONE_NAME = '手机';
+import { reasonText } from './deviceModel';
+import { devicesMessages } from './devices.messages';
+
 export const PHONE_NAME_MAX = 80;
 
-// 网关按去掉首尾空白后的长度校验（1 到 80）。这里先校验一遍，给出中文的说明。
-export function phoneNameError(name: string): string | null {
+/** 设备名的缺省值，按界面语言。 */
+export function defaultPhoneName(locale: Locale): string {
+  return devicesMessages(locale).phone.defaultName;
+}
+
+// 网关按去掉首尾空白后的长度校验（1 到 80）。这里先校验一遍，给出界面语言的说明。
+export function phoneNameError(name: string, locale: Locale): string | null {
+  const m = devicesMessages(locale).phone;
   const trimmed = name.trim();
-  if (!trimmed) return '请填写设备名';
-  if (trimmed.length > PHONE_NAME_MAX) return `设备名最多 ${PHONE_NAME_MAX} 个字符`;
-  if (/[\u0000-\u001f\u007f]/.test(trimmed)) return '设备名不能包含换行等控制字符';
+  if (!trimmed) return m.nameRequired;
+  if (trimmed.length > PHONE_NAME_MAX) return m.nameTooLong(PHONE_NAME_MAX);
+  if (/[\u0000-\u001f\u007f]/.test(trimmed)) return m.nameControl;
   return null;
 }
 
@@ -40,15 +48,16 @@ export function isNotFound(reason: unknown): boolean {
 }
 
 // 生成邀请失败时的说明。网关的几种拒绝各有原因，按状态码说清楚怎么办。
-export function invitationErrorText(reason: unknown): string {
+export function invitationErrorText(reason: unknown, locale: Locale): string {
+  const m = devicesMessages(locale).phone;
   switch (statusOf(reason)) {
     case 409:
-      return '网关只在本机监听，手机连不上。请在 Mac 上设置 PLC_GATEWAY_HOST 和 PLC_GATEWAY_PORT，然后重启 daemon。';
+      return m.gatewayLocalOnly;
     case 404:
-      return '这个 daemon 没有开启本机网页配对。请在 Mac 的终端运行 plc pair new。';
+      return m.loopbackOff;
     case 403:
-      return '只有在运行 daemon 的 Mac 上打开的网页才能添加手机。';
+      return m.onlyLocal;
     default:
-      return reasonText(reason);
+      return reasonText(reason, locale);
   }
 }

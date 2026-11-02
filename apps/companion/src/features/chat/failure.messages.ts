@@ -1,0 +1,273 @@
+// 会话里失败卡片、Run 失败和系统检查点的说法（failurePresentation.ts、FailureCard.tsx）。
+import { defineMessages } from '@/i18n';
+
+export const failureMessages = defineMessages({
+  en: {
+    actions: { resend: 'Resend', retry: 'Retry', remove: 'Delete', refresh: 'Refresh to check', 'open-ticket': 'Open ticket' },
+    facts: { done: 'Done', reason: 'Reason', next: 'Next', model: 'Model', raw: 'Original text' },
+    youAsked: (quote: string) => `You asked "${quote}"`,
+    // Lead 自己发起的一轮没完成：work 是一整句，label 是一行里的短话。
+    systemWork: {
+      'system:heartbeat': { work: 'This heartbeat check did not finish', label: 'Heartbeat check did not finish' },
+      'system:digest': { work: 'This batch of digests did not finish', label: 'Digests did not finish' },
+      'system:notification': { work: 'This notification is not announced yet', label: 'Notification not announced yet' },
+      'system:blocker': { work: 'The new blocker was not handled this time', label: 'New blocker not handled' },
+      'system:precipitate': { work: 'This note cleanup did not finish', label: 'Note cleanup did not finish' },
+    },
+    systemWorkFallback: (name: string) => `${name} did not finish this task on its own`,
+    reason: {
+      empty: (name: string) => `${name} gave no answer this time`,
+      aborted: (name: string) => `The reply of ${name} stopped`,
+      restart: (name: string) => `A restart stopped the reply of ${name}`,
+      unknown: (name: string) => `${name} did not finish the reply this time`,
+    },
+    account: 'account',
+    configuration: 'configuration',
+    recovery: {
+      recovered: 'The model is available again',
+      at: (time: string) => `The system tries again at ${time}`,
+      later: 'The system tries again the next time it is necessary',
+    },
+    work: {
+      others: (count: number) => (count === 1 ? '1 operation is done' : `${count} operations are done`),
+      namedAndOthers: (named: string, count: number) =>
+        `${named}, and ${count === 1 ? '1 more operation is done' : `${count} more operations are done`}`,
+      separator: ', ',
+    },
+    timeoutUnknown: {
+      headline: 'The send result is not known. The message is kept. Refresh to check if it arrived.',
+      label: 'Not sure if it was sent',
+      next: 'The message is kept. Refresh to check if it arrived.',
+    },
+    retrying: 'Retrying',
+    rejected: {
+      headline: 'Send failed. This message was not sent. You can select "Retry" or "Delete".',
+      label: 'Not sent',
+      next: 'You can select "Retry" or "Delete".',
+    },
+    restart: {
+      headline: (work: string, name: string, continued: boolean) =>
+        `${work ? `${work}. ` : ''}A restart stopped the reply. ${continued ? `${name} continued the reply.` : `${name} will continue the reply.`}`,
+      label: (continued: boolean) => (continued ? 'Restart stopped it · reply continued' : 'Restart stopped it · reply will continue'),
+    },
+    noAnswer: 'No answer',
+    answerNotComplete: 'Answer not complete',
+    ticket: {
+      reason: (ticketId: number, partial: boolean) => (partial
+        ? `The agent of ticket #${ticketId} did not finish the answer to this message`
+        : `The agent of ticket #${ticketId} did not answer this message. The ticket did not change`),
+      nextPartial: 'Work that it did is not done again. You can continue in the ticket.',
+      nextAskAgain: 'You can ask again in the ticket.',
+      headlinePartial: (ticketId: number) =>
+        `The agent of ticket #${ticketId} did not finish the answer to this message. Work that it did is not done again. You can continue in the ticket.`,
+      headlineNone: (ticketId: number, canResend: boolean) =>
+        `The agent of ticket #${ticketId} did not answer this message. The ticket did not change. `
+        + (canResend ? 'You can select "Resend" to ask again.' : 'You can ask again in the ticket.'),
+    },
+    system: {
+      needsUser: (reason: string, work: string, name: string, what: string) =>
+        `${reason}. ${work}. The system cannot recover by itself. Check the model ${what} of ${name}.`,
+      network: (reason: string, work: string) =>
+        `${reason}. ${work}. The system continues when the network is back. You do not need to do anything.`,
+      other: (reason: string, work: string, recovery: string) => `${reason}. ${work}. ${recovery}. You do not need to do anything.`,
+      nextNeedsUser: (name: string, what: string) => `The system cannot recover by itself. Check the model ${what} of ${name}`,
+      nextNetwork: 'The system continues when the network is back',
+    },
+    partial: {
+      nextNeedsUser: (name: string, what: string) =>
+        `Check the model ${what} of ${name} first, then tell ${name} to continue. Work that is done is not done again.`,
+      next: (name: string) => `Work that is done is not done again. To continue, tell ${name}.`,
+      headline: (work: string, reason: string, next: string) =>
+        `${work ? `${work}. ` : ''}${reason ? `${reason}. ` : ''}The reply did not finish. ${next}`,
+    },
+    plain: {
+      tapResend: 'select "Resend"',
+      sendAgain: 'send it again',
+      resendShort: 'resend',
+      sendOnce: 'send it again',
+      unreachable: (reason: string, resend: string) =>
+        `${reason}. This message got no answer. The system does not send it again automatically. You can ${resend}.`,
+      needsUser: (reason: string, name: string, what: string, resend: string) =>
+        `${reason}. This message got no answer. Check the model ${what} of ${name} first, then ${resend}.`,
+      unknown: (name: string, resend: string) => `${name} did not finish the reply this time. You can ${resend} to try again.`,
+      other: (reason: string, resend: string) => `${reason}. You can ${resend} to ask again.`,
+      nextNeedsUser: (name: string, what: string, resend: string) => `Check the model ${what} of ${name} first, then ${resend}.`,
+      nextUnreachable: (resend: string) => `The system does not send it again automatically. You can ${resend}.`,
+      nextOther: (resend: string) => `You can ${resend}.`,
+      summaryNeedsUser: (name: string, what: string, resend: string) => `Check the model ${what} of ${name} first, then ${resend}`,
+    },
+    run: {
+      category: {
+        model_capacity: 'found the model at full capacity',
+        provider_unavailable: 'could not connect to the model service',
+        run_interrupted: 'stopped before the end',
+        authentication: 'failed authentication',
+        account_quota: 'has no account balance',
+        usage_limit: 'used all of its usage limit and waits for the reset',
+        model_unsupported: 'does not support this model',
+        runtime_unavailable: 'could not start',
+        runtime_configuration: 'has a configuration error',
+        host_defect: 'found an error in the host code',
+      } as Record<string, string>,
+      categoryFallback: 'had a run error',
+      subject: (ticketId: number, agent: string, phrase: string) => `The ${agent} of ticket #${ticketId} ${phrase}`,
+      settled: (subject: string) => `${subject}.`,
+      headline: (subject: string, rest: string) => `${subject}. ${rest}`,
+      runFailed: 'Run failed',
+      handlingLabel: (name: string) => `${name} is on it`,
+      handlingHeadline: (subject: string, name: string) => `${subject}. ${name} is handling it and tells you if it needs you.`,
+      needsYou: 'Needs you',
+      autoRetrying: 'Retrying automatically',
+      progress: 'The system retries automatically. You do not need to do anything.',
+      login: (agent: string) => `The system paused dispatch. Sign in to ${agent} again.`,
+      refill: (agent: string) => `The system paused dispatch. Add credit to the ${agent} account.`,
+      config: (agent: string) => `The system paused dispatch. Correct the configuration of ${agent}.`,
+      codeFix: 'The system stopped this ticket. The host code needs a fix.',
+      exhausted: 'All automatic retries are used. You decide the next step.',
+      escalated: (name: string) => `${name} could not handle it. Look at it.`,
+      waitLabel: (name: string) => `Waits for ${name}`,
+      waitRest: (name: string) =>
+        `${name} cannot connect to the model now. After it recovers, it decides if a retry is safe. If it is urgent, open the ticket and handle it yourself.`,
+      judge: (name: string) => `${name} decides if a retry is safe and tells you if it needs your decision.`,
+      noRetry: 'The system does not retry this run automatically. You can retry it in the ticket later.',
+    },
+    checkpoint: {
+      reclaimed: (ticket: number) => `The daemon restart took back the Run of ticket #${ticket}`,
+      recovered: (ticket: number) => `The system took back the Run of ticket #${ticket} and dispatched it again`,
+      dispatchFailed: (ticket: number) => `The Run of ticket #${ticket} did not start`,
+      stopped: (ticket: number) => `Daemon restarts stopped the Run of ticket #${ticket} many times, so the system stopped it`,
+      generic: (ticket: number, title: string) => `Ticket #${ticket}: ${title}`,
+      escalated: (words: string, name: string) => `${words} · ${name} could not handle it. Look at it`,
+      handling: (words: string, name: string) => `${words} · ${name} is handling it`,
+      judge: (words: string, name: string) => `${words} · ${name} decides if it dispatches again`,
+    },
+  },
+  zh: {
+    actions: { resend: '重发', retry: '重试', remove: '删除', refresh: '刷新确认', 'open-ticket': '打开工单' },
+    facts: { done: '做过', reason: '原因', next: '接下来', model: '模型', raw: '原文' },
+    youAsked: (quote) => `你问的「${quote}」`,
+    systemWork: {
+      'system:heartbeat': { work: '这次心跳巡检没有完成', label: '心跳巡检没有完成' },
+      'system:digest': { work: '这一批摘要没有处理完', label: '摘要没有处理完' },
+      'system:notification': { work: '这条通知还没播报出去', label: '通知还没播报出去' },
+      'system:blocker': { work: '这次没能处理新的 blocker', label: '没能处理新的 blocker' },
+      'system:precipitate': { work: '这次整理笔记没有完成', label: '整理笔记没有完成' },
+    },
+    systemWorkFallback: (name) => `${name} 这次主动处理没有完成`,
+    reason: {
+      empty: (name) => `${name} 这次没有给出回答`,
+      aborted: (name) => `${name} 的回复被中断了`,
+      restart: (name) => `${name} 的回复被重启打断了`,
+      unknown: (name) => `${name} 这次没有完成回复`,
+    },
+    account: '账号',
+    configuration: '配置',
+    recovery: {
+      recovered: '模型现在已经恢复',
+      at: (time) => `系统会在 ${time} 自动再试`,
+      later: '系统会在下一次需要时再试',
+    },
+    work: {
+      others: (count) => `${count} 个操作已完成`,
+      namedAndOthers: (named, count) => `${named}，另有 ${count} 个操作已完成`,
+      separator: '、',
+    },
+    timeoutUnknown: {
+      headline: '发送结果未知，消息已保留；刷新后确认是否已送达。',
+      label: '不知道发出去没有',
+      next: '消息已保留；刷新后确认是否已送达。',
+    },
+    retrying: '正在重试',
+    rejected: {
+      headline: '发送失败：这条消息没有发出去。你可以点「重试」，或者「删除」它。',
+      label: '没有发出去',
+      next: '你可以点「重试」，或者「删除」它。',
+    },
+    restart: {
+      headline: (work, name, continued) =>
+        `${work ? `${work}；` : ''}回复被重启打断，${continued ? `${name} 已接着回复。` : `${name} 会接着回复你。`}`,
+      label: (continued) => `重启打断，${continued ? '已接着回复' : '会接着回复'}`,
+    },
+    noAnswer: '没有回答',
+    answerNotComplete: '没有回答完',
+    ticket: {
+      reason: (ticketId, partial) => `工单 #${ticketId} 的 agent 没能回答${partial ? '完' : ''}这条消息${partial ? '' : '，工单本身没有变化'}`,
+      nextPartial: '它已经做过的事不会重做，你可以在工单里接着说。',
+      nextAskAgain: '你可以在工单里再问一次。',
+      headlinePartial: (ticketId) => `工单 #${ticketId} 的 agent 没能回答完这条消息；它已经做过的事不会重做，你可以在工单里接着说。`,
+      headlineNone: (ticketId, canResend) => `工单 #${ticketId} 的 agent 没能回答这条消息，工单本身没有变化；`
+        + (canResend ? '你可以点「重发」再问一次。' : '你可以在工单里再问一次。'),
+    },
+    system: {
+      needsUser: (reason, work, name, what) => `${reason}，${work}；系统没法自己恢复，请检查 ${name} 的模型${what}。`,
+      network: (reason, work) => `${reason}，${work}；网络恢复后系统会继续，你不需要操作。`,
+      other: (reason, work, recovery) => `${reason}，${work}；${recovery}，你不需要操作。`,
+      nextNeedsUser: (name, what) => `系统没法自己恢复，请检查 ${name} 的模型${what}`,
+      nextNetwork: '网络恢复后系统会继续',
+    },
+    partial: {
+      nextNeedsUser: (name, what) => `请先检查 ${name} 的模型${what}，再告诉 ${name} 接着做；做过的事不会重做。`,
+      next: (name) => `做过的事不会重做；要继续的话，直接告诉 ${name}。`,
+      headline: (work, reason, next) => `${work ? `${work}；` : ''}${reason ? `${reason}，` : ''}回复没有完成。${next}`,
+    },
+    plain: {
+      tapResend: '点「重发」',
+      sendAgain: '再发一次',
+      resendShort: '重发',
+      sendOnce: '发一次',
+      unreachable: (reason, resend) => `${reason}，这条消息没有得到回答；系统不会自动重发，你可以${resend}。`,
+      needsUser: (reason, name, what, resend) => `${reason}，这条消息没有得到回答；请先检查 ${name} 的模型${what}，再${resend}。`,
+      unknown: (name, resend) => `${name} 这次没有完成回复；你可以${resend}再试一次。`,
+      other: (reason, resend) => `${reason}；你可以${resend}再问一次。`,
+      nextNeedsUser: (name, what, resend) => `请先检查 ${name} 的模型${what}，再${resend}。`,
+      nextUnreachable: (resend) => `系统不会自动重发，你可以${resend}。`,
+      nextOther: (resend) => `你可以${resend}。`,
+      summaryNeedsUser: (name, what, resend) => `请先检查 ${name} 的模型${what}，再${resend}`,
+    },
+    run: {
+      category: {
+        model_capacity: '遇到模型满载',
+        provider_unavailable: '连不上模型服务',
+        run_interrupted: '运行被中断',
+        authentication: '认证失败',
+        account_quota: '账号余额不足',
+        // 用量额度用完、在等重置（usage_limited）：不用充值，等重置或者换模型。
+        usage_limit: '用量额度用完，在等重置',
+        model_unsupported: '不支持这个模型',
+        runtime_unavailable: '没能启动',
+        runtime_configuration: '配置有误',
+        host_defect: '遇到宿主代码出错',
+      },
+      categoryFallback: '运行出错',
+      subject: (ticketId, agent, phrase) => `工单 #${ticketId} 的 ${agent} ${phrase}`,
+      settled: (subject) => `${subject}。`,
+      headline: (subject, rest) => `${subject}，${rest}`,
+      runFailed: '运行失败',
+      handlingLabel: (name) => `${name} 处理中`,
+      handlingHeadline: (subject, name) => `${subject}，${name} 正在处理；需要你时它会告诉你。`,
+      needsYou: '需要你处理',
+      autoRetrying: '自动重试中',
+      progress: '系统会自动重试；你不需要操作。',
+      login: (agent) => `系统暂停了派发；需要你重新登录 ${agent}。`,
+      refill: (agent) => `系统暂停了派发；需要给 ${agent} 的账号充值。`,
+      config: (agent) => `系统暂停了派发；需要修正 ${agent} 的配置。`,
+      codeFix: '系统停止了这张工单；需要修复宿主代码。',
+      exhausted: '自动重试已经用完；需要你决定下一步。',
+      escalated: (name) => `${name} 没能处理它；需要你看一下。`,
+      waitLabel: (name) => `等 ${name} 恢复`,
+      waitRest: (name) => `${name} 现在连不上模型，恢复后会判断能不能安全重试；着急的话可以打开工单自己处理。`,
+      judge: (name) => `${name} 会判断能不能安全重试；需要你决定时它会告诉你。`,
+      noRetry: '系统不会自动重试这次运行；你可以稍后在工单里重试。',
+    },
+    checkpoint: {
+      reclaimed: (ticket) => `工单 #${ticket} 的 Run 在 daemon 重启时被收回`,
+      recovered: (ticket) => `工单 #${ticket} 的 Run 被收回以后，系统接着派发了`,
+      dispatchFailed: (ticket) => `工单 #${ticket} 的 Run 没能启动`,
+      stopped: (ticket) => `工单 #${ticket} 的 Run 反复被 daemon 重启打断，系统停掉了它`,
+      generic: (ticket, title) => `工单 #${ticket}：${title}`,
+      escalated: (words, name) => `${words} · ${name} 没能处理，需要你看一下`,
+      handling: (words, name) => `${words} · ${name} 在处理`,
+      judge: (words, name) => `${words} · ${name} 会判断要不要重新派发`,
+    },
+  },
+});

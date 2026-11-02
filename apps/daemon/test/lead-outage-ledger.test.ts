@@ -90,6 +90,22 @@ describe("after a daemon restart", () => {
     });
   });
 
+  // 卡片按写的时候用户选的语言写（2026-11-01）：英文写的也认得出原因和「已推送给你」。
+  it("reads back an open outage card written in English", () => {
+    const openSince = Date.parse("2026-10-16T11:12:00.000Z");
+    const openId = outageNotice(openSince,
+      'Paimon offline since 19:12 (model service busy) · 2 items waited\n· Ticket #7 "迁移脚本": 执行重试已耗尽 — Handled when Paimon recovers\n'
+        + "· Reminder: send the report — Pushed to you",
+      new Date("2026-10-16T11:13:00.000Z"));
+    expect(restoreOutages(db).open).toEqual({
+      since: openSince, kind: "busy", turnId: openId,
+      items: [
+        { line: 'Ticket #7 "迁移脚本": 执行重试已耗尽', kind: "inbox", hasRecord: false },
+        { line: "Reminder: send the report", kind: "pushed", hasRecord: false },
+      ],
+    });
+  });
+
   // 发布评审 reliability-backlog：没结束的卡片比一张已经结束的卡片还早，说明之后又有一次停摆开始并结束了。
   // 以前照样把它当成「还没结束的那一次」接着更新，新的停摆写进一张旧卡片。
   it("does not reopen an open card that is older than a card that already ended", () => {
@@ -120,8 +136,9 @@ describe("after a daemon restart", () => {
     });
     const card = () => db.prepare("SELECT assistant_text FROM channel_turns WHERE id=?").get(`turn_outage_${openSince}`) as
       { assistant_text: string };
-    await vi.waitFor(() => expect(card().assistant_text.split("\n")[0]).toMatch(/^Paimon 离线 \d\d:\d\d–\d\d:\d\d（网络中断）/));
-    expect(card().assistant_text).toContain("工单 #7「迁移脚本」：执行重试已耗尽");
+    // 中文写的那张，收尾时按现在选的语言（缺省英文）整段重写；积压的事的原文不翻译。
+    await vi.waitFor(() => expect(card().assistant_text.split("\n")[0]).toMatch(/^Paimon offline \d\d:\d\d–\d\d:\d\d \(network down\)/));
+    expect(card().assistant_text).toContain("· 工单 #7「迁移脚本」：执行重试已耗尽 — Handed to Paimon");
     expect(db.prepare("SELECT COUNT(*) AS n FROM channel_turns WHERE id LIKE 'turn_outage_%'").get()).toEqual({ n: 1 });
   });
 });

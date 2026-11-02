@@ -76,7 +76,7 @@ describe('the confirm card for a timer someone else asked for', () => {
     await act(async () => { renderWithRuntime(<SurfaceView surface={surface()} />, runtime); });
     expect((client as any).timerRequest).toHaveBeenCalledWith(ID, expect.any(AbortSignal));
     const card = screen.getByTestId(`surface-timer-request-${ID}`);
-    expect(screen.getByTestId(`surface-timer-request-${ID}-state`).textContent).toBe('等你决定');
+    expect(screen.getByTestId(`surface-timer-request-${ID}-state`).textContent).toBe('Waiting for you');
     expect(card.textContent).toContain('Ethan（Slack）');
     expect(screen.getByTestId(`surface-timer-request-${ID}-what`).textContent).toContain('替 Sean 在 #release 发上线通知');
     expect(card.textContent).toContain('授权表没让代你做');
@@ -84,7 +84,7 @@ describe('the confirm card for a timer someone else asked for', () => {
 
     await act(async () => { fireEvent.click(screen.getByTestId(`surface-timer-request-${ID}-confirm`)); });
     expect((client as any).resolveTimerRequest).toHaveBeenCalledWith(ID, 'confirm');
-    expect(screen.getByTestId(`surface-timer-request-${ID}-state`).textContent).toBe('已设');
+    expect(screen.getByTestId(`surface-timer-request-${ID}-state`).textContent).toBe('Set');
     expect(screen.queryByTestId(`surface-timer-request-${ID}-confirm`)).toBeNull();
     expect(screen.queryByTestId(`surface-timer-request-${ID}-decline`)).toBeNull();
   });
@@ -97,8 +97,8 @@ describe('the confirm card for a timer someone else asked for', () => {
     await act(async () => { renderWithRuntime(<SurfaceView surface={surface()} />, runtime); });
     await act(async () => { fireEvent.click(screen.getByTestId(`surface-timer-request-${ID}-decline`)); });
     expect((client as any).resolveTimerRequest).toHaveBeenCalledWith(ID, 'decline');
-    expect(screen.getByTestId(`surface-timer-request-${ID}-state`).textContent).toBe('没有设');
-    expect(screen.getByTestId(`surface-timer-request-${ID}-result`).textContent).toContain('不设');
+    expect(screen.getByTestId(`surface-timer-request-${ID}-state`).textContent).toBe('Not set');
+    expect(screen.getByTestId(`surface-timer-request-${ID}-result`).textContent).toContain('Do not set');
   });
   // 回归（2026-10-28）：Aurum 的消息叫醒的一轮里，Lead 接着做用户本人的跟进、设下一次跟进，卡上写成「Aurum Huang（Slack）要求设一个定时器」。
   // 现在 Lead 没指明是哪条消息要的时，来源里没有发信人：卡上不写谁要求的，只写这一轮读过哪个对话。
@@ -113,9 +113,9 @@ describe('the confirm card for a timer someone else asked for', () => {
     const { runtime } = runtimeWith({ timerRequest: vi.fn(async () => unnamed) });
     await act(async () => { renderWithRuntime(<SurfaceView surface={surface()} />, runtime); });
     const card = screen.getByTestId(`surface-timer-request-${ID}`);
-    expect(card.textContent).toContain('要设一个定时器');
-    expect(card.textContent).not.toContain('要求设一个定时器');
-    expect(card.textContent).toContain('这一轮读过');
+    expect(card.textContent).toContain('wants to set a timer');
+    expect(card.textContent).not.toContain('asks to set a timer');
+    expect(card.textContent).toContain('This turn read messages in');
     expect(card.textContent).toContain('Ivy Lin 等人的群聊');
   });
 });

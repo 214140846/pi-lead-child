@@ -9,7 +9,9 @@
 import { Type } from "typebox";
 import { describeConnectionSettings, type ConnectionSettings } from "./connections.ts";
 import { registerEventKind, type EventKindDefinition } from "./events.ts";
+import type { Locale } from "./i18n.ts";
 import { DEFAULT_LEAD_NAME } from "./lead-profile.ts";
+import { securityAlertMessages } from "./security-alerts.messages.ts";
 
 // 推送用的通知（notifications.kind）。daemon 直接推送它，不请 Lead 播报。不挂工单。
 export const SECURITY_ALERT_NOTIFICATION_KIND = "security_alert";
@@ -97,61 +99,57 @@ export const SECURITY_ALERT_EVENT_KINDS: readonly EventKindDefinition[] = [
 for (const definition of SECURITY_ALERT_EVENT_KINDS) registerEventKind(definition);
 
 /** 推送和收件箱里的文字。标题说发生了什么，正文说现在是什么、要用户做什么。 */
+// 文字按界面语言（security-alerts.messages.ts）。locale 暂时缺省 zh：daemon 写进数据库的提醒照旧是中文，
+// 连接设置的描述（connections.ts 的 describeConnectionSettings）也还是中文。都迁完以后去掉缺省值。
 export function connectionSettingsTamperAlertText(input: {
   label: string;
   expected: ConnectionSettings;
   found: ConnectionSettings;
   restored: ConnectionSettings;
   seal: ConnectionSettingsSealState;
-}): { title: string; body: string } {
-  const how = input.seal === "invalid"
-    ? "设置的封印对不上"
-    : "账本里的设置和设置页的记录不一致";
+}, locale: Locale = "zh"): { title: string; body: string } {
+  const m = securityAlertMessages(locale).tamper;
+  const how = input.seal === "invalid" ? m.sealInvalid : m.recordMismatch;
   return {
-    title: `${input.label} 的权限设置被绕过设置页修改，已恢复`,
+    title: m.title(input.label),
     body: [
-      `${how}：发现的是「${describeConnectionSettings(input.found)}」，记录的是「${describeConnectionSettings(input.expected)}」。`,
-      `已恢复成更严的「${describeConnectionSettings(input.restored)}」。`,
-      "这通常是有进程直接改了数据库（例如 child 用 sqlite3）。如果需要放开，请在设置 → 连接里改。",
+      m.found(how, describeConnectionSettings(input.found, locale), describeConnectionSettings(input.expected, locale)),
+      m.restored(describeConnectionSettings(input.restored, locale)),
+      m.hint,
     ].join("\n"),
   };
 }
 
-const TARGET_WORDS = { "plc.db": "账本 plc.db", "config.json": "配置 config.json" } as const;
-
 export function ledgerWriteAttemptAlertText(input: {
   itemId: number; runId: number; target: "plc.db" | "config.json"; command: string;
-}): { title: string; body: string } {
+}, locale: Locale = "zh"): { title: string; body: string } {
+  const m = securityAlertMessages(locale).ledgerWrite;
   return {
-    title: `工单 #${input.itemId} 的 agent 想直接改${TARGET_WORDS[input.target]}`,
+    title: m.title(input.itemId, m.target[input.target]),
     body: [
-      `Run #${input.runId} 执行了：${input.command}`,
-      input.target === "plc.db"
-        ? "plc.db 只能由 daemon 写，用 sqlite3 写库会被写入守卫拦住。"
-        : "config.json 只能经 daemon 改（设置页）。",
-      "请看看这个 agent 为什么要这样做。需要改设置时，在设置页改。",
+      m.command(input.runId, input.command),
+      input.target === "plc.db" ? m.dbOnly : m.configOnly,
+      m.hint,
     ].join("\n"),
   };
 }
 
 // leadName 是 Lead 的名字（设置 → 身份与风格），不给时用缺省的。
-export function configChangedAlertText(changed: readonly string[], leadName: string = DEFAULT_LEAD_NAME): { title: string; body: string } {
+export function configChangedAlertText(changed: readonly string[], leadName: string = DEFAULT_LEAD_NAME, locale: Locale = "zh"): { title: string; body: string } {
+  const m = securityAlertMessages(locale).configChanged;
   return {
-    title: "config.json 被直接修改了",
+    title: m.title,
     body: [
-      changed.length ? `变了的配置项：${changed.join("、")}。` : "内容变了。",
-      `这次修改不是经 daemon 做的（设置页、${leadName} 的工具都经 daemon 写）。如果是你自己改的，可以忽略；不是的话，请查一下是哪个进程改的。`,
+      changed.length ? m.changed(changed.join(m.separator)) : m.contentChanged,
+      m.notDaemon(leadName),
     ].join("\n"),
   };
 }
 
-export function ledgerGuardRemovedAlertText(count: number): { title: string; body: string } {
+export function ledgerGuardRemovedAlertText(count: number, locale: Locale = "zh"): { title: string; body: string } {
+  const m = securityAlertMessages(locale).guardRemoved;
   return {
-    title: "plc.db 的写入守卫被删掉或换掉了，已补装",
-    body: [
-      `有 ${count} 个守卫触发器不见了或者被换过，daemon 已经补装。`,
-      "删掉它们的进程可能在准备直接改库。请看看最近的 child 在做什么；连接的权限设置另有封印核对。",
-      "如果是你自己为回滚卸掉的，先停 daemon 再卸（plc daemon ledger-guard uninstall）。",
-    ].join("\n"),
+    title: m.title,
+    body: [m.count(count), m.hint, m.rollback].join("\n"),
   };
 }

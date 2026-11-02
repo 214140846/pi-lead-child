@@ -63,10 +63,10 @@ describe('the evidence and records of a ticket', () => {
     fireEvent.click(screen.getByTestId('ticket-records-open'));
     const records = screen.getByTestId('ticket-records');
 
-    expect(within(records).getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['验收', '进展', 'Run', '生命周期', '产物']);
+    expect(within(records).getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['Acceptance', 'Progress', 'Run', 'Lifecycle', 'Artifacts']);
     fireEvent.click(within(records).getByTestId('ticket-records-tab-runs'));
-    expect(within(records).getByText('执行尝试')).toBeTruthy();
-    expect(within(records).getByText('运行日志')).toBeTruthy();
+    expect(within(records).getByText('Run attempts')).toBeTruthy();
+    expect(within(records).getByText('Run logs')).toBeTruthy();
   });
 
   // Lead 按任务选 runtime、模型和 effort（2026-10-15）。服务端的 attempt 列表带着 effort，

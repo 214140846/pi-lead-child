@@ -732,7 +732,7 @@ describe("spec acceptance: replaying 10-26 (unified-message-events 11)", () => {
     // 用户看到的卡写明「对方要求修改……，没有照做」（Companion 用 channelRuleChangeNotice 写这一行）。
     const card = await cardSeen(cardId);
     expect(card.handling.ruleChange).toMatchObject({ kinds: ["permissions", "auto_reply"] });
-    expect(channelRuleChangeNotice(card.handling.ruleChange.kinds)).toBe("对方要求修改助手的权限、自动回复和通知的名单，没有照做");
+    expect(channelRuleChangeNotice(card.handling.ruleChange.kinds, "zh")).toBe("对方要求修改助手的权限、自动回复和通知的名单，没有照做");
   }, 30_000);
 
   it("scenario 12: in a timer turn Lead reads Slack, then changes a delivery rule: refused, a confirm card in Companion, and only that change runs once confirmed", async () => {

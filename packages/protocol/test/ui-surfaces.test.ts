@@ -265,7 +265,7 @@ describe("a surface while its arguments still stream", () => {
     expect(partial).toMatchObject({
       id: uiSurfaceIdForCall("call|1"),
       root: "card",
-      fallbackText: "正在生成卡片…",
+      fallbackText: "Making the card…",
       nodes: [
         { id: "card", children: ["head", "title"] },
         { id: "head" },
@@ -586,3 +586,22 @@ describe("the Group pattern", () => {
     expect(validateUiSurface(card([group("g", [])]))).toMatchObject({ ok: false, errors: [{ message: expect.stringContaining("至少要有一件") }] });
   });
 });
+
+// 2026-10-30：走势小图（Sparkline）只追加进目录，目录版本不变。2 到 120 个点，都是数。
+describe("the Sparkline component", () => {
+  const card = (props: Record<string, unknown>): UiSurface => ({
+    id: "s", catalogVersion: UI_CATALOG_VERSION, root: "line", fallbackText: "走势", nodes: [{ id: "line", type: "Sparkline", props }],
+  });
+
+  it("accepts a trend with a baseline and end labels, and keeps the catalog version", () => {
+    expect(validateUiSurface(card({ points: [1, 2.5, 3], baseline: 2, tone: "success", start: "10-01", end: "今天", unit: "点" })).ok).toBe(true);
+    expect(UI_CATALOG_VERSION).toBe(1);
+  });
+
+  it("refuses a single point, too many points, or non-numbers", () => {
+    expect(validateUiSurface(card({ points: [1] })).ok).toBe(false);
+    expect(validateUiSurface(card({ points: Array.from({ length: 121 }, (_, index) => index) })).ok).toBe(false);
+    expect(validateUiSurface(card({ points: [1, "2"] })).ok).toBe(false);
+  });
+});
+

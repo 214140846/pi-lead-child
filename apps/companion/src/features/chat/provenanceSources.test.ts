@@ -22,9 +22,9 @@ describe('the sources behind a reply', () => {
     expect(provenanceSources([
       tool('a', 'list_needs_user', {}, '需要用户处理的工单共 2 张（和 App 的「需要我」是同一组）：\n#1 [review] 成果快照与登记机制 — 核查未派发\n#66 [blocked] 修复 #72 的回归 — 需介入'),
       tool('b', 'get_ticket', { id: 7 }, '#7 ...'),
-    ])).toEqual([
-      { label: '等你处理的工单', sources: [{ kind: 'ticket', ticketId: 1 }, { kind: 'ticket', ticketId: 66 }], truncated: false },
-      { label: '工单 #7 的账本', sources: [{ kind: 'ticket', ticketId: 7 }], truncated: false },
+    ], 'en')).toEqual([
+      { label: 'Tickets that need you', sources: [{ kind: 'ticket', ticketId: 1 }, { kind: 'ticket', ticketId: 66 }], truncated: false },
+      { label: 'Ledger of ticket #7', sources: [{ kind: 'ticket', ticketId: 7 }], truncated: false },
     ]);
   });
 
@@ -32,14 +32,14 @@ describe('the sources behind a reply', () => {
     const [inbox, run] = provenanceSources([
       tool('a', 'read_inbox', { state: 'pending' }, '#12 [attention/structural/pending] 2026-10-15 10:00:00 Run #87 的进展：读完了执行者的交付\n#13 [blocker/structural/delivered] 2026-10-15 10:02:00 交接失败'),
       tool('b', 'read_run_events', { run_id: 49 }, 'Run #49 · 3 条事件\n10:01 运行 npm test\n10:02 失败：EPERM'),
-    ]);
+    ], 'en');
     expect(inbox).toEqual({
-      label: '系统通知',
+      label: 'System notices',
       sources: [{ kind: 'line', text: 'Run #87 的进展：读完了执行者的交付' }, { kind: 'line', text: '交接失败' }],
       truncated: false,
     });
     expect(run).toEqual({
-      label: 'Run #49 的事件',
+      label: 'Events of Run #49',
       sources: [{ kind: 'run', runId: 49 }, { kind: 'line', text: '10:01 运行 npm test' }, { kind: 'line', text: '10:02 失败：EPERM' }],
       truncated: false,
     });
@@ -48,7 +48,7 @@ describe('the sources behind a reply', () => {
   it('keeps what it can read from a cut-off result and says it was cut off', () => {
     const [needs] = provenanceSources([
       tool('a', 'list_needs_user', {}, `需要用户处理的工单共 9 张：\n#1 [review] 成果快照与登记机制 — 核查未派发\n${'#9 [ready] x — 待确认\n'.repeat(20)}`, true),
-    ]);
+    ], 'en');
     expect(needs!.truncated).toBe(true);
     expect(needs!.sources[0]).toEqual({ kind: 'ticket', ticketId: 1 });
   });
@@ -58,6 +58,6 @@ describe('the sources behind a reply', () => {
       tool('a', 'get_ticket', { id: 7 }, null),
       tool('b', 'get_ticket', { id: 7 }, null),
       tool('c', 'add_comment', { id: 7 }, 'ok'),
-    ])).toEqual([{ label: '工单 #7 的账本', sources: [{ kind: 'ticket', ticketId: 7 }], truncated: false }]);
+    ], 'en')).toEqual([{ label: 'Ledger of ticket #7', sources: [{ kind: 'ticket', ticketId: 7 }], truncated: false }]);
   });
 });

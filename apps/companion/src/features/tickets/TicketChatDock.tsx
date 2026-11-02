@@ -6,10 +6,12 @@ import { formatConversationTime } from '@/features/chat/LeadConversation';
 import { presentTurnFailure } from '@/features/chat/failurePresentation';
 import { MessageComposer } from '@/features/chat/MessageComposer';
 import { useControlPlaneStore } from '@/state/CompanionStateProvider';
+import { useLocale, useMessages } from '@/i18n';
 import { useLeadName, useMessage, useMessagePart, useMessageParts, useTurn } from '@/state/hooks';
 
 import { replyActionButtons } from './replyActions';
 import { TicketConversation, ticketConversationSenderLabel } from './TicketConversation';
+import { ticketChatMessages } from './ticketChat.messages';
 import {
   elapsedText, ticketChatDestination, type TicketActionReceipt, type TicketRunProgress,
 } from './ticketChatStatus';
@@ -73,11 +75,13 @@ export function TicketChatDock({
   bar,
   composerRevision = 0,
 }: TicketChatDockProps) {
+  const locale = useLocale();
+  const m = useMessages(ticketChatMessages);
   const lastId = messageIds[messageIds.length - 1] ?? null;
   const lastMessage = useMessage(lastId ?? '');
   const lastTurn = useTurn(lastMessage?.turnId ?? '');
   // 消息交给这张工单的 agent（2026-10-19）：说明写现在是谁在跑、消息会去哪里；续接已结束的会话时写预估成本。
-  const destination = ticketChatDestination({ ticketDisplayId, liveRun, runtimeName, resume: chatResume });
+  const destination = ticketChatDestination({ ticketDisplayId, liveRun, runtimeName, resume: chatResume, locale });
   // 回复下面的按钮：最后一条是 agent 答完的回复，你在它之后还没做过动作；按钮是快模型说它在问的动作 ∩ 工单现在能做的动作。
   const answered = lastMessage?.role === 'assistant' && lastMessage.state !== 'streaming' && !lastMessage.failure
     && !(receipt && receipt.createdAt > lastMessage.createdAt);
@@ -106,10 +110,10 @@ export function TicketChatDock({
       testID="ticket-chat-dock"
       expanded={expanded}
       onExpandedChange={onExpandedChange}
-      title="工单对话"
+      title={m.title}
       count={messageIds.length > 0 ? String(messageIds.length) : undefined}
       unread={unread}
-      unreadLabel="新回复"
+      unreadLabel={m.newReply}
       bar={bar}
       preview={(
         <Column gap="card-row">
@@ -138,7 +142,7 @@ export function TicketChatDock({
           <MessageComposer
             key={composerRevision}
             contextKey={`ticket:${ticketId}`}
-            placeholder={send ? destination.placeholder : '连接后可以发给这张工单'}
+            placeholder={send ? destination.placeholder : m.connectToSend}
             compact
             minimal
             disabled={!send}
@@ -167,36 +171,40 @@ function DockPreview({ ticketId, lastId, receipt }: { ticketId: number; lastId: 
   const parts = useMessageParts(lastId ?? '');
   const userPart = useMessagePart(turn ? `${turn.userMessageId}:text` : '');
   const leadName = useLeadName();
+  const locale = useLocale();
+  const m = useMessages(ticketChatMessages);
+  const clock = (value: string) => formatConversationTime(value, undefined, locale);
   if (receipt && (!message || receipt.createdAt > message.createdAt)) {
     return (
       <Row testID="ticket-chat-receipt" items="center" gap="icon-label">
         <Dot color="accent" size={7} />
         <Text flex={1} minW={0} size="card-title" weight="bold" numberOfLines={1}>{receipt.title}</Text>
-        <Text size="meta" mono tone="secondary">{formatConversationTime(receipt.createdAt)}</Text>
+        <Text size="meta" mono tone="secondary">{clock(receipt.createdAt)}</Text>
       </Row>
     );
   }
   if (!message) {
-    return <Text size="secondary" tone="secondary">还没有对话。在下面问这张工单的进展，或者交代它的 agent。</Text>;
+    return <Text size="secondary" tone="secondary">{m.empty}</Text>;
   }
   const user = message.role === 'user';
-  const who = user ? '你' : ticketConversationSenderLabel(turn?.originKind, leadName);
+  const who = user ? m.you : ticketConversationSenderLabel(turn?.originKind, leadName, locale);
   // queued：在跑的 Run 不能中途接收消息，消息排着队，Run 结束后转交（2026-10-15）。
-  const when = message.state === 'streaming' ? '正在回答' : message.state === 'queued' ? '已排队' : formatConversationTime(message.updatedAt);
+  const when = message.state === 'streaming' ? m.answering : message.state === 'queued' ? m.queued : clock(message.updatedAt);
   const text = textPart?.kind === 'text' ? plainPreview(textPart.text) : '';
   // 失败时和展开后的失败行用同一条规则（failurePresentation）：agent 调过工具时工单可能变了，也不给「重发」。
   const failure = message.failure ? presentTurnFailure({
+    locale,
     failure: message.failure,
     originKind: turn?.originKind,
     ticketId,
     userText: userPart?.kind === 'text' ? userPart.text : null,
     lead: undefined,
-    clock: formatConversationTime,
+    clock,
     tools: parts.flatMap((part) => part.kind === 'tool' ? [part] : []),
   }) : null;
   const body = failure
-    ? failure.actions.includes('resend') ? '没能回答这条消息，工单本身没有变化。展开后可以重发。' : failure.headline
-    : text || (message.state === 'streaming' ? '正在回答…' : '（没有文字回复）');
+    ? failure.actions.includes('resend') ? m.noAnswerResend : failure.headline
+    : text || (message.state === 'streaming' ? m.answeringNow : m.noText);
   return (
     <Column testID="ticket-chat-preview" gap="text-stack">
       <Text size="meta" weight="semibold" tone="secondary">{`${who} · ${when}`}</Text>
@@ -207,6 +215,8 @@ function DockPreview({ ticketId, lastId, receipt }: { ticketId: number; lastId: 
 
 // 正在跑的那次 Run。准备超过一分钟还没开始，就说它可能卡住了（#66 的核查 Run #73）。
 function LiveRunRow({ progress }: { progress: TicketRunProgress }) {
+  const locale = useLocale();
+  const m = useMessages(ticketChatMessages);
   return (
     <Row
       testID="ticket-chat-live-run"
@@ -225,10 +235,10 @@ function LiveRunRow({ progress }: { progress: TicketRunProgress }) {
       <Column flex={1} minW={0} gap="text-stack">
         <Text size="card-title" weight="bold" numberOfLines={1}>{progress.label}</Text>
         {progress.stalled ? (
-          <Text size="secondary" tone="warning-dark">超过 1 分钟还没开始。通常 10 秒内开始，可能卡住了。</Text>
+          <Text size="secondary" tone="warning-dark">{m.stalled}</Text>
         ) : null}
       </Column>
-      <Text size="meta" mono tone="secondary">{elapsedText(progress.elapsedMs)}</Text>
+      <Text size="meta" mono tone="secondary">{elapsedText(progress.elapsedMs, locale)}</Text>
     </Row>
   );
 }
@@ -249,6 +259,7 @@ function ExpandedConversation({
   /** 最后一条回复下面的按钮。 */
   replyFooter: ReactNode;
 }) {
+  const m = useMessages(ticketChatMessages);
   // 你发的最后一条消息。它变了，说明你刚发了消息。
   const lastUserMessageId = useControlPlaneStore((state) => {
     for (let index = messageIds.length - 1; index >= 0; index -= 1) {
@@ -264,7 +275,7 @@ function ExpandedConversation({
         <ConversationColumn testID="ticket-chat-column" gap="conversation-block">
           {messageIds.length > 0
             ? <TicketConversation ticketId={ticketId} messageIds={messageIds} onResend={onResend} />
-            : <Text size="secondary" tone="secondary" align="center">还没有对话。在下面问这张工单的进展，或者交代它的 agent。</Text>}
+            : <Text size="secondary" tone="secondary" align="center">{m.empty}</Text>}
           {replyFooter}
           {liveRun ? <LiveRunRow progress={liveRun} /> : null}
         </ConversationColumn>

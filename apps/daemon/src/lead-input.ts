@@ -655,7 +655,7 @@ export class LeadInput {
     const waiting = [
       ...tickets.flatMap((ticket) => {
         const reason = ticketNeedsUser(ticket);
-        return reason ? [`${ticketLine(ticket)}：${ticketNeedsUserLabel(reason)}`] : [];
+        return reason ? [`${ticketLine(ticket)}：${ticketNeedsUserLabel(reason, "zh")}`] : [];
       }),
       ...pendingApprovals(db).map((approval) =>
         `审批 #${approval.id}：工单 #${approval.item_id ?? "-"} 要执行「${approval.tool}」：${oneLine(approval.action, 80)}`),

@@ -5,6 +5,7 @@ import type { ConnectionDto } from '@pi-lead-child/protocol';
 import { useRouter, type Href } from 'expo-router';
 import { useState } from 'react';
 
+import { useLocale, useMessages } from '@/i18n';
 import { useCompanionRuntime } from '@/state/CompanionStateProvider';
 import { useConnectionPhase, useConnections } from '@/state/hooks';
 
@@ -15,6 +16,7 @@ import { ConnectionHealthBar } from './ConnectionHealthBar';
 import {
   connectionNeedsUser, connectionSecondLine, connectionStatus, groupConnections, type ConnectionGroupId, type ConnectionStatus,
 } from './connectionModel';
+import { connectionsMessages } from './connections.messages';
 import { isDevicePaired } from './settingsNav';
 import { UnpairedNotice } from './UnpairedNotice';
 
@@ -41,6 +43,8 @@ function ConnectionList({ selectedKey }: { selectedKey: string | null }) {
   const router = useRouter();
   const { desktop } = useBreakpoint();
   const runtime = useCompanionRuntime();
+  const locale = useLocale();
+  const m = useMessages(connectionsMessages);
   const paired = isDevicePaired(useConnectionPhase());
   const { connections, resource } = useConnections();
   // 正在走连接流程的那一行，和它开始时在哪一组。同一时间只开一个。
@@ -52,13 +56,13 @@ function ConnectionList({ selectedKey }: { selectedKey: string | null }) {
     if (resource?.state === 'error') {
       return (
         <Card testID="connections-error" p="page-card" rounded="2xl" gap="card-row">
-          <Text size="secondary" tone="danger-dark">{`读不到连接：${resource.error ?? ''}`}</Text>
-          <Row><Button label="重试" variant="outline" tone="neutral" size="sm" onPress={() => void runtime.ensureResource('connections', true).catch(() => {})} /></Row>
+          <Text size="secondary" tone="danger-dark">{m.loadFailed(resource.error ?? '')}</Text>
+          <Row><Button label={m.retry} variant="outline" tone="neutral" size="sm" onPress={() => void runtime.ensureResource('connections', true).catch(() => {})} /></Row>
         </Card>
       );
     }
-    if (resource?.state === 'unsupported') return <Text size="body" tone="muted">这台 daemon 还不支持连接。</Text>;
-    return <Text testID="connections-loading" size="body" tone="muted">正在读取连接…</Text>;
+    if (resource?.state === 'unsupported') return <Text size="body" tone="muted">{m.unsupported}</Text>;
+    return <Text testID="connections-loading" size="body" tone="muted">{m.loading}</Text>;
   }
 
   // 桌面上详情在抽屉里，换一个连接不往历史里压新的一页；手机上推进详情页。
@@ -71,7 +75,7 @@ function ConnectionList({ selectedKey }: { selectedKey: string | null }) {
   return (
     <Column testID="connections-list">
       <ConnectionHealthBar items={connections.items} />
-      {groupConnections(connections.items, flow).map((group) => (
+      {groupConnections(connections.items, flow, locale).map((group) => (
         <Column key={group.id} testID={`connections-group-${group.id}`} mb="page-section">
           <Text testID={`connections-group-title-${group.id}`} size="eyebrow" weight="bold" tone="secondary" px="section-label-x" pb="section-label-bottom">{group.label}</Text>
           <Card rounded="2xl" overflow="hidden">
@@ -93,7 +97,7 @@ function ConnectionList({ selectedKey }: { selectedKey: string | null }) {
       {adding ? <AddCustomConnection onClose={() => setAdding(false)} /> : (
         <Pressable
           testID="connections-add-custom"
-          aria-label="添加 MCP 服务器"
+          aria-label={m.addCustom}
           onPress={() => setAdding(true)}
           flexDirection="row"
           items="center"
@@ -103,8 +107,8 @@ function ConnectionList({ selectedKey }: { selectedKey: string | null }) {
         >
           <ServiceMark service="custom" size={24} />
           {/* spacing-exempt: 链接字号 */}
-          <Text size="13" weight="bold" tone="accent">+ 添加 MCP 服务器</Text>
-          <Text size="note" tone="muted">任何支持 OAuth 的远程 MCP 服务器</Text>
+          <Text size="13" weight="bold" tone="accent">{m.addCustomLink}</Text>
+          <Text size="note" tone="muted">{m.addCustomHint}</Text>
         </Pressable>
       )}
     </Column>
@@ -120,14 +124,17 @@ function ConnectionRow({ connection, divider, selected, flowOpen, onOpen, onStar
   onStartFlow: () => void;
   onCloseFlow: () => void;
 }) {
-  const status = connectionStatus(connection);
-  const second = connectionSecondLine(connection);
+  const locale = useLocale();
+  const m = useMessages(connectionsMessages);
+  const status = connectionStatus(connection, locale);
+  const second = connectionSecondLine(connection, locale);
   const unavailable = connection.state === 'unavailable';
   // 右边的按钮：要重新授权的写「重新授权」，可以连接的写「连接」，要先配置的写「设置」。
-  const action = connectionNeedsUser(connection) ? '重新授权'
-    : connection.state === 'not_connected' ? '连接'
-    : connection.state === 'needs_setup' ? '设置'
+  const actionKind = connectionNeedsUser(connection) ? 'reauthorize'
+    : connection.state === 'not_connected' ? 'connect'
+    : connection.state === 'needs_setup' ? 'setUp'
     : null;
+  const action = actionKind ? m[actionKind] : null;
   // 已连接的行点开详情；别的行没有详情可看，按钮就是入口。
   const opensDetail = connection.state === 'connected' || connection.state === 'degraded' || connection.state === 'needs_reauth';
   // 包在 Pressable 里时不给 flex：Pressable 已经在横向撑满，它是纵向的容器，里面的 Row 再写 flex 1，
@@ -151,7 +158,7 @@ function ConnectionRow({ connection, divider, selected, flowOpen, onOpen, onStar
     <Column testID={`connection-row-${connection.key}`} borderTopWidth={divider ? 1 : 0} borderTopColor="border" bg={selected ? 'accent-wash' : 'surface'}>
       <Row items="center" gap="side-item" px="row-x" py="row-y">
         {opensDetail ? (
-          <Pressable testID={`connection-open-${connection.key}`} aria-label={`查看 ${connection.label}`} onPress={onOpen} flex={1} minW={0}>
+          <Pressable testID={`connection-open-${connection.key}`} aria-label={m.view(connection.label)} onPress={onOpen} flex={1} minW={0}>
             {body}
           </Pressable>
         ) : body}
@@ -159,8 +166,8 @@ function ConnectionRow({ connection, divider, selected, flowOpen, onOpen, onStar
           <Button
             testID={`connection-action-${connection.key}`}
             label={action}
-            variant={action === '连接' ? 'soft' : 'outline'}
-            tone={action === '连接' ? 'accent' : 'neutral'}
+            variant={actionKind === 'connect' ? 'soft' : 'outline'}
+            tone={actionKind === 'connect' ? 'accent' : 'neutral'}
             size="sm"
             onPress={onStartFlow}
           />

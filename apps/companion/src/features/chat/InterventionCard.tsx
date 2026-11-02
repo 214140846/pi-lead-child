@@ -8,8 +8,10 @@ import type {
 } from '@pi-lead-child/protocol';
 import { ticketNeedsUserLabel } from '@pi-lead-child/protocol';
 
+import { useLocale, type Locale } from '@/i18n';
 import type { InterventionCommandState } from '../../state/types';
 import { checkpointDisplayTitle, checkpointSourceLabel } from './CheckpointCard';
+import { interventionMessages } from './intervention.messages';
 import { MarkdownMessage } from './MarkdownMessage';
 import { resolvedByLabel } from './resolvedByLabel';
 import { DisclosureView } from '../genui/Disclosure';
@@ -40,24 +42,17 @@ export type InterventionCardViewModel = {
   resolvedByLabel: string | null;
 };
 
-const stateLabel: Record<KernelIntervention['state'], string> = {
-  pending: '需要你介入',
-  approved: '已授权',
-  rejected: '已拒绝',
-  resolved: '已解决',
-  dismissed: '已暂缓',
-  expired: '已过期',
-};
-
-export function buildInterventionCardViewModel(intervention: KernelIntervention, leadName: string): InterventionCardViewModel {
+// 各个状态的名字在 intervention.messages.ts（state）。
+export function buildInterventionCardViewModel(intervention: KernelIntervention, leadName: string, locale: Locale): InterventionCardViewModel {
+  const m = interventionMessages(locale);
   const actions: InterventionActionViewModel[] = intervention.kind === 'approval'
     ? intervention.actions.map((action) => ({
       id: action,
       label: action === 'approve'
-        ? '授权并让它继续'
+        ? m.approveAndContinue
         : action === 'approve_session'
-          ? '本工单同类免批'
-          : '拒绝',
+          ? m.approveSession
+          : m.reject,
       tone: action === 'approve' ? 'primary' : action === 'reject' ? 'danger' : 'secondary',
     }))
     : intervention.actions.map((action, index) => ({
@@ -71,14 +66,14 @@ export function buildInterventionCardViewModel(intervention: KernelIntervention,
     detail: intervention.detail,
     // 等你处理的介入和收件箱、状态标签同一种说法：「待你决定」「待审批」（2026-10-16）。
     stateLabel: intervention.state === 'pending'
-      ? ticketNeedsUserLabel(intervention.kind === 'approval' ? 'approval' : 'decision')
-      : stateLabel[intervention.state],
+      ? ticketNeedsUserLabel(intervention.kind === 'approval' ? 'approval' : 'decision', locale)
+      : m.state[intervention.state],
     pending: intervention.state === 'pending',
     actions,
-    resolutionText: interventionResolutionText(intervention, leadName),
+    resolutionText: interventionResolutionText(intervention, leadName, locale),
     resolvedByLabel: intervention.state === 'pending' || intervention.state === 'expired'
       ? null
-      : resolvedByLabel(intervention.resolvedBy, leadName),
+      : resolvedByLabel(intervention.resolvedBy, leadName, locale),
   };
 }
 
@@ -96,14 +91,16 @@ export function interventionDisplayTitle(
 export function buildInterventionActionCommand(
   intervention: KernelIntervention,
   action: InterventionActionKey,
-  response?: string,
+  response: string | undefined,
+  locale: Locale,
 ): ResolveKernelInterventionRequest {
-  if (intervention.state !== 'pending') throw new Error('该介入请求已不再等待处理');
+  const m = interventionMessages(locale).error;
+  if (intervention.state !== 'pending') throw new Error(m.notPending);
   if (intervention.kind === 'approval') {
     if (action !== 'approve' && action !== 'reject' && action !== 'approve_session') {
-      throw new Error('审批操作无效');
+      throw new Error(m.invalidApproval);
     }
-    if (!intervention.actions.includes(action)) throw new Error('审批操作当前不可用');
+    if (!intervention.actions.includes(action)) throw new Error(m.approvalUnavailable);
     return { authority: 'approval', decision: action };
   }
 
@@ -111,24 +108,24 @@ export function buildInterventionActionCommand(
     const optionId = action.slice('option:'.length);
     const offered = intervention.actions.some((candidate) =>
       candidate.kind === 'select' && candidate.optionId === optionId);
-    if (!offered) throw new Error('决策选项当前不可用');
+    if (!offered) throw new Error(m.optionUnavailable);
     return { authority: 'decision_request', decision: 'select', optionId };
   }
   if (action === 'respond') {
     if (!intervention.actions.some((candidate) => candidate.kind === 'respond')) {
-      throw new Error('自定义回复当前不可用');
+      throw new Error(m.respondUnavailable);
     }
     const resolution = response?.trim() ?? '';
-    if (!resolution) throw new Error('请输入回复内容');
+    if (!resolution) throw new Error(m.emptyReply);
     return { authority: 'decision_request', decision: 'respond', resolution };
   }
   if (action === 'dismiss') {
     if (!intervention.actions.some((candidate) => candidate.kind === 'dismiss')) {
-      throw new Error('暂不处理当前不可用');
+      throw new Error(m.dismissUnavailable);
     }
     return { authority: 'decision_request', decision: 'dismiss' };
   }
-  throw new Error('决策操作无效');
+  throw new Error(m.invalidDecision);
 }
 
 // 2026-10-27 按画布「child 来信」重画（对象组件 Intervention → 模式「审批」「决定」「结束行」，主题 11.3–11.5）：
@@ -157,12 +154,14 @@ export function InterventionCard({
   onOpenTicket: (ticketId: number) => void;
   onResolve?: (command: ResolveKernelInterventionRequest) => Promise<void>;
 }) {
+  const locale = useLocale();
+  const m = interventionMessages(locale);
   const [customOpen, setCustomOpen] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
   const [response, setResponse] = useState('');
   const [selected, setSelected] = useState<string | null>(null);
   const full = intervention && isFullIntervention(intervention) ? intervention : undefined;
-  const model = full ? buildInterventionCardViewModel(full, leadName) : null;
+  const model = full ? buildInterventionCardViewModel(full, leadName, locale) : null;
   const ticketId = intervention?.ticketId ?? checkpoint?.ticketId;
   const pending = full?.state === 'pending' || (!full && intervention !== undefined && 'requiresAction' in intervention && intervention.requiresAction);
   const submitting = commandState?.state === 'pending';
@@ -175,7 +174,7 @@ export function InterventionCard({
     setValidationError(null);
     let command: ResolveKernelInterventionRequest;
     try {
-      command = buildInterventionActionCommand(full, action, customResponse);
+      command = buildInterventionActionCommand(full, action, customResponse, locale);
     } catch (reason) {
       setValidationError(reason instanceof Error ? reason.message : String(reason));
       return;
@@ -185,7 +184,7 @@ export function InterventionCard({
 
   const who = ticketId !== undefined ? `child #${ticketId}` : 'child';
   if (model && !model.pending) {
-    const summary = resolvedSummary(model, full!, requestWords(full!, checkpoint));
+    const summary = resolvedSummary(model, full!, requestWords(full!, checkpoint), locale);
     return (
       <Card w="100%" rounded="xl" overflow="hidden" borderWidth={1} borderColor="border" testID={`intervention-${full!.id}`}>
         <DisclosureView
@@ -210,10 +209,10 @@ export function InterventionCard({
                 <Row items="center" gap="inline-item">
                   {model.resolvedByLabel ? (
                     <Text testID="intervention-resolved-by" size="meta" tone="secondary">
-                      {`${model.resolvedByLabel} 回答${full!.resolvedAt ? ` · ${clock(full!.resolvedAt)}` : ''}`}
+                      {m.answeredBy(model.resolvedByLabel, full!.resolvedAt ? clock(full!.resolvedAt) : null)}
                     </Text>
                   ) : null}
-                  {ticketId !== undefined ? <Button label={`打开工单 #${ticketId}`} onPress={() => onOpenTicket(ticketId)} variant="link" size="xs" /> : null}
+                  {ticketId !== undefined ? <Button label={m.openTicket(ticketId)} onPress={() => onOpenTicket(ticketId)} variant="link" size="xs" /> : null}
                 </Row>
               </Column>
             </Column>
@@ -221,7 +220,7 @@ export function InterventionCard({
         />
         {/* 会话外（例如工单详情）照旧可以直接打开工单。 */}
         {showOpenTicket && ticketId !== undefined ? (
-          <Box px="card" pb="card-row"><Button label={`打开工单 #${ticketId}`} onPress={() => onOpenTicket(ticketId)} variant="link" size="xs" /></Box>
+          <Box px="card" pb="card-row"><Button label={m.openTicket(ticketId)} onPress={() => onOpenTicket(ticketId)} variant="link" size="xs" /></Box>
         ) : null}
       </Card>
     );
@@ -230,7 +229,7 @@ export function InterventionCard({
   if (!pending && ticketId !== undefined) {
     return (
       <Card w="100%" rounded="xl" borderWidth={1} borderColor="border">
-        <EndLine state="介入已更新" tone="muted" subject={who} result={checkpoint?.title ?? `工单 #${ticketId}`} at={null} />
+        <EndLine state={m.updated} tone="muted" subject={who} result={checkpoint?.title ?? m.ticket(ticketId)} at={null} />
         <Column px="card" pb="card" gap="card-row">
           <CheckpointEvidence checkpoint={checkpoint} />
           {showOpenTicket ? <TicketButton ticketId={ticketId} onOpenTicket={onOpenTicket} /> : null}
@@ -244,7 +243,7 @@ export function InterventionCard({
   const optionActions = model?.actions.filter((action) => action.id.startsWith('option:')) ?? [];
   const otherActions = model?.actions.filter((action) => !action.id.startsWith('option:')) ?? [];
   const chosen = selected ?? (optionActions[0]?.id.slice('option:'.length) ?? null);
-  const waited = full ? waitedWords(full.createdAt) : null;
+  const waited = full ? waitedWords(full.createdAt, locale) : null;
   return (
     <Column w="100%" gap="group-label">
       {checkpoint && !full ? <SourceLabel>{checkpointSourceLabel(checkpoint)}</SourceLabel> : null}
@@ -252,10 +251,10 @@ export function InterventionCard({
         {/* 头部：琥珀点、「待审批」「待你决定」、child #160 要做什么，右边时间和等了多久（主题 11.4）。 */}
         <Row items="center" gap="inline-item" minW={0}>
           <Box w={6} h={6} rounded="full" bg="warning" />
-          <Text size="label" weight="bold" tone="warning-dark" shrink={0}>{model?.stateLabel ?? '需要你介入'}</Text>
+          <Text size="label" weight="bold" tone="warning-dark" shrink={0}>{model?.stateLabel ?? m.state.pending}</Text>
           <Text flex={1} minW={0} size="card-title" numberOfLines={2}>
             <Text size="card-title" weight="bold">{who}</Text>
-            {`${full && full.kind !== 'approval' ? '：' : ' '}${full ? requestWords(full, checkpoint) : checkpoint?.title ?? ''}`}
+            {`${full && full.kind !== 'approval' ? m.colon : ' '}${full ? requestWords(full, checkpoint) : checkpoint?.title ?? ''}`}
           </Text>
           {full ? <Text size="meta" tone="secondary" shrink={0}>{[clock(full.createdAt), waited].filter(Boolean).join(' · ')}</Text> : null}
         </Row>
@@ -268,7 +267,7 @@ export function InterventionCard({
             {checkpoint?.summary ? <Text size="meta" tone="secondary" numberOfLines={1}>{checkpoint.summary}</Text> : null}
           </Row>
         ) : full ? null : (
-          <MarkdownMessage markdown={checkpoint?.summary ?? '正在同步可操作详情。'} size="secondary" tone="secondary" />
+          <MarkdownMessage markdown={checkpoint?.summary ?? m.syncingDetail} size="secondary" tone="secondary" />
         )}
         {options.length ? (
           // 单选行：选项名 600，代价写在同一行；选中的行 accent-wash 底（主题 11.3）。
@@ -304,10 +303,10 @@ export function InterventionCard({
         ) : null}
         <CheckpointEvidence checkpoint={checkpoint} />
         {commandState?.state === 'succeeded' ? (
-          <Text size="note" weight="medium" tone="success-dark">操作已提交，正在同步权威状态。</Text>
+          <Text size="note" weight="medium" tone="success-dark">{m.submitted}</Text>
         ) : null}
         {!full ? (
-          <Text size="note" weight="medium" tone="warning-dark">当前连接没有返回可操作详情；不会根据安全引用推测或代替你执行。</Text>
+          <Text size="note" weight="medium" tone="warning-dark">{m.noDetail}</Text>
         ) : null}
         {customOpen && full && full.kind !== 'approval' && full.state === 'pending' ? (
           <Column gap="card-row">
@@ -318,11 +317,11 @@ export function InterventionCard({
               multiline
               height={70}
               size="sm"
-              placeholder="写给 child 的一句明确决定"
+              placeholder={m.replyPlaceholder}
             />
             <Row gap="actions">
-              <ActionButton disabled={disabled} label={submitting ? '提交中…' : '提交决定'} onPress={() => execute('respond', response)} tone="primary" />
-              <ActionButton disabled={disabled} label="取消" onPress={() => setCustomOpen(false)} tone="quiet" />
+              <ActionButton disabled={disabled} label={submitting ? m.submitting : m.submitDecision} onPress={() => execute('respond', response)} tone="primary" />
+              <ActionButton disabled={disabled} label={m.cancel} onPress={() => setCustomOpen(false)} tone="quiet" />
             </Row>
           </Column>
         ) : model?.actions.length ? (
@@ -332,7 +331,7 @@ export function InterventionCard({
               <ActionButton
                 key={action.id}
                 disabled={disabled}
-                label={submitting ? '提交中…' : APPROVAL_LABELS[action.id] ?? action.label}
+                label={submitting ? m.submitting : approvalLabel(action.id, locale) ?? action.label}
                 onPress={() => execute(action.id)}
                 tone={action.id === 'approve' ? 'primary' : action.id === 'approve_session' ? 'secondary' : 'quiet'}
               />
@@ -341,7 +340,7 @@ export function InterventionCard({
                 {optionActions.length ? (
                   <ActionButton
                     disabled={disabled || !chosen}
-                    label={submitting ? '提交中…' : '就这样定'}
+                    label={submitting ? m.submitting : m.decide}
                     onPress={() => chosen && execute(`option:${chosen}`)}
                     tone="primary"
                   />
@@ -350,7 +349,7 @@ export function InterventionCard({
                   <ActionButton
                     key={action.id}
                     disabled={disabled}
-                    label={action.id === 'respond' ? '自己写一句' : action.id === 'dismiss' ? '先不管' : action.label}
+                    label={action.id === 'respond' ? m.writeOwn : action.id === 'dismiss' ? m.notNow : action.label}
                     onPress={() => {
                       if (action.id === 'respond') setCustomOpen(true);
                       else execute(action.id);
@@ -371,7 +370,10 @@ export function InterventionCard({
 
 // 审批的三个按钮：按后果从轻到重（画布 child 状态 1）。
 const APPROVAL_ORDER: readonly InterventionActionKey[] = ['approve', 'approve_session', 'reject'];
-const APPROVAL_LABELS: Partial<Record<InterventionActionKey, string>> = { approve: '授权这一次', approve_session: '本工单同类免批', reject: '拒绝' };
+function approvalLabel(id: InterventionActionKey, locale: Locale): string | undefined {
+  const m = interventionMessages(locale);
+  return id === 'approve' ? m.approveOnce : id === 'approve_session' ? m.approveSession : id === 'reject' ? m.reject : undefined;
+}
 
 function clock(at: string | null): string | null {
   if (!at) return null;
@@ -381,11 +383,12 @@ function clock(at: string | null): string | null {
 }
 
 // 「等了 4 分钟」：从请求发出到现在。
-function waitedWords(createdAt: string): string | null {
+function waitedWords(createdAt: string, locale: Locale): string | null {
   const ms = Date.now() - Date.parse(createdAt);
   if (!Number.isFinite(ms) || ms < 60_000) return null;
   const minutes = Math.round(ms / 60_000);
-  return minutes < 60 ? `等了 ${minutes} 分钟` : minutes < 1440 ? `等了 ${Math.round(minutes / 60)} 小时` : `等了 ${Math.round(minutes / 1440)} 天`;
+  const waited = interventionMessages(locale).waited;
+  return minutes < 60 ? waited.minutes(minutes) : minutes < 1440 ? waited.hours(Math.round(minutes / 60)) : waited.days(Math.round(minutes / 1440));
 }
 
 // child 要什么，用它自己的话：审批是 child 写的那一步（checkpoint 的标题），决定和提问是它问的那句。
@@ -396,9 +399,9 @@ function requestWords(intervention: KernelIntervention, checkpoint?: KernelCheck
 }
 
 // 结束行的一句结果：child 要什么 · 谁回答了（回答里有表格时写附几张表）。
-function resolvedSummary(model: InterventionCardViewModel, intervention: KernelIntervention, request: string): string {
+function resolvedSummary(model: InterventionCardViewModel, intervention: KernelIntervention, request: string, locale: Locale): string {
   const tables = (model.resolutionText?.match(/^\s*\|.*\|\s*\n\s*\|[\s:|-]+\|/gm) ?? []).length;
-  const by = model.resolvedByLabel ? `${model.resolvedByLabel} 已回答${tables ? `，附 ${tables} 张表` : ''}` : model.stateLabel;
+  const by = model.resolvedByLabel ? interventionMessages(locale).answered(model.resolvedByLabel, tables) : model.stateLabel;
   return intervention.kind === 'approval' ? `${request} · ${model.resolutionText ?? model.stateLabel}` : `${request} · ${by}`;
 }
 
@@ -425,11 +428,12 @@ function SourceLabel({ children }: { children: string }) {
 }
 
 function CheckpointEvidence({ checkpoint }: { checkpoint?: KernelCheckpoint }) {
+  const m = interventionMessages(useLocale());
   const evidence = buildInterventionEvidence(checkpoint);
   if (evidence.length === 0) return null;
   return (
     <Column w="100%" borderTopWidth={1} borderTopColor="border-soft">
-      <Text size="eyebrow" weight="bold" tone="secondary">诊断证据</Text>
+      <Text size="eyebrow" weight="bold" tone="secondary">{m.evidence}</Text>
       {evidence.map((fact, index) => (
         <Row key={`${fact.label}:${index}`} minH={32} items="flex-start" gap="inline-item" py="row-y" borderTopWidth={1} borderTopColor="border-soft">
           <Box w={70} shrink={0}>
@@ -461,9 +465,10 @@ function ActionButton({ disabled, label, onPress, tone }: {
 }
 
 function TicketButton({ ticketId, onOpenTicket }: { ticketId: number; onOpenTicket: (ticketId: number) => void }) {
+  const m = interventionMessages(useLocale());
   return (
     <Box self="flex-start">
-      <Button label={`打开工单 #${ticketId}`} onPress={() => onOpenTicket(ticketId)} variant="link" />
+      <Button label={m.openTicket(ticketId)} onPress={() => onOpenTicket(ticketId)} variant="link" />
     </Box>
   );
 }
@@ -474,23 +479,24 @@ function isFullIntervention(
   return 'title' in intervention && 'actions' in intervention;
 }
 
-function interventionResolutionText(intervention: KernelIntervention, leadName: string): string | null {
+function interventionResolutionText(intervention: KernelIntervention, leadName: string, locale: Locale): string | null {
+  const m = interventionMessages(locale);
   if (intervention.state === 'pending') return null;
-  if (intervention.state === 'expired') return `请求已过期，等待 ${leadName} 重新评估。`;
+  if (intervention.state === 'expired') return m.expired(leadName);
   if (intervention.kind === 'approval') {
-    if (!intervention.resolution) return stateLabel[intervention.state];
+    if (!intervention.resolution) return m.state[intervention.state];
     const decision = intervention.resolution.decision === 'reject'
-      ? '已拒绝'
+      ? m.resolution.rejected
       : intervention.resolution.sessionExempt
-        ? '已授权，本工单同类操作免批'
-        : '已授权本次操作';
+        ? m.resolution.approvedSession
+        : m.resolution.approvedOnce;
     return decision;
   }
-  if (!intervention.resolution) return stateLabel[intervention.state];
+  if (!intervention.resolution) return m.state[intervention.state];
   const value = intervention.resolution.kind === 'option'
     ? intervention.options.find((option) => option.id === intervention.resolution?.optionId)?.label
     : intervention.resolution.kind === 'text'
       ? intervention.resolution.text
-      : '已暂不处理';
+      : m.resolution.dismissed;
   return value ?? null;
 }

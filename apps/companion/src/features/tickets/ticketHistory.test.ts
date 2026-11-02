@@ -70,10 +70,10 @@ describe('ticket history presentation', () => {
     });
 
     expect(lifecycle.map((item) => item.title)).toEqual([
-      '创建工单',
-      '已取消（draft → cancelled）',
-      '待确认（cancelled → draft）',
-      '已确认 / 就绪（draft → ready）',
+      'Created the ticket',
+      'Cancelled (draft → cancelled)',
+      'Waiting for confirmation (cancelled → draft)',
+      'Confirmed / ready (draft → ready)',
     ]);
     expect(buildAttemptPresentation([])).toEqual([]);
     expect(lifecycle[1]).toMatchObject({ actor: 'Paimon', reason: '需求暂缓', sourceTicketId: 19 });
@@ -104,9 +104,9 @@ describe('ticket history presentation', () => {
     });
 
     expect(lifecycle.map((item) => item.title)).toEqual([
-      '创建工单',
-      '返工已请求，等待派发',
-      'Run #30 开始启动',
+      'Created the ticket',
+      'Rework is requested and waits for dispatch',
+      'Run #30 is starting',
       'Run dispatch failed',
     ]);
     expect(lifecycle[2]).toMatchObject({ reason: 'codex · gpt-5', attemptId: 30 });
@@ -127,7 +127,7 @@ describe('ticket history presentation', () => {
       }],
     });
 
-    expect(lifecycle[1]).toMatchObject({ title: '原来的会话已过期，已开新会话', reason, attemptId: 71 });
+    expect(lifecycle[1]).toMatchObject({ title: 'The old session expired. A new session started', reason, attemptId: 71 });
   });
 
   it('projects multiple failed runs and tolerates missing optional fields', () => {
@@ -137,8 +137,8 @@ describe('ticket history presentation', () => {
     ]);
 
     expect(attempts.map((item) => item.id)).toEqual([1, 2]);
-    expect(attempts[0]).toMatchObject({ runtime: 'codex', model: 'gpt-5', result: '失败（exit 1）' });
-    expect(attempts[1]).toMatchObject({ runtime: '未知 runtime', model: '未记录 model', failureFull: null });
+    expect(attempts[0]).toMatchObject({ runtime: 'codex', model: 'gpt-5', result: 'Failed (exit 1)' });
+    expect(attempts[1]).toMatchObject({ runtime: 'Unknown runtime', model: 'Model not recorded', failureFull: null });
     expect(attempts[0]?.choice).toBe('codex · gpt-5');
   });
 
@@ -157,7 +157,7 @@ describe('ticket history presentation', () => {
         sessionCursor: null, createdAt: '2026-08-11T05:00:00.000Z',
       }],
     });
-    expect(lifecycle[1]).toMatchObject({ title: 'Run #30 开始启动', reason: 'claude · opus · effort max' });
+    expect(lifecycle[1]).toMatchObject({ title: 'Run #30 is starting', reason: 'claude · opus · effort max' });
   });
 
   it('labels relation provenance without merging another ticket history', () => {
@@ -204,23 +204,28 @@ describe('ticket history presentation', () => {
     expect(buildRelationPresentation(relatedDetail, tickets, 'Paimon')).toEqual([
       expect.objectContaining({
         ticketId: 40,
-        label: '实施任务',
-        groupLabel: '实施',
+        label: 'Implementation task',
+        groupLabel: 'Implementation',
         sourceTicketId: 40,
         title: '失败执行 B',
-        stateLabel: '已撤销',
-        detail: expect.stringContaining('#40 已完成'),
+        stateLabel: 'Revoked',
+        detail: expect.stringContaining('#40 is done'),
       }),
       expect.objectContaining({
         ticketId: 38,
-        label: '相关事项',
-        groupLabel: '相关事项',
+        label: 'Related',
+        groupLabel: 'Related',
         sourceTicketId: 19,
         title: '失败执行 A',
-        stateLabel: '有效',
-        detail: '原因：same investigation',
+        stateLabel: 'Active',
+        detail: 'Reason: same investigation',
       }),
     ]);
+  });
+
+  it('writes the lifecycle in Chinese when the interface language is Chinese', () => {
+    const lifecycle = buildLifecyclePresentation({ ticketId: 19, leadName: 'Paimon', detail, activities: [], locale: 'zh' });
+    expect(lifecycle.map((item) => item.title)).toEqual(['创建工单']);
   });
 
   it('safely truncates long failure text and preserves the expandable full value', () => {

@@ -55,12 +55,12 @@ function render(current: TicketSummary) {
 describe('a run failure in the Lead conversation', () => {
   it('is one quiet line while Lead handles it', () => {
     const card = render(ticket({ pendingApprovalCount: 0, blockerCount: 0, leadHandling: true }));
-    expect(card.textContent).toContain('Paimon 正在处理');
-    expect(within(card).queryByRole('button', { name: /打开工单/ })).toBeNull();
+    expect(card.textContent).toContain('Paimon is handling it');
+    expect(within(card).queryByRole('button', { name: /Open ticket/ })).toBeNull();
   });
 
   it('offers to open the ticket once it needs the user', () => {
     const card = render(ticket({ pendingApprovalCount: 0, blockerCount: 1 }));
-    expect(within(card).getByRole('button', { name: '打开工单 #66' })).toBeTruthy();
+    expect(within(card).getByRole('button', { name: 'Open ticket #66' })).toBeTruthy();
   });
 });

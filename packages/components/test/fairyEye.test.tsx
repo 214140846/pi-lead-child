@@ -94,8 +94,8 @@ describe('FairyEye motion spec', () => {
 describe('FairyEye', () => {
   it('names itself and says when it is thinking', () => {
     renderUI(<FairyEye name="Paimon" state="thinking" testID="fairy" />);
-    expect(screen.getByTestId('fairy').getAttribute('aria-label')).toBe('Paimon 在想');
-    expect(screen.getByRole('img', { name: 'Paimon 在想' })).toBeTruthy();
+    expect(screen.getByTestId('fairy').getAttribute('aria-label')).toBe('Paimon is thinking');
+    expect(screen.getByRole('img', { name: 'Paimon is thinking' })).toBeTruthy();
   });
 
   it('never claims to think in a still tone', () => {

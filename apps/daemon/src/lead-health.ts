@@ -5,8 +5,9 @@
 //     或者上下文压缩失败（2026-10-17，spec D9），到下一次成功的模型调用为止。
 // 离线（daemon 本身连不上）由客户端按连接状态判断，这里不管。
 import {
-  classifyLeadModelError, DEFAULT_LEAD_NAME, leadModelFailureReason, redactSecretText, type LeadStatus,
+  classifyLeadModelError, DEFAULT_LEAD_NAME, DEFAULT_LOCALE, leadModelFailureReason, redactSecretText, type LeadStatus, type Locale,
 } from "@pi-lead-child/protocol";
+import { leadHealthMessages } from "./lead-health.messages.js";
 
 export interface LeadHealthTracker {
   status(): LeadStatus;
@@ -27,9 +28,9 @@ export interface LeadHealthTracker {
   compactionFailed(detail: string): void;
 }
 
-// 上下文压缩失败时顶栏的原因。name 是 Lead 的名字（设置 → 身份与风格）。
-export function leadCompactionFailedReason(name: string): string {
-  return `${name} 的上下文压缩失败`;
+// 上下文压缩失败时顶栏的原因。name 是 Lead 的名字（设置 → 身份与风格），locale 是用户现在选的语言。
+export function leadCompactionFailedReason(name: string, locale: Locale): string {
+  return leadHealthMessages(locale).compactionFailed(name);
 }
 
 // 回答被截成空的：stopReason 是 length，没有文字，也没有调工具。上下文满了时 pi 只给回答留 1 个 token（pi-ai 的
@@ -89,10 +90,13 @@ export function createLeadHealthTracker(options: {
   savePatrol?: (at: Date) => void;
   // 原因里称呼 Lead 用的名字（设置 → 身份与风格）。不给时用缺省的名字。
   leadName?: () => string;
+  // 原因（顶栏显示）用的语言：用户现在选的界面语言。不给时用缺省的语言。
+  locale?: () => Locale;
   now?: () => Date;
 }): LeadHealthTracker {
   const now = options.now ?? (() => new Date());
   const name = options.leadName ?? (() => DEFAULT_LEAD_NAME);
+  const locale = options.locale ?? (() => DEFAULT_LOCALE);
   // 模型调用连续失败：从什么时候开始、几次、最近一次的原文。
   let since: Date | null = null;
   let failures = 0;
@@ -122,8 +126,8 @@ export function createLeadHealthTracker(options: {
       since: (failures > 0 ? since : compaction?.since)?.toISOString() ?? null,
       failures,
       reason: showCompaction
-        ? leadCompactionFailedReason(name())
-        : leadModelFailureReason(classifyLeadModelError(lastError ?? ""), name()),
+        ? leadCompactionFailedReason(name(), locale())
+        : leadModelFailureReason(classifyLeadModelError(lastError ?? ""), name(), locale()),
       detail: showCompaction ? compaction!.detail : lastError,
       nextAttemptAt: next?.toISOString() ?? null,
       lastSuccessAt: lastSuccessAt?.toISOString() ?? null,

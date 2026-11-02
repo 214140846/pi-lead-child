@@ -2,7 +2,10 @@ import { Badge, Box, Button, Card, Column, Icon, Pressable, Row, Text, type Colo
 import type { ProjectOverview } from '@pi-lead-child/protocol';
 import { useState, type ReactNode } from 'react';
 
+import { useLocale, useMessages } from '@/i18n';
+
 import { buildProjectCards, type ProjectCardView, type ProjectCountKey } from './projectModel';
+import { projectsMessages } from './projects.messages';
 import { UNASSIGNED_PROJECT } from './model';
 
 const palette: ColorToken[] = ['accent', 'warning', 'success', 'danger', 'violet', 'cyan'];
@@ -40,6 +43,7 @@ function SectionTitle({ label, count }: { label: string; count: number }) {
 
 // 在推进的项目：一项目一卡。分布条、图例、Lead 写的一句话、最近的截止、累计花费。
 function ProjectCard({ card, onSelect }: { card: ProjectCardView; onSelect?: (name: string) => void }) {
+  const m = useMessages(projectsMessages);
   return (
     <Pressable
       testID={`project-row-${card.id}`}
@@ -87,7 +91,7 @@ function ProjectCard({ card, onSelect }: { card: ProjectCardView; onSelect?: (na
           {card.spend ? (
             <Row items="baseline" gap="inline-item">
               <Text size="meta" mono weight="bold">{card.spend}</Text>
-              <Text size="meta" tone="muted">累计</Text>
+              <Text size="meta" tone="muted">{m.total}</Text>
             </Row>
           ) : null}
         </Row>
@@ -153,6 +157,8 @@ function Fold({ testID, label, cards, open, onToggle, children }: {
 // 项目 tab（阶段 2，方向 A）。有未结束工单的项目一项目一卡，等你的在前；没有未结束工单的收进「安静的项目」，
 // 可以归档；归档的收进「已归档」，可以恢复。
 export function ProjectList({ overviews, onSelect, onSetArchived }: ProjectListProps) {
+  const m = useMessages(projectsMessages);
+  const locale = useLocale();
   const [quietOpen, setQuietOpen] = useState(false);
   const [archivedOpen, setArchivedOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -160,12 +166,12 @@ export function ProjectList({ overviews, onSelect, onSetArchived }: ProjectListP
   if (overviews === null) {
     return (
       <Column testID="project-list" px="section-label-x" py="banner-y">
-        <Text size="secondary" tone="muted">正在读取项目</Text>
+        <Text size="secondary" tone="muted">{m.loading}</Text>
       </Column>
     );
   }
 
-  const cards = buildProjectCards(overviews);
+  const cards = buildProjectCards(overviews, undefined, locale);
   const setArchived = (card: ProjectCardView, archived: boolean) => {
     setError(null);
     void onSetArchived?.(Number(card.id), archived).catch((cause: unknown) => {
@@ -175,37 +181,37 @@ export function ProjectList({ overviews, onSelect, onSetArchived }: ProjectListP
 
   return (
     <Column testID="project-list" gap="stacked-card" w="100%">
-      <SectionTitle label="在推进" count={cards.active.length} />
+      <SectionTitle label={m.active} count={cards.active.length} />
       {cards.active.length === 0 ? (
         <Card rounded="xl" p="card">
-          <Text size="secondary" tone="secondary">没有在推进的项目。</Text>
+          <Text size="secondary" tone="secondary">{m.noActive}</Text>
         </Card>
       ) : null}
       {cards.active.map((card) => <ProjectCard key={card.id} card={card} onSelect={onSelect} />)}
       {error ? <Text size="secondary" color="danger-dark" px="section-label-x">{error}</Text> : null}
       {cards.quiet.length > 0 ? (
-        <Fold testID="projects-quiet" label="安静的项目" cards={cards.quiet} open={quietOpen} onToggle={() => setQuietOpen((open) => !open)}>
+        <Fold testID="projects-quiet" label={m.quiet} cards={cards.quiet} open={quietOpen} onToggle={() => setQuietOpen((open) => !open)}>
           {cards.quiet.map((card) => (
             <FoldedRow
               key={card.id}
               card={card}
               onSelect={onSelect}
               action={card.canArchive && onSetArchived
-                ? { testID: `project-archive-${card.id}`, label: '归档', onPress: () => setArchived(card, true) }
+                ? { testID: `project-archive-${card.id}`, label: m.archive, onPress: () => setArchived(card, true) }
                 : null}
             />
           ))}
         </Fold>
       ) : null}
       {cards.archived.length > 0 ? (
-        <Fold testID="projects-archived" label="已归档" cards={cards.archived} open={archivedOpen} onToggle={() => setArchivedOpen((open) => !open)}>
+        <Fold testID="projects-archived" label={m.archived} cards={cards.archived} open={archivedOpen} onToggle={() => setArchivedOpen((open) => !open)}>
           {cards.archived.map((card) => (
             <FoldedRow
               key={card.id}
               card={card}
               onSelect={onSelect}
               action={onSetArchived
-                ? { testID: `project-restore-${card.id}`, label: '恢复', onPress: () => setArchived(card, false) }
+                ? { testID: `project-restore-${card.id}`, label: m.restore, onPress: () => setArchived(card, false) }
                 : null}
             />
           ))}

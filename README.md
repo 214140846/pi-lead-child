@@ -1,140 +1,286 @@
 # pi-lead-child
 
-pi-lead-child 是一个常驻的个人助理系统。Lead agent 接收你的请求，把工作拆成工单，再派给 child agent 执行。设计见 [DESIGN.md](DESIGN.md) 和 [docs/DESIGN-GATEWAY.md](docs/DESIGN-GATEWAY.md)。
+English · [中文](README.zh-CN.md)
 
-## 仓库结构
+**One conversation. One assistant that is always on. You do not manage a pile of agent sessions, and you do not ask each one "is it done yet?"**
 
-仓库是一个 npm workspaces monorepo。`apps/` 放可运行的应用，`packages/` 放职责单一的子包。
+pi-lead-child is an **orchestration pattern built on the [pi](https://github.com/badlogic/pi-mono) agent: the Lead coordinates, the children execute.** The Lead is a long-running agent on pi. It understands you, splits the work, and supervises progress. A child is an agent that starts for one task and does the actual work. A child can be pi, Codex, or Claude Code.
 
-```
-apps/
-  companion/    Expo 应用：web、iOS、Android 三端的工作台界面，是 daemon 的客户端
-  cli/          plc 命令行：终端里的 daemon 客户端，也负责安装、启动和检查 daemon
-  daemon/       常驻服务：coordinatord 入口和组装内核、网关、lead、supervisor 的组合根
-packages/
-  protocol/     daemon 网关和客户端之间的线协议：DTO schema、协议版本、配对
-  client/       网关的 TypeScript 客户端：控制面 HTTP/WebSocket、凭据存储接口
-  components/   三端统一 API 的基础组件库（Tamagui + Expo UI）
-  core/         领域类型、配置、线上词汇和纯领域规则
-  runtime/      agent runtime 适配器（pi、Codex、Claude）、失败分类、进程启动
-  store/        SQLite 持久化：schema、迁移、仓储
-  engine/       编排内核：调度、运行管线、child 管理、恢复
-  gateway/      配对的 HTTP/WebSocket 网关、控制面投影、静态 web 界面托管
-  supervisor/   守护 daemon 的 supervisor、launchd 安装、keychain、plc doctor
-  lead/         lead agent：会话、模型配置、lead 的工具
-```
+The Lead runs on your own computer. You talk only to the Lead, and it is always the same conversation. Many coding agents can work behind it at the same time, but their sessions are the Lead's business, not yours. When you are quiet, the Lead keeps working: it follows up, checks results, and handles messages from every channel. It calls you only when a decision needs you.
 
-## 依赖方向
+---
 
-依赖只能从上层指向下层。各个 app 之间互相不依赖。`apps/daemon/test/package-boundaries.test.ts` 检查这些规则，也检查依赖图没有环。
+## Why pi-lead-child
 
-```
-companion  →  components, client, protocol
-client  →  protocol
-core  →  protocol
-runtime  →  core
-store  →  core, runtime, protocol
-engine  →  core, runtime, store, protocol
-supervisor  →  core, runtime, store, protocol
-gateway  →  core, runtime, store, engine, protocol
-lead  →  core, runtime, store, engine, supervisor, protocol
-daemon  →  所有后端包
-cli  →  client, protocol, core（只用 core 找路径）
-```
+- If the many sessions that Claude Code and Codex open make you tired and lost, and you no longer remember which window does what,
+- If you keep switching between windows only to ask "is it done yet?",
+- If you want a decision from three days ago, and the only way to find it is to read session after session,
+- If every new session makes you explain the background again from the start,
+- If your agent stopped at an approval and waited for you, silently, all night,
+- If colleagues on Slack ask about the same progress again and again, and the answer is already in the tickets and the PRs,
+- If notifications interrupt you all day, but you are afraid to miss the one that matters,
+- If you want an AI that takes the initiative, but not one that talks too much,
 
-`cli` 和 `companion` 一样是 daemon 的客户端。它不打开账本，也不在前台运行内核。
+then maybe you do not need one more agent. Maybe you need an assistant that watches all your agents for you.
 
-## plc 和 daemon
+---
 
-`plc` 通过三条通道和 daemon 通信：
+## The problem: more sessions, more work for you
 
-- 客户端动作走网关，和 companion 用同一个 `@pi-lead-child/client`：建单、列表、事项和 Run 的动作、授权、委托、重检、配对、aish 凭证、聊天。
-- 运行时控制走 `supervisor.sock`：`plc daemon stop/status/restart/upgrade`。
-- 安装、卸载、首次启动、没有 supervisor 时的停止、`plc doctor` 和 `plc lead model/use` 运行 daemon 的运维入口 `apps/daemon/dist/ops.mjs`。
+Most AI agents today are **session-oriented**. One task gets one session. You ask, it answers. When you stop asking, it stops. The better the agents get, the more sessions you open, and the problems grow:
 
-### 网关在哪里监听
+- **You become the dispatcher.** The agents can work in parallel. Your attention cannot. You switch between a dozen windows to see which one finished, which one is stuck, and which one waits for your answer.
+- **A session only waits.** It finishes, fails, or stops at an approval, and you do not know until you look. A question that waited three hours for you may need a one-word answer.
+- **You cannot find things.** Decisions, conclusions, and context are spread across dozens of sessions. To find "the plan we agreed on" three days later, you read them one by one.
+- **Every session starts from zero.** A new session does not know what happened in the old ones, so you explain the background again and again.
+- **Messages come from everywhere.** Slack, CI, reminders, and agent reports each take their own path, and each one competes for your attention.
 
-- 网关总是监听 `127.0.0.1`。没有配置 `PLC_GATEWAY_PORT` 时用 47130；这个端口被占用时改用随机端口。配置了端口时用那个端口，被占用时不改。
-- 网关开到回环之外需要同时配置 `PLC_GATEWAY_HOST` 和 `PLC_GATEWAY_PORT`。只配了 host 时，它只监听回环，并在日志里警告。
-- 配置的具体地址（局域网、Tailscale）另开一个监听，和回环共用端口。开机时这个地址可能还没就绪（例如 launchd 登录后 Tailscale 才连上），所以绑不上时在后台重试：1 秒起，每次翻倍，最多 60 秒一次，直到成功。回环地址一直可用。`plc daemon status` 和 `plc doctor` 显示这个地址的状态。
-- 已经绑上的地址后来消失（网卡断开、Tailscale 退出）时，daemon 不重新绑定。同一个地址回来后，监听通常照常可用。地址换了（例如拿到新的局域网 IP）时，需要重启 daemon。
-- 通配地址（`0.0.0.0`、`::`）不另开监听：网关只开这一个监听，它也包含回环。Linux 上通配地址不能和 `127.0.0.1` 共用一个端口。通配地址绑不上时，网关只监听回环，并在日志里警告；`plc daemon status` 显示 `stopped` 和原因。
-- `plc` 每次请求、每次连接之前，都在 `plc.sock` 上问一次网关的地址，不缓存。
+The capability of the agents is no longer the bottleneck. **Your attention is the bottleneck.** A session-oriented design moves all the cost of managing agents to you.
 
-### 自动拉起
+pi-lead-child solves this problem with four design decisions.
 
-daemon 没有运行时，`plc` 先拉起它。下面两种情况不自动拉起，`plc` 报错并说明原因：
+---
 
-- 用户用 `plc daemon stop` 停过 daemon。没有 supervisor 时，`plc daemon stop` 也把这一点记进 `supervisor-state.json`。要启动，运行 `plc daemon start`。
-- 维护（重启、备份、升级）正在进行。这时 `plc daemon start` 也被拒绝：等维护完成，supervisor 会自己拉起 daemon。
+## 1. Only one conversation
 
-supervisor 在维护途中停掉时，下次启动把那条维护记录记成 `interrupted`，它不再挡住启动。拉起失败时，`plc` 报错并给出排查提示，不直接写账本。
+In pi-lead-child, you have one conversation, and on the other side there is one Lead.
 
-### 凭证和信任边界
+- **The work lives in tickets, not in conversations.** When you give the Lead a task, it opens a ticket and dispatches it to a child agent. The child's sessions, retries, and reviews all attach to the ticket. You do not see those sessions, and you do not manage them.
+- **To find something, ask the Lead.** "What did we decide about that API last week?" The Lead searches the tickets, its notes, and the Slack conversations, and gives you the answer. You do not read a session list.
+- **Status comes from the ledger, not from memory.** The tickets are the ledger, and the conversation is only a cache. When you ask about progress, the Lead reads the ledger first. So it tells you the current state, not the state it remembers.
+- **A long conversation stays clear.** Before the context fills up, the Lead writes the important facts and decisions to its notes and long-term memory. Then it compacts the context.
 
-信任边界是系统用户。数据目录是 0700，`plc.sock`、`supervisor.sock` 和 `cli-credential.json` 是 0600：它们只挡别的系统用户。同一个用户的任何进程（包括 child agent）都能连上 `plc.sock` 换一个临时 admin token，也能读 `cli-credential.json`。那个凭证带 `tickets:create`，所以能做事项动作、对 lead 授权和委托。在同一个系统用户之内，这一点没法强制隔离。
+The result: you always talk to one assistant that knows you and knows all the progress, not to a row of windows that do not know each other.
 
-下面几点只是纵深防御，用来减少暴露面和缩短泄露后的影响时间，不是隔离：
+---
 
-- `cli-credential.json` 只带 `chat`、`tickets:view`、`tickets:create`、`notices`，不带 `admin` 和 `approvals:respond`。
-- 用户的决定（`approvals:respond`：审批、决定请求、连接的写入确认、记忆切换、常设指令的提议、「不是我」）只有本机网页和扫码配对的手机能做。`plc` 的凭证、`plc pair new` 建的配对、在本机兑换的邀请都做不了，因为 child 不伪造任何东西就能拿到它们。child 伪造本机网页的请求仍然能批，这时会推送给你，带「不是我」。经过和后续方案见 `.scratch/child-self-approve/options.md`。
-- Lead 在你这一轮里代你做操作时，这一轮的凭证也要有这个操作的 scope。用 `plc` 的凭证开的一轮，Lead 不能代你批审批。
-- 管理命令（`plc pair`、`plc aish`、`plc recheck`）每次在 `plc.sock` 上换一个临时 admin token。它只在 daemon 的内存里，5 分钟后作废，daemon 重启也作废，只能用于管理路由，`plc` 不把它写进文件。它被拒绝时，`plc` 换一个再试一次。
-- `plc.db` 的每张表都有写入守卫（`packages/store/src/ledger-guard.ts`）。只有 daemon 和 `plc` 打开的连接能写；`sqlite3` 命令行能读（`sqlite3 -readonly`），写语句会失败。存心绕过的进程可以删掉触发器，daemon 每分钟发现一次、补装并推送。只回滚代码之前，先停 daemon，再运行 `plc daemon ledger-guard uninstall`：旧代码打开装过守卫的库会失败。
-- 连接的权限设置（谁能用、写入策略）有保险库的封印，绑定连接和版本。绕过设置页的改动会被发现、恢复成更严的值，并直接推送给用户。设置页的改动是一次主人操作，带「不是我」。
-- child 的命令里出现写 `plc.db` 或 `config.json` 的操作，会直接推送给用户。`config.json` 被 daemon 以外的进程改了，交给 Lead 告诉用户（多半是你自己手改的）。`plc lead use` 经 daemon 写，不算。
-- child 的事件和 pi 的会话文件按值盖掉已知的密钥（名字像密钥的环境变量）。Lead 的 read、grep、find、ls 读不到凭证文件，结果里的密钥被盖掉。
+## 2. It does not wait for you
 
-2026-10-19 审查的经过和还没做的方案（例如用沙箱跑 child）见 `.scratch/permission-boundaries/spec.md`。
+The Lead is **event-driven**. Your message is only one of the things that can wake it:
 
-loopback 自动配对（`PLC_ALLOW_LOOPBACK_AUTO_PAIR=1`，`PLC_DEV=1` 时缺省打开）会越过这个边界。它只检查远端地址是回环、`Origin` 是网关自己的回环 origin。回环 TCP 端口不分系统用户，`Origin` 也可以伪造，所以同一台机器上的别的系统用户也能用它拿到一个带缺省 scope 的 binding。只在单用户的开发机上打开它。
+| What wakes the Lead | What the Lead can do |
+|---|---|
+| A child finishes, fails, or gets stuck | Check the result against the acceptance criteria, send it back for rework, or approve a routine request for you |
+| Someone asks you something on Slack | Find the answer and reply for you, or give you a draft card |
+| A follow-up that it set for itself is due | "In 30 minutes, check whether CI recovered. If it did not, tell the user." |
+| A background check has a result | Wait for a deploy, for CI, or for someone's reply. The check does not use the Lead until there is a result |
+| A reminder that you set is due | First check whether the matter is already resolved. If it is, close the reminder quietly |
+| A batch of small changes is ready | Merge them into one digest, and tell you only what you need to know |
 
-`plc` 第一次需要网关时，在 `plc.sock` 上换一个 `kind=cli` 的凭证，存进 `cli-credential.json`。`plc auth status` 显示它对应的 binding。这个凭证被拒绝时，运行 `plc auth login` 重新签发。`plc auth login` 先用旧 token 向网关证明它是哪个 binding，确认是那个 `kind=cli` 的 binding 之后才撤销它。账本重置过时，binding 编号可能被别的设备复用，这时不撤销任何 binding。
+**Initiative does not mean noise.** You do not see most of the Lead's turns. When one of its internal turns has nothing for you, it leaves nothing behind. The Lead also knows whether you are watching now. If you are, it speaks. If you are not, the messages wait in a queue, and only the truly urgent ones go to your desktop as a notification.
 
-### lead 自己发起的回合
+---
 
-lead 自己发起的回合也在会话流里，例如处理 blocker、播报即时通知、心跳巡检和整理笔记。这些回合的 `originKind` 以 `system:` 开头，没有发起的 binding，所以所有带 `chat` scope 的客户端都收得到。daemon 自己发出的 blocker 提示和兜底通知也是这样的回合。`plc chat` 和 companion 用 protocol 里的同一个函数 `systemTurnLabel` 给它们贴标签。用户发起的回合只发给发起的 binding。
+## 3. Progressive disclosure: the Lead reads only what it needs, and you see only what you need
 
-"有人在听"只算同时满足下面三个条件的 v2 网关连接：
+An always-on assistant has two scarce resources: **the Lead's context** and **your attention**. pi-lead-child uses one rule for both. Start with the smallest layer, and go one layer deeper only when necessary.
 
-- 连接是活的。网关定时 ping，两个间隔内没有回应的连接被断开。
-- 客户端说现在有人在看（`presence.set`）。companion 在应用处于前台（web 上是标签页可见）、并且 5 分钟内有过操作（点按、键盘、触摸、滚动）时上报 `attended: true`。`plc chat` 运行时、并且 5 分钟内有过输入时上报。这个时间是 protocol 里的 `PRESENCE_IDLE_MS`。什么都不报的连接不算，旧版 v1 连接也不算。
-- binding 现在仍然有效，并且带 `chat` scope。每次计数都重新读账本。
+### For the Lead: the cost of an answer follows the depth of the question, not the length of the history
 
-即时通知的播报规则：
+When the Lead looks something up, it starts at the cheapest layer and stops when it has enough:
 
-- lead 空闲、并且有人在听时，daemon 让 lead 开一轮播报。lead 正忙时不往当前回合里塞，等它空下来。
-- 只有 lead 在这一轮里真的说了话、并且播完时仍然有人在听，通知才记为 lead 已送达。
-- 一言不发或失败时，通知留在 pending，下次尝试按 15 秒起、每次翻倍、最多 5 分钟退避。同一条通知的重试复用同一轮，会话流里只留一轮。
-- 播了但播完时没人在听：记下来，不再播第二遍。
-- 没有送达的通知到了兜底窗口由兜底投递推出去；没人在听时还会弹桌面通知。
+| Layer | Content | Approximate cost | Questions it answers |
+|---|---|---|---|
+| L0 | The conversation and the notes | Almost zero | "What did we decide last time?" |
+| L1 | The ticket index | A few hundred tokens | "Which tasks are open? Which one is stuck?" |
+| L2 | The body and the main events of one ticket | A few thousand tokens | "How far is that research? What is the conclusion?" |
+| L3 | The original session of a child | Ten thousand tokens or more | "Why did the child make this change?" |
 
-## 界面
+Each layer is a compressed form of the next layer, and it keeps a pointer to the next layer. So the Lead answers most questions cheaply, and it can still follow a question down to the original record.
 
-`apps/companion` 的界面只从 `@pi-lead-child/components` 引入。应用不直接引入 react-native、Expo UI、Tamagui，也不写样式表。`apps/companion/src/uiBoundary.test.ts` 检查这条规则。组件库的用法见 [packages/components/README.md](packages/components/README.md)。
+The Lead applies the same rule to itself:
 
-## 常用命令
+- **Skills load on demand.** The permanent system prompt keeps only the rules that every turn needs. Procedures for planning tickets, acceptance, PR review, and scheduling live in skills. The Lead reads a skill only when it needs it.
+- **Rarely used tools do not take context.** Dozens of low-frequency tools appear only by name. The Lead calls them from a script when it needs them.
+- **External chatter does not enter the Lead's context.** Messages in subscribed channels that do not mention you go only to the notes. The Lead can search them later.
+- **Waiting messages take one line.** When the Lead is busy, the messages that wait for it show as one line with a count and no content.
+
+### For you: every event has one of five levels
+
+Each incoming event is first triaged to a level:
+
+| Level | What you see |
+|---|---|
+| Record | Nothing. You can find it when you need it |
+| Digest | It waits in a batch, merged by subject, and you get it all at once |
+| Auto-handle | The Lead handles it and leaves a record that you can undo |
+| Tell | A separate message, after the Lead finishes its current reply |
+| Interrupt | It comes in immediately |
+
+- Each source has its own threshold, stored as a standing order that you can change. For example, Slack has a high threshold, so it rarely interrupts you.
+- Your own messages skip triage.
+- When several events have the same root cause, the Lead tells you once and names the tickets involved.
+
+---
+
+## 4. Many channels, one line
+
+You may bring up a task on the web, ask about it on your phone, and get a question about it from a colleague on Slack. pi-lead-child connects all of these to one line.
+
+### Every entry point, the same Lead
+
+- The web, iOS, Android, and the terminal (`plc`) all connect to the same Lead and the same conversation.
+- A Slack message that you send to yourself also counts as you talking to the Lead.
+- System events, such as timers, background checks, and ticket changes, go through the same path as messages.
+
+### External channels only receive and send; the Lead does the work
+
+Each channel does only three things. It receives messages, decides whether a message needs a reply, and sends the reply back to where the message came from. The real work goes to the Lead and to tickets, through general tools and skills.
+
+- A new channel does not need its own copy of any task logic.
+- A fast small model triages each external message first, in a few hundred milliseconds. Only the messages that need the Lead go to the Lead.
+- Slack is the external channel that is connected now.
+
+### Tell the Lead how to handle things with a "handoff note"
+
+You do not fill in a complex rule table. You write a few plain sentences to the Lead, as if you hand your work over to a colleague:
+
+> If someone asks about project progress, look it up and reply directly.
+> If someone asks me to review a PR, review it and write a draft. Send it after I confirm.
+> If someone asks about salaries or configuration, decline politely.
+
+- Each kind of situation has one handling mode: handle it and reply for me, write a draft for me to confirm, decline and reply, or only tell me.
+- Before each reply, the Lead estimates how sure it is and how much a mistake would cost. Each edit, undo, and confirmation that you make becomes a calibration sample.
+- If you send the Lead's drafts of one kind unchanged several times, the Lead suggests that you let it handle that kind on its own.
+
+### Some limits that the handoff note cannot change
+
+- **The Lead is not a back door.** If someone asks the Lead for something that they cannot access but you can, the Lead does not look it up.
+- **External messages cannot change the rules.** Nobody on Slack can change the Lead's persona, permissions, standing orders, or handoff note. The code refuses these requests. The prompt is not the only guard.
+- **Every outgoing message is signed.** An automatic reply says that the assistant replied for you. A reply that you confirmed says that you confirmed it. Personal data, such as email addresses, is masked in the message.
+- **If you reply on Slack yourself, the card closes.** The Lead does not handle that message again.
+
+---
+
+## A day with the Lead
+
+> It is 9 a.m., and you have not opened your computer yet.
+>
+> - Nina asks on Slack: "Is the PROJ-123 API live yet?" Your handoff note says that progress questions can get a direct reply. The Lead checks the ticket and the PR and replies for you. The first line of the reply says that the assistant replied for you.
+> - The fix ticket from last night is finished. One child wrote the code, and another child reviewed it. The Lead checked each acceptance criterion and then opened a draft PR.
+> - At 3 a.m., a child stopped at a routine approval. The Lead decided that it was safe and approved it for you, so the work did not stop for the whole night.
+> - Overnight, the CI channel got 40 build notifications. None of them mentioned you. They went only to the notes.
+> - Your reminder "follow up on Ethan's quote before Friday" is due. The Lead sees that Ethan already replied, so it closes the reminder and does not disturb you.
+>
+> You open your phone. In the same conversation, there is only one new message: "The PR is ready. One trade-off needs your decision."
+
+---
+
+## What else
+
+### The Lead leads a team; it does not write the code itself
+
+- Each ticket has its own isolated worktree. Many children work in parallel without interfering with each other.
+- A child can be **pi, Codex, or Claude Code**.
+- One ticket can span many attempts: a rerun after a crash, rework, and review all attach to the same ticket.
+- After delivery, the system opens a draft PR automatically.
+
+### What you can click, the Lead can do
+
+Every button in the interface is one operation with two entry points: one for your click and one for the Lead. So you can ask the Lead to do anything that you can do in the interface.
+
+### When something blocks the Lead, there is always a next step
+
+If the Lead cannot do something, it gives you an authorization card. You confirm once, and the Lead runs exactly that one operation. You never get a message that says "please type this command in your terminal yourself."
+
+### The Lead can draw interfaces
+
+For complex information, the Lead draws a card on the spot with the same components as the app: tables, progress, charts, and buttons that you can click. You can also ask it to build a custom view and pin it to your workspace.
+
+### It remembers, and it can forget
+
+When the Lead updates its long-term memory, it tells you, and you can undo the change. Facts that are out of date are marked as invalid.
+
+### Your messages do not get lost
+
+If the daemon restarts, the network drops, or the model fails, each message that you sent still has a place to go. One outage gives you one card, not a flood of them.
+
+### It runs on your own machine
+
+The daemon runs on your computer. A supervisor keeps it alive and restarts it when necessary. All data is in a local SQLite database.
+
+---
+
+## Compared with common tools
+
+| | Chat assistant | Coding agent CLI | **pi-lead-child** |
+|---|---|---|---|
+| Sessions you manage | More and more | More and more | Always one |
+| When you are quiet | Does nothing | Does nothing | Follows up, checks, handles messages |
+| Who checks if a task is done | You | You | The Lead, which calls you only when needed |
+| Finding an old conclusion | Read the session history | Read the session history | Ask the Lead |
+| As the history grows | More cost, more confusion | More cost, more confusion | Looks things up layer by layer, by the depth of the question |
+| Many message sources | Not handled | Not handled | One triage, five levels |
+| Replying for you | Cannot | Cannot | Follows your handoff note, with confidence estimates and calibration |
+| Work in parallel | One task | One task per session | Many tickets, many children in parallel |
+
+---
+
+## Why not Hermes?
+
+[Hermes Agent](https://github.com/NousResearch/hermes-agent) is an open-source agent from Nous Research. It is also always on, has memory, connects to Slack, and dispatches subagents. It is a good project. The difference is not in the feature list. The difference is in **the problem that each project solves**:
+
+- **Hermes is an agent that you can reach from anywhere.** You talk to it in Telegram, Discord, Slack, or the terminal. It does work for you and writes its own skills.
+- **pi-lead-child is an assistant that manages your attention.** It stands between you and all your messages and agents, and it decides what deserves your time.
+
+### The specific differences
+
+| | Hermes | pi-lead-child |
+|---|---|---|
+| Sessions | One session per chat (split by DM, by person in a group, or by thread); `/new` starts a new session; full-text search finds old sessions | You have only one conversation; the work state is in the ticket ledger, and the Lead reads it when asked |
+| Role on Slack | A bot. People on the allowlist, or people who paired, can talk to it, and it answers as itself | Your proxy. It reads the messages sent to **you** and, by your handoff note, replies for you, writes a draft, or only tells you. Every message is signed |
+| Confidence when replying for you | Not applicable | Estimates confidence and cost each time; your edits and undos become calibration samples |
+| Managing your attention | New messages during a run can interrupt, queue, or steer; notification detail is configurable | Every event gets one of five levels; each source has its own interrupt threshold; it speaks only when you are watching; small things are batched |
+| Who does the work | Hermes's own subagents (you can change their model and profile) | The coding agents that you already use: pi, Codex, Claude Code |
+| Boundary for external messages | Unknown users are denied by default; an allowlist and pairing decide who can use it | All external text is untrusted: a turn that an external message woke cannot change the rules, and the Lead is not a back door. The code enforces both |
+
+### Where Hermes is stronger
+
+- **It connects to more places.** Telegram, Discord, WhatsApp, Signal, and email. pi-lead-child connects only to Slack now.
+- **It runs in more places.** Local, Docker, SSH, and several cloud sandboxes. pi-lead-child runs only on your Mac.
+- **It grows its own skills.** After a complex task, Hermes writes the procedure as a skill and improves it the next time.
+- **Its task board is more complete.** The Hermes Kanban has dependencies, automatic dispatch, and retries on failure. It is close to our tickets.
+- **It is more mature.** It has a larger community, more model choices, and fuller documentation.
+
+### Which one to choose
+
+- If you want an agent that can do work and that you can call from any chat app, **choose Hermes**.
+- If dozens of agent sessions and Slack messages pull you around every day, and you want an assistant that blocks the noise and speaks only when a decision needs you, **choose pi-lead-child**.
+
+> This description of Hermes comes from its [documentation](https://hermes-agent.nousresearch.com/docs/) as of November 2026. Hermes changes quickly. If there is a difference, its documentation is correct.
+
+---
+
+## Quick start
+
+You need macOS and Node 24.
 
 ```bash
 npm install
 ```
 
 ```bash
-npm run verify
+npm run build && npm run build:web
 ```
 
 ```bash
-npm run web
+npm run plc -- daemon start
 ```
 
-```bash
-npm run plc -- daemon status
-```
+Then open the gateway address that `plc daemon status` shows, and scan the code with your phone to pair it.
 
-`npm run verify` 依次运行全部类型检查、测试、验收脚本和构建。修复缺陷时先运行 `npm run test:core-invariants`，再运行 `npm run verify`（见 [AGENTS.md](AGENTS.md)）。
+---
 
-## 构建产物
+## Status
 
-- `npm run build` 把 daemon 构建到 `apps/daemon/dist`，把 `plc` 构建到 `apps/cli/dist/cli.mjs`。
-- `npm run build:web` 把 web 界面导出到 `apps/daemon/dist/web`，由网关托管。
-- `plc` 命令在 `apps/cli/bin/plc`。它按 `apps/daemon/dist` 找 daemon 和 supervisor 的构建产物。
+This is a personal project at the demo stage. The data format can change between versions, and there is no guarantee of migration.
+
+## Learn more
+
+- [Architecture and operation](docs/ARCHITECTURE.md): repository layout, dependency direction, `plc` and the daemon, the trust boundary, notification rules.
+- [Core design](DESIGN.md): the split between the Lead and the children, the ticket model, the event pipeline, progressive disclosure.
+- [Gateway design](docs/DESIGN-GATEWAY.md): pairing, the protocol, connections from many devices.
+- [Interface design system](docs/design/README.md): interaction patterns, themes, genui cards.
+- [Rules for contributors and agents](AGENTS.md).
+
+Most of the design documents are in Chinese.

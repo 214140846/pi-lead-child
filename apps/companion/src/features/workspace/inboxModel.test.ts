@@ -32,10 +32,12 @@ const facts: InboxTicketFact[] = [
 
 describe('waitedText', () => {
   it('says how long something has waited in the largest whole unit', () => {
-    expect(waitedText('2026-08-25T08:01:12.000Z', now)).toBe('50 天');
-    expect(waitedText('2026-10-15T04:30:00.000Z', now)).toBe('3 小时');
-    expect(waitedText('2026-10-15T07:34:00.000Z', now)).toBe('12 分钟');
-    expect(waitedText('2026-10-15T07:45:30.000Z', now)).toBe('刚刚');
+    expect(waitedText('2026-08-25T08:01:12.000Z', now)).toBe('50 days');
+    expect(waitedText('2026-10-15T04:30:00.000Z', now)).toBe('3 hours');
+    expect(waitedText('2026-10-15T07:34:00.000Z', now)).toBe('12 minutes');
+    expect(waitedText('2026-10-15T07:45:30.000Z', now)).toBe('just now');
+    expect(waitedText('2026-08-25T08:01:12.000Z', now, 'zh')).toBe('50 天');
+    expect(waitedText('2026-10-15T07:45:30.000Z', now, 'zh')).toBe('刚刚');
   });
 });
 
@@ -54,13 +56,13 @@ describe('buildInboxCards', () => {
 
   it('writes the number, the reason label and how long it has waited, and the reason in full', () => {
     const card = buildInboxCards(items, facts, {}, now).find((entry) => entry.ticketId === '72')!;
-    expect(card.meta).toBe('#72 · 需介入 · 等了 50 天');
+    expect(card.meta).toBe('#72 · Needs you · Waited 50 days');
     expect(card.reason).toBe('Run #54 交付的成果格式不合法');
   });
 
   it('offers the decision card recommendation as the one action, or opens the ticket', () => {
     const cards = buildInboxCards(items, facts, {}, now);
-    expect(cards.find((card) => card.ticketId === '66')!.action).toMatchObject({ id: 'request_review', label: '派发独立核查' });
+    expect(cards.find((card) => card.ticketId === '66')!.action).toMatchObject({ id: 'request_review', label: 'Request independent review' });
     // 阻塞的工单没有一键动作：你要先看原因，在工单里决定。
     expect(cards.find((card) => card.ticketId === '72')!.action).toBeNull();
   });
@@ -73,14 +75,14 @@ describe('buildInboxCards', () => {
       attention: { pendingApprovalCount: 0, blockerCount: 1, pendingDecisionCount: 1 },
     });
     const [card] = buildInboxCards([owed], facts, {}, now);
-    expect(card!.meta).toBe('#66 · 待你决定 · 等了 54 天');
+    expect(card!.meta).toBe('#66 · Needs your decision · Waited 54 days');
     expect(card!.action).toBeNull();
   });
 
   it('carries the notices folded into the row so acting on it acknowledges them', () => {
     const card = buildInboxCards(items, facts, { 51: [101, 102] }, now).find((entry) => entry.ticketId === '51')!;
     expect(card.noticeIds).toEqual([101, 102]);
-    expect(card.meta).toBe('#51 · 需介入 · 等了 59 天 · 2 条通知');
+    expect(card.meta).toBe('#51 · Needs you · Waited 59 days · 2 notices');
   });
 });
 

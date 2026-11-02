@@ -9,6 +9,7 @@
 // 变化时网关发 snapshot.required，payload 是 {resource: "model-settings"}，客户端重新 GET。
 // /v1/decision-model（直觉的主用）和 /v1/lead/models（输入框的模型选择）照旧：它们的 DTO 是严格的契约，这里不往里加字段。
 import { Type, type Static, type TProperties, type TSchema } from "typebox";
+import { DEFAULT_LOCALE, defineMessages, type Locale } from "./i18n.ts";
 import { LeadModelChoiceSchema } from "./lead-models.ts";
 
 const StrictObject = <T extends TProperties>(properties: T) =>
@@ -168,14 +169,31 @@ export const SetFastChainRequestSchema = StrictObject({
 });
 export type SetFastChainRequest = Static<typeof SetFastChainRequestSchema>;
 
-// 一个分工是不是合法：不空、不超过上限、没有重复。返回问题，没问题时为 null。key 把同一个模型的几种写法认成一个。
-export function modelChainProblem<T>(chain: readonly T[], key: (item: T) => string, options: { allowEmpty?: boolean } = {}): string | null {
-  if (chain.length === 0 && !options.allowEmpty) return "至少要有一个主用";
-  if (chain.length > MODEL_MAX_CHAIN) return `备用最多 ${MODEL_MAX_BACKUPS} 个`;
+// 分工校验的问题，设置页显示。daemon 现在取 zh。
+export const modelChainMessages = defineMessages({
+  en: {
+    empty: "Choose at least one primary model.",
+    tooMany: (max: number) => `You can have at most ${max} backups.`,
+    duplicate: (id: string) => `${id} is in the list two times.`,
+  },
+  zh: {
+    empty: "至少要有一个主用",
+    tooMany: (max) => `备用最多 ${max} 个`,
+    duplicate: (id) => `${id} 出现了两次`,
+  },
+});
+
+// 一个分工是不是合法：不空、不超过上限、没有重复。返回问题（按 locale 的语言），没问题时为 null。key 把同一个模型的几种写法认成一个。
+export function modelChainProblem<T>(
+  chain: readonly T[], key: (item: T) => string, options: { allowEmpty?: boolean; locale?: Locale } = {},
+): string | null {
+  const m = modelChainMessages(options.locale ?? DEFAULT_LOCALE);
+  if (chain.length === 0 && !options.allowEmpty) return m.empty;
+  if (chain.length > MODEL_MAX_CHAIN) return m.tooMany(MODEL_MAX_BACKUPS);
   const seen = new Set<string>();
   for (const item of chain) {
     const id = key(item);
-    if (seen.has(id)) return `${id} 出现了两次`;
+    if (seen.has(id)) return m.duplicate(id);
     seen.add(id);
   }
   return null;

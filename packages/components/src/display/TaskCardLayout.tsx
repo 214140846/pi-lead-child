@@ -8,7 +8,6 @@ import { Text } from '../primitives/Text';
 import {
   formatToolDetail,
   groupTaskSteps,
-  stepStateLabel,
   summarizeGroupArgs,
   summarizeToolArgs,
   taskCardSpec,
@@ -17,6 +16,9 @@ import {
   type TaskTimelineItem,
 } from './TaskCard.shared';
 import type { TaskCardProps, TaskCardTool, TaskStepState } from './TaskCard.types';
+import { useMessages } from '../i18n';
+import { useLocale } from '../theme/preferences';
+import { taskCardMessages } from './taskCard.messages';
 
 // 展开和收起的按钮。web 和原生各给一个实现（TaskCard.tsx / TaskCard.native.tsx）：
 // 都是 button 角色，并报告展开状态；web 上是真正的 <button>，键盘可以聚焦和按下。
@@ -59,7 +61,9 @@ function useExpansion(props: TaskCardProps) {
 }
 
 export function TaskCardLayout({ Toggle, ...props }: TaskCardProps & { Toggle: Toggle }) {
-  const summary = taskCardSummary(props);
+  const locale = useLocale();
+  const m = taskCardMessages(locale);
+  const summary = taskCardSummary(props, locale);
   const expansion = useExpansion(props);
   const bodyId = `task-card-${useId().replace(/[^A-Za-z0-9_-]/g, '')}`;
   const items = groupTaskSteps(props.steps);
@@ -88,7 +92,7 @@ export function TaskCardLayout({ Toggle, ...props }: TaskCardProps & { Toggle: T
         </TimelineRow>
       ) : null}
       {items.length === 0 && !thinking ? (
-        <Text size="note" tone="muted" pb="timeline-event">没有步骤。</Text>
+        <Text size="note" tone="muted" pb="timeline-event">{m.noSteps}</Text>
       ) : null}
     </Column>
   ) : null;
@@ -107,7 +111,7 @@ export function TaskCardLayout({ Toggle, ...props }: TaskCardProps & { Toggle: T
       <Toggle
         expanded={expansion.expanded}
         onPress={() => expansion.setExpanded(!expansion.expanded)}
-        label={`任务步骤，${title}`}
+        label={m.stepsToggle(title)}
         controls={bodyId}
         testID={props.testID ? `${props.testID}-toggle` : undefined}
       >
@@ -148,9 +152,11 @@ function InlineSummary({
   title: string;
   timeline: ReactNode;
 }) {
-  const summary = taskCardSummary(props);
+  const locale = useLocale();
+  const m = taskCardMessages(locale);
+  const summary = taskCardSummary(props, locale);
   const failedCount = props.steps.filter((step) => step.kind === 'tool' && step.state === 'failed').length;
-  const failedLabel = failedCount ? `${failedCount} 个失败` : null;
+  const failedLabel = failedCount ? m.failedCount(failedCount) : null;
   const quietTitle = failedLabel ? title.replace(` · ${failedLabel}`, '') : title;
   return (
     <Column testID={props.testID ? `${props.testID}-inline` : undefined} w="100%" gap="card-row">
@@ -163,7 +169,7 @@ function InlineSummary({
           inline
           expanded={expansion.expanded}
           onPress={() => expansion.setExpanded(!expansion.expanded)}
-          label={`任务步骤，${title}`}
+          label={m.stepsToggle(title)}
           controls={bodyId}
           testID={props.testID ? `${props.testID}-toggle` : undefined}
         >
@@ -242,6 +248,7 @@ type StepHandlers = {
 };
 
 function TimelineItem({ item, last, ...handlers }: { item: TaskTimelineItem; last: boolean } & StepHandlers) {
+  const m = useMessages(taskCardMessages);
   if (item.kind === 'note') {
     return (
       <TimelineRow
@@ -267,7 +274,7 @@ function TimelineItem({ item, last, ...handlers }: { item: TaskTimelineItem; las
       <handlers.Toggle
         expanded={open}
         onPress={() => handlers.toggleStep(item.id)}
-        label={`${item.name} ×${item.steps.length}，${stepStateLabel[item.state]}`}
+        label={m.groupToggle(item.name, item.steps.length, m.stepState[item.state])}
         controls={detailId}
       >
         <StepLine name={item.name} count={item.steps.length} summary={summary} open={open} />
@@ -304,6 +311,7 @@ function StepLine({ name, count, summary, open }: { name: string; count?: number
 
 // 一次工具调用：一行名字和参数，展开后是完整的参数、结果和失败原因。
 function ToolCall({ step, Toggle, isStepExpanded, toggleStep }: { step: TaskCardTool } & StepHandlers) {
+  const m = useMessages(taskCardMessages);
   const open = isStepExpanded(step.id);
   const summary = summarizeToolArgs(step.args);
   const detailId = `${step.id}-detail`.replace(/[^A-Za-z0-9_-]/g, '-');
@@ -312,7 +320,7 @@ function ToolCall({ step, Toggle, isStepExpanded, toggleStep }: { step: TaskCard
       <Toggle
         expanded={open}
         onPress={() => toggleStep(step.id)}
-        label={[step.name, summary, stepStateLabel[step.state]].filter(Boolean).join('，')}
+        label={[step.name, summary, m.stepState[step.state]].filter(Boolean).join(m.listSeparator)}
         controls={detailId}
       >
         <StepLine name={step.name} summary={summary} open={open} />
@@ -323,6 +331,7 @@ function ToolCall({ step, Toggle, isStepExpanded, toggleStep }: { step: TaskCard
 }
 
 function ToolCallDetail({ id, step }: { id: string; step: TaskCardTool }) {
+  const m = useMessages(taskCardMessages);
   const args = formatToolDetail(step.args);
   const result = formatToolDetail(step.result);
   const error = step.error;
@@ -330,11 +339,11 @@ function ToolCallDetail({ id, step }: { id: string; step: TaskCardTool }) {
   return (
     // spacing-exempt: 光学对齐
     <Column id={id} gap="card-row" pt="card-row" pb={2}>
-      {args && args !== '{}' ? <DetailBlock label="参数" text={args} /> : null}
-      {step.state === 'running' ? <Text size="meta" tone="muted">运行中…</Text> : null}
-      {showResult ? <DetailBlock label="结果" text={result} /> : null}
+      {args && args !== '{}' ? <DetailBlock label={m.args} text={args} /> : null}
+      {step.state === 'running' ? <Text size="meta" tone="muted">{m.running}</Text> : null}
+      {showResult ? <DetailBlock label={m.result} text={result} /> : null}
       {error ? <Text size="note" weight="medium" tone="danger-dark">{error}</Text> : null}
-      {step.truncated ? <Text size="note" weight="bold" tone="warning-dark">内容已截断</Text> : null}
+      {step.truncated ? <Text size="note" weight="bold" tone="warning-dark">{m.truncated}</Text> : null}
     </Column>
   );
 }

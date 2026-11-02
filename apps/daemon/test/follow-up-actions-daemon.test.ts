@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { CHAT_FOLLOW_UP_ACTIONS_CAPABILITY, UI_ACTION_PERFORMED_KIND } from "@pi-lead-child/protocol";
 import { createPairing, listEvents, openDb, redeemPairing, type Db } from "@pi-lead-child/store";
+import { updateDesignPreferences } from "@pi-lead-child/engine";
 import { tempDir } from "@pi-lead-child/core/testing";
 import { startDaemon } from "../src/server.js";
 import { deferred, fakePiLead, situationIn, type FakeCall, type FakeImage } from "./fake-pi-session.js";
@@ -219,6 +220,8 @@ describe("a follow-up held for a turn of its own", () => {
       if (input.includes("追问 D")) return { say: "D 的回答。" };
       return { say: "收到。" };
     });
+    // 说明按用户选的语言写：这里选中文。
+    updateDesignPreferences(db, { request: { locale: "zh" }, caller: { kind: "user" } });
     const { send, act, http } = await start(lead);
 
     await send("问题 A");

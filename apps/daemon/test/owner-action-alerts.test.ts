@@ -13,6 +13,7 @@ import {
 } from "@pi-lead-child/store";
 import { startDaemon } from "../src/server.js";
 import { requestCliCredential } from "./plc-client.js";
+import { updateDesignPreferences } from "@pi-lead-child/engine";
 
 let dir: string;
 let dbPath: string;
@@ -25,6 +26,8 @@ beforeEach(() => {
   vi.stubEnv("PLC_DATA_DIR", dir);
   vi.stubEnv("PLC_NOTICE_POLL_MS", "20");
   db = openDb(dbPath);
+  // 这个文件的断言是中文：先把界面语言设成中文（缺省是英文）。
+  updateDesignPreferences(db, { request: { locale: "zh" }, caller: { kind: "user" } });
 });
 
 afterEach(async () => {

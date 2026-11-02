@@ -34,10 +34,10 @@ describe('the collapsed line', () => {
 
   // spec D9：回合还在进行时，收起的一行写这一轮已经过去的时间。
   it('adds the time since the turn started while it runs', () => {
-    expect(taskCardSummary({ status: 'thinking', steps: [], durationMs: 12_000 })).toEqual({ tone: 'running', title: 'Thinking', detail: '12 秒' });
+    expect(taskCardSummary({ status: 'thinking', steps: [], durationMs: 12_000 })).toEqual({ tone: 'running', title: 'Thinking', detail: '12 s' });
     const steps = [tool('b', 'query_tickets', { stage: 'review' }, { state: 'running' })];
     expect(taskCardSummary({ status: 'working', steps, durationMs: 65_000 }))
-      .toEqual({ tone: 'running', title: 'query_tickets', detail: 'stage=review · 1 分 5 秒' });
+      .toEqual({ tone: 'running', title: 'query_tickets', detail: 'stage=review · 1 min 5 s' });
   });
 
   it('names the running tool and its most meaningful argument', () => {
@@ -51,21 +51,30 @@ describe('the collapsed line', () => {
   it('counts the tools and the time when the turn finished', () => {
     const steps = Array.from({ length: 10 }, (_, index) => tool(String(index), 'query_tickets', {}));
     expect(taskCardSummary({ status: 'done', steps: [note('n', '先查一下。'), ...steps], durationMs: 12_400 }))
-      .toEqual({ tone: 'done', title: '10 个工具 · 12 秒', detail: null });
+      .toEqual({ tone: 'done', title: '10 tools · 12 s', detail: null });
     expect(taskCardSummary({ status: 'done', steps: [tool('a', 'x', {}, { state: 'failed' })], durationMs: 125_000 }))
-      .toEqual({ tone: 'done', title: '1 个工具 · 1 个失败 · 2 分 5 秒', detail: null });
+      .toEqual({ tone: 'done', title: '1 tool · 1 failed · 2 min 5 s', detail: null });
   });
 
   it('shows an error state when the turn failed', () => {
     expect(taskCardSummary({ status: 'failed', steps: [tool('a', 'x', {}), tool('b', 'y', {})], durationMs: 3_000 }))
-      .toEqual({ tone: 'failed', title: '回复未完成 · 2 个工具已完成 · 3 秒', detail: null });
+      .toEqual({ tone: 'failed', title: 'Reply not finished · 2 tools done · 3 s', detail: null });
   });
 
   // 2026-10-16：建好提醒以后这一轮失败了，卡片只写「未完成 · 1个工具」，看不出提醒已经建好。
   it('says which tools finished when the turn failed', () => {
     expect(taskCardSummary({ status: 'failed', steps: [tool('a', 'create_reminder', {})], durationMs: 1_000 }))
-      .toEqual({ tone: 'failed', title: '回复未完成 · 1 个工具已完成 · 1 秒', detail: null });
+      .toEqual({ tone: 'failed', title: 'Reply not finished · 1 tool done · 1 s', detail: null });
     expect(taskCardSummary({ status: 'failed', steps: [tool('a', 'x', {}), tool('b', 'y', {}, { state: 'stopped' })] }))
+      .toEqual({ tone: 'failed', title: 'Reply not finished · 2 tools, 1 done', detail: null });
+  });
+
+  // 界面语言是中文时，收起的一行写中文。
+  it('writes the line in Chinese when the locale is zh', () => {
+    const steps = [tool('a', 'x', {}, { state: 'failed' }), tool('b', 'y', {})];
+    expect(taskCardSummary({ status: 'done', steps, durationMs: 125_000 }, 'zh'))
+      .toEqual({ tone: 'done', title: '2 个工具 · 1 个失败 · 2 分 5 秒', detail: null });
+    expect(taskCardSummary({ status: 'failed', steps: [tool('a', 'x', {}), tool('b', 'y', {}, { state: 'stopped' })] }, 'zh'))
       .toEqual({ tone: 'failed', title: '回复未完成 · 2 个工具，1 个已完成', detail: null });
   });
 });
@@ -134,7 +143,7 @@ describe('TaskCard on web', () => {
 
   it('is one line with a button that expands it', () => {
     renderUI(<TaskCard status="done" steps={steps} durationMs={12_000} testID="card" />);
-    const toggle = screen.getByRole('button', { name: /3 个工具 · 1 个失败 · 12 秒/ });
+    const toggle = screen.getByRole('button', { name: /3 tools · 1 failed · 12 s/ });
     expect(toggle.tagName).toBe('BUTTON');
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
     // 被控制的区域还不存在时不指向它。
@@ -168,9 +177,9 @@ describe('TaskCard on web', () => {
   it('marks a call that never ended in a finished turn as not completed, without a spinner', () => {
     const unfinished = [tool('a', 'bash', { command: 'sleep 99' }, { state: 'stopped' })];
     expect(taskCardSummary({ status: 'done', steps: unfinished, durationMs: null }))
-      .toEqual({ tone: 'done', title: '1 个工具 · 1 个未完成', detail: null });
+      .toEqual({ tone: 'done', title: '1 tool · 1 not finished', detail: null });
     renderUI(<TaskCard status="done" steps={unfinished} expanded />);
-    expect(screen.getByRole('button', { name: 'bash，sleep 99，未完成' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'bash, sleep 99, Not finished' })).toBeTruthy();
     expect(screen.queryByRole('progressbar')).toBeNull();
   });
 
@@ -199,7 +208,7 @@ describe('the inline variant', () => {
       <TaskCard variant="inline" leading="Lead · 17:57" status="done" steps={twoTools} durationMs={21_000} testID="turn" />,
     );
     expect(screen.getByText('Lead · 17:57')).toBeTruthy();
-    const toggle = screen.getByRole('button', { name: /2 个工具 · 21 秒/ });
+    const toggle = screen.getByRole('button', { name: /2 tools · 21 s/ });
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
     expect(screen.queryByTestId('turn-marker')).toBeNull();
     expect(screen.queryByTestId('turn')).toBeNull();
@@ -222,7 +231,7 @@ describe('the inline variant', () => {
 
   it('opens the same timeline under the header', () => {
     renderUI(<TaskCard variant="inline" leading="Lead · 17:57" status="done" steps={twoTools} durationMs={21_000} />);
-    const toggle = screen.getByRole('button', { name: /2 个工具/ });
+    const toggle = screen.getByRole('button', { name: /2 tools/ });
     fireEvent.click(toggle);
     const body = document.getElementById(toggle.getAttribute('aria-controls')!);
     expect(within(body!).getByText('add_comment')).toBeTruthy();
@@ -236,7 +245,7 @@ describe('the inline variant', () => {
       <TaskCard variant="inline" leading="Lead" status="done" durationMs={1_000} testID="turn"
         steps={[tool('a', 'query_tickets', {}), tool('b', 'add_comment', {}, { state: 'failed', error: 'db locked' })]} />,
     );
-    expect(screen.getByTestId('turn-failures').textContent).toBe('1 个失败');
+    expect(screen.getByTestId('turn-failures').textContent).toBe('1 failed');
   });
 
   it('keeps the card variant as before for other surfaces', () => {

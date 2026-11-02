@@ -54,7 +54,7 @@ export async function handleHandbookRoute(ctx: HandbookRouteContext): Promise<bo
       invalid(ctx, "body must be the whole handbook after the change: { autoReply, situations, caps }");
       return true;
     }
-    const problems = channelHandbookProblems(body);
+    const problems = channelHandbookProblems(body, "zh");
     if (problems.length) {
       invalid(ctx, problems.join("；"));
       return true;

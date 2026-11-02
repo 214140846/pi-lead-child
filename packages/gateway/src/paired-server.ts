@@ -186,8 +186,9 @@ import {
   type NotificationState,
 } from "@pi-lead-child/store";
 import {
-  activeLeadGrant, getStandingOrder, leadDisplayName, ownerActionView, recordOwnerAction,
+  activeLeadGrant, getLocale, getStandingOrder, leadDisplayName, ownerActionView, recordOwnerAction,
 } from "@pi-lead-child/store";
+import { routeMessages } from "./routes.messages.js";
 
 type ControlPlaneService = ReturnType<typeof createControlPlaneService>;
 
@@ -1270,7 +1271,9 @@ export async function startPairedServer(
     try {
       // OAuth 回调不是 /v1 下的路由，要排在静态网页之前。
       if (req.method === "GET" && url.pathname === OAUTH_CALLBACK_PATH) {
-        await handleOAuthCallback(req, res, url, bridge.connections, isLoopbackAddress(req.socket.remoteAddress), bridge.log);
+        await handleOAuthCallback(req, res, url, bridge.connections, isLoopbackAddress(req.socket.remoteAddress), bridge.log, {
+          locale: getLocale(bridge.db), leadName: leadDisplayName(bridge.db),
+        });
         return;
       }
 
@@ -1428,12 +1431,13 @@ export async function startPairedServer(
       if (req.method === "GET" && url.pathname === "/v1/lead/models") {
         requireAuth(req, "chat");
         const service = bridge.uiActionServices?.leadModels;
-        if (!service) throw new HttpError(503, "internal_error", "Lead 的模型切换还没有启动");
+        const m = routeMessages(getLocale(bridge.db));
+        if (!service) throw new HttpError(503, "internal_error", m.leadModelsUnavailable);
         let catalog: Awaited<ReturnType<typeof service.catalog>>;
         try {
           catalog = await service.catalog();
         } catch (error) {
-          throw new HttpError(503, "internal_error", `读不到模型目录：${error instanceof Error ? error.message : String(error)}`);
+          throw new HttpError(503, "internal_error", m.leadModelsFailed(error));
         }
         json(req, res, 200, catalog);
         return;
@@ -1444,12 +1448,13 @@ export async function startPairedServer(
       if (req.method === "GET" && url.pathname === "/v1/models/settings") {
         requireAuth(req, "tickets:view");
         const service = bridge.uiActionServices?.modelSettings;
-        if (!service) throw new HttpError(503, "internal_error", "模型设置还没有启动（Lead 的会话还没建好）");
+        const m = routeMessages(getLocale(bridge.db));
+        if (!service) throw new HttpError(503, "internal_error", m.modelSettingsUnavailable);
         let modelSettings: Awaited<ReturnType<typeof service.get>>;
         try {
           modelSettings = await service.get();
         } catch (error) {
-          throw new HttpError(503, "internal_error", `读不到模型设置：${error instanceof Error ? error.message : String(error)}`);
+          throw new HttpError(503, "internal_error", m.modelSettingsFailed(error));
         }
         json(req, res, 200, { modelSettings });
         return;
@@ -1460,12 +1465,13 @@ export async function startPairedServer(
       if (req.method === "GET" && url.pathname === "/v1/memory/hindsight") {
         requireAuth(req, "tickets:view");
         const service = bridge.uiActionServices?.memorySettings;
-        if (!service) throw new HttpError(503, "internal_error", "这台 daemon 不托管记忆服务（Hindsight）");
+        const m = routeMessages(getLocale(bridge.db));
+        if (!service) throw new HttpError(503, "internal_error", m.hindsightUnavailable);
         let hindsight: Awaited<ReturnType<typeof service.hindsight>>;
         try {
           hindsight = await service.hindsight();
         } catch (error) {
-          throw new HttpError(503, "internal_error", `读不到记忆服务的状态：${error instanceof Error ? error.message : String(error)}`);
+          throw new HttpError(503, "internal_error", m.hindsightFailed(error));
         }
         json(req, res, 200, { hindsight });
         return;
@@ -1800,6 +1806,7 @@ export async function startPairedServer(
         readBody: async () => parseJson(await readBody(req, maxBodyBytes)) ?? {},
         requireAuth: (scope) => routeAuth(scope).display_name,
         ownerAction: routeOwnerAction,
+        locale: getLocale(bridge.db),
       })) return;
 
       if (await handleMemoryRoute({
@@ -1808,6 +1815,7 @@ export async function startPairedServer(
         readBody: async () => parseJson(await readBody(req, maxBodyBytes)) ?? {},
         requireAuth: (scope) => routeAuth(scope).display_name,
         ownerAction: routeOwnerAction,
+        locale: getLocale(bridge.db),
       })) return;
 
       // 首次启动引导（.scratch/onboarding）：7 项关键设置配没配好。daemon 算好存在 kv 里，这里只读。
@@ -1855,6 +1863,7 @@ export async function startPairedServer(
         readBody: async () => parseJson(await readBody(req, maxBodyBytes)) ?? {},
         requireAuth: (scope) => { routeAuth(scope); },
         // 设置页的开关转调操作层（runtime 的 disable、enable），和 Lead 的 perform_action 同一个函数。
+        locale: getLocale(bridge.db),
         perform: async (request) => {
           const outcome = await performUiActionAsUser(req, { binding: routeCaller!, scopes: routeScopes }, {
             target: { type: "runtime", id: request.runtime }, action: request.enabled ? "enable" : "disable",
@@ -1931,6 +1940,7 @@ export async function startPairedServer(
         loopbackPage: () => isLoopbackPage(req),
         editableHere: () => editableHere(req),
         ownerAction: routeOwnerAction,
+        locale: getLocale(bridge.db),
       })) return;
 
       // 外部来源的会话卡（工单 11）：读要 chat，卡上的动作要 tickets:create。卡上的动作是操作层的 channel_card：
@@ -2061,12 +2071,12 @@ export async function startPairedServer(
           );
           recordOwnerActionFor(req, binding, leadTrustOwnerAction(capability, {
             granted: true, grantId: grant.id, changed: activeBefore?.id !== grant.id,
-          }, leadDisplayName(bridge.db)));
+          }, leadDisplayName(bridge.db), getLocale(bridge.db)));
           json(req, res, 200, { capability, granted: true, grant });
           return;
         }
         const revoked = trust.revoke(capability, grantChannel(binding));
-        if (revoked > 0) recordOwnerActionFor(req, binding, leadTrustOwnerAction(capability, { granted: false, revoked }, leadDisplayName(bridge.db)));
+        if (revoked > 0) recordOwnerActionFor(req, binding, leadTrustOwnerAction(capability, { granted: false, revoked }, leadDisplayName(bridge.db), getLocale(bridge.db)));
         json(req, res, 200, { capability, granted: false, revoked, grant: null });
         return;
       }

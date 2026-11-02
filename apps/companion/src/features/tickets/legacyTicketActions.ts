@@ -6,9 +6,12 @@
 //   - 撤回确认、恢复是 user_only，开始执行是 lead_allowed，释放工作区按共享和隔离分档；
 //   - 恢复要先把 item-restore.ts 从 gateway 搬到 engine。
 // ticketDetailSkeleton.test.tsx 的「legacy actions」那几条测试钉住了这里的行为，换成读清单时会提醒改。
+import type { Locale } from '@pi-lead-child/protocol';
+
 import type { Ticket } from '@/features/workspace/model';
 
 import { ticketDecisionActions } from './ticketDecision';
+import { ticketStateMessages } from './ticketState.messages';
 
 export type LegacyTicketActionId = 'restore' | 'start' | 'unconfirm' | 'release';
 
@@ -21,12 +24,10 @@ export type LegacyTicketAction = {
 
 const LEGACY_IDS: readonly LegacyTicketActionId[] = ['start', 'unconfirm', 'restore', 'release'];
 
-const NOTES: Record<LegacyTicketActionId, string | null> = {
-  start: null,
-  unconfirm: '回到草稿，等你再确认开跑。',
-  restore: '恢复以后回到草稿，不会自动开跑。',
-  release: '把隔离工作区还回去，改动留在分支上。',
-};
+function notes(locale: Locale): Record<LegacyTicketActionId, string | null> {
+  const m = ticketStateMessages(locale).legacyNotes;
+  return { start: null, unconfirm: m.unconfirm, restore: m.restore, release: m.release };
+}
 
 function isLegacyId(id: string): id is LegacyTicketActionId {
   return (LEGACY_IDS as readonly string[]).includes(id);
@@ -36,8 +37,12 @@ function isLegacyId(id: string): id is LegacyTicketActionId {
  * 旧的判断说现在能做的那几个（ticketDecisionActions：protocol 的 userItemActionsFor 和工作区的 availableActions，
  * 加上受阻、恢复中不给开始这些过滤）。草稿下面还有已取消的子工单时，恢复叫「继续恢复」。
  */
-export function legacyTicketActions(ticket: Ticket, context: { cancelledChildCount?: number } = {}): LegacyTicketAction[] {
+export function legacyTicketActions(
+  ticket: Ticket,
+  context: { cancelledChildCount?: number; locale?: Locale } = {},
+): LegacyTicketAction[] {
+  const notesById = notes(context.locale ?? 'en');
   return ticketDecisionActions(ticket, context).flatMap((action) => isLegacyId(action.id)
-    ? [{ id: action.id, label: action.label, note: NOTES[action.id] }]
+    ? [{ id: action.id, label: action.label, note: notesById[action.id] }]
     : []);
 }

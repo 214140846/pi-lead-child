@@ -12,6 +12,7 @@ import {
   readGatewayTickets,
   readGatewayTimeline,
 } from "@pi-lead-child/gateway/testing";
+import { updateDesignPreferences } from "@pi-lead-child/engine";
 
 let db: Db;
 let dir: string;
@@ -35,6 +36,8 @@ const range = () => ({ from: at(-14 * day), to: at(14 * day), timezone: "Asia/Sh
 beforeEach(() => {
   dir = tempDir("plc-timeline-");
   db = openDb(join(dir, "plc.db"));
+  // 这个文件的断言是中文：先把界面语言设成中文（缺省是英文）。
+  updateDesignPreferences(db, { request: { locale: "zh" }, caller: { kind: "user" } });
   turnId = createTurn(db, { originKind: "companion", userText: "#72 明天下午提测" }).id;
 });
 

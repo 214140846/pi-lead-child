@@ -25,24 +25,25 @@ const notDispatched: TicketReviewState = {
 
 describe('ticketDecision', () => {
   it('recommends dispatching the review for a delivery nobody will review (the #66 case)', () => {
-    const decision = ticketDecision({ ticket: ticket({ stage: 'review', reviewState: notDispatched, verificationPolicy: 'independent_reviewer' }) });
-    expect(recommendedTicketOption(decision)).toMatchObject({ id: 'request_review', label: '派发独立核查' });
+    const decision = ticketDecision({ locale: 'en', ticket: ticket({ stage: 'review', reviewState: notDispatched, verificationPolicy: 'independent_reviewer' }) });
+    expect(recommendedTicketOption(decision)).toMatchObject({ id: 'request_review', label: 'Request independent review' });
   });
 
   it('recommends confirming a draft Lead wrote', () => {
-    const decision = ticketDecision({ ticket: ticket({ stage: 'draft', hasRun: false }) });
+    const decision = ticketDecision({ locale: 'en', ticket: ticket({ stage: 'draft', hasRun: false }) });
     expect(recommendedTicketOption(decision)?.id).toBe('confirm');
   });
 
   it('has no one-click recommendation for a blocked ticket: you decide in the ticket', () => {
     const blocked = ticket({ stage: 'blocked', runtime: { ...idle, state: 'blocked' } });
     expect(ticketDecisionActions(blocked).map((action) => action.id)).toEqual(['cancel']);
-    expect(recommendedTicketOption(ticketDecision({ ticket: blocked }))).toBeNull();
+    expect(recommendedTicketOption(ticketDecision({ locale: 'en', ticket: blocked }))).toBeNull();
   });
 
   it('names the blocker the caller found as the headline', () => {
     const blocked = ticket({ stage: 'blocked', runtime: { ...idle, state: 'blocked' } });
     const decision = ticketDecision({
+      locale: 'en',
       ticket: blocked,
       blocker: { title: 'Agent Run 未捕获异常', summary: 'Run #54 交付的成果格式不合法。' },
     });
@@ -52,7 +53,7 @@ describe('ticketDecision', () => {
 
   it('offers to continue a restore when the root came back as a draft and children stay cancelled', () => {
     const draft = ticket({ stage: 'draft', hasRun: false });
-    expect(ticketDecisionActions(draft, { cancelledChildCount: 2 })[0]).toMatchObject({ id: 'restore', label: '继续恢复' });
+    expect(ticketDecisionActions(draft, { cancelledChildCount: 2 })[0]).toMatchObject({ id: 'restore', label: 'Continue restore' });
   });
 });
 
@@ -65,15 +66,15 @@ describe('a ticket waiting for your decision', () => {
   });
 
   it('recommends nothing from the stage, and says the decision comes first', () => {
-    const decision = ticketDecision({ ticket: owed() });
+    const decision = ticketDecision({ locale: 'en', ticket: owed() });
     expect(recommendedTicketOption(decision)).toBeNull();
-    expect(decision.chip).toBe('待你决定');
-    expect(decision.headline).toBe('等你决定');
+    expect(decision.chip).toBe('Needs your decision');
+    expect(decision.headline).toBe('Waiting for your decision');
     expect(decision.options.map((option) => option.id)).toContain('request_review');
   });
 
-  it('labels the ticket 待你决定 wherever its status shows', () => {
-    expect(owed().statusLabel).toBe('待你决定');
+  it('labels the ticket "Needs your decision" wherever its status shows', () => {
+    expect(owed().statusLabel).toBe('Needs your decision');
     expect(owed().needsUser).toBe('decision');
   });
 });

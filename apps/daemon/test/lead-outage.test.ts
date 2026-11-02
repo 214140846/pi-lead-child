@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { addInbox, addLeadFollowUp, createItem, openDb, type Db } from "@pi-lead-child/store";
 import { tempDir } from "@pi-lead-child/core/testing";
+import { updateDesignPreferences } from "@pi-lead-child/engine";
 import { startDaemon } from "../src/server.js";
 
 let dir: string;
@@ -56,8 +57,29 @@ const outageTurns = () => db.prepare(
   "SELECT id, assistant_text FROM channel_turns WHERE origin_kind = 'system:fallback-notice' ORDER BY created_at",
 ).all() as Array<{ id: string; assistant_text: string }>;
 
+// 停摆卡片按写的时候用户选的语言写（2026-11-01）。积压的事的原文（收件箱的说明）不翻译。
+const EXPECTED = {
+  en: {
+    open: /^Paimon offline since \d\d:\d\d \(network down\) · 2 items waited$/,
+    followUp: (id: number) => `Ticket #${id} "E2E 终验": A follow-up that Paimon set is due — Handled when Paimon recovers`,
+    blocker: (id: number) => `Ticket #${id} "迁移脚本": 执行重试已耗尽（执行失败 2/2）`,
+    three: /3 items waited/,
+    closed: /^Paimon offline \d\d:\d\d(?:–\d\d:\d\d|, less than a minute) \(network down\) · 3 items waited · (?:recovered at \d\d:\d\d|recovered), waiting work handled$/,
+  },
+  zh: {
+    open: /^Paimon 离线 \d\d:\d\d 起（网络中断）· 期间积压 2 件$/,
+    followUp: (id: number) => `工单 #${id}「E2E 终验」：Paimon 设的一次跟进到点了 —— 等 Paimon 恢复后处理`,
+    blocker: (id: number) => `工单 #${id}「迁移脚本」：执行重试已耗尽（执行失败 2/2）`,
+    three: /期间积压 3 件/,
+    // 测试里的停摆通常不到一分钟：同一分钟里开始又恢复时写「不到一分钟」，不写「19:11–19:11」。
+    closed: /^Paimon 离线 \d\d:\d\d(?:–\d\d:\d\d|，不到一分钟)（网络中断）· 期间积压 3 件 · (?:\d\d:\d\d )?已恢复并补处理$/,
+  },
+} as const;
+
 describe("while Lead cannot work", () => {
-  it("keeps one outage notice, written for the user, updated in place until Lead is back", async () => {
+  it.each(["en", "zh"] as const)("keeps one outage notice, written for the user, updated in place until Lead is back (%s)", async (locale) => {
+    const expected = EXPECTED[locale];
+    updateDesignPreferences(db, { request: { locale }, caller: { kind: "user" } });
     let down: string | null = "getaddrinfo ENOTFOUND api.anthropic.com";
     const lead = quietLead();
     daemon = await startDaemon({
@@ -74,24 +96,22 @@ describe("while Lead cannot work", () => {
     await vi.waitFor(() => expect(outageTurns()).toHaveLength(1));
     const [first] = outageTurns();
     const [headline, ...lines] = first!.assistant_text.split("\n");
-    expect(headline).toMatch(/^Paimon 离线 \d\d:\d\d 起（网络中断）· 期间积压 2 件$/);
-    expect(lines.join("\n")).toContain(`工单 #${review}「E2E 终验」：Paimon 设的一次跟进到点了`);
-    expect(lines.join("\n")).toContain(`工单 #${migration}「迁移脚本」：执行重试已耗尽（执行失败 2/2）`);
+    expect(headline).toMatch(expected.open);
+    expect(lines.join("\n")).toContain(expected.followUp(review));
+    expect(lines.join("\n")).toContain(expected.blocker(migration));
     expect(first!.assistant_text).not.toMatch(/notify_user|record_disposition|batchable|跟进：看/);
     expect(lead.prompts).toEqual([]);
 
     // 停摆期间又来了一件：还是这一条，原地更新。
     const report = createItem(db, { title: "周报", brief: "b", createdBy: "user" });
     addInbox(db, { itemId: report, severity: "blocker", source: "structural", summary: `工单 #${report} 需要你确认发布时间` });
-    await vi.waitFor(() => expect(outageTurns()[0]!.assistant_text).toMatch(/期间积压 3 件/));
+    await vi.waitFor(() => expect(outageTurns()[0]!.assistant_text).toMatch(expected.three));
     expect(outageTurns()).toHaveLength(1);
     expect(outageTurns()[0]!.id).toBe(first!.id);
 
     // 网络恢复：Lead 接着处理积压的事，这一条写上恢复的时间。
     down = null;
-    await vi.waitFor(() => expect(outageTurns()[0]!.assistant_text.split("\n")[0])
-      // 测试里的停摆通常不到一分钟：同一分钟里开始又恢复时写「不到一分钟」，不写「19:11–19:11」。
-      .toMatch(/^Paimon 离线 \d\d:\d\d(?:–\d\d:\d\d|，不到一分钟)（网络中断）· 期间积压 3 件 · (?:\d\d:\d\d )?已恢复并补处理$/));
+    await vi.waitFor(() => expect(outageTurns()[0]!.assistant_text.split("\n")[0]).toMatch(expected.closed));
     expect(outageTurns()).toHaveLength(1);
     await vi.waitFor(() => expect(lead.prompts.some((prompt) => prompt.includes("执行重试已耗尽"))).toBe(true));
   });

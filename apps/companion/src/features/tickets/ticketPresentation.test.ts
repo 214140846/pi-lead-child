@@ -11,7 +11,7 @@ import {
   buildInterventionPresentation,
   buildTicketActionPresentation,
   buildTicketDetailPresentation,
-  checkpointToPresentation,
+  checkpointPresentationFor,
   interventionActionRequest,
   interventionToAuthority,
   resourceToCheckpointFeedResource,
@@ -103,19 +103,19 @@ const terminalHandoffFailure: CheckpointPresentationInput = {
 
 describe('ticket presentation', () => {
   it('makes workspace state and cross-ticket context explicit', () => {
-    expect(ticketContextLabel(42, 38)).toBe('其他工单 · #38');
-    expect(ticketContextLabel(42, 42)).toBeNull();
+    expect(ticketContextLabel(42, 38, 'zh')).toBe('其他工单 · #38');
+    expect(ticketContextLabel(42, 42, 'zh')).toBeNull();
     expect(workspaceStatusPresentation({
       id: 1, ownerTicketId: 42, kind: 'isolated_child', mode: 'isolated', state: 'review_hold', inherited: false,
       availableActions: ['release'],
-    })).toMatchObject({ kindLabel: '子工单工作区', stateLabel: '等待核查', stateTone: 'attention' });
+    }, 'zh')).toMatchObject({ kindLabel: '子工单工作区', stateLabel: '等待核查', stateTone: 'attention' });
   });
 
   it('does not infer running work or successful cleanup from workspace readiness', () => {
     const workspace = { id: 1, ownerTicketId: 42, kind: 'experiment' as const, mode: 'isolated' as const, inherited: false, availableActions: [] };
-    expect(workspaceStatusPresentation({ ...workspace, state: 'active' }).nextStep).not.toContain('正在');
-    expect(workspaceStatusPresentation({ ...workspace, state: 'cleaning' }).nextStep).toContain('清理');
-    expect(workspaceStatusPresentation({ ...workspace, state: 'active' }).kindLabel).toBe('实验工作区');
+    expect(workspaceStatusPresentation({ ...workspace, state: 'active' }, 'zh').nextStep).not.toContain('正在');
+    expect(workspaceStatusPresentation({ ...workspace, state: 'cleaning' }, 'zh').nextStep).toContain('清理');
+    expect(workspaceStatusPresentation({ ...workspace, state: 'active' }, 'zh').kindLabel).toBe('实验工作区');
   });
   it('only promotes an unresolved terminal handoff failure as a current alert', () => {
     expect(activeTerminalHandoffFailure('blocked', [terminalHandoffFailure])).toBe(terminalHandoffFailure);
@@ -152,7 +152,7 @@ describe('ticket presentation', () => {
       createdAt: '2026-07-24T08:06:00.000Z',
     };
 
-    expect(checkpointToPresentation(checkpoint)).toEqual({
+    expect(checkpointPresentationFor('zh')(checkpoint)).toEqual({
       id: '18',
       // 写下这条记录的 Run：用来判断"等待验收"说的是不是当前那次交付。
       attemptId: 73,
@@ -208,11 +208,11 @@ describe('ticket presentation', () => {
       resolvedAt: null,
     };
 
-    expect(interventionToAuthority(approval, true)).toEqual({
+    expect(interventionToAuthority(approval, true, 'zh')).toEqual({
       id: 'approval:9', kind: 'approval', state: 'pending', canRespond: true,
       prompt: '安装 launchd 服务', allowSessionApproval: true,
     });
-    expect(interventionToAuthority(decision, false)).toEqual({
+    expect(interventionToAuthority(decision, false, 'zh')).toEqual({
       id: 'decision:4', kind: 'decision', state: 'pending', canRespond: false,
       prompt: '需要确定灰度比例。', allowCustom: true,
       options: [{ id: 'safe', label: '安全灰度' }],
@@ -242,7 +242,7 @@ describe('ticket presentation', () => {
         canRespond: true,
         allowSessionApproval: true,
       },
-    });
+    }, undefined, { locale: 'zh' });
 
     expect(feed.state).toBe('ready');
     expect(feed.items.map((item) => item.id)).toEqual(['11', '10']);
@@ -255,16 +255,16 @@ describe('ticket presentation', () => {
     const feed = buildCheckpointFeedPresentation([
       { ...checkpoints[0]!, id: '20', createdAt: '2026-07-24T09:00:00.000Z' },
       { ...checkpoints[1]!, id: '21', createdAt: '2026-07-24T08:00:00.000Z' },
-    ], {});
+    ], {}, undefined, { locale: 'zh' });
 
     expect(feed.items.map((item) => item.id)).toEqual(['21', '20']);
   });
 
   it('returns stable loading, empty, disconnected, and page-error checkpoint states', () => {
-    expect(buildCheckpointFeedPresentation([], {}, { state: 'loading' }).state).toBe('loading');
-    expect(buildCheckpointFeedPresentation([], {}, { state: 'ready' }).state).toBe('empty');
-    expect(buildCheckpointFeedPresentation([], {}, { state: 'disconnected' }).state).toBe('disconnected');
-    expect(buildCheckpointFeedPresentation(checkpoints, {}, { state: 'error', error: 'timeout' })).toMatchObject({
+    expect(buildCheckpointFeedPresentation([], {}, { state: 'loading' }, { locale: 'zh' }).state).toBe('loading');
+    expect(buildCheckpointFeedPresentation([], {}, { state: 'ready' }, { locale: 'zh' }).state).toBe('empty');
+    expect(buildCheckpointFeedPresentation([], {}, { state: 'disconnected' }, { locale: 'zh' }).state).toBe('disconnected');
+    expect(buildCheckpointFeedPresentation(checkpoints, {}, { state: 'error', error: 'timeout' }, { locale: 'zh' })).toMatchObject({
       state: 'ready',
       pageError: 'timeout',
     });
@@ -279,33 +279,33 @@ describe('ticket presentation', () => {
       allowSessionApproval: true,
     };
 
-    expect(buildInterventionPresentation(authority).actions.map((action) => action.id)).toEqual([
+    expect(buildInterventionPresentation(authority, 'zh').actions.map((action) => action.id)).toEqual([
       'reject',
       'approve_once',
       'approve_session',
     ]);
-    expect(buildInterventionPresentation(authority).actions[0]?.label).toBe('拒绝');
-    expect(buildInterventionPresentation({ ...authority, canRespond: false }).actions).toEqual([]);
-    expect(buildInterventionPresentation({ ...authority, state: 'resolved', resolvedBy: 'alice', resolutionLabel: '已授权本次' })).toMatchObject({
+    expect(buildInterventionPresentation(authority, 'zh').actions[0]?.label).toBe('拒绝');
+    expect(buildInterventionPresentation({ ...authority, canRespond: false }, 'zh').actions).toEqual([]);
+    expect(buildInterventionPresentation({ ...authority, state: 'resolved', resolvedBy: 'alice', resolutionLabel: '已授权本次' }, 'zh')).toMatchObject({
       stateLabel: '已解决',
       tone: 'success',
       resolutionText: 'alice · 已授权本次',
       actions: [],
     });
-    expect(buildInterventionPresentation({ ...authority, state: 'rejected' })).toMatchObject({ tone: 'danger' });
+    expect(buildInterventionPresentation({ ...authority, state: 'rejected' }, 'zh')).toMatchObject({ tone: 'danger' });
     // 2026-10-26：resolvedBy 是内部的 actor 字符串，显示成给人看的说法，不再写「lead」「user via page」。
-    expect(buildInterventionPresentation({ ...authority, state: 'resolved', resolvedBy: 'lead', resolutionLabel: '已授权本次' }).resolutionText)
+    expect(buildInterventionPresentation({ ...authority, state: 'resolved', resolvedBy: 'lead', resolutionLabel: '已授权本次' }, 'zh').resolutionText)
       .toBe(`${leadNameNow()} · 已授权本次`);
     expect(buildInterventionPresentation({ ...authority, state: 'resolved', resolvedBy: 'user via page', resolutionLabel: '已授权本次' }).resolutionText)
-      .toBe('你 · 已授权本次');
+      .toBe('You · 已授权本次');
   });
 
   // 2026-10-16：同一件事只有一种说法。等你回答的决定写「待你决定」、等你批准的写「待审批」，
   // 和收件箱、状态标签（protocol 的 ticketNeedsUserLabel）一样，不再都写「需要你介入」。
   it('names a pending intervention the way the inbox and the status label do', () => {
-    expect(buildInterventionPresentation({ id: 'decision:12', kind: 'decision', state: 'pending', canRespond: true, options: [] }).stateLabel)
+    expect(buildInterventionPresentation({ id: 'decision:12', kind: 'decision', state: 'pending', canRespond: true, options: [] }, 'zh').stateLabel)
       .toBe('待你决定');
-    expect(buildInterventionPresentation({ id: 'approval:7', kind: 'approval', state: 'pending', canRespond: true }).stateLabel)
+    expect(buildInterventionPresentation({ id: 'approval:7', kind: 'approval', state: 'pending', canRespond: true }, 'zh').stateLabel)
       .toBe('待审批');
   });
 
@@ -319,12 +319,12 @@ describe('ticket presentation', () => {
       allowCustom: true,
     };
 
-    expect(buildInterventionPresentation(decision).actions.map((action) => action.id)).toEqual([
+    expect(buildInterventionPresentation(decision, 'zh').actions.map((action) => action.id)).toEqual([
       'option:safe',
       'option:fast',
       'custom',
     ]);
-    expect(buildInterventionPresentation({ ...decision, state: 'expired' })).toMatchObject({
+    expect(buildInterventionPresentation({ ...decision, state: 'expired' }, 'zh')).toMatchObject({
       stateLabel: '已过期',
       tone: 'muted',
       actions: [],
@@ -332,7 +332,7 @@ describe('ticket presentation', () => {
   });
 
   it('keeps artifacts honest and removes the prototype metric grid', () => {
-    const detail = buildTicketDetailPresentation(ticket, {
+    const detail = buildTicketDetailPresentation(ticket, { locale: 'zh',
       timing: { elapsedMs: ticket.elapsedMs },
       artifactCapability: 'unsupported',
     });
@@ -387,7 +387,7 @@ describe('ticket vocabulary matches the protocol', () => {
   // 于是它一直静默地活着：ConnectedTicketThread 和 LeadConversation 里两条
   // `=== 'in_progress'` 分支永远不成立，子工单一律显示成 waiting。
   it('carries the protocol stage through without remapping', () => {
-    const ticket = ticketSummaryToTicket(summaryFixture({ status: 'active' }));
+    const ticket = ticketSummaryToTicket(summaryFixture({ status: 'active' }), undefined, 'zh');
     expect(ticket.status).toBe('active');
     expect(ticket.statusLabel).toBe('进行中');
   });
@@ -395,7 +395,7 @@ describe('ticket vocabulary matches the protocol', () => {
   it('carries kind and hasRun onto the view model', () => {
     const reminder = ticketSummaryToTicket(summaryFixture({
       status: 'scheduled', kind: 'reminder', hasRun: false,
-    }));
+    }), undefined, 'zh');
     expect(reminder.kind).toBe('reminder');
     expect(reminder.hasRun).toBe(false);
   });
@@ -408,7 +408,7 @@ describe('ticket vocabulary matches the protocol', () => {
       activeExecution: null,
       pendingInterventionCount: 0,
       latestCheckpointId: null,
-    });
+    }, 'zh');
     expect(ticket.elapsedMs ?? null).toBeNull();
   });
 });
@@ -423,7 +423,7 @@ describe('rail grouping never calls a non-running stage running', () => {
       priority: 'normal', project: null, dueAt: null, deferUntil: null, updatedAt: '2026-10-15T07:00:00.000Z',
       runtime: { state: runtime, lastActivityAt: null, activeAttemptId: runtime === 'running' ? 3 : null },
       attention: { pendingApprovalCount: 0, blockerCount: 0 },
-    } as TicketSummary);
+    } as TicketSummary, undefined, 'zh');
 
   it('puts a draft under 需要你介入, not 进行中 — it is waiting on the user', () => {
     expect(groupForTicket(mk('draft'))).toBe('needs_intervention');
@@ -448,7 +448,7 @@ describe('rail grouping never calls a non-running stage running', () => {
 // 不能在 UI 里按 stage 手写第二份（那一份必然和内核分家）。
 describe('ticket action row is derived from the actor matrix', () => {
   const at = (status: string, kind: 'task' | 'reminder' = 'task') =>
-    buildTicketActionPresentation({ status, kind } as any);
+    buildTicketActionPresentation({ status, kind } as any, 'zh');
   const ids = (status: string, kind: 'task' | 'reminder' = 'task') =>
     at(status, kind).map((action) => action.id);
 
@@ -482,11 +482,11 @@ describe('ticket action row is derived from the actor matrix', () => {
   it('appends only server-authorized workspace actions without inferring them', () => {
     const active = { id: 7, ownerTicketId: 42, mode: 'shared' as const, kind: 'primary' as const, state: 'active' as const, inherited: false, availableActions: ['release' as const] };
     const released = { ...active, state: 'released' as const, availableActions: ['cleanup' as const] };
-    expect(buildTicketActionPresentation({ status: 'done', kind: 'task', workspace: active }).map((a) => a.id))
+    expect(buildTicketActionPresentation({ status: 'done', kind: 'task', workspace: active }, 'zh').map((a) => a.id))
       .toEqual(['rework', 'release']);
-    expect(buildTicketActionPresentation({ status: 'done', kind: 'task', workspace: released }).map((a) => a.id))
+    expect(buildTicketActionPresentation({ status: 'done', kind: 'task', workspace: released }, 'zh').map((a) => a.id))
       .toEqual(['rework', 'cleanup']);
-    expect(buildTicketActionPresentation({ status: 'done', kind: 'task', workspace: { ...active, availableActions: [] } }).map((a) => a.id))
+    expect(buildTicketActionPresentation({ status: 'done', kind: 'task', workspace: { ...active, availableActions: [] } }, 'zh').map((a) => a.id))
       .toEqual(['rework']);
   });
 
@@ -497,7 +497,7 @@ describe('ticket action row is derived from the actor matrix', () => {
   });
 
   it('names the destructive ticket action explicitly', () => {
-    expect(buildTicketActionPresentation({ status: 'blocked', kind: 'task' } as any).find((action) => action.id === 'cancel')?.label)
+    expect(buildTicketActionPresentation({ status: 'blocked', kind: 'task' } as any, 'zh').find((action) => action.id === 'cancel')?.label)
       .toBe('取消工单');
   });
 });
@@ -515,7 +515,7 @@ describe('historical checkpoint labels (F14) and dates (F17)', () => {
   ];
 
   it('regression #66: does not label old crashes as needing intervention while the ticket is in review', () => {
-    const feed = buildCheckpointFeedPresentation(history, {}, { state: 'ready' }, { ticketStatus: 'review' });
+    const feed = buildCheckpointFeedPresentation(history, {}, { state: 'ready' }, { locale: 'zh', ticketStatus: 'review' });
     const label = (id: string) => feed.items.find((item) => item.id === id);
 
     expect(label('85')).toMatchObject({ kindLabel: '当时阻塞', historical: true });
@@ -528,13 +528,13 @@ describe('historical checkpoint labels (F14) and dates (F17)', () => {
 
   it('regression #66: does not say an older delivery is waiting for acceptance', () => {
     const submitted = { ...at('68', 'completed', '2026-08-17T11:01:46.424Z'), attemptId: 42 };
-    const feed = buildCheckpointFeedPresentation([submitted], {}, { state: 'ready' }, { ticketStatus: 'review', deliveryRunId: 49 });
+    const feed = buildCheckpointFeedPresentation([submitted], {}, { state: 'ready' }, { locale: 'zh', ticketStatus: 'review', deliveryRunId: 49 });
 
     expect(feed.items[0]).toMatchObject({ kindLabel: '已提交验收', historical: true });
   });
 
   it('keeps the current blocker labelled as needing intervention', () => {
-    const feed = buildCheckpointFeedPresentation(history, {}, { state: 'ready' }, { ticketStatus: 'blocked' });
+    const feed = buildCheckpointFeedPresentation(history, {}, { state: 'ready' }, { locale: 'zh', ticketStatus: 'blocked' });
 
     expect(feed.items.find((item) => item.id === '93')).toMatchObject({ kindLabel: '需要介入' });
     expect(feed.items.find((item) => item.id === '85')).toMatchObject({ kindLabel: '当时阻塞' });
@@ -548,7 +548,7 @@ describe('historical checkpoint labels (F14) and dates (F17)', () => {
       [71, { purpose: 'conversation', blockedTicket: false }],
       [48, { purpose: 'execution', blockedTicket: true }],
     ]);
-    const feed = buildCheckpointFeedPresentation([crashed, handoff], {}, { state: 'ready' }, { ticketStatus: 'review', runs });
+    const feed = buildCheckpointFeedPresentation([crashed, handoff], {}, { state: 'ready' }, { locale: 'zh', ticketStatus: 'review', runs });
 
     expect(feed.items.find((item) => item.id === '153')).toMatchObject({ kindLabel: '对话失败', historical: true });
     expect(feed.items.find((item) => item.id === '93')).toMatchObject({ kindLabel: '当时阻塞', historical: true });
@@ -559,9 +559,9 @@ describe('historical checkpoint labels (F14) and dates (F17)', () => {
     const started = { ...at('152', 'progress', '2026-10-13T11:07:38.000Z'), nextStep: 'Answer the ticket-scoped conversation without changing the task lifecycle.' };
     const current = { ...at('93', 'blocked', '2026-08-21T09:17:54.141Z'), nextStep: '检查本次运行结果，修复交接通道后重新提交状态与终态 Checkpoint，再进入 Review。' };
 
-    const inReview = buildCheckpointFeedPresentation([past, started], {}, { state: 'ready' }, { ticketStatus: 'active' });
+    const inReview = buildCheckpointFeedPresentation([past, started], {}, { state: 'ready' }, { locale: 'zh', ticketStatus: 'active' });
     expect(inReview.items.map((item) => item.nextStep)).toEqual([undefined, undefined]);
-    const blocked = buildCheckpointFeedPresentation([current], {}, { state: 'ready' }, { ticketStatus: 'blocked' });
+    const blocked = buildCheckpointFeedPresentation([current], {}, { state: 'ready' }, { locale: 'zh', ticketStatus: 'blocked' });
     expect(blocked.items[0]?.nextStep).toBe(current.nextStep);
   });
 
@@ -574,7 +574,7 @@ describe('historical checkpoint labels (F14) and dates (F17)', () => {
         { label: 'Needs', value: 'none' },
       ],
     };
-    const feed = buildCheckpointFeedPresentation([crashed], {}, { state: 'ready' }, { ticketStatus: 'review' });
+    const feed = buildCheckpointFeedPresentation([crashed], {}, { state: 'ready' }, { locale: 'zh', ticketStatus: 'review' });
 
     expect(feed.items[0]?.keyFacts).toEqual([{ label: 'Runtime', value: 'claude' }]);
   });

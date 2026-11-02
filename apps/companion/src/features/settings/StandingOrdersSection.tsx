@@ -4,12 +4,14 @@ import type {
 } from '@pi-lead-child/protocol';
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 
+import { useLocale, useMessages } from '@/i18n';
 import { useCompanionRuntime } from '@/state/CompanionStateProvider';
 import { useConnectionPhase, useLeadName } from '@/state/hooks';
 
 import { StandingOrderProposalView } from './StandingOrderProposal';
+import { standingOrdersMessages } from './standingOrders.messages';
 import {
-  authorLabel, compactJson, executionSubtitle, levelLabel, orderReasonText, orderSubtitle, proposalOutcome, proposalTitle,
+  compactJson, executionSubtitle, levelLabel, orderReasonText, orderSubtitle, proposalOutcome, proposalTitle,
   shortTime, standingOrderErrorText, standingOrdersRollbackNote, withLeadName,
 } from './standingOrderModel';
 
@@ -21,6 +23,8 @@ import {
 export function StandingOrdersSection() {
   const runtime = useCompanionRuntime();
   const ready = useConnectionPhase() === 'ready';
+  const locale = useLocale();
+  const m = useMessages(standingOrdersMessages);
   const [list, setList] = useState<StandingOrderListResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
@@ -31,8 +35,8 @@ export function StandingOrdersSection() {
       setList(next);
       setError(null);
     },
-    (reason: unknown) => { if (!signal?.aborted) setError(standingOrderErrorText(reason)); },
-  ), [runtime]);
+    (reason: unknown) => { if (!signal?.aborted) setError(standingOrderErrorText(reason, locale)); },
+  ), [locale, runtime]);
 
   useEffect(() => {
     if (!ready) return undefined;
@@ -43,8 +47,8 @@ export function StandingOrdersSection() {
 
   if (!list) {
     return error
-      ? <Text testID="standing-orders-error" size="body" tone="danger-dark">{`读不到常设指令：${error}`}</Text>
-      : <Text testID="standing-orders-loading" size="body" tone="muted">正在读取常设指令…</Text>;
+      ? <Text testID="standing-orders-error" size="body" tone="danger-dark">{m.loadFailed(error)}</Text>
+      : <Text testID="standing-orders-loading" size="body" tone="muted">{m.loading}</Text>;
   }
   const pending = list.proposals.filter((proposal) => proposal.state === 'pending');
   return (
@@ -55,7 +59,7 @@ export function StandingOrdersSection() {
         </Card>
       ))}
       <Column gap="group-label">
-        <Text size="eyebrow" weight="bold" tone="secondary">{`全部指令（${list.items.length}）`}</Text>
+        <Text size="eyebrow" weight="bold" tone="secondary">{m.allOrders(list.items.length)}</Text>
         <Card rounded="xl" overflow="hidden">
           {list.items.map((order, index) => (
             <OrderRow
@@ -82,6 +86,8 @@ function OrderRow({ order, first, open, onToggle, onChanged }: {
   onChanged: () => void;
 }) {
   const leadName = useLeadName();
+  const locale = useLocale();
+  const m = useMessages(standingOrdersMessages);
   return (
     <Column borderTopWidth={first ? 0 : 1} borderTopColor="border-soft">
       <Pressable
@@ -96,11 +102,11 @@ function OrderRow({ order, first, open, onToggle, onChanged }: {
       >
         <Column flex={1} minW={0} gap="text-stack">
           <Text size="card-title" weight="semibold">{withLeadName(order.title, leadName)}</Text>
-          <Text size="secondary" tone="muted" numberOfLines={1}>{orderSubtitle(order, leadName)}</Text>
+          <Text size="secondary" tone="muted" numberOfLines={1}>{orderSubtitle(order, leadName, locale)}</Text>
         </Column>
-        {order.status === 'disabled' ? <Badge label="停用" tone="muted" size="sm" /> : null}
+        {order.status === 'disabled' ? <Badge label={m.disabled} tone="muted" size="sm" /> : null}
         {order.author !== 'system'
-          ? <Badge label={`${authorLabel(order.author, leadName)}${order.version === 1 ? '新增' : '改过'}`} tone="accent" size="sm" />
+          ? <Badge label={m.authorBadge(order.author, leadName, order.version === 1)} tone="accent" size="sm" />
           : null}
         <Icon name={open ? 'chevron-up' : 'chevron-down'} size={16} color="text-ghost" />
       </Pressable>
@@ -112,6 +118,8 @@ function OrderRow({ order, first, open, onToggle, onChanged }: {
 function OrderDetail({ id, onChanged }: { id: string; onChanged: () => void }) {
   const runtime = useCompanionRuntime();
   const leadName = useLeadName();
+  const locale = useLocale();
+  const m = useMessages(standingOrdersMessages);
   const [detail, setDetail] = useState<StandingOrderDetailResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [confirming, setConfirming] = useState<number | null>(null);
@@ -121,10 +129,10 @@ function OrderDetail({ id, onChanged }: { id: string; onChanged: () => void }) {
     const controller = new AbortController();
     runtime.standingOrder(id, controller.signal).then(
       (next) => { if (!controller.signal.aborted) setDetail(next); },
-      (reason: unknown) => { if (!controller.signal.aborted) setError(standingOrderErrorText(reason)); },
+      (reason: unknown) => { if (!controller.signal.aborted) setError(standingOrderErrorText(reason, locale)); },
     );
     return () => controller.abort();
-  }, [id, runtime]);
+  }, [id, locale, runtime]);
 
   const rollback = (version: number) => {
     setSubmitting(true);
@@ -134,7 +142,7 @@ function OrderDetail({ id, onChanged }: { id: string; onChanged: () => void }) {
         setDetail(next);
         setConfirming(null);
         onChanged();
-      }, (reason: unknown) => setError(standingOrderErrorText(reason)))
+      }, (reason: unknown) => setError(standingOrderErrorText(reason, locale)))
       .finally(() => setSubmitting(false));
   };
 
@@ -143,7 +151,7 @@ function OrderDetail({ id, onChanged }: { id: string; onChanged: () => void }) {
       <Column px="card-row" pb="card-row">
         {error
           ? <Text testID={`standing-order-detail-error-${id}`} size="body" tone="danger-dark">{error}</Text>
-          : <Text size="body" tone="muted">正在读取…</Text>}
+          : <Text size="body" tone="muted">{m.detailLoading}</Text>}
       </Column>
     );
   }
@@ -154,26 +162,26 @@ function OrderDetail({ id, onChanged }: { id: string; onChanged: () => void }) {
     <Column testID={`standing-order-detail-${id}`} px="row-x" pb="card-section" gap="page-section">
       <Text size="secondary" tone="secondary">{orderReasonText(order, leadName)}</Text>
       <Column gap="card-row">
-        <Fact label="条件" value={compactJson(order.condition)} />
-        <Fact label="动作" value={compactJson(order.action)} />
-        {order.limits !== null ? <Fact label="上限" value={compactJson(order.limits)} /> : null}
-        {order.escalateTo ? <Fact label="到时限升到" value={`${order.escalateTo}（${levelLabel(order.escalateTo)}）`} /> : null}
+        <Fact label={m.condition} value={compactJson(order.condition)} />
+        <Fact label={m.action} value={compactJson(order.action)} />
+        {order.limits !== null ? <Fact label={m.limits} value={compactJson(order.limits)} /> : null}
+        {order.escalateTo ? <Fact label={m.escalateTo} value={m.escalateValue(order.escalateTo, levelLabel(order.escalateTo, locale) ?? order.escalateTo)} /> : null}
       </Column>
 
-      <Block title="版本历史" hint={standingOrdersRollbackNote(leadName)}>
+      <Block title={m.versions} hint={standingOrdersRollbackNote(leadName, locale)}>
         {versions.map((version) => (
           <Column key={version.version} testID={`standing-order-version-${id}-${version.version}`} gap="text-stack">
             <Row items="center" gap="inline-item" flexWrap="wrap">
               <Text size="label" weight="bold">{`v${version.version}`}</Text>
               <Text flex={1} size="meta" tone="muted">
-                {[`${authorLabel(version.author, leadName)}写的`, version.approvedBy ? `批准：${version.approvedBy}` : null,
-                  version.createdAt ? shortTime(version.createdAt) : null, version.status === 'disabled' ? '停用' : null]
+                {[m.writtenBy(version.author, leadName), version.approvedBy ? m.approvedBy(version.approvedBy) : null,
+                  version.createdAt ? shortTime(version.createdAt) : null, version.status === 'disabled' ? m.disabled : null]
                   .filter(Boolean).join(' · ')}
               </Text>
-              {version.version === order.version ? <Badge label="现在" tone="success" size="sm" /> : (
+              {version.version === order.version ? <Badge label={m.current} tone="success" size="sm" /> : (
                 <Button
                   testID={`standing-order-rollback-${id}-${version.version}`}
-                  label="回滚到这一版"
+                  label={m.rollbackTo}
                   size="sm"
                   variant="outline"
                   tone="neutral"
@@ -185,29 +193,29 @@ function OrderDetail({ id, onChanged }: { id: string; onChanged: () => void }) {
             <Text size="secondary" tone="secondary">{orderReasonText(version, leadName)}</Text>
             {confirming === version.version ? (
               <Row testID={`standing-order-rollback-confirm-${id}`} items="center" gap="actions" flexWrap="wrap">
-                <Text flex={1} size="body" weight="semibold">{`写一个新版本 v${order.version + 1}，内容和 v${version.version} 一样？`}</Text>
-                <Button testID={`standing-order-rollback-yes-${id}`} label="回滚" size="sm" disabled={submitting} onPress={() => rollback(version.version)} />
-                <Button label="取消" size="sm" variant="outline" tone="neutral" disabled={submitting} onPress={() => setConfirming(null)} />
+                <Text flex={1} size="body" weight="semibold">{m.rollbackConfirm(order.version + 1, version.version)}</Text>
+                <Button testID={`standing-order-rollback-yes-${id}`} label={m.rollback} size="sm" disabled={submitting} onPress={() => rollback(version.version)} />
+                <Button label={m.cancel} size="sm" variant="outline" tone="neutral" disabled={submitting} onPress={() => setConfirming(null)} />
               </Row>
             ) : null}
           </Column>
         ))}
       </Block>
 
-      <Block title="最近的执行记录" hint="事件日志里按这条指令处理的事件，新的在前。">
+      <Block title={m.executions} hint={m.executionsHint}>
         {detail.executions.length ? detail.executions.map((execution) => (
           <Row key={execution.seq} testID={`standing-order-execution-${execution.seq}`} items="flex-start" gap="inline-item">
-            {levelLabel(execution.level) ? <Badge label={levelLabel(execution.level)!} tone="neutral" size="sm" /> : null}
+            {levelLabel(execution.level, locale) ? <Badge label={levelLabel(execution.level, locale)!} tone="neutral" size="sm" /> : null}
             <Column flex={1} minW={0} gap="text-stack">
               <Text size="body" numberOfLines={2}>{execution.summary}</Text>
               <Text size="meta" tone="muted" numberOfLines={1}>{executionSubtitle(execution)}</Text>
             </Column>
           </Row>
-        )) : <Text testID={`standing-order-no-executions-${id}`} size="body" tone="muted">最近还没有事件按它处理。</Text>}
+        )) : <Text testID={`standing-order-no-executions-${id}`} size="body" tone="muted">{m.noExecutions}</Text>}
       </Block>
 
       {resolved.length ? (
-        <Block title={`${leadName} 的提议`}>
+        <Block title={m.proposals(leadName)}>
           {resolved.map((proposal) => <ResolvedProposal key={proposal.approvalId} proposal={proposal} leadName={leadName} />)}
         </Block>
       ) : null}
@@ -217,10 +225,11 @@ function OrderDetail({ id, onChanged }: { id: string; onChanged: () => void }) {
 }
 
 function ResolvedProposal({ proposal, leadName }: { proposal: StandingOrderProposalDto; leadName: string }) {
-  const outcome = proposalOutcome(proposal);
+  const locale = useLocale();
+  const outcome = proposalOutcome(proposal, locale);
   return (
     <Column gap="text-stack">
-      <Text size="card-title" weight="semibold">{`${proposalTitle(proposal, leadName)} · ${shortTime(proposal.requestedAt)}`}</Text>
+      <Text size="card-title" weight="semibold">{`${proposalTitle(proposal, leadName, locale)} · ${shortTime(proposal.requestedAt)}`}</Text>
       {outcome ? <Text size="secondary" tone={outcome.tone}>{outcome.label}</Text> : null}
     </Column>
   );

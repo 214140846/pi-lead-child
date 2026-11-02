@@ -34,7 +34,7 @@ describe("the default handbook", () => {
     expect(validateStandingOrderDefinition(seed)).toEqual([]);
     expect(validStandingOrderRuleParams("channel.handbook", CHANNEL_HANDBOOK_DEFAULTS)).toBe(true);
     // 兜底的一句：Lead 自己判断（和 2026-10-29 起的行为一样）。
-    expect(handbookSentence(situation(CHANNEL_HANDBOOK_DEFAULTS, HANDBOOK_FALLBACK_ID))).toBe("上面都不像的，你自己判断，拿不准再问我。");
+    expect(handbookSentence(situation(CHANNEL_HANDBOOK_DEFAULTS, HANDBOOK_FALLBACK_ID), "zh")).toBe("上面都不像的，你自己判断，拿不准再问我。");
   });
 
   // 2026-10-29 的起因：「帮我处理一下这个 ticket：PROJ-6651」落进「别的」，按授权表只能问你。交接说明里有一句接住它。
@@ -42,8 +42,8 @@ describe("the default handbook", () => {
     const fix = situation(CHANNEL_HANDBOOK_DEFAULTS, "work_fix");
     expect(fix.mode).toBe("auto");
     expect(fix.abilities).toContain("coding_ticket");
-    expect(handbookSentence(fix)).toBe("有人请我排查或修复问题，比如「帮我处理一下 PROJ-6651」，你直接处理，做完回他。");
-    expect(handbookSentence(situation(CHANNEL_HANDBOOK_DEFAULTS, "closing"))).toBe("道谢或者告别，比如「谢谢，问题解决了」，你回个表情或者道声谢。");
+    expect(handbookSentence(fix, "zh")).toBe("有人请我排查或修复问题，比如「帮我处理一下 PROJ-6651」，你直接处理，做完回他。");
+    expect(handbookSentence(situation(CHANNEL_HANDBOOK_DEFAULTS, "closing"), "zh")).toBe("道谢或者告别，比如「谢谢，问题解决了」，你回个表情或者道声谢。");
   });
 
   it("names the assistant with the user's name, not a fixed one", () => {
@@ -52,11 +52,11 @@ describe("the default handbook", () => {
 
   it("rejects a handbook without the fallback, with repeated ids, or with a loose customer cap", () => {
     const noFallback = { ...copy(), situations: copy().situations.filter((item) => item.id !== HANDBOOK_FALLBACK_ID) };
-    expect(channelHandbookProblems(noFallback)).toEqual([`缺少兜底的一句（${HANDBOOK_FALLBACK_ID}）`]);
+    expect(channelHandbookProblems(noFallback, "zh")).toEqual([`缺少兜底的一句（${HANDBOOK_FALLBACK_ID}）`]);
     const repeated = { ...copy(), situations: [...copy().situations, situation(copy(), "chat")] };
-    expect(channelHandbookProblems(repeated)).toEqual(["编号重复：chat"]);
+    expect(channelHandbookProblems(repeated, "zh")).toEqual(["编号重复：chat"]);
     const customer = { ...copy(), caps: { ...copy().caps, customer: "auto" as const } };
-    expect(channelHandbookProblems(customer)).toEqual(["客户的上限最宽只能到「交给你」"]);
+    expect(channelHandbookProblems(customer, "zh")).toEqual(["客户的上限最宽只能到「交给你」"]);
     expect(validStandingOrderRuleParams("channel.handbook", customer)).toBe(false);
     expect(validateStandingOrderDefinition(withHandbook(customer))).toContain("客户的上限最宽只能到「交给你」");
   });

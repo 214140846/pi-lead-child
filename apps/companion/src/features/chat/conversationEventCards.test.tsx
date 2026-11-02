@@ -123,23 +123,23 @@ describe('cards in Lead activity', () => {
       ],
     }));
 
-    expect(screen.getByText(/^Paimon 在后台处理了 6 件事 · /)).toBeTruthy();
+    expect(screen.getByText(/^Paimon handled 6 items in the background · /)).toBeTruthy();
     // 块默认收起，每行只有一行字（2026-10-24）；依据和 Lead 的补充展开后才有。
     expect(screen.queryByTestId('lead-activity-basis')).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: '展开' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Expand' }));
     await screen.findByTestId('lead-activity-panel');
-    expect(row('ticket:7@10').getByTestId('lead-activity-label').textContent).toBe('摘要');
+    expect(row('ticket:7@10').getByTestId('lead-activity-label').textContent).toBe('Digest');
     expect(row('ticket:7@10').getAllByTestId('lead-activity-basis-item').map((item) => item.textContent)).toEqual(['run.transient_retry v1']);
-    expect(row('ticket:8@20').getByTestId('lead-activity-label').textContent).toBe('自动处理');
-    expect(row('standing_order:inbox.no_wake@30').getByTestId('lead-activity-label').textContent).toBe('指令修改');
-    expect(row('standing_order:inbox.no_wake@30').getAllByTestId('lead-activity-basis-item').map((item) => item.textContent)).toEqual(['指令修改要告诉你']);
-    expect(row('inbox:40').getByTestId('lead-activity-label').textContent).toBe('延后');
+    expect(row('ticket:8@20').getByTestId('lead-activity-label').textContent).toBe('Automatic');
+    expect(row('standing_order:inbox.no_wake@30').getByTestId('lead-activity-label').textContent).toBe('Standing order change');
+    expect(row('standing_order:inbox.no_wake@30').getAllByTestId('lead-activity-basis-item').map((item) => item.textContent)).toEqual(['Tell you about standing order changes']);
+    expect(row('inbox:40').getByTestId('lead-activity-label').textContent).toBe('Deferred');
     expect(row('inbox:40').getByText('#9 核查报了缺陷')).toBeTruthy();
-    expect(row('inbox:40').getByTestId('lead-activity-note').textContent).toBe('Paimon：等最终结论一起说');
-    expect(row('ticket:10@50').getByTestId('lead-activity-note').textContent).toBe('Paimon：处理好了 · 已经合进主分支');
+    expect(row('inbox:40').getByTestId('lead-activity-note').textContent).toBe('Paimon: 等最终结论一起说');
+    expect(row('ticket:10@50').getByTestId('lead-activity-note').textContent).toBe('Paimon: Handled · 已经合进主分支');
     expect(row('ticket:10@50').getAllByTestId('lead-activity-basis-item').map((item) => item.textContent)).toEqual(['inbox.no_wake v1', 'inbox.merge_attention v1']);
-    expect(row('ticket:10@50').getByText('2 条')).toBeTruthy();
-    expect(row('ticket:11@60').getByTestId('lead-activity-label').textContent).toBe('已在别处处理');
+    expect(row('ticket:10@50').getByText('2 entries')).toBeTruthy();
+    expect(row('ticket:11@60').getByTestId('lead-activity-label').textContent).toBe('Handled elsewhere');
     expect(screen.queryByTestId('interrupt-banner')).toBeNull();
   });
 
@@ -147,13 +147,13 @@ describe('cards in Lead activity', () => {
     const runtime = setup();
     push(runtime, { card: card() });
     expect(screen.getAllByTestId(/^lead-activity-ticket:/)).toHaveLength(1);
-    fireEvent.click(screen.getByRole('button', { name: '展开' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Expand' }));
     await screen.findByTestId('lead-activity-panel');
 
     push(runtime, { card: card({ entityVersion: 13, lastSeq: 12, count: 2, summary: '#7 第二次重试' }) });
     expect(screen.getAllByTestId(/^lead-activity-ticket:/)).toHaveLength(1);
     expect(row('ticket:7@10').getByText('#7 第二次重试')).toBeTruthy();
-    expect(row('ticket:7@10').getByText('2 条')).toBeTruthy();
+    expect(row('ticket:7@10').getByText('2 entries')).toBeTruthy();
 
     // 乱序到达的旧版本不覆盖。
     push(runtime, { card: card() });
@@ -167,13 +167,13 @@ describe('cards in Lead activity', () => {
       }),
     });
     expect(screen.getAllByTestId(/^lead-activity-ticket:/)).toHaveLength(1);
-    expect(row('ticket:7@10').getByTestId('lead-activity-note').textContent).toBe('Paimon：不处理 · 重试成功了，不用管');
+    expect(row('ticket:7@10').getByTestId('lead-activity-note').textContent).toBe('Paimon: No action · 重试成功了，不用管');
     expect(screen.getAllByTestId('lead-activity-block')).toHaveLength(1);
     expect(runtime.control.getState().messageIdsBySession[SESSION] ?? []).toEqual([]);
 
     // 别处已处理：结束状态。
     push(runtime, { card: card({ entityVersion: 17, lastSeq: 12, count: 2, summary: '#7 第二次重试', state: 'resolved_elsewhere' }) });
-    expect(row('ticket:7@10').getByTestId('lead-activity-label').textContent).toBe('已在别处处理');
+    expect(row('ticket:7@10').getByTestId('lead-activity-label').textContent).toBe('Handled elsewhere');
   });
 });
 
@@ -193,12 +193,12 @@ describe('the button on a Lead activity card', () => {
     const runtime = setup({ performUiAction } as never);
     push(runtime, { card: changed() });
     const line = row('core_memory:12@70');
-    expect(line.getByTestId('lead-activity-label').parentElement!.textContent).toContain('常驻偏好 · ');
+    expect(line.getByTestId('lead-activity-label').parentElement!.textContent).toContain('Preferences · ');
     const button = line.getByTestId('lead-activity-action-core_memory:12@70');
     expect(button.textContent).toBe('撤销');
     await act(async () => { fireEvent.click(button); });
     expect(performUiAction).toHaveBeenCalledWith('core_memory_change', '31', 'undo', { input: {} });
-    await waitFor(() => expect(row('core_memory:12@70').getByTestId('lead-activity-action-core_memory:12@70').textContent).toBe('已撤销'));
+    await waitFor(() => expect(row('core_memory:12@70').getByTestId('lead-activity-action-core_memory:12@70').textContent).toBe('Done: 撤销'));
 
     // 网关推来同一张卡的新版本：没有 action，按钮消失，还是一行。
     push(runtime, { card: changed({ entityVersion: 72, lastSeq: 71, summary: '你撤销了 Paimon 对常驻偏好「周报语言」的改动', action: undefined }) });
@@ -221,12 +221,12 @@ describe('the button on a Lead activity card', () => {
     await act(async () => { fireEvent.click(row('core_memory:12@70').getByTestId('lead-activity-action-core_memory:12@70')); });
     // 原因在这一行里（不是这一行下面新加的一块），按钮恢复可用，可以再点。
     await waitFor(() => expect(row('core_memory:12@70').getByTestId('lead-activity-action-error').textContent)
-      .toBe('撤销没有完成：这次改动之后这一条又改过，不能撤销这一次。'));
+      .toBe('撤销 did not complete: 这次改动之后这一条又改过，不能撤销这一次。'));
     expect(row('core_memory:12@70').getByTestId('lead-activity-action-core_memory:12@70').textContent).toBe('撤销');
 
-    fireEvent.click(screen.getByRole('button', { name: '展开' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Expand' }));
     const panel = await screen.findByTestId('lead-activity-panel');
-    expect(within(panel).getByTestId('lead-activity-action-error').textContent).toBe('撤销没有完成：这次改动之后这一条又改过，不能撤销这一次。');
+    expect(within(panel).getByTestId('lead-activity-action-error').textContent).toBe('撤销 did not complete: 这次改动之后这一条又改过，不能撤销这一次。');
     expect(within(panel).getByTestId('lead-activity-action-core_memory:12@70').textContent).toBe('撤销');
   });
 
@@ -259,7 +259,7 @@ describe('the interrupt banner above the composer', () => {
 
     push(runtime, { interrupt: interrupt() });
     expect(screen.getByTestId('interrupt-banner-text').textContent).toBe('提醒「交房租」到点');
-    expect(screen.getByTestId('interrupt-banner-meta').textContent).toContain('依据 reminder.fire v1');
+    expect(screen.getByTestId('interrupt-banner-meta').textContent).toContain('Basis: reminder.fire v1');
     // 别的事（新的摘要、同一条的旧版本）不让它消失。
     push(runtime, { card: card({ entityVersion: 13, lastSeq: 12, summary: '#7 第二次重试' }) });
     push(runtime, { interrupt: interrupt({ entityVersion: 19 }) });
@@ -278,7 +278,7 @@ describe('the interrupt banner above the composer', () => {
     push(runtime, { interrupt: interrupt() });
     push(runtime, { interrupt: interrupt({ key: 'interrupt:30', seq: 30, entityVersion: 30, lastSeq: 30, summary: '服务器磁盘快满了' }) });
     expect(screen.getByTestId('interrupt-banner-text').textContent).toBe('提醒「交房租」到点');
-    expect(screen.getByTestId('interrupt-banner-meta').textContent).toContain('还有 1 条');
+    expect(screen.getByTestId('interrupt-banner-meta').textContent).toContain('1 more');
 
     push(runtime, { interrupt: interrupt({ entityVersion: 32, lastSeq: 31, acknowledgedAt: '2026-10-17T01:06:00.000Z' }) });
     expect(screen.getByTestId('interrupt-banner-text').textContent).toBe('服务器磁盘快满了');

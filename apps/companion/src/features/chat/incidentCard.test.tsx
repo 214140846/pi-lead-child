@@ -78,16 +78,16 @@ describe('one outage, one card', () => {
     const cards = screen.getAllByTestId('incident-card');
     expect(cards).toHaveLength(1);
     expect(screen.queryAllByTestId('failure-card')).toEqual([]);
-    expect(cards[0]!.textContent).toContain('Paimon 离线 19:19–20:07（网络中断）· 期间积压 1 件 · 20:07 已恢复');
-    expect(cards[0]!.textContent).toContain('系统通知');
+    expect(cards[0]!.textContent).toContain('Paimon offline 19:19–20:07 (network down) · 1 item waited · recovered at 20:07');
+    expect(cards[0]!.textContent).toContain('System notice');
     // 和会话里别的警告一样是一行可以展开的条目：没有「技术详情」按钮。
-    expect(cards[0]!.textContent).not.toContain('技术详情');
+    expect(cards[0]!.textContent).not.toContain('Technical details');
     // 收起时只有一句；Lead 写给自己的话、工具名从不出现。
     expect(screen.getByTestId('lead-conversation').textContent).not.toMatch(/notify_user|record_disposition|batchable|跟进：看/);
 
-    act(() => fireEvent.click(within(cards[0]!).getByRole('button', { name: /展开/ })));
-    expect(cards[0]!.textContent).toContain('Paimon 设的一次跟进到点了');
-    expect(cards[0]!.textContent).toContain('期间 Paimon 有 2 次自动处理没有完成（网络不可用）');
+    act(() => fireEvent.click(within(cards[0]!).getByRole('button', { name: /show details/ })));
+    expect(cards[0]!.textContent).toContain('A follow-up that Paimon set is due');
+    expect(cards[0]!.textContent).toContain('During this time, 2 automatic tasks of Paimon did not finish (The network is not available)');
     expect(screen.getByTestId('lead-conversation').textContent).not.toMatch(/notify_user|record_disposition|batchable/);
   });
 
@@ -101,7 +101,7 @@ describe('one outage, one card', () => {
     // daemon 写下的标题照原文显示：写的时候用的是那时的名字，这里不改写（2026-10-22）。
     expect(card.textContent).toContain('Lead 离线 19:11–20:07（网络中断）· 期间积压 1 件 · 20:07 已恢复并补处理');
     expect(card.textContent).not.toContain('E2E 终验');
-    act(() => fireEvent.click(within(card).getByRole('button', { name: /展开/ })));
+    act(() => fireEvent.click(within(card).getByRole('button', { name: /show details/ })));
     expect(card.textContent).toContain('工单 #66「E2E 终验」：Lead 设的一次跟进到点了 —— 已交给 Lead');
   });
 });

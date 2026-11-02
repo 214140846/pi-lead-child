@@ -3,6 +3,7 @@
 //
 // key 是一个连接在线上的名字：预设服务就是服务 id（"notion"），自定义 MCP 是 "custom-<id>"。
 import { Type, type Static, type TProperties } from "typebox";
+import { DEFAULT_LOCALE, defineMessages, type Locale } from "./i18n.ts";
 
 const StrictObject = <T extends TProperties>(properties: T) =>
   Type.Object(properties, { additionalProperties: false });
@@ -183,22 +184,54 @@ export function connectionSettingsLoosened(before: ConnectionSettings, after: Co
   return loosened.writePolicy || loosened.addedRoles.length > 0;
 }
 
-const ROLE_WORDS: Record<ConnectionRole, string> = { lead: "Lead", executor: "执行工单的 agent", reviewer: "评审 agent" };
+// 连接权限设置的说法。界面按用户的语言取；daemon 写进主人操作记录和安全提醒的暂时取 zh（2026-11-01）。
+export const connectionSettingsLabels = defineMessages({
+  en: {
+    roles: { lead: "Lead", executor: "agents that do tickets", reviewer: "review agents" } satisfies Record<ConnectionRole, string>,
+    join: (items: string[]) => (items.length <= 1 ? items.join("") : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`),
+    nobody: "nobody",
+    writePolicy: { direct: "do it directly", confirm: "ask me first" } satisfies Record<ConnectionWritePolicy, string>,
+    // who 是 null：谁都不能用。
+    summary: (who: string | null, write: string) => `${who ? `Who can use it: ${who}` : "Nobody can use it"}. Writes: ${write}`,
+    whoChanged: (before: string, after: string) => `who can use it changed from "${before}" to "${after}"`,
+    writeChanged: (before: string, after: string) => `writes changed from "${before}" to "${after}"`,
+    joinChanges: (parts: string[]) => parts.join("; "),
+  },
+  zh: {
+    roles: { lead: "Lead", executor: "执行工单的 agent", reviewer: "评审 agent" },
+    join: (items) => items.join("、"),
+    nobody: "谁都不能用",
+    writePolicy: { direct: "直接执行", confirm: "先问我" },
+    summary: (who, write) => `${who ? `${who}可以用` : "谁都不能用"}；写入${write}`,
+    whoChanged: (before, after) => `可以用的从「${before}」改成「${after}」`,
+    writeChanged: (before, after) => `写入从「${before}」改成「${after}」`,
+    joinChanges: (parts) => parts.join("；"),
+  },
+});
 
-const whoWords = (settings: ConnectionSettings): string => (settings.roles.length ? settings.roles.map((role) => ROLE_WORDS[role]).join("、") : "谁都不能用");
-const writeWords = (settings: ConnectionSettings): string => (settings.writePolicy === "direct" ? "直接执行" : "先问我");
+function whoWords(settings: ConnectionSettings, locale: Locale): string {
+  const m = connectionSettingsLabels(locale);
+  return settings.roles.length ? m.join(settings.roles.map((role) => m.roles[role])) : m.nobody;
+}
+
+function writeWords(settings: ConnectionSettings, locale: Locale): string {
+  return connectionSettingsLabels(locale).writePolicy[settings.writePolicy];
+}
 
 /** 给人看的一句话，例如「Lead、执行工单的 agent 可以用；写入先问我」。 */
-export function describeConnectionSettings(settings: ConnectionSettings): string {
-  return `${settings.roles.length ? `${whoWords(settings)}可以用` : "谁都不能用"}；写入${writeWords(settings)}`;
+export function describeConnectionSettings(settings: ConnectionSettings, locale: Locale = DEFAULT_LOCALE): string {
+  return connectionSettingsLabels(locale).summary(settings.roles.length ? whoWords(settings, locale) : null, writeWords(settings, locale));
 }
 
 /** 只写变了的那几项，例如「写入从「先问我」改成「直接执行」」。没有变化时是 null（2026-10-28：会话里的记录只占一行）。 */
-export function describeConnectionSettingsChange(before: ConnectionSettings, after: ConnectionSettings): string | null {
+export function describeConnectionSettingsChange(
+  before: ConnectionSettings, after: ConnectionSettings, locale: Locale = DEFAULT_LOCALE,
+): string | null {
+  const m = connectionSettingsLabels(locale);
   const parts: string[] = [];
-  if (whoWords(before) !== whoWords(after)) parts.push(`可以用的从「${whoWords(before)}」改成「${whoWords(after)}」`);
-  if (before.writePolicy !== after.writePolicy) parts.push(`写入从「${writeWords(before)}」改成「${writeWords(after)}」`);
-  return parts.length ? parts.join("；") : null;
+  if (whoWords(before, locale) !== whoWords(after, locale)) parts.push(m.whoChanged(whoWords(before, locale), whoWords(after, locale)));
+  if (before.writePolicy !== after.writePolicy) parts.push(m.writeChanged(writeWords(before, locale), writeWords(after, locale)));
+  return parts.length ? m.joinChanges(parts) : null;
 }
 
 export const ConnectionResponseSchema = StrictObject({ connection: ConnectionDtoSchema });

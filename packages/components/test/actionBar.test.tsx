@@ -20,7 +20,7 @@ describe('ActionBar', () => {
         primary={{ label: '验收并合并', onPress: accept }}
       />,
     );
-    expect(screen.getByTestId('bar').textContent).toContain('下一步：你验收，并选好代码怎么处理');
+    expect(screen.getByTestId('bar').textContent).toContain('Next: 你验收，并选好代码怎么处理');
     expect(screen.getByText('已确认 1/3 条验收标准')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '更多操作：取消工单' }));
     fireEvent.click(screen.getByRole('button', { name: '打回返工' }));
@@ -96,7 +96,7 @@ describe('ConfirmBar', () => {
     expect(dialog.textContent).toContain('推送plc/item-102-d2d16749');
     expect(dialog.textContent).toContain('目标aishx/task-model-routing');
     expect(dialog.textContent).toContain('推送是对外操作');
-    fireEvent.click(screen.getByRole('button', { name: '取消' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     fireEvent.click(screen.getByRole('button', { name: '推送并开 PR' }));
     expect(onCancel).toHaveBeenCalledTimes(1);
     expect(onConfirm).toHaveBeenCalledTimes(1);
@@ -129,8 +129,8 @@ describe('ChatDock with an action bar', () => {
     expect(dock.contains(bar)).toBe(true);
     // 操作栏在标题行前面。
     expect(bar.compareDocumentPosition(toggle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(bar.textContent).toContain('下一步：你验收');
-    expect(toggle.textContent).not.toContain('下一步');
+    expect(bar.textContent).toContain('Next: 你验收');
+    expect(toggle.textContent).not.toContain('Next:');
     fireEvent.click(toggle);
     expect(onExpandedChange).toHaveBeenCalledWith(true);
   });

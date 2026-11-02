@@ -18,7 +18,7 @@ describe('NoticeRow', () => {
         details="503 upstream connect error"
       />,
     );
-    const row = screen.getByRole('button', { name: 'Lead 的模型服务暂时连不上，系统会自动再试。，展开详情' });
+    const row = screen.getByRole('button', { name: 'Lead 的模型服务暂时连不上，系统会自动再试。, show details' });
     expect(row.getAttribute('aria-expanded')).toBe('false');
     expect(screen.getByText('共 2 次 · 最近 20:06')).toBeTruthy();
     expect(screen.queryByText('503 upstream connect error')).toBeNull();
@@ -26,13 +26,13 @@ describe('NoticeRow', () => {
 
     fireEvent.click(row);
     expect(screen.getByText('503 upstream connect error')).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Lead 的模型服务暂时连不上，系统会自动再试。，收起详情' }).getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByRole('button', { name: 'Lead 的模型服务暂时连不上，系统会自动再试。, hide details' }).getAttribute('aria-expanded')).toBe('true');
   });
 
   it('keeps the actions on the row, and is not a toggle when there is nothing more to show', () => {
     const resend = vi.fn();
     renderUI(<NoticeRow testID="notice" tone="warning" title="没能回答这条消息。" actions={[{ label: '重发', onPress: resend }]} />);
-    expect(screen.queryByRole('button', { name: /展开详情/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /show details/ })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '重发' }));
     expect(resend).toHaveBeenCalled();
   });

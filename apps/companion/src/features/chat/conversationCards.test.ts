@@ -106,7 +106,7 @@ function turn(id: string, ticketId: number | null): LeadTurnEntity {
 
 describe('Lead conversation card timeline', () => {
   it('formats conversation timestamps with the prototype 24-hour clock', () => {
-    expect(formatConversationTime('2026-07-25T07:38:00.000Z', 'Asia/Shanghai')).toBe('15:38');
+    expect(formatConversationTime('2026-07-25T07:38:00.000Z', 'Asia/Shanghai', 'zh')).toBe('15:38');
   });
 
   it('places a turn card after its assistant message while keeping message order', () => {
@@ -297,14 +297,17 @@ describe('Lead conversation card timeline', () => {
     // 需要你的工单用共用规则（protocol 的 ticketNeedsUser）和它给的原因：子工单 #46 和草稿 #45 也算。
     // 「执行中」用 ticketTurn：#41 停在 review，但它有 Run 在跑，工单 tab 也把它放在「在执行」。
     expect(buildLeadFooterItems(tickets, workItems)).toEqual([
-      { ticketId: 42, stateLabel: '运行中', tone: 'running', progressPercent: 62 },
-      { ticketId: 43, stateLabel: '启动中', tone: 'running', progressPercent: null },
-      { ticketId: 44, stateLabel: '待审批', tone: 'attention', progressPercent: null },
-      { ticketId: 45, stateLabel: '待确认', tone: 'attention', progressPercent: null },
-      { ticketId: 41, stateLabel: '运行中', tone: 'running', progressPercent: 100 },
-      { ticketId: 55, stateLabel: '运行中', tone: 'running', progressPercent: 28 },
-      { ticketId: 46, stateLabel: '待审批', tone: 'attention', progressPercent: null },
+      { ticketId: 42, stateLabel: 'Running', tone: 'running', progressPercent: 62 },
+      { ticketId: 43, stateLabel: 'Starting', tone: 'running', progressPercent: null },
+      { ticketId: 44, stateLabel: 'Needs approval', tone: 'attention', progressPercent: null },
+      { ticketId: 45, stateLabel: 'Needs confirmation', tone: 'attention', progressPercent: null },
+      { ticketId: 41, stateLabel: 'Running', tone: 'running', progressPercent: 100 },
+      { ticketId: 55, stateLabel: 'Running', tone: 'running', progressPercent: 28 },
+      { ticketId: 46, stateLabel: 'Needs approval', tone: 'attention', progressPercent: null },
     ]);
+    // 中文界面用同一套名字的中文。
+    expect(buildLeadFooterItems(tickets, workItems, 'zh').map((item) => item.stateLabel))
+      .toEqual(['运行中', '启动中', '待审批', '待确认', '运行中', '运行中', '待审批']);
   });
 });
 

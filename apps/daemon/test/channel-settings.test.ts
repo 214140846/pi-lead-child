@@ -12,6 +12,7 @@ import { Vault } from "@pi-lead-child/connections";
 import type { ChannelAdapter, ChannelSettingsSpec } from "@pi-lead-child/engine";
 import type { ChannelSecretsTestResult } from "@pi-lead-child/protocol";
 import { openDb, type Db } from "@pi-lead-child/store";
+import { updateDesignPreferences } from "@pi-lead-child/engine";
 import { ChannelSettings } from "../src/channel-settings.js";
 
 const ONE = "PLC_FAKE_ONE";
@@ -153,7 +154,21 @@ describe("checking and saving", () => {
     const settings = setup({ testTimeoutMs: 20 });
     answer = () => new Promise(() => {});
     const result = await settings.test("fake", { [ONE]: SAVED });
-    expect(result).toMatchObject({ ok: false, checks: [{ pass: false, detail: expect.stringContaining("没有在") }] });
+    expect(result).toMatchObject({
+      ok: false, checks: [{ label: "Check", pass: false, detail: "Fake did not answer in 0 seconds. The check is not complete." }],
+    });
+    await expect(settings.test("other", {})).rejects.toMatchObject({ code: "not_found", message: "There is no such channel." });
+  });
+
+  it("writes the check result and the errors in the language the user chose", async () => {
+    updateDesignPreferences(db, { request: { locale: "zh" }, caller: { kind: "user" } });
+    const settings = setup({ testTimeoutMs: 20 });
+    answer = () => new Promise(() => {});
+    const result = await settings.test("fake", { [ONE]: SAVED });
+    expect(result).toMatchObject({ ok: false, checks: [{ label: "检查", pass: false, detail: "Fake 没有在 0 秒内回答，没有检查完。" }] });
+    await expect(settings.test("other", {})).rejects.toMatchObject({ code: "not_found", message: "没有这个通道" });
+    await expect(settings.test("fake", { PLC_NOT_DECLARED: "x" }))
+      .rejects.toMatchObject({ code: "invalid_request", message: "请求里有这个通道没有声明的密钥名" });
   });
 
   it("saves only what the request gave when the checks pass, never when they fail, and removes only the vault's", async () => {

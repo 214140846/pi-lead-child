@@ -184,7 +184,7 @@ describe("the settings page", () => {
 
   it("refuses to save when the vault is unavailable", async () => {
     const { key: k } = await connectCustom(hub());
-    expect(() => hub({ vault: brokenVault }).updateSettings(k, { writePolicy: "direct" })).toThrow(/保险库暂时不可用/);
+    expect(() => hub({ vault: brokenVault }).updateSettings(k, { writePolicy: "direct" })).toThrow(/vault is temporarily not available/);
   });
 });
 

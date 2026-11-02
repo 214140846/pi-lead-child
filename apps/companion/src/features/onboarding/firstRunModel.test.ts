@@ -20,22 +20,25 @@ function provider(models: BrainModel[], problem: string | null = null): ModelPro
 
 describe('the provider request', () => {
   it('fills the preset address and protocol and needs only a key', () => {
-    expect(firstRunProviderRequest({ preset: 'anthropic', apiKey: ' sk-ant ', baseUrl: '', api: 'openai-completions' }, [])).toEqual({
+    expect(firstRunProviderRequest({ preset: 'anthropic', apiKey: ' sk-ant ', baseUrl: '', api: 'openai-completions' }, [], 'en')).toEqual({
       ok: true, input: { name: 'anthropic', baseUrl: 'https://api.anthropic.com', api: 'anthropic-messages', apiKey: 'sk-ant' },
     });
-    expect(firstRunProviderRequest({ preset: 'google', apiKey: 'g', baseUrl: '', api: 'openai-completions' }, [])).toMatchObject({
+    expect(firstRunProviderRequest({ preset: 'google', apiKey: 'g', baseUrl: '', api: 'openai-completions' }, [], 'en')).toMatchObject({
       ok: true, input: { baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', api: 'openai-completions' },
     });
-    expect(firstRunProviderRequest({ preset: 'openai', apiKey: '  ', baseUrl: '', api: 'openai-completions' }, [])).toEqual({
+    expect(firstRunProviderRequest({ preset: 'openai', apiKey: '  ', baseUrl: '', api: 'openai-completions' }, [], 'en')).toEqual({
+      ok: false, problem: 'Enter the API key for OpenAI.',
+    });
+    expect(firstRunProviderRequest({ preset: 'openai', apiKey: '  ', baseUrl: '', api: 'openai-completions' }, [], 'zh')).toEqual({
       ok: false, problem: '填上 OpenAI 的 API key。',
     });
   });
 
   it('takes the address and protocol for another service, with an optional key', () => {
-    expect(firstRunProviderRequest({ preset: 'custom', apiKey: '', baseUrl: 'http://127.0.0.1:8317/v1/', api: 'openai-completions' }, [])).toEqual({
+    expect(firstRunProviderRequest({ preset: 'custom', apiKey: '', baseUrl: 'http://127.0.0.1:8317/v1/', api: 'openai-completions' }, [], 'en')).toEqual({
       ok: true, input: { name: 'local-8317', baseUrl: 'http://127.0.0.1:8317/v1', api: 'openai-completions' },
     });
-    expect(firstRunProviderRequest({ preset: 'custom', apiKey: '', baseUrl: 'ftp://x', api: 'openai-completions' }, [])).toMatchObject({ ok: false });
+    expect(firstRunProviderRequest({ preset: 'custom', apiKey: '', baseUrl: 'ftp://x', api: 'openai-completions' }, [], 'en')).toMatchObject({ ok: false });
   });
 
   it('names another service after its host, avoiding names already taken', () => {
@@ -54,11 +57,14 @@ describe('the model choice', () => {
   });
 
   it('stays on step one with the reason when the catalog is empty or failed', () => {
-    expect(firstRunProviderFacts(null)).toMatchObject({ connected: false, problem: null });
-    expect(firstRunProviderFacts(provider([], 'GET https://api.anthropic.com/v1/models failed: 401'))).toMatchObject({
+    expect(firstRunProviderFacts(null, 'en')).toMatchObject({ connected: false, problem: null });
+    expect(firstRunProviderFacts(provider([], 'GET https://api.anthropic.com/v1/models failed: 401'), 'en')).toMatchObject({
       connected: false, problem: 'GET https://api.anthropic.com/v1/models failed: 401',
     });
-    expect(firstRunProviderFacts(provider([]))).toMatchObject({ connected: false, problem: 'anthropic 的目录里一个模型也没有。检查地址和接口格式。' });
-    expect(firstRunProviderFacts(provider([model('claude-sonnet-5-5')]))).toMatchObject({ connected: true, modelCount: 1, problem: null });
+    expect(firstRunProviderFacts(provider([]), 'en')).toMatchObject({
+      connected: false, problem: 'The catalog of anthropic has no models. Check the address and the API format.',
+    });
+    expect(firstRunProviderFacts(provider([]), 'zh')).toMatchObject({ connected: false, problem: 'anthropic 的目录里一个模型也没有。检查地址和接口格式。' });
+    expect(firstRunProviderFacts(provider([model('claude-sonnet-5-5')]), 'en')).toMatchObject({ connected: true, modelCount: 1, problem: null });
   });
 });

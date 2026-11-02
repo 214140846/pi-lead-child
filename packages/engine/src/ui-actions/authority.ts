@@ -139,7 +139,7 @@ export function activeUserTurnBlocker(db: Db, turnId: string | null, scope: Scop
  */
 export function userTurnRefusalText(error: unknown, where: string): string {
   if (error instanceof UserTurnScopeError) {
-    return `这一轮来自${bindingOriginLabel(error.origin)}，这种凭证没有 ${error.scope}`
+    return `这一轮来自${bindingOriginLabel(error.origin, "zh")}，这种凭证没有 ${error.scope}`
       + `（child 在这台机器上也拿得到它），不能凭它代用户做。请用户在 ${where} 里自己点`;
   }
   return `${error instanceof Error ? error.message : String(error)}。用户没有在这一轮这样要求时，请他在 ${where} 里自己点`;

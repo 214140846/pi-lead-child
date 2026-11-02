@@ -212,7 +212,7 @@ describe("a Lead turn that hits a rate limit", () => {
       "SELECT disposition, disposition_detail FROM events WHERE kind = 'user.message' AND json_extract(payload, '$.turnId') = ?",
     ).get(first)) as { disposition: string; disposition_detail: string };
     expect(outcome.disposition).toBe("handled");
-    expect(JSON.parse(outcome.disposition_detail)).toMatchObject({ outcome: "done", answeredWith: second, note: "和后面的插话一起回答" });
+    expect(JSON.parse(outcome.disposition_detail)).toMatchObject({ outcome: "done", answeredWith: second, note: "Answered together with the message that came in after it" });
   });
 
   it("stops switching when every model is rate limited, and leaves Lead degraded for the outage flow", async () => {
@@ -223,7 +223,7 @@ describe("a Lead turn that hits a rate limit", () => {
     await vi.waitFor(() => expect(turnState(turnId).state).toBe("failed"));
     await new Promise((resolve) => setTimeout(resolve, 150));
     expect(lead.switches).toEqual(["p/b"]);
-    expect((await overview()).lead).toMatchObject({ state: "degraded", reason: "Paimon 的模型服务正忙" });
+    expect((await overview()).lead).toMatchObject({ state: "degraded", reason: "The model service of Paimon is busy" });
     expect(logs.some((line) => line.includes("every Lead model failed"))).toBe(true);
   });
 });
@@ -246,7 +246,7 @@ describe("a Lead turn that fails for a reason other than a rate limit", () => {
     // Lead 只回 NO_REPLY：切换不允许静默，系统直接在会话里说。
     await vi.waitFor(() => expect(db.prepare(
       "SELECT assistant_text FROM channel_turns WHERE origin_kind = 'system:fallback-notice'",
-    ).all()).toEqual([{ assistant_text: expect.stringContaining("Paimon 的模型从 vibeproxy/gemini 换成了 vibeproxy/claude-sonnet") }]));
+    ).all()).toEqual([{ assistant_text: expect.stringContaining("The model of Paimon changed from vibeproxy/gemini to vibeproxy/claude-sonnet") }]));
   });
 
   // 审查：fetch failed、超时、连接断开以前直接算模型服务不可用，一次抖动就换模型。现在先探网络：断网时不换。

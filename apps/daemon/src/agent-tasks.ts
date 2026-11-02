@@ -258,7 +258,7 @@ export function createAgentTaskDispatcher(options: AgentTaskDispatcherOptions): 
       throw new Error(`agent task request is invalid: ${first ? `${(first as { instancePath?: string }).instancePath || "/"} ${first.message}` : "?"}`);
     }
     const bound = request.bound ?? DEFAULT_INTENT_GRANT_BOUNDS[request.intent];
-    const { grant, dropped } = computeRunGrant({ intent: request.intent, scope: request.scope, bound, resolveLocalRepo: options.resolveLocalRepo });
+    const { grant, dropped } = computeRunGrant({ intent: request.intent, scope: request.scope, bound, resolveLocalRepo: options.resolveLocalRepo, locale: "zh" });
     const labels = describeRunGrant(grant);
     const brief = [
       `${INTENT_WORDS[request.intent]}（通道派的工单）。${oneLine(request.request.summary, 300)}`,

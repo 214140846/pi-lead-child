@@ -8,6 +8,7 @@
 //   用户改完点「追加」才调 update（mode=append）。
 // - 变化时网关发 snapshot.required，payload 是 {resource: "reply-style"}，客户端重新 GET。
 import { Type, type Static, type TProperties, type TSchema } from "typebox";
+import { DEFAULT_LOCALE, defineMessages, type Locale } from "./i18n.ts";
 import { normalizeLeadProfileText } from "./lead-profile.ts";
 
 const StrictObject = <T extends TProperties>(properties: T) =>
@@ -123,18 +124,37 @@ export function nextReplyStyleText(current: string, request: ReplyStyleUpdateReq
   return current ? `${current}\n\n${section}` : section;
 }
 
-/** 这次修改有什么问题，用户能看懂的一句话。没有问题时返回 null。 */
-export function replyStyleProblem(request: ReplyStyleUpdateRequest, next: string): string | null {
-  if (request.mode === "append" && !normalizeReplyStyleText(request.text)) return "追加的内容是空的";
+// 修改有问题时给用户看的话。界面按用户的语言取；daemon 现在传 zh。
+const replyStyleProblemMessages = defineMessages({
+  en: {
+    appendEmpty: "The text to append is empty.",
+    labelTooLong: (max: number) => `The heading can be at most ${max} characters.`,
+    appendTooLong: (max: number, length: number, over: number) =>
+      `The reply style can be at most ${max} characters. After the append it is ${length} characters, ${over} too many. Delete some text first, then append.`,
+    tooLong: (max: number, length: number, over: number) =>
+      `The reply style can be at most ${max} characters. It is ${length} characters now, ${over} too many.`,
+  },
+  zh: {
+    appendEmpty: "追加的内容是空的",
+    labelTooLong: (max) => `小标题最多 ${max} 个字`,
+    appendTooLong: (max, length, over) => `代回复风格最多 ${max} 字，追加以后是 ${length} 字，超了 ${over} 字。先删掉一些再追加`,
+    tooLong: (max, length, over) => `代回复风格最多 ${max} 字，现在是 ${length} 字，超了 ${over} 字`,
+  },
+});
+
+/** 这次修改有什么问题，用户能看懂的一句话（按 locale 的语言）。没有问题时返回 null。 */
+export function replyStyleProblem(request: ReplyStyleUpdateRequest, next: string, locale: Locale = DEFAULT_LOCALE): string | null {
+  const m = replyStyleProblemMessages(locale);
+  if (request.mode === "append" && !normalizeReplyStyleText(request.text)) return m.appendEmpty;
   if (request.label !== undefined && replyStyleLength(normalizeReplyStyleLabel(request.label)) > REPLY_STYLE_LABEL_MAX_LENGTH) {
-    return `小标题最多 ${REPLY_STYLE_LABEL_MAX_LENGTH} 个字`;
+    return m.labelTooLong(REPLY_STYLE_LABEL_MAX_LENGTH);
   }
   const length = replyStyleLength(next);
   if (length > REPLY_STYLE_TEXT_MAX_LENGTH) {
     const over = length - REPLY_STYLE_TEXT_MAX_LENGTH;
     return request.mode === "append"
-      ? `代回复风格最多 ${REPLY_STYLE_TEXT_MAX_LENGTH} 字，追加以后是 ${length} 字，超了 ${over} 字。先删掉一些再追加`
-      : `代回复风格最多 ${REPLY_STYLE_TEXT_MAX_LENGTH} 字，现在是 ${length} 字，超了 ${over} 字`;
+      ? m.appendTooLong(REPLY_STYLE_TEXT_MAX_LENGTH, length, over)
+      : m.tooLong(REPLY_STYLE_TEXT_MAX_LENGTH, length, over);
   }
   return null;
 }

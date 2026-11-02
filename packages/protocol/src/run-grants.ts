@@ -18,6 +18,8 @@
 import { Type, type Static, type TProperties } from "typebox";
 import { Value } from "typebox/value";
 import type { HandbookAbility } from "./channel-handbook.ts";
+import type { Locale } from "./i18n.ts";
+import { runGrantMessages } from "./run-grants.messages.ts";
 
 const StrictObject = <T extends TProperties>(properties: T) =>
   Type.Object(properties, { additionalProperties: false });
@@ -241,17 +243,19 @@ function splitRepo(name: string): { owner: string; repo: string } {
   return { owner: name.slice(0, at), repo: name.slice(at + 1) };
 }
 
-function eventsLabel(events: readonly GrantReviewEvent[]): string {
-  return events.map((event) => event === "APPROVE" ? "可以 APPROVE" : event === "REQUEST_CHANGES" ? "可以要求改动" : "发 COMMENT").join("，");
+// 规则的 label 按 locale 的语言写（run-grants.messages.ts）。locale 暂时缺省 zh：清单写进数据库，也给 Lead 看，都迁完以后去掉缺省值。
+function eventsLabel(events: readonly GrantReviewEvent[], locale: Locale): string {
+  const m = runGrantMessages(locale);
+  return events.map((event) => event === "APPROVE" ? m.approve : event === "REQUEST_CHANGES" ? m.requestChanges : m.comment).join(m.eventSeparator);
 }
 
 /** GitHub 仓库的只读规则。 */
-export function githubReadRule(name: string): RunGrantRule {
+export function githubReadRule(name: string, locale: Locale = "zh"): RunGrantRule {
   const { owner, repo } = splitRepo(name);
   return {
     id: `read:github:${lower(name)}`, connection: GITHUB_CONNECTION, tools: "read",
     args: { owner: { oneOf: [owner] }, repo: { oneOf: [repo] } },
-    label: `只读 ${name}`,
+    label: runGrantMessages(locale).readOnly(name),
   };
 }
 
@@ -259,7 +263,7 @@ export function githubReadRule(name: string): RunGrantRule {
  * 在一个 PR 上发 review 的两条规则：pull_request_review_write（只能 create、submit_pending、delete_pending，
  * event 只能是给的那几种）和 add_comment_to_pending_review（行内评论）。APPROVE 还要过 GitHub 守卫的四条检查。
  */
-export function pullRequestReviewRules(pr: GrantPullRequest, events: readonly GrantReviewEvent[]): RunGrantRule[] {
+export function pullRequestReviewRules(pr: GrantPullRequest, events: readonly GrantReviewEvent[], locale: Locale = "zh"): RunGrantRule[] {
   if (!events.length) return [];
   const name = `${pr.owner}/${pr.repo}#${pr.number}`;
   const target = { owner: { oneOf: [pr.owner] }, repo: { oneOf: [pr.repo] }, pullNumber: { oneOf: [pr.number] } };
@@ -272,28 +276,28 @@ export function pullRequestReviewRules(pr: GrantPullRequest, events: readonly Gr
         method: { oneOf: [...GITHUB_REVIEW_WRITE_METHODS] },
         event: { oneOf: [...events], optional: true },
       },
-      label: `只在 ${name} 上${eventsLabel(events)}`,
+      label: runGrantMessages(locale).reviewOn(name, eventsLabel(events, locale)),
     },
     {
       id: `review-comment:${lower(name)}`, connection: GITHUB_CONNECTION, tools: [GITHUB_REVIEW_TOOLS.comment],
       args: target,
-      label: `在 ${name} 的 review 里加行内评论`,
+      label: runGrantMessages(locale).inlineComments(name),
     },
   ];
 }
 
 /** 本地仓库的只读规则（连接中心的 local 连接，参数 repo 是仓库名）。 */
-export function localReadRule(name: string): RunGrantRule {
+export function localReadRule(name: string, locale: Locale = "zh"): RunGrantRule {
   return {
     id: `read:local:${lower(name)}`, connection: LOCAL_REPO_CONNECTION, tools: "read",
     args: { repo: { oneOf: [name] } },
-    label: `只读本地仓库 ${name}`,
+    label: runGrantMessages(locale).localReadOnly(name),
   };
 }
 
 /** 一个连接的只读规则（例如 CDP、Jira）。 */
-export function connectionReadRule(connection: string): RunGrantRule {
-  return { id: `read:${lower(connection)}`, connection, tools: "read", label: `只读 ${connection}` };
+export function connectionReadRule(connection: string, locale: Locale = "zh"): RunGrantRule {
+  return { id: `read:${lower(connection)}`, connection, tools: "read", label: runGrantMessages(locale).readOnly(connection) };
 }
 
 /** 一份已经核对过的范围生成的规则。重复的规则（同一个 id）只留一条。 */
@@ -303,12 +307,12 @@ export function grantRulesForScope(scope: {
   pullRequest: GrantPullRequest | null;
   reviewEvents: readonly GrantReviewEvent[];
   connections: readonly string[];
-}): RunGrantRule[] {
+}, locale: Locale = "zh"): RunGrantRule[] {
   const rules = [
-    ...scope.repos.map(githubReadRule),
-    ...(scope.pullRequest ? pullRequestReviewRules(scope.pullRequest, scope.reviewEvents) : []),
-    ...scope.localRepos.map((entry) => localReadRule(entry.name)),
-    ...scope.connections.map(connectionReadRule),
+    ...scope.repos.map((name) => githubReadRule(name, locale)),
+    ...(scope.pullRequest ? pullRequestReviewRules(scope.pullRequest, scope.reviewEvents, locale) : []),
+    ...scope.localRepos.map((entry) => localReadRule(entry.name, locale)),
+    ...scope.connections.map((connection) => connectionReadRule(connection, locale)),
   ];
   return rules.filter((rule, index) => rules.findIndex((other) => other.id === rule.id) === index);
 }
@@ -332,6 +336,8 @@ export function computeRunGrant(input: {
   scope: GrantScope;
   bound?: IntentGrantBound;
   resolveLocalRepo: (name: string) => GrantLocalRepo | null;
+  // 规则的 label 用的语言，缺省 zh。
+  locale?: Locale;
 }): ComputedRunGrant {
   if (!(GRANT_INTENTS as readonly string[]).includes(input.intent)) throw new GrantError(`不认识的意图：${String(input.intent)}`);
   if (!Value.Check(GrantScopeSchema, input.scope)) {
@@ -408,7 +414,7 @@ export function computeRunGrant(input: {
     grant: {
       version: 1,
       intent: input.intent,
-      rules: grantRulesForScope({ repos, localRepos, pullRequest, reviewEvents, connections }),
+      rules: grantRulesForScope({ repos, localRepos, pullRequest, reviewEvents, connections }, input.locale),
       localRepos,
     },
     dropped,
@@ -423,6 +429,7 @@ export function widenRunGrant(
   grant: RunGrant,
   scope: GrantScope,
   resolveLocalRepo: (name: string) => GrantLocalRepo | null,
+  locale: Locale = "zh",
 ): { grant: RunGrant; added: RunGrantRule[]; addedLocalRepos: GrantLocalRepo[]; unresolved: string[] } {
   if (!Value.Check(GrantScopeSchema, scope)) throw new GrantError("范围的格式不对");
   if (scope.reviewEvents?.length && !scope.pullRequest) throw new GrantError("要给 review 结论，必须同时给 pullRequest");
@@ -447,7 +454,7 @@ export function widenRunGrant(
     pullRequest: scope.pullRequest ?? null,
     reviewEvents: scope.reviewEvents ?? [],
     connections: scope.connections ?? [],
-  });
+  }, locale);
   const added = candidates.filter((rule) => !grant.rules.some((existing) => existing.id === rule.id));
   return {
     grant: { ...grant, rules: [...grant.rules, ...added], localRepos: [...grant.localRepos, ...addedLocalRepos] },

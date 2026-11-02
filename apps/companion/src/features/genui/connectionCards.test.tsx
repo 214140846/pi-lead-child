@@ -53,9 +53,9 @@ describe('the connect card', () => {
     const { runtime, client } = connectionsRuntime([notion]);
     renderWithRuntime(<SurfaceView surface={surface('ConnectionConnect', { connection: 'notion', reason: '要读你上周的会议记录' })} />, runtime);
     const card = screen.getByTestId('surface-connection-notion');
-    expect(card.textContent).toContain('连接 Notion');
+    expect(card.textContent).toContain('Connect: Notion');
     expect(card.textContent).toContain('要读你上周的会议记录');
-    expect(card.textContent).toContain('连接以后，Paimon 可以搜索和读 Notion 页面');
+    expect(card.textContent).toContain('After you connect, Paimon can 搜索和读 Notion 页面');
 
     fireEvent.click(screen.getByTestId('surface-connect-notion'));
     // 和设置页一样：新窗口在点击里打开，再发请求。
@@ -68,7 +68,7 @@ describe('the connect card', () => {
     const { runtime, client } = connectionsRuntime([notion]);
     renderWithRuntime(<SurfaceView surface={surface('ConnectionConnect', { connection: 'notion' })} />, runtime);
     fireEvent.click(screen.getByTestId('surface-connect-later-notion'));
-    expect(screen.getByTestId('surface-connection-notion').textContent).toContain('还没有连接 Notion');
+    expect(screen.getByTestId('surface-connection-notion').textContent).toContain('Notion is not connected yet');
     expect(screen.queryByTestId('surface-connect-notion')).toBeNull();
     expect(client.startConnection).not.toHaveBeenCalled();
   });
@@ -80,14 +80,14 @@ describe('the connect card', () => {
     });
     const { runtime } = connectionsRuntime([expired]);
     renderWithRuntime(<SurfaceView surface={surface('ConnectionConnect', { connection: 'notion' })} />, runtime);
-    expect(screen.getByTestId('surface-connection-notion').textContent).toContain('重新授权 Notion');
-    expect(screen.getByTestId('surface-connect-notion').textContent).toBe('重新授权');
+    expect(screen.getByTestId('surface-connection-notion').textContent).toContain('Authorize again: Notion');
+    expect(screen.getByTestId('surface-connect-notion').textContent).toBe('Authorize again');
   });
 
   it('is one line when the connection is already connected', () => {
     const { runtime } = connectionsRuntime([jira]);
     renderWithRuntime(<SurfaceView surface={surface('ConnectionConnect', { connection: 'atlassian' })} />, runtime);
-    expect(screen.getByTestId('surface-connection-atlassian').textContent).toBe('JJira & Confluence 已连接');
+    expect(screen.getByTestId('surface-connection-atlassian').textContent).toBe('JJira & Confluence is connected');
     expect(screen.queryByTestId('surface-connect-atlassian')).toBeNull();
   });
 
@@ -100,9 +100,9 @@ describe('the connect card', () => {
     await act(async () => {
       start.resolve({ flow: 'connected', connection: connected });
     });
-    expect(screen.getByTestId('connect-done').textContent).toContain('Notion 已连接');
+    expect(screen.getByTestId('connect-done').textContent).toContain('Notion is connected');
     fireEvent.click(screen.getByTestId('connect-finish'));
-    expect(screen.getByTestId('surface-connection-notion').textContent).toBe('NNotion 已连接');
+    expect(screen.getByTestId('surface-connection-notion').textContent).toBe('NNotion is connected');
   });
 });
 
@@ -117,7 +117,7 @@ describe('the write confirmation card', () => {
     });
     const card = screen.getByTestId(`surface-confirmation-${CONFIRMATION_ID}`);
     expect(client.connectionConfirmation).toHaveBeenCalledWith(CONFIRMATION_ID, expect.any(AbortSignal));
-    expect(card.textContent).toContain('Jira & Confluence · 写入确认');
+    expect(card.textContent).toContain('Jira & Confluence · Write confirmation');
     expect(card.textContent).toContain('在 ACME 项目里建一个 issue：「登录页白屏」');
     expect(screen.queryByTestId('surface-confirmation-args')).toBeNull();
     fireEvent.click(screen.getByTestId('surface-confirmation-args-toggle'));
@@ -126,13 +126,13 @@ describe('the write confirmation card', () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     await act(async () => { fireEvent.click(screen.getByTestId('surface-confirmation-approve')); });
     expect(client.resolveConnectionConfirmation).toHaveBeenCalledWith(CONFIRMATION_ID, true);
-    expect(screen.getByTestId('surface-confirmation-running').textContent).toBe('正在执行');
+    expect(screen.getByTestId('surface-confirmation-running').textContent).toBe('Running');
     expect(screen.queryByTestId('surface-confirmation-approve')).toBeNull();
 
     client.connectionConfirmation.mockResolvedValue(confirmation({ state: 'done', resultPreview: '已建 ACME-142' }));
     await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
     const result = screen.getByTestId('surface-confirmation-result');
-    expect(result.textContent).toContain('已执行');
+    expect(result.textContent).toContain('Done');
     expect(result.textContent).toContain('已建 ACME-142');
   });
 
@@ -146,11 +146,11 @@ describe('the write confirmation card', () => {
     });
     await act(async () => { fireEvent.click(screen.getByTestId('surface-confirmation-reject')); });
     expect(client.resolveConnectionConfirmation).toHaveBeenCalledWith(CONFIRMATION_ID, false);
-    expect(screen.getByTestId('surface-confirmation-result').textContent).toBe('已拒绝');
+    expect(screen.getByTestId('surface-confirmation-result').textContent).toBe('Rejected');
   });
 
   it('shows failed and expired confirmations without buttons', async () => {
-    for (const [state, label] of [['failed', '执行失败'], ['expired', '已过期']] as const) {
+    for (const [state, label] of [['failed', 'Failed'], ['expired', 'Expired']] as const) {
       const { runtime } = connectionsRuntime([jira], {
         connectionConfirmation: vi.fn(async () => confirmation({ state, resultPreview: state === 'failed' ? 'Jira 回 403' : null })),
       });

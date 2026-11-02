@@ -50,7 +50,7 @@ describe("CDP as a read-only connection", () => {
   it("recognizes the server by its address, with a label and what it can do", async () => {
     expect(knownServer(`${CDP_URL}/`)).toBe(KNOWN_SERVERS[0]);
     const { hub, key } = await connectCdp();
-    expect(hub.get(key)).toMatchObject({ label: "CDP", capability: expect.stringContaining("客户数据"), tools: { total: 3, readOnly: 3, write: 0 } });
+    expect(hub.get(key)).toMatchObject({ label: "CDP", capability: expect.stringContaining("customer data"), tools: { total: 3, readOnly: 3, write: 0 } });
     expect(hub.get("cdp").key).toBe(key);
   });
 

@@ -3,6 +3,7 @@
 //   - Lead 只能在你这一轮明确要求时代你改；
 //   - 没有变化时什么也不写；「不是我」恢复成改之前的样子，之后又改过的不动；
 //   - 主色太浅（白底上不到 4.5:1）时拒绝：可读性底线。
+//   - 给用户看的文字（主人操作的摘要、拒绝的理由）按界面语言写，缺省英文（2026-11-01）。
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { tempDir } from "@pi-lead-child/core/testing";
@@ -55,7 +56,7 @@ describe("updateDesignPreferences", () => {
     expect(performed()).toHaveLength(1);
     expect(performed()[0]!.payload).toMatchObject({
       action: "ui.design",
-      summary: "工单详情的密度改成标准，圆角改成大圆角，主色改成 #1E51D6，改了设计说明",
+      summary: "Set ticket details density to standard, set corner radius to large, set the accent color to #1E51D6, changed the design notes",
       undo: { kind: "design_preferences", before: { radius: "soft" }, after: { radius: "round", notes: "喜欢大圆角" } },
     });
   });
@@ -82,14 +83,14 @@ describe("updateDesignPreferences", () => {
       }
       return null;
     };
-    expect(attempt({})).toMatchObject({ code: "invalid_input", message: "没有要改的内容" });
+    expect(attempt({})).toMatchObject({ code: "invalid_input", message: "Nothing to change." });
     expect(attempt({ radius: "huge" })).toBeInstanceOf(DesignPreferencesError);
     expect(attempt({ density: { sidebar: "compact" } })).toBeInstanceOf(DesignPreferencesError);
     expect(attempt({ colors: { accent: "blue" } })).toBeInstanceOf(DesignPreferencesError);
     // 浅蓝当链接文字读不清：主色至少 4.5:1。
-    expect(attempt({ colors: { accent: "#9DB8FF" } })).toMatchObject({ code: "invalid_input", message: expect.stringContaining("主色太浅") });
+    expect(attempt({ colors: { accent: "#9DB8FF" } })).toMatchObject({ code: "invalid_input", message: expect.stringContaining("The accent color is too light") });
     // 警告色只当图标和底色，门槛是 3:1；缺省的橙色本身就过不了 4.5:1，不能把它挡在门外。
-    expect(attempt({ colors: { warning: "#FFE8B0" } })).toMatchObject({ code: "invalid_input", message: expect.stringContaining("警告色太浅") });
+    expect(attempt({ colors: { warning: "#FFE8B0" } })).toMatchObject({ code: "invalid_input", message: expect.stringContaining("The warning color is too light") });
     expect(getDesignPreferences(db).updatedAt).toBeNull();
   });
 
@@ -114,8 +115,36 @@ describe("updateDesignPreferences", () => {
     expect(outcome.by).toEqual({ actor: "lead", onBehalfOf: { actor: "user", sourceTurnId: "turn-user", bindingId: binding.id } });
     expect(getDesignPreferences(db)).toMatchObject({ radius: "round", updatedBy: "lead" });
     expect(performed()[0]).toMatchObject({
-      payload: { action: "ui.design", summary: "助手代你圆角改成大圆角", detail: { sourceTurnId: "turn-user" }, source: { client: "lead" } },
+      payload: { action: "ui.design", summary: "The assistant set corner radius to large for you", detail: { sourceTurnId: "turn-user" }, source: { client: "lead" } },
     });
+  });
+});
+
+describe("interface language", () => {
+  it("writes the summary of a language switch in the new language, and later text in the chosen one", () => {
+    const binding = web();
+    const caller = { kind: "user" as const, credential: binding, source: SOURCE };
+    updateDesignPreferences(db, { request: { locale: "zh" }, caller });
+    expect(getDesignPreferences(db).locale).toBe("zh");
+    updateDesignPreferences(db, { request: { radius: "round" }, caller });
+    expect(performed().map((event) => (event.payload as { summary: string }).summary).sort()).toEqual(["圆角改成大圆角", "界面语言改成中文"]);
+    expect(() => updateDesignPreferences(db, { request: { colors: { accent: "#9DB8FF" } }, caller })).toThrow("主色太浅");
+  });
+
+  it("refuses a language it does not know", () => {
+    expect(() => updateDesignPreferences(db, { request: { locale: "fr" } as never, caller: { kind: "user" } })).toThrow(DesignPreferencesError);
+  });
+
+  it("reverts an older change that predates the language field without touching the language", () => {
+    const binding = web();
+    const caller = { kind: "user" as const, credential: binding, source: SOURCE };
+    updateDesignPreferences(db, { request: { locale: "zh" }, caller });
+    updateDesignPreferences(db, { request: { textScale: "large" }, caller });
+    const { updatedAt: _a, updatedBy: _b, locale: _l, ...legacy } = DEFAULT_DESIGN_PREFERENCES;
+    const before = legacy as unknown as Parameters<typeof revertDesignPreferences>[1]["before"];
+    const after = { ...legacy, textScale: "large" } as unknown as typeof before;
+    expect(revertDesignPreferences(db, { before, after })).toBe("reverted");
+    expect(getDesignPreferences(db)).toMatchObject({ textScale: "medium", locale: "zh" });
   });
 });
 

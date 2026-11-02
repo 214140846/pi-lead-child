@@ -18,6 +18,7 @@ import {
   revokeBinding, transition, updateRun, type Db,
 } from "@pi-lead-child/store";
 import { liveChildren } from "../src/children/manager.js";
+import { updateDesignPreferences } from "../src/design-preferences.js";
 import { prepareRunWorkspace } from "../src/coordinator/workspace-policy.js";
 import {
   listLeadTicketActions, listTicketActions, runTicketAction, TICKET_ACTIONS, ticketActionCatalogText, TicketActionError,
@@ -209,7 +210,8 @@ describe("Lead acting for the user", () => {
     expect(JSON.parse(event.payload)).toMatchObject({
       action: "ticket.confirm",
       // 称呼 Lead 用它的名字（设置 → 身份与风格，缺省 Paimon）。
-      summary: expect.stringMatching(/^Paimon 代你确认了工单/),
+      // 摘要按用户选的界面语言写（缺省英文）。
+      summary: expect.stringMatching(/^Paimon on your behalf: Confirmed Ticket #/),
       credential: { bindingId: binding.id },
       source: { client: "lead" },
       delivery: "push",
@@ -400,6 +402,8 @@ describe("widening a sub-agent's grant", () => {
   });
 
   it("widens the grant in the user's turn, records Lead acting for the user, and the owner action", async () => {
+    // 主人操作的摘要按用户选的界面语言写。这条用中文。
+    updateDesignPreferences(db, { request: { locale: "zh" }, caller: { kind: "user" } });
     const { binding } = createLoopbackBinding(db, { name: "Mac 网页" });
     const turn = userTurn(binding.id);
     const { itemId, runId } = channelTicket();

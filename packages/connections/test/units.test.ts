@@ -90,7 +90,10 @@ describe("small rules", () => {
   it("accepts only HTTPS custom servers", () => {
     expect(normalizeCustomServerUrl(" https://mcp.example.com/mcp#x ")).toBe("https://mcp.example.com/mcp");
     expect(() => normalizeCustomServerUrl("http://mcp.example.com/mcp")).toThrow(/https/);
-    expect(() => normalizeCustomServerUrl("https://user:pw@mcp.example.com")).toThrow(/用户名/);
+    expect(() => normalizeCustomServerUrl("https://user:pw@mcp.example.com")).toThrow(/user name/);
+    // 设置页显示这个错误：按用户选的语言写。
+    expect(() => normalizeCustomServerUrl("https://user:pw@mcp.example.com", "zh")).toThrow(/用户名/);
+    expect(() => normalizeCustomServerUrl("mcp.example.com", "zh")).toThrow("请输入一个完整的地址");
   });
 
   it("reads pre-registered client IDs from config.json and lets the environment win", () => {

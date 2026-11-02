@@ -21,6 +21,8 @@ import {
   type FairyEyeState,
   type FairyEyeTone,
 } from './FairyEye.shared';
+import { useMessages } from '../i18n';
+import { displayMessages } from './display.messages';
 
 export type { FairyEyeState, FairyEyeTone } from './FairyEye.shared';
 
@@ -40,6 +42,7 @@ export type FairyEyeProps = {
 // 全部用 View 画，三端同一份；动效用 Reanimated，在 UI 线程上跑。几个 Fairy 共用页面时钟，所以一起呼吸。
 // 规格（形状、颜色、节奏、出处）在 FairyEye.shared.ts。
 export function FairyEye({ size = 18, state = 'idle', tone = 'color', name = 'Fairy', testID }: FairyEyeProps) {
+  const m = useMessages(displayMessages);
   const reduced = useReducedMotion();
   const palette = fairyPalettes[tone];
   const moving = tone === 'color' && !reduced;
@@ -99,7 +102,7 @@ export function FairyEye({ size = 18, state = 'idle', tone = 'color', name = 'Fa
     <View
       testID={testID}
       role="img"
-      aria-label={thinking ? `${name} 在想` : name}
+      aria-label={thinking ? m.thinking(name) : name}
       pointerEvents="none"
       style={{ width: size, height: size, flexShrink: 0 }}
     >

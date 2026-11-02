@@ -46,7 +46,7 @@ describe('resolved intervention card', () => {
     renderUI(
       <InterventionCard intervention={resolvedDecision('lead', TABLE_ANSWER)} leadName="Fairy" onOpenTicket={() => {}} />,
     );
-    expect(document.body.textContent).toContain('Fairy 已回答，附 1 张表');
+    expect(document.body.textContent).toContain('Fairy answered, with 1 table');
     fireEvent.click(screen.getByTestId('surface-disclosure-intervention-decision:7-summary'));
     expect(await screen.findByTestId('markdown-table')).toBeTruthy();
     const text = document.body.textContent ?? '';
@@ -68,14 +68,14 @@ describe('resolved intervention card', () => {
   });
 
   it('names every actor the backend writes in words for people', () => {
-    const by = (resolvedBy: string | null) => buildInterventionCardViewModel(resolvedDecision(resolvedBy), 'Fairy').resolvedByLabel;
+    const by = (resolvedBy: string | null) => buildInterventionCardViewModel(resolvedDecision(resolvedBy), 'Fairy', 'en').resolvedByLabel;
 
     expect(by('lead')).toBe('Fairy');
-    expect(by('lead for user via turn:42')).toBe('Fairy 代你');
-    expect(by('user via page')).toBe('你');
-    expect(by('user via paired binding:3')).toBe('你');
-    expect(by('user via slack:U123')).toBe('你');
-    expect(by('system: superseded')).toBe('系统');
+    expect(by('lead for user via turn:42')).toBe('Fairy for you');
+    expect(by('user via page')).toBe('You');
+    expect(by('user via paired binding:3')).toBe('You');
+    expect(by('user via slack:U123')).toBe('You');
+    expect(by('system: superseded')).toBe('System');
     expect(by(null)).toBeNull();
   });
 });
@@ -115,13 +115,13 @@ describe('pending intervention card header', () => {
     };
     const { container } = renderUI(<InterventionCard intervention={decision} leadName="Fairy" onOpenTicket={() => {}} />);
     const text = container.textContent ?? '';
-    expect(text).toContain('child #160：第二轮审查按什么粒度送？');
+    expect(text).toContain('child #160: 第二轮审查按什么粒度送？');
     expect(text.split('第二轮审查按什么粒度送？')).toHaveLength(2);
     expect(text).not.toContain('Decision required');
   });
 
   it('ends a resolved question with the question itself', () => {
     const { container } = renderUI(<InterventionCard intervention={resolvedDecision('lead')} leadName="Fairy" onOpenTicket={() => {}} />);
-    expect(container.textContent).toContain('请确认 review 结果。 · Fairy 已回答');
+    expect(container.textContent).toContain('请确认 review 结果。 · Fairy answered');
   });
 });

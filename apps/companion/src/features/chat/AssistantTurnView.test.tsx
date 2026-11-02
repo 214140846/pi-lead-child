@@ -85,7 +85,7 @@ describe('an assistant turn in the conversation', () => {
     const runtime = runtimeWithTurn();
     renderUI(view(runtime));
 
-    const toggle = screen.getByRole('button', { name: /1 个工具/ });
+    const toggle = screen.getByRole('button', { name: /1 tool/ });
     const reply = screen.getByTestId('reply');
     expect(reply.textContent).toBe('没有待验收的工单。');
     expect(toggle.compareDocumentPosition(reply) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -100,12 +100,12 @@ describe('an assistant turn in the conversation', () => {
   it('stays expanded when the conversation renders the turn again', () => {
     const runtime = runtimeWithTurn();
     const first = renderUI(view(runtime));
-    fireEvent.click(screen.getByRole('button', { name: /1 个工具/ }));
+    fireEvent.click(screen.getByRole('button', { name: /1 tool/ }));
     fireEvent.click(screen.getByRole('button', { name: /query_tickets/ }));
     first.unmount();
 
     renderUI(view(runtime));
-    expect(screen.getByRole('button', { name: /1 个工具/ }).getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByRole('button', { name: /1 tool/ }).getAttribute('aria-expanded')).toBe('true');
     expect(screen.getByRole('button', { name: /query_tickets/ }).getAttribute('aria-expanded')).toBe('true');
     expect(screen.getByText(/"stage": "review"/)).toBeTruthy();
   });
@@ -115,9 +115,9 @@ describe('an assistant turn in the conversation', () => {
     applyLive(runtime, [event(5, 'approval.required', { approvalId: 3 })]);
     renderUI(view(runtime));
 
-    const toggle = screen.getByRole('button', { name: /1 个工具/ });
+    const toggle = screen.getByRole('button', { name: /1 tool/ });
     const reply = screen.getByTestId('reply');
-    const attachment = screen.getByText('审批 #3');
+    const attachment = screen.getByText('Approval #3');
     expect(toggle.compareDocumentPosition(reply) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(reply.compareDocumentPosition(attachment) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
@@ -187,7 +187,7 @@ describe('the tools in the message header', () => {
       </CompanionRuntimeProvider>,
     );
     expect(screen.getByText('Lead · 12:00')).toBeTruthy();
-    expect(screen.getByRole('button', { name: /1 个工具/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /1 tool/ })).toBeTruthy();
     expect(screen.queryByTestId(`task-card-${ASSISTANT}`)).toBeNull();
     expect(screen.getByTestId(`task-card-${ASSISTANT}-inline`)).toBeTruthy();
   });
@@ -228,14 +228,14 @@ describe('the provenance under a reply', () => {
           renderReply={(reply) => <Text testID="reply">{reply}</Text>} />
       </CompanionRuntimeProvider>,
     );
-    expect(screen.getByText('依据：Run #87 的事件')).toBeTruthy();
+    expect(screen.getByText('Source: Events of Run #87')).toBeTruthy();
     view.unmount();
     renderUI(
       <CompanionRuntimeProvider runtime={runtime}>
         <AssistantTurnView messageId={ASSISTANT} messageState="completed" renderReply={(reply) => <Text testID="reply">{reply}</Text>} />
       </CompanionRuntimeProvider>,
     );
-    expect(screen.queryByText('依据：Run #87 的事件')).toBeNull();
+    expect(screen.queryByText('Source: Events of Run #87')).toBeNull();
   });
 
   // 2026-10-16 用户要求：标签可以点开，看 Lead 依据的具体工单、通知或事件；点一张工单就打开它。
@@ -261,8 +261,8 @@ describe('the provenance under a reply', () => {
           renderReply={(reply) => <Text testID="reply">{reply}</Text>} />
       </CompanionRuntimeProvider>,
     );
-    fireEvent.click(screen.getByRole('button', { name: '依据：等你处理的工单，查看来源' }));
-    const source = await screen.findByRole('button', { name: '打开工单 #66 成果快照与登记机制' });
+    fireEvent.click(screen.getByRole('button', { name: 'Source: Tickets that need you. Show the sources.' }));
+    const source = await screen.findByRole('button', { name: 'Open ticket #66 成果快照与登记机制' });
     fireEvent.click(source);
     expect(runtime.workspace.getState().selectedTicketId).toBe(66);
   });
@@ -288,7 +288,7 @@ describe('the time in the turn header', () => {
 
   it('is the whole turn from its start to its end, not the time its tools took', () => {
     const live = renderUI(inline(applyLive(emptyRuntime(), longTurn), 'completed'));
-    expect(screen.getByRole('button', { name: /1 个工具 · 1 小时 12 分/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /1 tool · 1 h 12 min/ })).toBeTruthy();
     live.unmount();
 
     const reloaded = emptyRuntime();
@@ -299,7 +299,7 @@ describe('the time in the turn header', () => {
       toolCalls: foldTurnToolCalls(longTurn),
     }]);
     renderUI(inline(reloaded, 'completed'));
-    expect(screen.getByRole('button', { name: /1 个工具 · 1 小时 12 分/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /1 tool · 1 h 12 min/ })).toBeTruthy();
   });
 
   it('counts up from the start of the turn while it is still running', () => {
@@ -308,9 +308,9 @@ describe('the time in the turn header', () => {
       vi.setSystemTime(new Date('2026-10-16T11:02:12.000Z'));
       const runtime = applyLive(emptyRuntime(), longTurn.slice(0, 2));
       renderUI(inline(runtime, 'streaming'));
-      expect(screen.getByRole('button', { name: /get_ticket.*12 秒/ })).toBeTruthy();
+      expect(screen.getByRole('button', { name: /get_ticket.*12 s/ })).toBeTruthy();
       act(() => { vi.advanceTimersByTime(5_000); });
-      expect(screen.getByRole('button', { name: /get_ticket.*17 秒/ })).toBeTruthy();
+      expect(screen.getByRole('button', { name: /get_ticket.*17 s/ })).toBeTruthy();
     } finally {
       vi.useRealTimers();
     }

@@ -296,7 +296,7 @@ export async function requestExternalTimer(
     decisionInputOf(db, request.origin, request.spec), policy ? confidenceParamsFrom(policy.params) : CONFIDENCE_MODEL_DEFAULTS,
   ));
   // 「Ethan（Slack）要求的」或者「读了「…」里的消息以后设的」，后面接「定时器」。
-  const requester = timerAskedBy(request.origin);
+  const requester = timerAskedBy(request.origin, "zh");
   const what = describeTimer(db, request.spec);
   const record = (timer: { kind: TimerKind; id: number } | null, requestId: string | null) => db.transaction(() => appendEvent(db, {
     source: "system", kind: TIMER_REQUEST_DECIDED_KIND,
@@ -395,7 +395,7 @@ function dtoOf(db: Db, record: TimerRequestRecord, now: Date): TimerRequestDto {
     repeat: request.spec.tool === "create_cron_trigger" ? request.spec.cron : null,
     outward: request.spec.tool === "follow_up" ? request.spec.outward ?? null : null,
     origin: request.origin,
-    requester: timerRequesterLabel(request.origin),
+    requester: timerRequesterLabel(request.origin, "zh"),
     reasons: request.reasons,
     cost: request.cost,
     note: request.note,
@@ -440,7 +440,7 @@ function storeTimerRequest(
     id,
     userAction: userActionRequest({
       kind: "confirm_timer", target: timerRequestEntityKey(id), title: CONFIRM_TITLE,
-      reason: clip(`${timerAskedBy(args.origin)}定时器：${describeTimer(db, args.spec)}`, 300),
+      reason: clip(`${timerAskedBy(args.origin, "zh")}定时器：${describeTimer(db, args.spec)}`, 300),
     }),
   };
 }
@@ -475,7 +475,7 @@ const STATE_WORDS: Record<Exclude<TimerRequestState, "pending">, string> = {
 
 // 确认卡上的定时器是怎么来的（timerAskedBy）。读不懂来源时退回要求人的名字。
 function askedBy(request: TimerRequestDto): string {
-  return request.origin.kind === "external" ? timerAskedBy(request.origin) : `${request.requester} 要求的`;
+  return request.origin.kind === "external" ? timerAskedBy(request.origin, "zh") : `${request.requester} 要求的`;
 }
 
 function tellLead(db: Db, request: TimerRequestDto): void {
@@ -686,7 +686,7 @@ export const TIMER_TARGET: UiActionTargetKind<TimerTarget> = {
   name: (timer) => `定时器 ${timer.ref}「${clip(timer.title, 40)}」`,
   describe: (timer) => ({
     ref: timer.ref, kind: timer.kind, title: timer.title, at: timer.at, repeat: timer.repeat, state: timer.state,
-    requester: timer.origin.kind === "external" ? timerRequesterLabel(timer.origin) : timer.origin.kind,
+    requester: timer.origin.kind === "external" ? timerRequesterLabel(timer.origin, "zh") : timer.origin.kind,
   }),
 };
 

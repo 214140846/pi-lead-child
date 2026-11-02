@@ -7,10 +7,12 @@ import type { ReactNode } from 'react';
 
 import { leadSubtitleTone, useLeadPresence } from '@/components/LeadIdentity';
 import type { LeadPresence } from '@/components/leadPresence';
+import { useMessages } from '@/i18n';
 import { useConnectionPhase, useLeadName } from '@/state/hooks';
 
 import { ConnectionHealthBar } from './ConnectionHealthBar';
 import { PendingSwitchBanner } from './MemorySection';
+import { settingsMessages } from './settings.messages';
 import { isDevicePaired, SETTINGS_GROUPS, settingsGroupLabel, type SettingsBadges, type SettingsSectionId } from './settingsNav';
 
 // 每个分组图标的底色。
@@ -37,6 +39,7 @@ export function SettingsHome({ badges = {}, connections, memory }: {
   const phase = useConnectionPhase();
   const presence = useLeadPresence();
   const leadName = useLeadName();
+  const m = useMessages(settingsMessages);
 
   return (
     <Screen edges={['top', 'bottom']} bg="surface-muted">
@@ -44,7 +47,7 @@ export function SettingsHome({ badges = {}, connections, memory }: {
         {/* 设置是从会话顶栏的 Lead 名字进来的；栈里没有会话时（直接打开地址）换成会话。 */}
         <Pressable
           testID="settings-close"
-          aria-label="返回对话"
+          aria-label={m.backToConversation}
           onPress={() => router.dismissTo('/' as Href)}
           h={36}
           px={6} // spacing-exempt: 返回链接点击区
@@ -52,14 +55,14 @@ export function SettingsHome({ badges = {}, connections, memory }: {
           rounded="sm"
         >
           {/* spacing-exempt: 链接字号 */}
-          <Text size="15" weight="semibold" tone="accent">‹ 对话</Text>
+          <Text size="15" weight="semibold" tone="accent">{`‹ ${m.conversation}`}</Text>
         </Pressable>
       </Row>
       <ScrollArea>
         {/* spacing-exempt: 标题自带留白 */}
         <Column testID="settings-home" px="page-x" pt={2} pb="page-bottom">
           {/* spacing-exempt: 光学对齐 */}
-          <Text size="page-title" weight="extrabold" letterSpacing={-0.4} px={2} pb="page-section">设置</Text>
+          <Text size="page-title" weight="extrabold" letterSpacing={-0.4} px={2} pb="page-section">{m.title}</Text>
           {/* 有连接要你处理时，最上面先说（方案 B 的健康条）。 */}
           <ConnectionHealthBar items={connections} />
           {/* 记忆有要你确认的切换时，也在最上面。和设置 → 记忆、会话里的卡片是同一个确认。 */}
@@ -79,7 +82,7 @@ export function SettingsHome({ badges = {}, connections, memory }: {
               <Column flex={1} minW={0} gap="text-stack">
                 <Text testID="settings-paimon-name" size="card-title" weight="bold" numberOfLines={1}>{leadName}</Text>
                 <Text testID="settings-paimon-status" size="secondary" tone={leadSubtitleTone(presence)} numberOfLines={1}>
-                  {paimonCardSubtitle(presence)}
+                  {paimonCardSubtitle(presence, m)}
                 </Text>
               </Column>
               <Icon name="chevron-right" size={16} color="text-ghost" />
@@ -88,7 +91,7 @@ export function SettingsHome({ badges = {}, connections, memory }: {
           {SETTINGS_GROUPS.map((group) => (
             <Column key={group.id}>
               {/* spacing-exempt: 和 ListItem 的 16 对齐 */}
-              <Text size="eyebrow" weight="semibold" tone="secondary" px={16} pt="section-label-top" pb="section-label-bottom">{settingsGroupLabel(group, leadName)}</Text>
+              <Text size="eyebrow" weight="semibold" tone="secondary" px={16} pt="section-label-top" pb="section-label-bottom">{settingsGroupLabel(group, leadName, m)}</Text>
               <GroupCard>
                 {group.items.map((item, index) => {
                   const count = badges[item.id];
@@ -109,7 +112,7 @@ export function SettingsHome({ badges = {}, connections, memory }: {
                       <Box w={28} h={28} rounded="xs" bg={ICON_WELLS[item.id]} items="center" justify="center">
                         <Icon name={item.icon} size={16} color="white" />
                       </Box>
-                      <Text flex={1} minW={0} size="label" numberOfLines={1}>{item.label}</Text>
+                      <Text flex={1} minW={0} size="label" numberOfLines={1}>{m.items[item.id]}</Text>
                       {count !== undefined && count > 0 ? (
                         <Box testID={`settings-row-${item.id}-badge`}>
                           <Badge label={String(Math.min(count, 99))} tone="warning" variant="solid" size="sm" />
@@ -133,7 +136,7 @@ function GroupCard({ children }: { children: ReactNode }) {
 }
 
 // 名字下面的一行字：在线时写「在线」和最近一次巡检，别的状态和会话顶栏写的一样。
-export function paimonCardSubtitle(presence: LeadPresence): string {
-  if (presence.state === 'online') return presence.subtitle ? `在线 · ${presence.subtitle}` : '在线';
+export function paimonCardSubtitle(presence: LeadPresence, m: { online: string; onlineWith: (detail: string) => string }): string {
+  if (presence.state === 'online') return presence.subtitle ? m.onlineWith(presence.subtitle) : m.online;
   return presence.subtitle ?? presence.label;
 }

@@ -5,10 +5,11 @@
 // 这里只算新的整段、校验、写库；主人操作（channel.reply_style）由操作层按 ownerActionInput 记。
 import {
   ReplyStyleUpdateRequestSchema, nextReplyStyleText, replyStyleProblem,
-  type ReplyStyleAuthor, type ReplyStyleDto, type ReplyStyleUpdateRequest,
+  type Locale, type ReplyStyleAuthor, type ReplyStyleDto, type ReplyStyleUpdateRequest,
 } from "@pi-lead-child/protocol";
-import { getReplyStyle, writeReplyStyle, type Db } from "@pi-lead-child/store";
+import { getLocale, getReplyStyle, writeReplyStyle, type Db } from "@pi-lead-child/store";
 import { Value } from "typebox/value";
+import { replyStyleMessages } from "./reply-style.messages.js";
 
 export class ReplyStyleError extends Error {
   constructor(readonly code: "invalid_input", message: string) {
@@ -23,11 +24,12 @@ export interface ReplyStyleUpdateOutcome {
   after: string;
 }
 
-/** 主人操作的一句话：改了什么。 */
-export function replyStyleChangeSummary(before: string, after: string, mode: ReplyStyleUpdateRequest["mode"]): string {
-  if (!after) return "清空了代回复风格";
-  if (mode === "append") return "在代回复风格后面追加了一段";
-  return before ? "改了代回复风格" : "写了代回复风格";
+/** 主人操作的一句话：改了什么（按 locale 的语言）。 */
+export function replyStyleChangeSummary(before: string, after: string, mode: ReplyStyleUpdateRequest["mode"], locale: Locale): string {
+  const m = replyStyleMessages(locale);
+  if (!after) return m.cleared;
+  if (mode === "append") return m.appended;
+  return before ? m.changed : m.written;
 }
 
 /** 改代回复风格。授权已经由操作层做过。没有变化时什么也不写。 */
@@ -35,12 +37,13 @@ export function updateReplyStyle(
   db: Db, input: { request: ReplyStyleUpdateRequest; by: ReplyStyleAuthor; now: Date },
 ): ReplyStyleUpdateOutcome {
   if (!Value.Check(ReplyStyleUpdateRequestSchema, input.request)) {
-    throw new ReplyStyleError("invalid_input", "input 是 { mode: replace 或 append, text, label? }");
+    // 设置页直接显示这些错误，Lead 的工具也读它们：按用户现在的语言写。
+    throw new ReplyStyleError("invalid_input", replyStyleMessages(getLocale(db)).invalidInput);
   }
   return db.transaction(() => {
     const current = getReplyStyle(db);
     const after = nextReplyStyleText(current.text, input.request, input.now);
-    const problem = replyStyleProblem(input.request, after);
+    const problem = replyStyleProblem(input.request, after, getLocale(db));
     if (problem) throw new ReplyStyleError("invalid_input", problem);
     if (after === current.text) return { replyStyle: current, changed: false, before: current.text, after };
     const replyStyle = writeReplyStyle(db, after, { by: input.by, at: input.now });

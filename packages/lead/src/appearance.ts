@@ -2,19 +2,24 @@
 // 内容来自设置页「外观」（store 的 design-preferences.ts）。session.ts 在每一轮开头重新生成，和 identity 一节一样。
 // 用户的设计说明只用来提修改建议：渲染不读它，Lead 也不能从它里面拿到权限。
 import {
-  DENSITY_LEVEL_LABELS, DENSITY_ZONE_LABELS, DENSITY_ZONES, LINE_HEIGHT_LEVEL_LABELS, PALETTE_ROLE_LABELS, PALETTE_ROLES,
-  RADIUS_LEVEL_LABELS, TEXT_SCALE_LEVEL_LABELS, type DesignPreferencesFields,
+  DENSITY_ZONES, LOCALE_NAMES, PALETTE_ROLES, designPreferenceLabels, type DesignPreferencesFields,
 } from "@pi-lead-child/protocol";
 
 export const APPEARANCE_SECTION = "appearance";
 
+// 系统提示词是中文，档位的名字也取中文。
+const labels = designPreferenceLabels("zh");
+
 export function renderAppearance(preferences: DesignPreferencesFields): string {
-  const density = DENSITY_ZONES.map((zone) => `${DENSITY_ZONE_LABELS[zone]} ${DENSITY_LEVEL_LABELS[preferences.density[zone]]}`).join("、");
-  const colors = PALETTE_ROLES.map((role) => `${PALETTE_ROLE_LABELS[role]} ${preferences.colors[role]}`).join("、");
+  const density = DENSITY_ZONES.map((zone) => `${labels.zone[zone]} ${labels.density[preferences.density[zone]]}`).join("、");
+  const colors = PALETTE_ROLES.map((role) => `${labels.palette[role]} ${preferences.colors[role]}`).join("、");
   const lines = [
     "界面的外观（设置 → 外观）现在是：",
-    `密度：${density}。圆角：${RADIUS_LEVEL_LABELS[preferences.radius]}。行高：${LINE_HEIGHT_LEVEL_LABELS[preferences.lineHeight]}。字号：${TEXT_SCALE_LEVEL_LABELS[preferences.textScale]}。`,
+    `密度：${density}。圆角：${labels.radius[preferences.radius]}。行高：${labels.lineHeight[preferences.lineHeight]}。字号：${labels.textScale[preferences.textScale]}。`,
     `颜色：${colors}。`,
+    // 界面语言（2026-11-01）。用户的消息用哪种语言，就用哪种语言回；没有用户消息可参照时（通知、提醒、卡片）用界面语言。
+    `界面语言：${LOCALE_NAMES[preferences.locale]}（${preferences.locale}）。回复用户时用他这条消息的语言；`
+      + "你主动发给用户的文字（通知、提醒、卡片上的字）用界面语言。",
   ];
   if (preferences.notes) lines.push("", "用户对外观的说明（他自己的话）：", preferences.notes);
   lines.push(

@@ -38,7 +38,7 @@ describe('native workspace navigation', () => {
   it('uses the workspace ticket projection for native grouping, filters, and empty states', () => {
     const ticketsRoute = source('../app/(tabs)/tickets.tsx');
 
-    expect(ticketsRoute).toContain('TICKET_RAIL_FILTERS');
+    expect(ticketsRoute).toContain('ticketRailFilters(locale)');
     expect(ticketsRoute).toContain('useWorkspaceStore');
     expect(ticketsRoute).toContain('<TicketList items={items} onSelect=');
     expect(ticketsRoute).toContain('grouped');
@@ -90,7 +90,7 @@ describe('native workspace navigation', () => {
     expect(ticketRoute).toContain('resolveWorkspaceTicket');
     expect(ticketRoute).toContain('useWorkItems');
     expect(ticketRoute).not.toContain('resolveWorkspaceTickets');
-    expect(ticketRoute).toContain('未找到工单');
-    expect(ticketRoute).toContain('返回');
+    expect(ticketRoute).toContain('m.notFound(');
+    expect(ticketRoute).toContain('ticket-not-found-back');
   });
 });

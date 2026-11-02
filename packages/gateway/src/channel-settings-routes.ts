@@ -16,8 +16,11 @@ import {
   type ChannelSettingsResponse,
   type ChannelSourceSettingsDto,
   type ChannelSourceSettingsResponse,
+  type Locale,
   type Scope,
+  DEFAULT_LOCALE,
 } from "@pi-lead-child/protocol";
+import { routeMessages } from "./routes.messages.js";
 import { channelCredentialsOwnerAction, type OwnerActionInput } from "./owner-actions.js";
 
 /** 一个来源的设置，editable 由网关按调用方补上。 */
@@ -78,6 +81,8 @@ export interface ChannelSettingsRouteContext {
   editableHere(): boolean;
   // 保存、删除成功以后，记一次主人操作（工单 15）。凭证是上一次 requireAuth 的调用方。
   ownerAction?(input: OwnerActionInput): void;
+  // 用户现在选的界面语言（store 的 getLocale）：回给界面的错误和主人操作的摘要按它写。不给时按缺省语言。
+  locale?: Locale;
 }
 
 const BASE = "/v1/channels/settings";
@@ -91,7 +96,9 @@ export async function handleChannelSettingsRoute(ctx: ChannelSettingsRouteContex
   // reason 放在 details 里：客户端用严格的 HttpErrorResponseSchema 校验错误响应，多一个字段整条错误就会被丢掉。
   const fail = (status: number, reason: string, message: string, details?: Record<string, unknown>) =>
     ctx.json(status, { error: { code: HTTP_CODE[status] ?? "internal_error", message, details: details ?? { reason } } });
-  const unavailable = () => fail(503, "unavailable", "消息通道还没有启动");
+  const locale = ctx.locale ?? DEFAULT_LOCALE;
+  const m = routeMessages(locale);
+  const unavailable = () => fail(503, "unavailable", m.channelsUnavailable);
 
   if (url.pathname === BASE) {
     if (req.method !== "GET") return false;
@@ -111,14 +118,14 @@ export async function handleChannelSettingsRoute(ctx: ChannelSettingsRouteContex
   if (testing ? req.method !== "POST" : req.method !== "PUT" && req.method !== "DELETE") return false;
   ctx.requireAuth("tickets:create");
   if (!ctx.loopbackPage()) {
-    fail(403, "not_local_page", "只有这台电脑上的网页能改通道的凭据：网关是明文 HTTP，密钥不能经过局域网");
+    fail(403, "not_local_page", m.notLocalPage);
     return true;
   }
   let source: string;
   try {
     source = decodeURIComponent(match[1]!);
   } catch {
-    fail(404, "not_found", "没有这个通道");
+    fail(404, "not_found", m.channelNotFound);
     return true;
   }
   const service = ctx.service;
@@ -128,21 +135,21 @@ export async function handleChannelSettingsRoute(ctx: ChannelSettingsRouteContex
   }
   const entry = service.list().find((candidate) => candidate.source === source);
   if (!entry) {
-    fail(404, "not_found", "没有这个通道");
+    fail(404, "not_found", m.channelNotFound);
     return true;
   }
 
   try {
     if (req.method === "DELETE") {
       const { source: view, removed } = await service.remove(source);
-      if (removed.length) ctx.ownerAction?.(channelCredentialsOwnerAction({ op: "delete", source, label: view.label, names: removed }));
+      if (removed.length) ctx.ownerAction?.(channelCredentialsOwnerAction({ op: "delete", source, label: view.label, names: removed }, locale));
       ctx.json(200, { source: { ...view, editable: true } } satisfies ChannelSourceSettingsResponse);
       return true;
     }
 
     const body = await ctx.readBody();
     if (!Value.Check(ChannelSecretsRequestSchema, body)) {
-      fail(400, "invalid_request", "请求体要是 {secrets: {名字: 值}}，值是 1 到 1000 个字符的字符串");
+      fail(400, "invalid_request", m.secretsBody);
       return true;
     }
     const secrets = (body as { secrets: Record<string, string> }).secrets;
@@ -150,7 +157,7 @@ export async function handleChannelSettingsRoute(ctx: ChannelSettingsRouteContex
     const unknown = Object.keys(secrets).filter((name) => !declared.has(name));
     if (unknown.length) {
       // 名字是调用方写的：截短以后再回显，不回显值。
-      fail(400, "unknown_secret", `这个通道不认这些密钥名：${unknown.map((name) => name.slice(0, 100)).join("、").slice(0, 300)}`);
+      fail(400, "unknown_secret", m.unknownSecrets(m.joinNames(unknown.map((name) => name.slice(0, 100))).slice(0, 300)));
       return true;
     }
 
@@ -160,14 +167,14 @@ export async function handleChannelSettingsRoute(ctx: ChannelSettingsRouteContex
     }
     const outcome = await service.save(source, secrets);
     if (!outcome.ok) {
-      fail(400, "checks_failed", "检查没有全部通过，没有保存", outcome.result as unknown as Record<string, unknown>);
+      fail(400, "checks_failed", m.checksFailed, outcome.result as unknown as Record<string, unknown>);
       return true;
     }
     const { saved } = outcome;
     if (saved.names.length) {
       ctx.ownerAction?.(channelCredentialsOwnerAction({
         op: "save", source, label: saved.source.label, names: saved.names, revision: saved.revision,
-      }));
+      }, locale));
     }
     ctx.json(200, { source: { ...saved.source, editable: true } } satisfies ChannelSourceSettingsResponse);
     return true;

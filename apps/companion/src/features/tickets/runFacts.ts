@@ -9,11 +9,14 @@
 //   - 让工单阻塞：一条以这次 Run 为来源、进入 blocked 的状态变更。
 //   - 失败原因：服务端分类的 runtime_failure_classified 决策；更早的记录没有分类，按崩溃原文推断。
 //   - 你停下了它：「停止执行」决策；为了换执行 agent 停下时，还有一条 ticket_runtime_switched。
-import type { ActivityDto, KernelRuntimeId, TicketReviewState } from '@pi-lead-child/protocol';
+import type { ActivityDto, KernelRuntimeId, Locale, TicketReviewState } from '@pi-lead-child/protocol';
 
 import type { AttemptEntity } from '@/state/types';
 
 import { runtimeDisplayName } from '@/features/workspace/runtimeNames';
+
+import { HANDOFF_FAILED_TITLE, STOP_RUN_DECISION } from './activityKeys';
+import { runFactsMessages } from './runFacts.messages';
 
 export type RunPurpose = 'execution' | 'review' | 'conversation' | 'integration' | 'learning';
 export type RunVerdict = 'pass' | 'fail';
@@ -59,8 +62,6 @@ export type RunFactsInput = {
   review?: Pick<TicketReviewState, 'reviewerAttemptId' | 'verdict' | 'supersededReview'> | null;
 };
 
-const HANDOFF_FAILED_TITLE = '运行结束，交接失败';
-
 export function buildRunFacts(input: RunFactsInput): Map<number, RunFacts> {
   const facts = new Map<number, RunFacts>();
   for (const attempt of input.attempts) {
@@ -91,7 +92,7 @@ export function buildRunFacts(input: RunFactsInput): Map<number, RunFacts> {
     }
     const run = activity.attemptId === null ? undefined : facts.get(activity.attemptId);
     if (!run) continue;
-    if (activity.kind === 'decision' && payload.decision === '停止执行') run.stoppedByUser = true;
+    if (activity.kind === 'decision' && payload.decision === STOP_RUN_DECISION) run.stoppedByUser = true;
     if (activity.kind === 'decision' && payload.decision === 'runtime_failure_classified') {
       run.failure = failureCategoryOf(payload.category) ?? run.failure;
     }
@@ -127,73 +128,43 @@ export type RunOutcome = {
   tone: RunOutcomeTone;
 };
 
-const PURPOSE_LABEL: Record<RunPurpose, string> = {
-  execution: '执行',
-  review: '核查',
-  conversation: '对话',
-  integration: '合并',
-  learning: '学习',
-};
-
-const RUNNING_LABEL: Record<RunPurpose, string> = {
-  execution: '执行中',
-  review: '核查中',
-  conversation: '正在回答',
-  integration: '合并中',
-  learning: '进行中',
-};
-
 /** 一次 Run 的用途和结果。没有事实时（还没读到活动流）按角色推断用途，结果只说进程怎么结束。 */
 export function runOutcome(
   attempt: Pick<AttemptEntity, 'id' | 'role' | 'purpose' | 'state' | 'exitCode'>,
   facts?: RunFacts,
+  locale: Locale = 'en',
 ): RunOutcome {
+  const m = runFactsMessages(locale);
   const purpose = facts?.purpose ?? attempt.purpose ?? (attempt.role === 'reviewer' ? 'review' : 'execution');
-  const purposeLabel = PURPOSE_LABEL[purpose];
-  const exit = attempt.exitCode === null || attempt.exitCode === 0 ? '' : `（exit ${attempt.exitCode}）`;
+  const purposeLabel = m.purpose[purpose];
+  const exit = attempt.exitCode === null || attempt.exitCode === 0 ? '' : m.exit(attempt.exitCode);
   switch (attempt.state) {
     case 'starting':
-      return { purposeLabel, result: '正在启动', tone: 'running' };
+      return { purposeLabel, result: m.result.starting, tone: 'running' };
     case 'running':
-      return { purposeLabel, result: RUNNING_LABEL[purpose], tone: 'running' };
+      return { purposeLabel, result: m.running[purpose], tone: 'running' };
     case 'paused':
-      return { purposeLabel, result: '已暂停', tone: 'neutral' };
+      return { purposeLabel, result: m.result.paused, tone: 'neutral' };
     case 'stopped':
-      return { purposeLabel, result: '已停止', tone: 'neutral' };
+      return { purposeLabel, result: m.result.stopped, tone: 'neutral' };
     case 'crashed':
-      return { purposeLabel, result: purpose === 'conversation' ? `没有回答${exit}` : `失败${exit}`, tone: 'danger' };
+      return { purposeLabel, result: purpose === 'conversation' ? m.result.noAnswer(exit) : m.result.failed(exit), tone: 'danger' };
     default:
       break;
   }
   // settled：进程结束了。结果看这次 Run 做成了什么。
   if (purpose === 'conversation') {
-    return exit ? { purposeLabel, result: `没有回答${exit}`, tone: 'danger' } : { purposeLabel, result: '已回答', tone: 'success' };
+    return exit ? { purposeLabel, result: m.result.noAnswer(exit), tone: 'danger' } : { purposeLabel, result: m.result.answered, tone: 'success' };
   }
   if (purpose === 'review') {
-    if (facts?.verdict === 'pass') return { purposeLabel, result: '通过', tone: 'success' };
-    if (facts?.verdict === 'fail') return { purposeLabel, result: '不通过', tone: 'danger' };
-    return { purposeLabel, result: exit ? `结束${exit}，没有结论` : '已结束，没有结论', tone: exit ? 'danger' : 'neutral' };
+    if (facts?.verdict === 'pass') return { purposeLabel, result: m.result.passed, tone: 'success' };
+    if (facts?.verdict === 'fail') return { purposeLabel, result: m.result.notPassed, tone: 'danger' };
+    return { purposeLabel, result: m.result.endedNoVerdict(exit), tone: exit ? 'danger' : 'neutral' };
   }
-  if (facts?.handoffFailed) return { purposeLabel, result: '交接失败', tone: 'danger' };
-  if (facts?.delivered) return { purposeLabel, result: '已交付', tone: 'success' };
-  return exit
-    ? { purposeLabel, result: `结束${exit}`, tone: 'danger' }
-    : { purposeLabel, result: '已结束', tone: 'neutral' };
+  if (facts?.handoffFailed) return { purposeLabel, result: m.result.handoffFailed, tone: 'danger' };
+  if (facts?.delivered) return { purposeLabel, result: m.result.delivered, tone: 'success' };
+  return { purposeLabel, result: m.result.ended(exit), tone: exit ? 'danger' : 'neutral' };
 }
-
-const FAILURE_REASONS: Record<Exclude<RunFailureCategory, 'model_unsupported'>, string> = {
-  model_capacity: '模型满载',
-  provider_unavailable: 'Provider 不可用',
-  run_interrupted: 'Run 被中断',
-  session_expired: '会话已过期',
-  authentication: '认证失败',
-  account_quota: '账号余额不足',
-  usage_limit: '用量额度用完',
-  runtime_unavailable: '启动失败',
-  runtime_configuration: '配置错误',
-  host_defect: '宿主代码出错',
-  task_failure: '任务失败',
-};
 
 /**
  * 一次 Run 为什么没做成，一个短语：「模型满载」「你换成 Claude Code」「交接失败」。
@@ -202,21 +173,23 @@ const FAILURE_REASONS: Record<Exclude<RunFailureCategory, 'model_unsupported'>, 
 export function runFailureReason(
   attempt: Pick<AttemptEntity, 'state' | 'runtime' | 'model'>,
   facts: Pick<RunFacts, 'purpose' | 'verdict' | 'delivered' | 'handoffFailed' | 'failure' | 'stoppedByUser' | 'switchedTo'>,
+  locale: Locale = 'en',
 ): string | null {
   if (attempt.state === 'starting' || attempt.state === 'running' || attempt.state === 'paused') return null;
   if (facts.delivered || facts.verdict !== null) return null;
-  if (facts.handoffFailed) return '交接失败';
+  const m = runFactsMessages(locale);
+  if (facts.handoffFailed) return m.reason.handoffFailed;
   if (attempt.state === 'stopped') {
-    if (facts.switchedTo) return `你换成 ${runtimeDisplayName(facts.switchedTo)}`;
-    return facts.stoppedByUser ? '你停止了' : '已停止';
+    if (facts.switchedTo) return m.reason.switchedTo(runtimeDisplayName(facts.switchedTo));
+    return facts.stoppedByUser ? m.reason.stoppedByYou : m.reason.stopped;
   }
   if (facts.failure === 'model_unsupported') {
-    const agent = runtimeDisplayName(attempt.runtime) ?? '执行 agent';
-    return attempt.model ? `${agent} 不支持模型 ${attempt.model}` : `${agent} 不支持该模型`;
+    const agent = runtimeDisplayName(attempt.runtime) ?? m.reason.executorAgent;
+    return attempt.model ? m.reason.modelUnsupported(agent, attempt.model) : m.reason.thisModelUnsupported(agent);
   }
-  if (facts.failure) return FAILURE_REASONS[facts.failure];
-  if (attempt.state === 'crashed') return '运行失败';
-  return facts.purpose === 'review' ? '没有结论' : '没有交付';
+  if (facts.failure) return m.failure[facts.failure];
+  if (attempt.state === 'crashed') return m.reason.runFailed;
+  return facts.purpose === 'review' ? m.reason.noVerdict : m.reason.noDelivery;
 }
 
 const FAILURE_CATEGORIES = new Set<string>([

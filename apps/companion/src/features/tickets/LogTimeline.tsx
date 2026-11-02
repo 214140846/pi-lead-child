@@ -1,7 +1,10 @@
 import { Badge, Box, Button, Card, Column, Pressable, Row, ScrollArea, Text } from '@pi-lead-child/components';
 import { useState } from 'react';
 
+import { useLocale, useMessages } from '@/i18n';
+
 import type { TicketLogPresentation } from './ticketLogs';
+import { ticketRecordsMessages } from './ticketRecords.messages';
 import { clockTimeLabel, timeRangeLabel } from './timeLabels';
 
 export type TicketLogRunPresentation = {
@@ -18,6 +21,7 @@ export type TicketLogRunPresentation = {
 
 // 一次 Run 的日志时间线：左侧状态圆点，右侧标题、状态、预览；有详情的条目可以展开。
 export function LogTimeline({ items }: { items: TicketLogPresentation[] }) {
+  const m = useMessages(ticketRecordsMessages);
   const [expandedIds, setExpandedIds] = useState<Record<string, boolean>>({});
   return (
     <Column testID="log-timeline">
@@ -81,14 +85,14 @@ export function LogTimeline({ items }: { items: TicketLogPresentation[] }) {
                 </Box>
                 {log.detail ? (
                   <Button
-                    label={expanded ? '收起' : log.expandLabel}
+                    label={expanded ? m.collapse : log.expandLabel}
                     onPress={() => setExpandedIds((current) => ({ ...current, [log.id]: !expanded }))}
                     testID={`ticket-log-toggle-${log.id}`}
                     variant="link"
                     size="xs"
                   />
                 ) : null}
-                {running ? <Text size="label" weight="bold" tone="accent">执行中</Text> : null}
+                {running ? <Text size="label" weight="bold" tone="accent">{m.running}</Text> : null}
               </Row>
             </Column>
           </Row>
@@ -100,6 +104,8 @@ export function LogTimeline({ items }: { items: TicketLogPresentation[] }) {
 
 // 按 Run 分组的日志。默认展开最新的一次 Run。
 export function RunLogGroups({ runs }: { runs: TicketLogRunPresentation[] }) {
+  const locale = useLocale();
+  const m = useMessages(ticketRecordsMessages);
   const [expandedRunId, setExpandedRunId] = useState<number | null>(runs.at(-1)?.id ?? null);
 
   if (runs.length === 0) return null;
@@ -116,7 +122,7 @@ export function RunLogGroups({ runs }: { runs: TicketLogRunPresentation[] }) {
           <Card key={run.id} testID={`run-log-group-${run.id}`} borderColor="border-soft" rounded="md">
             <Pressable
               testID={`run-log-toggle-${run.id}`}
-              aria-label={expanded ? '收起' : '展开'}
+              aria-label={expanded ? m.collapse : m.expand}
               aria-expanded={expanded}
               onPress={() => setExpandedRunId(expanded ? null : run.id)}
               feedback="highlight"
@@ -131,7 +137,7 @@ export function RunLogGroups({ runs }: { runs: TicketLogRunPresentation[] }) {
                 <Column minW={0} flex={1} items="flex-start" gap="text-stack">
                   <Text size="card-title" weight="bold">{`Run #${run.id} · ${run.purposeLabel} · ${run.result}`}</Text>
                   <Text size="meta" mono tone="muted">
-                    {`${run.choice} · ${timeRangeLabel(run.startedAt, run.endedAt)} · ${run.logs.length} 条日志`}
+                    {m.runLogMeta(run.choice, timeRangeLabel(run.startedAt, run.endedAt, undefined, locale), run.logs.length)}
                   </Text>
                 </Column>
                 {/* spacing-exempt: 文字当图标用 */}
@@ -142,7 +148,7 @@ export function RunLogGroups({ runs }: { runs: TicketLogRunPresentation[] }) {
               <Column testID={`run-log-content-${run.id}`} px="card" pb="card" borderTopWidth={1} borderTopColor="border-soft">
                 {run.logs.length > 0
                   ? <LogTimeline items={run.logs} />
-                  : <Text py="banner-y" size="secondary" tone="muted">还没有日志</Text>}
+                  : <Text py="banner-y" size="secondary" tone="muted">{m.noLogs}</Text>}
               </Column>
             ) : null}
           </Card>

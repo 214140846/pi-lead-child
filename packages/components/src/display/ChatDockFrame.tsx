@@ -9,6 +9,8 @@ import { Dot } from './Dot';
 import { Icon } from './Icon';
 import type { ChatDockProps, ChatDockToggleProps } from './ChatDock.types';
 import { useDockMotionContext, type DockPhase } from './dockMotion';
+import { useMessages } from '../i18n';
+import { displayMessages } from './display.messages';
 
 type Toggle = ComponentType<ChatDockToggleProps>;
 
@@ -52,14 +54,17 @@ export function ChatDockFrame({
   count,
   unread = false,
   unreadLabel,
-  expandLabel = '展开',
-  collapseLabel = '收起',
+  expandLabel: expandLabelProp,
+  collapseLabel: collapseLabelProp,
   preview,
   children,
   composer,
   bar,
   testID,
 }: ChatDockProps & { Toggle: Toggle }) {
+  const m = useMessages(displayMessages);
+  const expandLabel = expandLabelProp ?? m.expand;
+  const collapseLabel = collapseLabelProp ?? m.collapse;
   const bodyId = `chat-dock-${useId().replace(/[^A-Za-z0-9_-]/g, '')}`;
   const showUnread = unread && !expanded;
   // 在 DockedLayout 里时跟着它的动画：动画中预览和对话同时在，预览淡出、对话淡入（或反过来）。
@@ -132,7 +137,7 @@ export function ChatDockFrame({
         <Toggle
           expanded={expanded}
           onPress={() => press(!expanded)}
-          label={`${title}，${expanded ? collapseLabel : expandLabel}`}
+          label={m.titleAction(title, expanded ? collapseLabel : expandLabel)}
           controls={bodyId}
           testID={testID ? `${testID}-toggle` : undefined}
         >
@@ -163,7 +168,7 @@ export function ChatDockFrame({
             {/* 预览本身也能点开。它不在展开按钮里面：按钮里的文字在 web 上会继承居中对齐。 */}
             <Pressable
               testID={testID ? `${testID}-preview` : undefined}
-              aria-label={`${expandLabel}${title}`}
+              aria-label={m.expandTitle(expandLabel, title)}
               onPress={() => press(true)}
               feedback="none"
               px="page-x"

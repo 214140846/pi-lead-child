@@ -61,7 +61,7 @@ function scheduledUserTurn(db: Db, turnId: string, label: string, scope: Scope):
   if (!bindingScopes(credential).includes(scope)) {
     const origin = bindingOriginOf(credential);
     throw new UserTurnScopeError(turnId, scope, origin,
-      `${label} needs ${scope}, and ${turnId} was set from ${bindingOriginLabel(origin)}, which does not carry it`);
+      `${label} needs ${scope}, and ${turnId} was set from ${bindingOriginLabel(origin, "zh")}, which does not carry it`);
   }
   return { id: turnId, origin_binding_id: setBy.bindingId, origin_kind: "paired:timer", state: "streaming", created_at: setBy.startedAt };
 }
@@ -110,7 +110,7 @@ export function activePairedUserTurn(db: Db, turnId: string | null, label: strin
   if (!bindingScopes(credential).includes(scope)) {
     const origin = bindingOriginOf(credential);
     throw new UserTurnScopeError(turn.id, scope, origin,
-      `${label} needs ${scope}, and turn ${turn.id} came from ${bindingOriginLabel(origin)}, which does not carry it`);
+      `${label} needs ${scope}, and turn ${turn.id} came from ${bindingOriginLabel(origin, "zh")}, which does not carry it`);
   }
   return {
     id: turn.id, origin_binding_id: turn.origin_binding_id, origin_kind: turn.origin_kind, state: turn.state,

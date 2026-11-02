@@ -98,8 +98,8 @@ describe("first-run onboarding", () => {
       expect(after.setupHints).toEqual([expect.objectContaining({
         key: "setup_hint:1", item: "memory", state: "open",
         actions: [
-          { target: { type: "setup_hint", id: "1" }, action: "snooze", label: "以后再说" },
-          { target: { type: "setup_hint", id: "1" }, action: "dismiss", label: "不用再提" },
+          { target: { type: "setup_hint", id: "1" }, action: "snooze", label: "Later" },
+          { target: { type: "setup_hint", id: "1" }, action: "dismiss", label: "Do not show again" },
         ],
       })]);
     }, { timeout: 5_000 });

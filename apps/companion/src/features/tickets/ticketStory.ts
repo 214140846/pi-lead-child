@@ -7,12 +7,17 @@
 //   - 对话 Run。它们在工单对话里，失败也在那里（每件事只放一处）。
 //   - 正在跑的 Run。决策卡和对话坞的实时进度说它。
 //   - Run 开始、重试、系统内部的修复记录。原始记录在「证据与记录」的生命周期页签里。
-import type { ActivityDto } from '@pi-lead-child/protocol';
+import type { ActivityDto, Locale } from '@pi-lead-child/protocol';
 
 import type { AttemptEntity } from '@/state/types';
 
-import { runFailureReason, type RunFacts } from './runFacts';
 import { runtimeDisplayName } from '@/features/workspace/runtimeNames';
+
+import { REVIEW_REPORT_EVIDENCE_PREFIX, REVIEW_REPORT_VERDICT_PREFIX } from './activityKeys';
+import { runFailureReason, type RunFacts } from './runFacts';
+import { ticketHistoryMessages } from './ticketHistory.messages';
+
+type StoryMessages = ReturnType<typeof ticketHistoryMessages>['story'];
 
 export type TicketStoryTone = 'success' | 'danger' | 'accent' | 'neutral';
 
@@ -48,21 +53,25 @@ export type TicketStoryInput = {
   facts: ReadonlyMap<number, RunFacts>;
   /** Lead 的名字（useLeadName）。 */
   leadName: string;
+  /** 界面语言。不给时按英文。 */
+  locale?: Locale;
 };
 
 type StoryLine = { kind: 'line'; entry: TicketStoryEntry; userAction: boolean; order: number };
 type StoryFailure = { kind: 'failure'; purpose: 'execution' | 'review'; run: TicketStoryRun; order: number };
 type StoryEvent = StoryLine | StoryFailure;
 
-function userDecisions(leadName: string): Record<string, string> {
+function userDecisions(leadName: string, m: StoryMessages): Record<string, string> {
   return {
-    delegation_preflight_accepted: `你授权 ${leadName} 托管`,
-    rework_dispatch_requested: '你发起返工',
-    review_requested_by_user: '你派发了独立核查',
+    delegation_preflight_accepted: m.delegated(leadName),
+    rework_dispatch_requested: m.reworkRequested,
+    review_requested_by_user: m.reviewRequested,
   };
 }
 
 export function buildTicketStory(input: TicketStoryInput): TicketStoryEntry[] {
+  const locale = input.locale ?? 'en';
+  const m = ticketHistoryMessages(locale).story;
   const events: StoryEvent[] = [];
   const attemptsById = new Map(input.attempts.map((attempt) => [attempt.id, attempt]));
   for (const attempt of input.attempts) {
@@ -72,13 +81,13 @@ export function buildTicketStory(input: TicketStoryInput): TicketStoryEntry[] {
     const at = attempt.endedAt ?? attempt.startedAt;
     const order = attempt.id;
     if (facts.purpose === 'execution' && facts.delivered) {
-      events.push(line({ key: `run:${attempt.id}`, tone: 'success', title: `Run #${attempt.id} 交付`, at }, order));
+      events.push(line({ key: `run:${attempt.id}`, tone: 'success', title: m.delivered(attempt.id), at }, order));
     } else if (facts.purpose === 'review' && facts.verdict !== null) {
       const pass = facts.verdict === 'pass';
       events.push(line({
         key: `run:${attempt.id}`,
         tone: pass ? 'success' : 'danger',
-        title: `Run #${attempt.id} 核查${pass ? '通过' : '不通过'}`,
+        title: m.reviewed(attempt.id, pass),
         detail: reviewReportOf(input.activities, attempt.id),
         at,
       }, order));
@@ -86,13 +95,13 @@ export function buildTicketStory(input: TicketStoryInput): TicketStoryEntry[] {
       events.push({
         kind: 'failure',
         purpose: facts.purpose,
-        run: { runId: attempt.id, title: `Run #${attempt.id}`, reason: runFailureReason(attempt, facts), at },
+        run: { runId: attempt.id, title: `Run #${attempt.id}`, reason: runFailureReason(attempt, facts, locale), at },
         order,
       });
     }
   }
   for (const activity of input.activities) {
-    const title = activityTitle(activity, attemptsById, input.leadName);
+    const title = activityTitle(activity, attemptsById, input.leadName, m);
     if (!title) continue;
     events.push(line({
       key: `activity:${activity.id}`,
@@ -102,12 +111,12 @@ export function buildTicketStory(input: TicketStoryInput): TicketStoryEntry[] {
     }, activity.id, activity.actor === 'user'));
   }
   events.sort((left, right) => eventTime(left).localeCompare(eventTime(right)) || left.order - right.order);
-  const entries = mergeUserActions(groupFailures(events));
+  const entries = mergeUserActions(groupFailures(events, m), m);
   if (!input.created) return entries;
   // 创建总是第一件事。记录里的创建时间晚于别的事时（导入或种子数据），也不把它排到后面。
-  const who = input.created.by === 'user' ? '你' : input.created.by === 'lead' ? `${input.leadName} ` : '';
+  const by = input.created.by === 'user' || input.created.by === 'lead' ? input.created.by : null;
   return [
-    { key: 'created', tone: 'neutral', title: `${who}创建了工单`, detail: null, at: input.created.at, until: null, runs: [] },
+    { key: 'created', tone: 'neutral', title: m.created(by, input.leadName), detail: null, at: input.created.at, until: null, runs: [] },
     ...entries,
   ];
 }
@@ -128,13 +137,14 @@ function activityTitle(
   activity: TicketStoryInput['activities'][number],
   attempts: ReadonlyMap<number, TicketStoryInput['attempts'][number]>,
   leadName: string,
+  m: StoryMessages,
 ): { text: string; tone: TicketStoryTone } | null {
   const payload = activity.payload;
   if (activity.kind === 'transition') {
     const to = payload.to;
     const user = activity.actor === 'user';
-    if (to === 'done') return { text: user ? '你验收通过' : '工单完成', tone: 'success' };
-    if (to === 'cancelled') return { text: user ? '你取消了工单' : '工单已取消', tone: 'neutral' };
+    if (to === 'done') return { text: user ? m.youAccepted : m.ticketDone, tone: 'success' };
+    if (to === 'cancelled') return { text: user ? m.youCancelled : m.ticketCancelled, tone: 'neutral' };
     return null;
   }
   if (activity.kind !== 'decision' || activity.actor !== 'user' || typeof payload.decision !== 'string') return null;
@@ -143,27 +153,26 @@ function activityTitle(
     const previous = typeof payload.previousRunId === 'number' ? attempts.get(payload.previousRunId) : undefined;
     if (previous?.state === 'stopped') return null;
     const to = runtimeDisplayName(typeof payload.toRuntime === 'string' ? payload.toRuntime : null);
-    return to ? { text: `你把执行 agent 换成 ${to}`, tone: 'accent' } : null;
+    return to ? { text: m.runtimeSwitched(to), tone: 'accent' } : null;
   }
-  const text = userDecisions(leadName)[payload.decision];
+  const text = userDecisions(leadName, m)[payload.decision];
   return text ? { text, tone: 'accent' } : null;
 }
 
 // 连着的几次同一用途、都没做成的 Run 合成一行。中间夹着别的事（交付、核查结论、你的决定）就断开。
-function groupFailures(events: StoryEvent[]): StoryLine[] {
+function groupFailures(events: StoryEvent[], m: StoryMessages): StoryLine[] {
   const lines: StoryLine[] = [];
   let pending: StoryFailure[] = [];
   const flush = () => {
     if (pending.length === 0) return;
     const [first] = pending;
     const last = pending[pending.length - 1]!;
-    const noun = first!.purpose === 'review' ? '核查' : '执行';
-    const missed = first!.purpose === 'review' ? '没有完成' : '没有交付';
+    const review = first!.purpose === 'review';
     if (pending.length === 1) {
       lines.push(line({
         key: `run:${first!.run.runId}`,
         tone: 'danger',
-        title: first!.purpose === 'review' ? `核查 Run #${first!.run.runId} ${missed}` : `Run #${first!.run.runId} ${missed}`,
+        title: m.failedOne(review, first!.run.runId),
         detail: first!.run.reason,
         at: first!.run.at,
       }, first!.order));
@@ -173,8 +182,8 @@ function groupFailures(events: StoryEvent[]): StoryLine[] {
         entry: {
           key: `runs:${first!.run.runId}-${last.run.runId}`,
           tone: 'danger',
-          title: `${pending.length} 次${noun}${missed}`,
-          detail: reasonSummary(pending.map((failure) => failure.run.reason)),
+          title: m.failedMany(review, pending.length),
+          detail: reasonSummary(pending.map((failure) => failure.run.reason), m),
           at: first!.run.at,
           until: last.run.at,
           runs: pending.map((failure) => failure.run),
@@ -199,13 +208,13 @@ function groupFailures(events: StoryEvent[]): StoryLine[] {
 }
 
 // 同一秒里你做的几件事是一次操作（授权托管时同时发起返工）：合成一行。
-function mergeUserActions(lines: StoryLine[]): TicketStoryEntry[] {
+function mergeUserActions(lines: StoryLine[], m: StoryMessages): TicketStoryEntry[] {
   const entries: TicketStoryEntry[] = [];
   let previous: StoryLine | null = null;
   for (const current of lines) {
     const last = entries[entries.length - 1];
     if (previous?.userAction && current.userAction && last && sameSecond(previous.entry.at, current.entry.at)) {
-      last.title = `${last.title}，${current.entry.title.replace(/^你/, '')}`;
+      last.title = m.mergeActions(last.title, current.entry.title);
     } else {
       entries.push({ ...current.entry });
     }
@@ -221,13 +230,13 @@ function sameSecond(left: string, right: string): boolean {
 }
 
 /** 「模型满载、你换成 Claude Code、认证失败 ×2、交接失败」：按第一次出现的顺序，重复的写次数。 */
-function reasonSummary(reasons: (string | null)[]): string | null {
+function reasonSummary(reasons: (string | null)[], m: StoryMessages): string | null {
   const counts = new Map<string, number>();
   for (const reason of reasons) {
     if (reason) counts.set(reason, (counts.get(reason) ?? 0) + 1);
   }
   if (counts.size === 0) return null;
-  return [...counts].map(([reason, count]) => (count > 1 ? `${reason} ×${count}` : reason)).join('、');
+  return m.reasons([...counts].map(([reason, count]) => (count > 1 ? `${reason} ×${count}` : reason)));
 }
 
 // 核查报告的要点：去掉「独立核查 FAIL。关键证据：」这类开头和代码标记，留下证据。
@@ -237,8 +246,8 @@ function reviewReportOf(activities: TicketStoryInput['activities'], reviewerRunI
     if (activities[index]!.kind !== 'decision' || payload.reviewerRunId !== reviewerRunId) continue;
     if (typeof payload.reviewerReport !== 'string') continue;
     const text = payload.reviewerReport
-      .replace(/^\s*独立核查\s*(?:PASS|FAIL)\s*[。.:：]?\s*/i, '')
-      .replace(/^关键证据\s*[:：]\s*/, '')
+      .replace(REVIEW_REPORT_VERDICT_PREFIX, '')
+      .replace(REVIEW_REPORT_EVIDENCE_PREFIX, '')
       .replace(/`/g, '')
       .replace(/\s+/g, ' ')
       .trim();

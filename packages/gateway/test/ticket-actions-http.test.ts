@@ -8,7 +8,7 @@ import { TicketActionsResponseSchema, TicketActionRunResponseSchema } from "@pi-
 import {
   createItem, createLoopbackBinding, createPairing, createTurn, getBinding, getItem, listActivities, openDb, transition, type Db,
 } from "@pi-lead-child/store";
-import { liveChildren, runTicketAction } from "@pi-lead-child/engine";
+import { liveChildren, runTicketAction, updateDesignPreferences } from "@pi-lead-child/engine";
 import { createControlPlaneService } from "../src/control-plane.js";
 import { startPairedServer } from "../src/paired-server.js";
 import { createUserActionService } from "../src/user-actions.js";
@@ -180,6 +180,8 @@ describe("the ticket action routes", () => {
   // 「设置 → 已配对设备」撤销那台设备。你自己的凭证做的操作，「不是我」照旧撤销并作废凭证（owner-actions-http.test.ts）。
   it("undoes an action Lead misunderstood without revoking the user's own device", async () => {
     const server = await start();
+    // 提醒正文和撤销结果按用户选的界面语言写（缺省英文）。这条用中文。
+    updateDesignPreferences(db, { request: { locale: "zh" }, caller: { kind: "user" } });
     try {
       const itemId = createItem(db, { title: "草稿", brief: "b", createdBy: "lead", hold: true });
       // Lead 代做的权限不能大过这一轮的凭证（.scratch/child-self-approve/options.md）：只读设备的一轮不能让 Lead 代确认工单。

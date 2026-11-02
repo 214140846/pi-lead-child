@@ -118,7 +118,7 @@ describe("Lead model health", () => {
     newBlocker();
     await vi.waitFor(async () => expect((await overview()).lead?.state).toBe("degraded"));
     const degraded = (await overview()).lead!;
-    expect(degraded.reason).toBe("Paimon 的模型服务暂时连不上");
+    expect(degraded.reason).toBe("The model service of Paimon is not available now");
     expect(degraded.reason).not.toMatch(/503|\{/);
     expect(degraded.detail).toContain("upstream connect error");
     expect(degraded.failures).toBe(1);

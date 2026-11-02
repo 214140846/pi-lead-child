@@ -1,5 +1,7 @@
 import { Box, Column, Row } from '../primitives/layout';
 import { Text } from '../primitives/Text';
+import { useMessages } from '../i18n';
+import { dataMessages } from './data.messages';
 
 export type QuotedMessage = { at: string; text: string };
 
@@ -20,6 +22,7 @@ export type QuotedMessagesProps = {
 // 清爽主题：别人说话的气泡是 accent-soft 浅蓝底，左上角 4、其余 14（S-4、R-5），原文用 message-lead（Y-5）；
 // 收起成一行、又不止一条时，前面一个「N 条」小标签（surface-muted 灰底、text-strong 字，和状态无关，不上色）。
 export function QuotedMessages({ sender, messages, total, mode, hideSender = false, testID }: QuotedMessagesProps) {
+  const m = useMessages(dataMessages);
   const shown = mode === 'latest' ? messages.slice(-1) : messages;
   const earlier = Math.max(0, total - shown.length);
   return (
@@ -27,7 +30,7 @@ export function QuotedMessages({ sender, messages, total, mode, hideSender = fal
       {hideSender && !(mode === 'stack' && earlier > 0) ? null : (
         <Row items="center" gap="inline-item">
           {hideSender ? null : <Text size="meta" weight="semibold" numberOfLines={1}>{sender}</Text>}
-          {mode === 'stack' && earlier > 0 ? <Text size="meta" tone="secondary">{`更早的 ${earlier} 条`}</Text> : null}
+          {mode === 'stack' && earlier > 0 ? <Text size="meta" tone="secondary">{m.earlierMessages(earlier)}</Text> : null}
         </Row>
       )}
       <Column gap="list-row">
@@ -35,7 +38,7 @@ export function QuotedMessages({ sender, messages, total, mode, hideSender = fal
           <Row key={index} items="center" gap="inline-item">
             {mode === 'latest' && total > 1 ? (
               <Box testID={testID ? `${testID}-count` : undefined} shrink={0} bg="surface-muted" rounded="full" px="inline-item">
-                <Text size="meta" weight="semibold" tone="strong">{`${total} 条`}</Text>
+                <Text size="meta" weight="semibold" tone="strong">{m.messageCount(total)}</Text>
               </Box>
             ) : null}
             <Box

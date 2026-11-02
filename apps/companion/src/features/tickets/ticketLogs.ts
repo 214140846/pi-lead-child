@@ -1,4 +1,10 @@
+import type { Locale } from '@pi-lead-child/protocol';
+
 import type { AgentLogEntry, ToolDisplayProjection } from '@/state/types';
+
+import { ticketHistoryMessages } from './ticketHistory.messages';
+
+type LogMessages = ReturnType<typeof ticketHistoryMessages>['log'];
 
 const PREVIEW_LIMIT = 120;
 const PREVIEW_LINE_LIMIT = 3;
@@ -36,12 +42,13 @@ type ToolGroup = {
   output: ToolDisplayProjection | null;
 };
 
-export function buildTicketLogPresentation(entries: readonly AgentLogEntry[]): TicketLogPresentation[] {
+export function buildTicketLogPresentation(entries: readonly AgentLogEntry[], locale: Locale = 'en'): TicketLogPresentation[] {
+  const m = ticketHistoryMessages(locale).log;
   const tools = collectToolGroups(entries);
   return entries.flatMap((entry) => {
-    if (!entry.tool) return [eventPresentation(entry)];
+    if (!entry.tool) return [eventPresentation(entry, m)];
     const group = tools.get(toolKey(entry.attemptId, entry.tool.callId));
-    return group?.firstSeq === entry.seq ? [toolPresentation(group)] : [];
+    return group?.firstSeq === entry.seq ? [toolPresentation(group, m)] : [];
   });
 }
 
@@ -85,9 +92,9 @@ function collectToolGroups(entries: readonly AgentLogEntry[]): Map<string, ToolG
   return groups;
 }
 
-function toolPresentation(group: ToolGroup): TicketLogPresentation {
+function toolPresentation(group: ToolGroup, m: LogMessages): TicketLogPresentation {
   const command = group.name === 'command_execution' && group.command
-    ? displayCommand(group.command, group.cwd)
+    ? displayCommand(group.command, group.cwd, m)
     : null;
   const status = group.phase === 'failed'
     ? 'failed'
@@ -98,11 +105,11 @@ function toolPresentation(group: ToolGroup): TicketLogPresentation {
   const argsText = group.args?.preview ?? null;
   const title = command
     ? middleEllipsis(command.summary, PREVIEW_LIMIT)
-    : genericToolTitle(group.name, argsText);
-  const detailParts = command?.full && command.full !== title ? [`完整命令\n${command.full}`] : [];
-  if (!command && argsText) detailParts.push(`参数\n${argsText}`);
-  if (group.error) detailParts.push(`错误\n${group.error}`);
-  else if (resultText) detailParts.push(`${command ? '输出' : '结果'}\n${resultText}`);
+    : genericToolTitle(group.name, argsText, m);
+  const detailParts = command?.full && command.full !== title ? [`${m.fullCommand}\n${command.full}`] : [];
+  if (!command && argsText) detailParts.push(`${m.arguments}\n${argsText}`);
+  if (group.error) detailParts.push(`${m.error}\n${group.error}`);
+  else if (resultText) detailParts.push(`${command ? m.output : m.result}\n${resultText}`);
   const detail = detailParts.join('\n\n') || null;
   const preview = resultText ? previewText(resultText) : null;
   const needsFold = Boolean(
@@ -116,19 +123,19 @@ function toolPresentation(group: ToolGroup): TicketLogPresentation {
     createdAt: group.startedAt,
     title,
     status,
-    statusLabel: status === 'failed' ? '失败' : status === 'success' ? '成功' : '执行中',
-    meta: toolMeta(group, command !== null, resultText),
+    statusLabel: status === 'failed' ? m.failed : status === 'success' ? m.succeeded : m.running,
+    meta: toolMeta(group, command !== null, resultText, m),
     preview,
     detail: needsFold ? detail : null,
-    expandLabel: group.error ? '完整错误' : command ? '完整输出' : '调用详情',
+    expandLabel: group.error ? m.fullError : command ? m.fullOutput : m.callDetails,
     monospaceTitle: true,
   };
 }
 
-function eventPresentation(entry: AgentLogEntry): TicketLogPresentation {
+function eventPresentation(entry: AgentLogEntry, m: LogMessages): TicketLogPresentation {
   const failed = entry.kind === 'runtime.stderr' || entry.kind === 'run.failed';
   const success = entry.kind === 'run.completed';
-  const title = eventTitle(entry.kind);
+  const title = m.events[entry.kind] ?? entry.kind;
   const long = exceedsPreview(entry.text);
   return {
     id: `${entry.attemptId}:${entry.seq}`,
@@ -136,28 +143,28 @@ function eventPresentation(entry: AgentLogEntry): TicketLogPresentation {
     createdAt: entry.occurredAt,
     title,
     status: failed ? 'failed' : success ? 'success' : 'info',
-    statusLabel: failed ? '错误' : success ? '完成' : '信息',
+    statusLabel: failed ? m.eventError : success ? m.eventDone : m.eventInfo,
     meta: title === entry.kind ? null : entry.kind,
     preview: entry.text ? previewText(entry.text) : null,
     detail: long ? entry.text : null,
-    expandLabel: entry.kind === 'message.completed' ? '完整输出' : failed ? '完整错误' : '完整内容',
+    expandLabel: entry.kind === 'message.completed' ? m.fullOutput : failed ? m.fullError : m.fullContent,
     monospaceTitle: title === entry.kind,
   };
 }
 
-function toolMeta(group: ToolGroup, command: boolean, resultText: string | null): string {
-  const parts = [command ? '命令执行' : '工具调用'];
+function toolMeta(group: ToolGroup, command: boolean, resultText: string | null, m: LogMessages): string {
+  const parts = [command ? m.command : m.toolCall];
   if (group.exitCode !== null) parts.push(`exit ${group.exitCode}`);
   const duration = durationMs(group.startedAt, group.endedAt);
   if (duration !== null) parts.push(formatDuration(duration));
-  if (resultText) parts.push(outputSize(resultText));
-  if (group.output?.truncated || group.result?.truncated) parts.push('已截断');
+  if (resultText) parts.push(outputSize(resultText, m));
+  if (group.output?.truncated || group.result?.truncated) parts.push(m.truncated);
   return parts.join(' · ');
 }
 
-function genericToolTitle(name: string, argsText: string | null): string {
+function genericToolTitle(name: string, argsText: string | null, m: LogMessages): string {
   const shortName = name.split('.').at(-1) ?? name;
-  const label = TOOL_LABELS[shortName] ?? shortName;
+  const label = m.tools[shortName] ?? shortName;
   const primary = primaryArgument(argsText);
   return middleEllipsis(primary ? `${label} · ${primary}` : label, PREVIEW_LIMIT);
 }
@@ -180,12 +187,12 @@ function primaryArgument(argsText: string | null): string | null {
   return null;
 }
 
-function displayCommand(command: string, cwd: string | null): { summary: string; full: string } {
+function displayCommand(command: string, cwd: string | null, m: LogMessages): { summary: string; full: string } {
   let full = unwrapShell(command.trim());
   if (cwd) full = full.replaceAll(cwd, '.');
   full = shortenHome(full);
   const lines = full.split('\n').map((line) => line.trim()).filter(Boolean);
-  const suffix = lines.length > 1 ? ` · 另有 ${lines.length - 1} 条` : '';
+  const suffix = lines.length > 1 ? m.moreLines(lines.length - 1) : '';
   const summary = `${middleEllipsis(lines[0] ?? full, Math.max(1, PREVIEW_LIMIT - suffix.length))}${suffix}`;
   return { summary, full };
 }
@@ -236,42 +243,13 @@ function formatDuration(ms: number): string {
   return `${Math.floor(ms / 60_000)}m ${Math.round((ms % 60_000) / 1_000)}s`;
 }
 
-function outputSize(value: string): string {
+function outputSize(value: string, m: LogMessages): string {
   const lines = value ? value.split('\n').length : 0;
   const bytes = new TextEncoder().encode(value).length;
   const size = bytes < 1_024 ? `${bytes} B` : `${(bytes / 1_024).toFixed(1)} KB`;
-  return `输出 ${lines} 行 · ${size}`;
-}
-
-function eventTitle(kind: string): string {
-  return EVENT_LABELS[kind] ?? kind;
+  return m.outputSize(lines, size);
 }
 
 function toolKey(attemptId: number, callId: string): string {
   return `${attemptId}:${callId}`;
 }
-
-const TOOL_LABELS: Record<string, string> = {
-  create_task: '创建工单',
-  create_ticket: '创建工单',
-  get_ticket: '获取工单',
-  get_ticket_tree: '获取任务树',
-  query_tickets: '查询工单',
-  request_approval: '请求审批',
-  request_decision: '请求决策',
-  restore_task_from_user_request: '恢复任务',
-  spawn_child: '启动 Child',
-  submit_checkpoint: '提交进度记录',
-  ticket_update: '更新工单',
-};
-
-const EVENT_LABELS: Record<string, string> = {
-  'message.completed': 'Agent 输出',
-  'message.delta': 'Agent 输出片段',
-  'run.completed': '运行完成',
-  'run.failed': '运行失败',
-  'run.started': '开始运行',
-  'runtime.stderr': '标准错误',
-  'session.updated': '会话更新',
-  'usage.updated': 'Token 用量',
-};

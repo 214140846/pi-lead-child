@@ -20,7 +20,7 @@ describe('the settings gear in the rail header', () => {
     const header = screen.getByTestId('work-rail-header');
     expect(within(header).getByText('Paimon')).toBeTruthy();
     const gear = within(header).getByTestId('open-settings');
-    expect(gear.getAttribute('aria-label')).toBe('设置');
+    expect(gear.getAttribute('aria-label')).toBe('Settings');
 
     fireEvent.click(gear);
     expect(router.push).toHaveBeenCalledWith('/settings');

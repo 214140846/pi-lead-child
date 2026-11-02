@@ -11,8 +11,9 @@ import {
 } from "@pi-lead-child/protocol";
 import type { TSchema } from "typebox";
 import {
-  getBinding, getItem, itemUpdatedEvent, leadDisplayName, publishGatewayEvent, recordOwnerAction, runUpdatedEvent, type Db,
+  getBinding, getItem, getLocale, itemUpdatedEvent, leadDisplayName, publishGatewayEvent, recordOwnerAction, runUpdatedEvent, type Db,
 } from "@pi-lead-child/store";
+import { engineOwnerActionMessages } from "../owner-actions.messages.js";
 import { Value } from "typebox/value";
 import { ticketDelivery, type PullRequestRunner, type TicketDelivery } from "../coordinator/delivery.js";
 import type { ActionAttribution } from "./attribution.js";
@@ -228,7 +229,8 @@ export async function runTicketAction(db: Db, request: TicketActionRequest): Pro
       if (!input) return null;
       return recordOwnerAction(db, {
         ...input,
-        summary: by.actor === "lead" ? `${leadDisplayName(db)} 代你${input.summary}` : input.summary,
+        // 摘要按写入时用户选的语言写（input.summary 也是）。
+        summary: by.actor === "lead" ? engineOwnerActionMessages(getLocale(db)).byLead(leadDisplayName(db), input.summary) : input.summary,
         detail: { ...input.detail, ...(by.actor === "lead" && by.onBehalfOf ? { sourceTurnId: by.onBehalfOf.sourceTurnId } : {}) },
         undo: { ...input.undo },
         credential: owner.credential,

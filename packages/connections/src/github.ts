@@ -7,6 +7,8 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { delimiter, join } from "node:path";
+import { DEFAULT_LOCALE, type Locale } from "@pi-lead-child/protocol";
+import { githubMessages } from "./github.messages.js";
 import type { FetchLike } from "./oauth.js";
 
 export interface GhTokenSource {
@@ -78,7 +80,10 @@ export type DevicePoll =
   | { state: "done"; accessToken: string; scope: string | null }
   | { state: "failed"; reason: "expired" | "denied" | "error"; message: string };
 
-export async function pollDeviceFlow(fetchImpl: FetchLike, clientId: string, code: DeviceCode, interval: number): Promise<DevicePoll> {
+// 失败时的 message 给设置页看，按 locale 写。
+export async function pollDeviceFlow(
+  fetchImpl: FetchLike, clientId: string, code: DeviceCode, interval: number, locale: Locale = DEFAULT_LOCALE,
+): Promise<DevicePoll> {
   let response: Response;
   try {
     response = await fetchImpl("https://github.com/login/oauth/access_token", {
@@ -97,12 +102,13 @@ export async function pollDeviceFlow(fetchImpl: FetchLike, clientId: string, cod
   if (typeof body.access_token === "string" && body.access_token) {
     return { state: "done", accessToken: body.access_token, scope: typeof body.scope === "string" ? body.scope : null };
   }
+  const m = githubMessages(locale);
   switch (body.error) {
     case "authorization_pending": return { state: "pending", interval };
     case "slow_down": return { state: "pending", interval: typeof body.interval === "number" ? body.interval : interval + 5 };
-    case "expired_token": return { state: "failed", reason: "expired", message: "设备码过期了，请重新连接" };
-    case "access_denied": return { state: "failed", reason: "denied", message: "你在 GitHub 上拒绝了授权" };
-    default: return { state: "failed", reason: "error", message: `GitHub 返回了 ${typeof body.error === "string" ? body.error : `HTTP ${response.status}`}` };
+    case "expired_token": return { state: "failed", reason: "expired", message: m.deviceExpired };
+    case "access_denied": return { state: "failed", reason: "denied", message: m.deviceDenied };
+    default: return { state: "failed", reason: "error", message: m.deviceError(typeof body.error === "string" ? body.error : `HTTP ${response.status}`) };
   }
 }
 

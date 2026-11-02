@@ -2,18 +2,15 @@
 // 页面（ModelSection.tsx、ModelPicker.tsx、ModelLibrary.tsx）只管画。
 import {
   MODEL_MAX_BACKUPS, parseLeadModelSpec,
-  type BrainModel, type FastModel, type LeadModelChoice, type ModelProvider, type ModelRelease, type ModelSettingsDto,
+  DEFAULT_LOCALE,
+  type BrainModel, type FastModel, type LeadModelChoice, type Locale, type ModelProvider, type ModelRelease, type ModelSettingsDto,
 } from '@pi-lead-child/protocol';
 
-// 两类模型的名字（spec D1）。界面上只从这里取。
-export const BRAIN_NAME = '大脑';
-export const FAST_NAME = '直觉';
-export const BRAIN_HINT = 'LLM · 思考、对话、调用工具';
-export const FAST_HINT = '决策模型 · 打分、排序、挑选，比大脑快';
-// 生效时间（P15.2）。
-export const BRAIN_APPLIES = '改了下一轮就生效';
-export const FAST_APPLIES = '改了下一次判断就生效';
-export const FAST_USES = '用在：记忆重排、外来消息的信心分、派活建议';
+import { intlLocale } from '@/i18n';
+
+import { modelMessages } from './model.messages';
+
+// 两类模型的名字（spec D1）、说明和生效时间（P15.2）在 model.messages.ts，界面上只从那里取。
 
 // 模型库和下拉里，每个服务商先露出几个（最新的）。正在用的模型总会露出来。
 export const LIBRARY_VISIBLE = 5;
@@ -46,22 +43,23 @@ export function contextLabel(tokens: number | null): string | null {
 }
 
 /** 分工格子的第二行：服务商 · 图片 · 窗口 · 推理强度。 */
-export function brainModelSub(spec: string, entry: BrainEntry | undefined, effort: string | null): string {
+export function brainModelSub(spec: string, entry: BrainEntry | undefined, effort: string | null, locale: Locale): string {
+  const m = modelMessages(locale);
   const parsed = parseLeadModelSpec(spec);
-  if (!entry) return `${parsed.provider} · 目录里没有这个模型`;
+  if (!entry) return `${parsed.provider} · ${m.notInCatalog}`;
   return [
     parsed.provider,
-    entry.model.image ? '图片' : null,
+    entry.model.image ? m.images : null,
     contextLabel(entry.model.contextWindow),
-    effort ? `推理 ${effort}` : null,
+    effort ? m.reasoning(effort) : null,
   ].filter(Boolean).join(' · ');
 }
 
 /** 发布时间：服务商给的写日期，daemon 首见的写「首见 日期」。不知道时为 null。 */
-export function releaseLabel(released: ModelRelease | null): string | null {
+export function releaseLabel(released: ModelRelease | null, locale: Locale): string | null {
   if (!released) return null;
   const date = localDate(released.at);
-  return released.source === 'first_seen' ? `首见 ${date}` : date;
+  return released.source === 'first_seen' ? modelMessages(locale).firstSeen(date) : date;
 }
 
 function pad(value: number): string {
@@ -73,20 +71,20 @@ export function localDate(iso: string): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
 
-const WEEKDAYS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
-
-/** 额度封禁到什么时候（P14.2）：一周以内写「周一 16:00」，更远写「11-09 16:00」。 */
-export function untilLabel(iso: string, now: Date = new Date()): string {
+/** 额度封禁到什么时候（P14.2）：一周以内写「周一 16:00」（英文 Mon 16:00），更远写「11-09 16:00」。 */
+export function untilLabel(iso: string, now: Date, locale: Locale): string {
   const date = new Date(iso);
   const time = `${pad(date.getHours())}:${pad(date.getMinutes())}`;
   const days = (date.getTime() - now.getTime()) / 86_400_000;
-  return days < 6.5 ? `${WEEKDAYS[date.getDay()]} ${time}` : `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${time}`;
+  const weekday = new Intl.DateTimeFormat(intlLocale(locale), { weekday: 'short' }).format(date);
+  return days < 6.5 ? `${weekday} ${time}` : `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${time}`;
 }
 
 // ── 分工 ─────────────────────────────────────────────────────────────────────
 
-export function slotLabel(index: number): string {
-  return index === 0 ? '主用' : `备用 ${index}`;
+export function slotLabel(index: number, locale: Locale): string {
+  const m = modelMessages(locale);
+  return index === 0 ? m.primary : m.backup(index);
 }
 
 /** 分工还能不能再加备用，能加几个。 */
@@ -116,23 +114,23 @@ export function choiceFor(chain: readonly LeadModelChoice[], index: number, mode
 }
 
 /** 一个大脑模型在分工里的角色标签：主用、备用 n，以及是不是直觉的兜底。 */
-export function brainRoles(dto: ModelSettingsDto, model: string): string[] {
+export function brainRoles(dto: ModelSettingsDto, model: string, locale: Locale): string[] {
   const roles: string[] = [];
   const slot = brainSlotOf(dto.brain.chain, model);
-  if (slot >= 0) roles.push(slotLabel(slot));
+  if (slot >= 0) roles.push(slotLabel(slot, locale));
   const fallback = dto.fast.llmFallback?.model ?? (dto.fast.effectiveLlm ? parseLeadModelSpec(dto.fast.effectiveLlm).model : null);
-  if (fallback === model) roles.push(`${FAST_NAME}兜底`);
+  if (fallback === model) roles.push(modelMessages(locale).fastFallbackRole);
   return roles;
 }
 
-export function fastRoles(dto: ModelSettingsDto, id: string): string[] {
+export function fastRoles(dto: ModelSettingsDto, id: string, locale: Locale): string[] {
   const slot = dto.fast.chain.indexOf(id);
-  return slot >= 0 ? [slotLabel(slot)] : [];
+  return slot >= 0 ? [slotLabel(slot, locale)] : [];
 }
 
 /** 直觉一条的第二行：主机 · 模型。地址不合法时写问题。 */
-export function fastModelSub(model: FastModel): string {
-  if (!model.baseUrl) return model.problem ?? '地址不合法';
+export function fastModelSub(model: FastModel, locale: Locale): string {
+  if (!model.baseUrl) return model.problem ?? modelMessages(locale).invalidAddress;
   return `${urlHost(model.baseUrl)} · ${model.model}`;
 }
 
@@ -144,9 +142,10 @@ export function urlHost(url: string): string {
   }
 }
 
-export function fastKeyLabel(model: FastModel): string {
-  if (!model.apiKeySet) return '没有 key';
-  return model.apiKeySource === 'env' ? 'Keychain 里的 key' : 'key 已设置';
+export function fastKeyLabel(model: FastModel, locale: Locale): string {
+  const m = modelMessages(locale);
+  if (!model.apiKeySet) return m.noKey;
+  return model.apiKeySource === 'env' ? m.keyInKeychain : m.keySet;
 }
 
 // ── 模型库的分组 ──────────────────────────────────────────────────────────────
@@ -198,30 +197,34 @@ export function brainInUse(dto: ModelSettingsDto): Set<string> {
 }
 
 /** 收起的组的行尾：组里有在用的模型时写出来（例如「主用 · 备用 1」）。 */
-export function groupUseLabel(dto: ModelSettingsDto, group: ProviderGroupView): string | null {
-  const roles = group.inUse.flatMap((model) => brainRoles(dto, model));
+export function groupUseLabel(dto: ModelSettingsDto, group: ProviderGroupView, locale: Locale): string | null {
+  const roles = group.inUse.flatMap((model) => brainRoles(dto, model, locale));
   return roles.length ? roles.join(' · ') : null;
 }
 
 /** 服务商一行的第二行：主机 · 接口 · key · 共 N 个 · 最新 日期。 */
-export function providerSub(group: ProviderGroupView): string {
+export function providerSub(group: ProviderGroupView, locale: Locale): string {
+  const m = modelMessages(locale);
   const { provider } = group;
-  const key = provider.keySource === 'settings' ? 'key 已设置'
-    : provider.keySource === 'config' ? 'config.json 里的 key'
-    : provider.keySource === 'env' ? '环境变量里的 key'
-    : '不用 key';
+  const key = provider.keySource === 'settings' ? m.keySet
+    : provider.keySource === 'config' ? m.keyInConfig
+    : provider.keySource === 'env' ? m.keyInEnv
+    : m.keyNotNeeded;
   return [
-    urlHost(provider.baseUrl), API_LABELS[provider.api], key, `共 ${provider.models.length} 个`,
-    group.latest ? `最新 ${group.latest}` : null,
+    urlHost(provider.baseUrl), apiLabels(locale)[provider.api], key, m.modelCount(provider.models.length),
+    group.latest ? m.latest(group.latest) : null,
   ].filter(Boolean).join(' · ');
 }
 
-export const API_LABELS: Record<ModelProvider['api'], string> = {
-  'openai-completions': 'OpenAI 兼容',
-  'openai-responses': 'OpenAI Responses',
-  'anthropic-messages': 'Anthropic',
-  'google-generative-ai': 'Google',
-};
+// 接口格式的名字。只有「OpenAI 兼容」要翻译，其余是产品名。
+export function apiLabels(locale: Locale = DEFAULT_LOCALE): Record<ModelProvider['api'], string> {
+  return {
+    'openai-completions': modelMessages(locale).apiCompatible,
+    'openai-responses': 'OpenAI Responses',
+    'anthropic-messages': 'Anthropic',
+    'google-generative-ai': 'Google',
+  };
+}
 
 /** 有在用模型的服务商默认展开，其他默认收起（画布方案 B）。 */
 export function defaultExpanded(dto: ModelSettingsDto): Set<string> {
@@ -234,20 +237,24 @@ export function defaultExpanded(dto: ModelSettingsDto): Set<string> {
 export const PROVIDER_NAME_PATTERN = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 
 /** 服务商表单的问题。没问题时为 null。地址的检查和 daemon 用同一句话（serviceUrlProblem）。 */
-export function providerFormProblem(form: { name: string; baseUrl: string }, isNew: boolean, taken: readonly string[], urlProblem: string | null): string | null {
+export function providerFormProblem(
+  form: { name: string; baseUrl: string }, isNew: boolean, taken: readonly string[], urlProblem: string | null, locale: Locale,
+): string | null {
+  const m = modelMessages(locale);
   if (isNew) {
-    if (!PROVIDER_NAME_PATTERN.test(form.name.trim())) return '名字只能用小写字母、数字、- 和 _，最长 32 个字';
-    if (taken.includes(form.name.trim())) return `已经有叫 ${form.name.trim()} 的服务商了`;
+    if (!PROVIDER_NAME_PATTERN.test(form.name.trim())) return m.providerNameInvalid;
+    if (taken.includes(form.name.trim())) return m.providerNameTaken(form.name.trim());
   }
-  if (!form.baseUrl.trim()) return '地址要填';
+  if (!form.baseUrl.trim()) return m.addressRequired;
   return urlProblem;
 }
 
-export function fastFormProblem(form: { name: string; baseUrl: string; model: string }, urlProblem: string | null): string | null {
-  if (!form.name.trim()) return '名字要填';
-  if (form.name.trim().length > 40) return '名字最长 40 个字';
-  if (!form.baseUrl.trim()) return '地址要填';
+export function fastFormProblem(form: { name: string; baseUrl: string; model: string }, urlProblem: string | null, locale: Locale): string | null {
+  const m = modelMessages(locale);
+  if (!form.name.trim()) return m.nameRequired;
+  if (form.name.trim().length > 40) return m.nameTooLong;
+  if (!form.baseUrl.trim()) return m.addressRequired;
   if (urlProblem) return urlProblem;
-  if (!/^[A-Za-z0-9._-]{1,64}$/.test(form.model.trim())) return '模型名只能用字母、数字、点、- 和 _';
+  if (!/^[A-Za-z0-9._-]{1,64}$/.test(form.model.trim())) return m.modelNameInvalid;
   return null;
 }

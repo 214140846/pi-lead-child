@@ -79,13 +79,13 @@ describe('a message sent while Lead is busy', () => {
   it('shows it is queued, inserted, or answered in the next round', () => {
     const runtime = setup([turn('turn-1', { state: 'queued' })]);
     started(runtime, 'turn-1', { mode: 'queued', placement: 'queued' });
-    expect(screen.getByTestId('placement-status').textContent).toBe('排队中 · Paimon 答完这一轮后回答');
+    expect(screen.getByTestId('placement-status').textContent).toBe('In queue · Paimon answers it after this turn');
 
     started(runtime, 'turn-1', { mode: 'steered', placement: 'steered' });
-    expect(screen.getByTestId('placement-status').textContent).toBe('已插入');
+    expect(screen.getByTestId('placement-status').textContent).toBe('Steered in');
 
     started(runtime, 'turn-1', { mode: 'steered', placement: 'next_turn' });
-    expect(screen.getByTestId('placement-status').textContent).toBe('下一轮回答');
+    expect(screen.getByTestId('placement-status').textContent).toBe('Next turn');
 
     // 开始答它了：不再写放置方式。
     started(runtime, 'turn-1', { mode: 'started', placement: 'delivered' });
@@ -95,7 +95,7 @@ describe('a message sent while Lead is busy', () => {
   // 工单 06：以前「下一轮回答」只在实时显示，刷新以后快照说 steered，变成「已插入」。现在快照带着它。
   it('still says it will be answered in the next round after a reload', () => {
     setup([turn('turn-1', { state: 'steered', placement: 'next_turn' })]);
-    expect(screen.getByTestId('placement-status').textContent).toBe('下一轮回答');
+    expect(screen.getByTestId('placement-status').textContent).toBe('Next turn');
   });
 
   it('ignores a placement it does not know, and keeps working with an old daemon that sends none', () => {
@@ -110,7 +110,7 @@ describe('a message Lead answered together with the next one', () => {
   it('says so instead of showing a failure, live and after a reload', () => {
     const runtime = setup([turn('turn-1', { state: 'streaming' }), turn('turn-2', { state: 'completed', assistantText: '两条一起答了。' })]);
     started(runtime, 'turn-1', { mode: 'steered', placement: 'answered_together', answeredWith: 'turn-2' });
-    expect(screen.getByText('和下一条一起回答')).toBeTruthy();
+    expect(screen.getByText('Answered with the next message')).toBeTruthy();
     expect(screen.queryByTestId('failure-card')).toBeNull();
     expect(runtime.control.getState().turnsById['turn-1']).toMatchObject({ placement: 'answered_together', answeredWith: 'turn-2' });
 
@@ -120,7 +120,7 @@ describe('a message Lead answered together with the next one', () => {
         turn('turn-2', { state: 'completed', assistantText: '两条一起答了。' }),
       ]);
     });
-    expect(screen.getByText('和下一条一起回答')).toBeTruthy();
+    expect(screen.getByText('Answered with the next message')).toBeTruthy();
     expect(screen.queryByTestId('failure-card')).toBeNull();
   });
 });

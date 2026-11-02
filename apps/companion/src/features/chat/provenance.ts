@@ -1,33 +1,39 @@
+import type { Locale } from '@/i18n';
+
 import type { MessagePart } from '../../state/types';
+import { provenanceMessages } from './provenance.messages';
 
 // 这一轮回复的依据（2026-10-15 方案 A）：按这一轮实际调用过、并且完成了的读取工具生成，不用 Lead 写的话。
 // 只认识下面这些读取工具；改变外部状态的工具、失败或没结束的调用、render_ui 都不算依据。
-const PROVENANCE: Record<string, (args: Record<string, unknown>) => string> = {
-  read_run_events: (args) => typeof args.run_id === 'number' ? `Run #${args.run_id} 的事件` : 'Run 的事件',
-  get_ticket: (args) => typeof args.id === 'number' ? `工单 #${args.id} 的账本` : '工单账本',
-  query_tickets: () => '工单列表',
-  list_needs_user: () => '等你处理的工单',
-  read_inbox: () => '系统通知',
-  read_notifications: () => '通知',
-  get_runtime_health: () => '运行状态',
-  get_model_catalog: () => '模型目录',
+// 文案按界面语言（provenance.messages.ts）。
+type ProvenanceText = ReturnType<typeof provenanceMessages>;
+const PROVENANCE: Record<string, (args: Record<string, unknown>, m: ProvenanceText) => string> = {
+  read_run_events: (args, m) => m.runEvents(typeof args.run_id === 'number' ? args.run_id : null),
+  get_ticket: (args, m) => m.ticketLedger(typeof args.id === 'number' ? args.id : null),
+  query_tickets: (_args, m) => m.ticketList,
+  list_needs_user: (_args, m) => m.needsUser,
+  read_inbox: (_args, m) => m.inbox,
+  read_notifications: (_args, m) => m.notifications,
+  get_runtime_health: (_args, m) => m.runtimeHealth,
+  get_model_catalog: (_args, m) => m.modelCatalog,
 };
 
 type ToolPart = Extract<MessagePart, { kind: 'tool' }>;
 
-function readTools(parts: readonly MessagePart[]): Array<{ part: ToolPart; label: string; args: Record<string, unknown> }> {
+function readTools(parts: readonly MessagePart[], locale: Locale): Array<{ part: ToolPart; label: string; args: Record<string, unknown> }> {
+  const m = provenanceMessages(locale);
   return parts.flatMap((part) => {
     if (part.kind !== 'tool' || part.state !== 'completed') return [];
     const label = PROVENANCE[part.name];
     if (!label) return [];
     const args = parseObject(part.args?.preview);
-    return [{ part, label: label(args), args }];
+    return [{ part, label: label(args, m), args }];
   });
 }
 
-export function provenanceLabels(parts: readonly MessagePart[]): string[] {
+export function provenanceLabels(parts: readonly MessagePart[], locale: Locale): string[] {
   const labels: string[] = [];
-  for (const { label } of readTools(parts)) {
+  for (const { label } of readTools(parts, locale)) {
     if (!labels.includes(label)) labels.push(label);
   }
   return labels;
@@ -52,9 +58,9 @@ export type ProvenanceSource =
 export type ProvenanceGroup = { label: string; sources: ProvenanceSource[]; truncated: boolean };
 
 /** 每个依据标签点开以后列出的来源。同一个标签的多次调用合在一起。 */
-export function provenanceSources(parts: readonly MessagePart[]): ProvenanceGroup[] {
+export function provenanceSources(parts: readonly MessagePart[], locale: Locale): ProvenanceGroup[] {
   const groups: ProvenanceGroup[] = [];
-  for (const { part, label, args } of readTools(parts)) {
+  for (const { part, label, args } of readTools(parts, locale)) {
     let group = groups.find((entry) => entry.label === label);
     if (!group) {
       group = { label, sources: [], truncated: false };

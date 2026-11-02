@@ -13,7 +13,9 @@
 // 这个文件只依赖 typebox 和同包的 events.ts、stages.ts，companion 也读它。
 import { Type, type Static, type TProperties, type TSchema } from "typebox";
 import { registerEventKind, type EventKindDefinition } from "./events.ts";
+import { DEFAULT_LOCALE, type Locale } from "./i18n.ts";
 import { DEFAULT_LEAD_NAME } from "./lead-profile.ts";
+import { ownerActionMessages } from "./owner-actions.messages.ts";
 import type { UserItemActionId } from "./stages.ts";
 
 const StrictObject = <T extends TProperties>(properties: T) =>
@@ -59,8 +61,6 @@ export type OwnerActionUndoability = "conditional" | "none";
 
 export interface OwnerActionDefinition {
   id: OwnerActionId;
-  // 做了什么，动词开头，例如「验收工单」。
-  label: string;
   // 这条路由现在要的 scope。第一步不改它们（Mac 网页照常能批准）。
   scope: "approvals:respond" | "tickets:create";
   // 走到这个操作的路由。byAgent 的没有路由。
@@ -68,171 +68,146 @@ export interface OwnerActionDefinition {
   // 不是经路由做的：带清单的子 agent 经连接中心做的写操作（landing.md C3）。daemon 在连接中心报告写操作时记它。
   byAgent?: true;
   undo: OwnerActionUndoability;
-  // 「不是我」时怎么撤销，或者为什么不能撤销。
-  undoNote: string;
 }
+// 每个操作的名字（做了什么，动词开头，例如「验收工单」）和「不是我」时怎么撤销、为什么不能撤销，
+// 按语言写在 owner-actions.messages.ts，用 ownerActionLabel、ownerActionUndoNote 取。
 
 export const OWNER_ACTIONS: readonly OwnerActionDefinition[] = [
   {
-    id: "approval.resolve", label: "处理审批", scope: "approvals:respond",
+    id: "approval.resolve", scope: "approvals:respond",
     routes: ["POST /v1/approvals/:id/resolve", "POST /v1/kernel/interventions/approval::id/resolve"],
     undo: "conditional",
-    undoNote: "批准改为拒绝，并取消会话豁免。发起的 child 已经读到批准时，被批准的动作已经执行，无法撤回。拒绝不改。",
   },
   {
-    id: "decision.resolve", label: "回答决定请求", scope: "approvals:respond",
+    id: "decision.resolve", scope: "approvals:respond",
     routes: ["POST /v1/kernel/interventions/decision::id/resolve"],
     undo: "none",
-    undoNote: "回答已经交给发起方（{lead} 或 child），无法撤回。",
   },
   {
-    id: "connection.confirm", label: "确认连接的写入", scope: "approvals:respond",
+    id: "connection.confirm", scope: "approvals:respond",
     routes: ["POST /v1/connections/confirmations/:id/resolve"],
     undo: "none",
-    undoNote: "允许以后，写入已经发到外部服务，无法撤回。不允许的不改。",
   },
   {
-    id: "memory.switch_confirm", label: "确认记忆切换", scope: "approvals:respond",
+    id: "memory.switch_confirm", scope: "approvals:respond",
     routes: ["POST /v1/memory/switches/:id/confirm"],
     undo: "none",
-    undoNote: "切换已经开始，系统不自动切回。需要时在设置 → 记忆里切回。不同意的不改。",
   },
   {
-    id: "standing_order.proposal_decide", label: "决定常设指令的提议", scope: "approvals:respond",
+    id: "standing_order.proposal_decide", scope: "approvals:respond",
     routes: ["POST /v1/standing-order-proposals/:id/decision"],
     undo: "conditional",
-    undoNote: "批准的修改回滚到批准前的版本。新建的指令没有更早的版本，不能回滚。之后又改过的不自动回滚。拒绝不改。",
   },
   {
-    id: "ticket.confirm", label: "确认工单", scope: "tickets:create",
+    id: "ticket.confirm", scope: "tickets:create",
     routes: ["POST /v1/tickets/:id/confirm"],
     undo: "conditional",
-    undoNote: "工单回到草稿。已经开始执行的，先停止，再回到草稿。",
   },
   {
-    id: "ticket.complete", label: "验收工单", scope: "tickets:create",
+    id: "ticket.complete", scope: "tickets:create",
     routes: ["POST /v1/tickets/:id/complete"],
     undo: "conditional",
-    undoNote: "工单回到待验收（review）。依赖它的工单、父工单的集成已经开始的，不会自动撤回。",
   },
   {
-    id: "ticket.stop", label: "停止工单", scope: "tickets:create",
+    id: "ticket.stop", scope: "tickets:create",
     routes: ["POST /v1/tickets/:id/stop"],
     undo: "none",
-    undoNote: "执行的进程已经终止，系统不替你重新开始。需要时在工单里点「开始」。",
   },
   {
-    id: "ticket.cancel", label: "取消工单", scope: "tickets:create",
+    id: "ticket.cancel", scope: "tickets:create",
     routes: ["POST /v1/tickets/:id/cancel"],
     undo: "conditional",
-    undoNote: "工单恢复到草稿（提醒恢复到待提醒），要你重新确认。被停止的执行不会自动重启。",
   },
   {
-    id: "lead.trust", label: "改 {lead} 的授权", scope: "tickets:create",
+    id: "lead.trust", scope: "tickets:create",
     routes: ["POST /v1/lead/trust"],
     undo: "conditional",
-    undoNote: "新给的授权被撤回。撤回授权更保守，不自动恢复。",
   },
   {
-    id: "lead.delegation", label: "改委托验收", scope: "tickets:create",
+    id: "lead.delegation", scope: "tickets:create",
     routes: ["POST /v1/lead/delegation"],
     undo: "conditional",
-    undoNote: "新给的委托被撤回，授权时顺带开始的返工不会自动停止。撤回委托更保守，不自动恢复。",
   },
   {
     // 连接的权限设置（谁能用、写入策略）。放开写入策略以后，child 可以不经确认写外部服务（2026-10-19 审查）。
-    id: "connection.settings", label: "改连接的权限设置", scope: "tickets:create",
+    id: "connection.settings", scope: "tickets:create",
     routes: ["POST /v1/connections/:key/settings"],
     undo: "conditional",
-    undoNote: "这次放开的（新加的角色、改成直接写入）恢复原样。之后又改过的不自动恢复。收紧更保守，不自动恢复。已经执行的写入无法撤回。",
   },
   {
     // 外部通道（例如 Slack）的令牌（设置页「消息通道」，slack-settings 工单 S1）。换成别人的令牌，助手就替别人收发消息；
     // 删掉它，助手就收不到消息。只有本机网页能改，但 child 能伪造回环网页，所以算主人操作。
-    id: "channel.credentials", label: "改外部通道的凭据", scope: "tickets:create",
+    id: "channel.credentials", scope: "tickets:create",
     routes: ["PUT /v1/channels/settings/:source", "DELETE /v1/channels/settings/:source"],
     undo: "conditional",
-    undoNote: "删掉设置页里这个通道保存的凭据并断开（Keychain 或环境变量里还有凭据时，用它们重新连上）。之后又改过的不自动删除。"
-      + "删除凭据更保守，不自动恢复。",
   },
   {
-    id: "run.pause", label: "暂停 Run", scope: "tickets:create",
+    id: "run.pause", scope: "tickets:create",
     routes: ["POST /v1/runs/:id/pause"],
     undo: "conditional",
-    undoNote: "Run 还在暂停时，恢复它。",
   },
   {
-    id: "run.stop", label: "停止 Run", scope: "tickets:create",
+    id: "run.stop", scope: "tickets:create",
     routes: ["POST /v1/runs/:id/stop"],
     undo: "none",
-    undoNote: "停止是终态，进程已经终止，无法撤回。",
   },
   {
     // 放宽以后，正在跑的子 agent 马上能用新加的工具（连接中心每次调用都读最新的清单）。
-    id: "run.grant", label: "放宽子 agent 的权限", scope: "tickets:create",
+    id: "run.grant", scope: "tickets:create",
     routes: ["POST /v1/tickets/:id/actions/widen_grant"],
     undo: "conditional",
-    undoNote: "这次加上的规则从清单里删掉，子 agent 下一次调用就用不了它们。用新权限已经做了的写操作不会撤回。",
   },
   {
     // 带清单的子 agent 写外部服务（例如在 PR 上发评论、approve）。没有路由：它不是用户点的，而是 Lead 派的工单按清单做的。
-    id: "connection.agent_write", label: "子 agent 代你写外部服务", scope: "tickets:create",
+    id: "connection.agent_write", scope: "tickets:create",
     routes: [], byAgent: true,
     undo: "conditional",
-    undoNote: "写入已经发到外部服务。连接能撤回的（例如还没提交的 review）由系统撤回；不能撤回的给出链接，请你在那边改或删。",
   },
   {
-    id: "workspace.release", label: "释放工作区", scope: "tickets:create",
+    id: "workspace.release", scope: "tickets:create",
     routes: ["POST /v1/workspaces/:id/release"],
     undo: "none",
-    undoNote: "工作区已经释放，无法撤回。",
   },
   {
-    id: "workspace.cleanup", label: "清理工作区", scope: "tickets:create",
+    id: "workspace.cleanup", scope: "tickets:create",
     routes: ["POST /v1/workspaces/:id/cleanup"],
     undo: "none",
-    undoNote: "工作区的文件已经删除，无法撤回。",
   },
   {
-    id: "standing_order.rollback", label: "回滚常设指令", scope: "tickets:create",
+    id: "standing_order.rollback", scope: "tickets:create",
     routes: ["POST /v1/standing-orders/:id/rollback"],
     undo: "conditional",
-    undoNote: "指令回到回滚前的版本。之后又改过的，不自动回滚。",
   },
   {
     // Lead 的名字、人格和互动风格（设置页「身份与风格」，2026-10-22）。人格和互动风格进 Lead 的系统提示词，
     // 冒充用户改它们就能改 Lead 的说话方式，所以算主人操作。
-    id: "lead.profile", label: "改助手的名字和风格", scope: "tickets:create",
+    id: "lead.profile", scope: "tickets:create",
     routes: ["POST /v1/lead/profile"],
     undo: "conditional",
-    undoNote: "名字、人格和互动风格恢复成改之前的样子。之后又改过的，不自动恢复。",
   },
   {
     // 外观偏好（设置页「外观」，2026-10-22）：密度、圆角、行高、字号、颜色、设计说明。设计说明进 Lead 的提示词，
     // 颜色和字号改的是用户每天看的界面，所以算主人操作。
-    id: "ui.design", label: "改界面的外观", scope: "tickets:create",
+    id: "ui.design", scope: "tickets:create",
     routes: ["POST /v1/design/preferences"],
     undo: "conditional",
-    undoNote: "外观恢复成改之前的样子。之后又改过的，不自动恢复。",
   },
   {
     // 代回复风格（设置 → 消息通道，2026-10-28，reply-style.ts）。它进 Lead 和子 agent 写回复的提示词，
     // 冒充用户改它就能改代用户说出去的话，所以算主人操作。
-    id: "channel.reply_style", label: "改代回复风格", scope: "tickets:create",
+    id: "channel.reply_style", scope: "tickets:create",
     routes: ["POST /v1/channels/reply-style"],
     undo: "conditional",
-    undoNote: "代回复风格恢复成改之前的样子。之后又改过的，不自动恢复。",
   },
   {
     // 常驻偏好（设置 → 记忆 → 常驻偏好，2026-10-29，core-memory.ts）。它进 Lead 的系统提示词，
     // 冒充用户改它就能改 Lead 的行为，所以算主人操作。Lead 自己改的走 Lead 动态（带撤销），不记这一项。
-    id: "memory.preferences", label: "改常驻偏好", scope: "tickets:create",
+    id: "memory.preferences", scope: "tickets:create",
     routes: [
       "POST /v1/actions/core_memory/:id/update", "POST /v1/actions/core_memory/:id/delete",
       "POST /v1/actions/core_memory_change/:id/undo",
     ],
     undo: "conditional",
-    undoNote: "常驻偏好恢复成改之前的样子。之后又改过的，不自动恢复。",
   },
 ];
 
@@ -245,6 +220,16 @@ export function ownerActionText(text: string, leadName: string = DEFAULT_LEAD_NA
 
 export function ownerActionDefinition(id: string): OwnerActionDefinition | undefined {
   return BY_ID.get(id as OwnerActionId);
+}
+
+/** 操作的名字（按 locale 的语言），{lead} 已经换成 Lead 的名字。 */
+export function ownerActionLabel(id: OwnerActionId, locale: Locale, leadName: string = DEFAULT_LEAD_NAME): string {
+  return ownerActionText(ownerActionMessages(locale).actions[id].label, leadName);
+}
+
+/** 「不是我」时怎么撤销、为什么不能撤销（按 locale 的语言），{lead} 已经换成 Lead 的名字。 */
+export function ownerActionUndoNote(id: OwnerActionId, locale: Locale, leadName: string = DEFAULT_LEAD_NAME): string {
+  return ownerActionText(ownerActionMessages(locale).actions[id].undoNote, leadName);
 }
 
 // 工单动作（POST /v1/tickets/:id/:action，USER_ITEM_ACTION_IDS）里哪些算高风险。每个动作都要在这里写明，
@@ -358,27 +343,15 @@ export function originMayDecide(origin: BindingOrigin): boolean {
   return origin !== "cli" && origin !== "admin_pairing" && origin !== "local_invitation";
 }
 
-const ORIGIN_LABELS: Record<BindingOrigin, string> = {
-  cli: "plc 的 CLI 凭证",
-  loopback_web: "本机网页",
-  phone_qr: "扫码配对的手机",
-  admin_pairing: "plc pair 建的配对",
-  local_invitation: "在本机兑换的配对邀请",
-  aish: "Slack",
-  channel_owner: "你在 Slack 里发给自己的私信",
-  unknown: "v47 之前的凭证",
-};
-
-const CLIENT_LABELS: Record<OwnerActionClient, string> = {
-  cli: "CLI", web: "网页", phone: "手机", lead: "{lead} 在对话里代你做", agent: "{lead} 派的子 agent 按权限清单做", unknown: "未知客户端",
-};
-
-export function bindingOriginLabel(origin: string): string {
-  return ORIGIN_LABELS[origin as BindingOrigin] ?? ORIGIN_LABELS.unknown;
+// 凭证来历和客户端的名字按 locale 的语言（owner-actions.messages.ts）。后端写给 Lead 的文字传 "zh"。
+export function bindingOriginLabel(origin: string, locale: Locale = DEFAULT_LOCALE): string {
+  const labels = ownerActionMessages(locale).origins;
+  return labels[origin as BindingOrigin] ?? labels.unknown;
 }
 
-export function ownerActionClientLabel(client: string, leadName: string = DEFAULT_LEAD_NAME): string {
-  return ownerActionText(CLIENT_LABELS[client as OwnerActionClient] ?? CLIENT_LABELS.unknown, leadName);
+export function ownerActionClientLabel(client: string, leadName: string = DEFAULT_LEAD_NAME, locale: Locale = DEFAULT_LOCALE): string {
+  const labels = ownerActionMessages(locale).clients;
+  return ownerActionText(labels[client as OwnerActionClient] ?? labels.unknown, leadName);
 }
 
 // ── Lead 代你做的操作（工单操作层，spec 5.11）────────────────────────────────────────
@@ -394,8 +367,8 @@ export function isOnBehalfOwnerActionSource(source: { client: string }): boolean
   return source.client === "lead" || source.client === "agent";
 }
 
-export function onBehalfUndoCredentialNote(leadName: string = DEFAULT_LEAD_NAME): string {
-  return `这是 ${leadName} 在对话里代你做的：只撤销了这次操作，没有作废凭证。如果那句话不是你说的，请到「设置 → 已配对设备」撤销那台设备。`;
+export function onBehalfUndoCredentialNote(leadName: string = DEFAULT_LEAD_NAME, locale: Locale = DEFAULT_LOCALE): string {
+  return ownerActionMessages(locale).onBehalfUndoCredentialNote(leadName);
 }
 
 /** 推送和会话卡的文字：标题说做了什么，正文说哪个凭证、从哪里来，以及「不是我」（代做的是「撤销」）会做什么。 */
@@ -407,15 +380,20 @@ export function ownerActionAlertText(input: {
   // 多给一行说明（例如子 agent 写入的链接）。
   note?: string | null;
   leadName?: string;
+  // 文字的语言。不给时用缺省语言。
+  locale?: Locale;
 }): { title: string; body: string } {
   const lead = input.leadName ?? DEFAULT_LEAD_NAME;
+  const locale = input.locale ?? DEFAULT_LOCALE;
+  const m = ownerActionMessages(locale);
+  const origin = bindingOriginLabel(input.credential.origin, locale);
   if (input.source.client === "agent") {
     return {
       title: input.summary,
       body: [
-        `${lead} 派的子 agent 按${input.credential.name}的权限清单做的。`,
+        m.agentDid(lead, input.credential.name),
         ...(input.note ? [input.note] : []),
-        "要撤回？点「撤销」：能撤回的系统撤回；已经发到外部服务的，给你链接去那边改或删。",
+        m.agentUndo,
       ].join("\n"),
     };
   }
@@ -423,17 +401,17 @@ export function ownerActionAlertText(input: {
     return {
       title: input.summary,
       body: [
-        `${lead} 在对话里代你做的。那一轮来自：${input.credential.name}（${bindingOriginLabel(input.credential.origin)}，#${input.credential.bindingId}）`,
-        `${lead} 理解错了？点「撤销」：撤销这次操作，不作废凭证。如果那句话不是你说的，请到「设置 → 已配对设备」撤销那台设备。`,
+        m.leadDid(lead, input.credential.name, origin, input.credential.bindingId),
+        m.leadUndo(lead),
       ].join("\n"),
     };
   }
-  const where = [ownerActionClientLabel(input.source.client, lead), input.source.fromThisMachine ? "来自这台电脑" : "来自别的设备"].join(" · ");
+  const where = [ownerActionClientLabel(input.source.client, lead, locale), input.source.fromThisMachine ? m.fromThisComputer : m.fromOtherDevice].join(" · ");
   return {
     title: input.summary,
     body: [
-      `凭证：${input.credential.name}（${bindingOriginLabel(input.credential.origin)}，#${input.credential.bindingId}）· ${where}`,
-      "不是你做的？点「不是我」：撤销这次操作，并作废这个凭证。",
+      m.credentialLine(input.credential.name, origin, input.credential.bindingId, where),
+      m.notMe,
     ].join("\n"),
   };
 }
@@ -442,8 +420,8 @@ export function ownerActionAlertText(input: {
  * 只记录的主人操作（扫码配对的手机做的，delivery 是 record）在会话里的一行（画布「代你操作」状态 7）。
  * 不推送，没有「不是我」：手机就是用户本人。标题说做了什么，正文说在哪台设备上。
  */
-export function ownerActionRecordText(input: { summary: string; deviceName: string }): { title: string; body: string } {
-  return { title: input.summary, body: `在 ${input.deviceName} 上做的（扫码配对的手机）。只记录，不推送。` };
+export function ownerActionRecordText(input: { summary: string; deviceName: string; locale?: Locale }): { title: string; body: string } {
+  return { title: input.summary, body: ownerActionMessages(input.locale ?? DEFAULT_LOCALE).recordBody(input.deviceName) };
 }
 
 // ── 通知和会话卡 ─────────────────────────────────────────────────────────────────

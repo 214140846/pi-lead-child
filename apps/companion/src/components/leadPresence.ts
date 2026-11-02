@@ -8,7 +8,10 @@ import {
   classifyLeadModelError, leadModelFailureNeedsUser, leadModelFailureShortLabel, type LeadStatus,
 } from '@pi-lead-child/protocol';
 
+import { DEFAULT_LOCALE, intlLocale, type Locale } from '@/i18n';
 import type { ControlPlanePhase } from '@/state/types';
+
+import { leadPresenceMessages } from './leadPresence.messages';
 
 export type LeadPresence = {
   state: 'online' | 'degraded' | 'offline';
@@ -28,31 +31,35 @@ export function leadPresence(input: {
   now?: number;
   // Lead 的名字（useLeadName）。
   name: string;
+  // 界面语言（useLocale）。不给时用缺省语言。
+  locale?: Locale;
 }): LeadPresence {
   const { connectionState, phase, lead, name } = input;
+  const locale = input.locale ?? DEFAULT_LOCALE;
+  const m = leadPresenceMessages(locale);
   const now = input.now ?? Date.now();
   if (connectionState !== 'connected') {
     return {
       state: 'offline',
       dotColor: 'text-muted',
       pulse: false,
-      label: phase === 'unpaired' ? '未配对 · 点击配对' : `${name} 离线`,
+      label: phase === 'unpaired' ? m.unpaired : m.offlineNamed(name),
       subtitle: phase === 'unpaired'
-        ? '未配对 · 点击配对'
-        : connectionState === 'reconnecting' ? '离线 · 正在重连' : connectionState === 'connecting' ? '连接中' : '离线',
+        ? m.unpaired
+        : connectionState === 'reconnecting' ? m.reconnecting : connectionState === 'connecting' ? m.connecting : m.offline,
     };
   }
   if (lead?.state === 'degraded') {
     const kind = classifyLeadModelError(lead.detail ?? '');
-    const short = leadModelFailureShortLabel(kind);
+    const short = leadModelFailureShortLabel(kind, locale);
     // 断网不是模型的问题：说离线，等网络恢复，不给时间（2026-10-16）。
     if (kind === 'network') {
       return {
         state: 'degraded',
         dotColor: 'text-muted',
         pulse: false,
-        label: `${name} 离线：网络不可用`,
-        subtitle: '离线：网络不可用，恢复后继续',
+        label: m.networkLabel(name),
+        subtitle: m.networkSubtitle,
       };
     }
     // 认证、配置这类失败系统自己再试也好不了：不说"自动重试"，说要检查配置。
@@ -61,31 +68,31 @@ export function leadPresence(input: {
         state: 'degraded',
         dotColor: 'danger',
         pulse: false,
-        label: `${name} 降级：${lead.reason ?? `${name} 调用模型失败`}`,
-        subtitle: `${short}，需要检查配置`,
+        label: m.degraded(name, lead.reason ?? m.modelFailed(name)),
+        subtitle: m.checkConfig(short),
       };
     }
     // 时间已经过了：系统正在重试，或者刚试完、新的状态还没到。不再写一个过去的时间。
     const retry = !lead.nextAttemptAt
-      ? '你发消息时会再试'
-      : Date.parse(lead.nextAttemptAt) <= now ? '正在重试' : `${formatClock(lead.nextAttemptAt)} 自动重试`;
+      ? m.retryOnMessage
+      : Date.parse(lead.nextAttemptAt) <= now ? m.retrying : m.retryAt(formatClock(lead.nextAttemptAt, locale));
     return {
       state: 'degraded',
       dotColor: 'warning',
       pulse: false,
-      label: `${name} 降级：${lead.reason ?? `${name} 调用模型失败`}`,
+      label: m.degraded(name, lead.reason ?? m.modelFailed(name)),
       subtitle: `${short} · ${retry}`,
     };
   }
   // 心跳巡检没有要说的话时，会话里不留消息；这里写最近一次巡检的时间，让人知道它一直在看。
-  const patrol = lead?.lastPatrolAt ? `最近巡检 ${formatClock(lead.lastPatrolAt)}` : null;
-  return { state: 'online', dotColor: 'success', pulse: true, label: `${name} 在线`, subtitle: patrol };
+  const patrol = lead?.lastPatrolAt ? m.lastPatrol(formatClock(lead.lastPatrolAt, locale)) : null;
+  return { state: 'online', dotColor: 'success', pulse: true, label: m.online(name), subtitle: patrol };
 }
 
-function formatClock(value: string): string {
+function formatClock(value: string, locale: Locale): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '';
-  return new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }).format(date);
+  return new Intl.DateTimeFormat(intlLocale(locale), { hour: '2-digit', minute: '2-digit', hour12: false }).format(date);
 }
 
 // Fairy 表示 Lead 的整体状态（方案 C，主题 F-4、F-7）：左栏头部，和手机上、左栏收起时的会话顶栏。

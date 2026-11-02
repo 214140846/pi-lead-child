@@ -1,9 +1,11 @@
 import { Type, type Static, type TProperties, type TSchema } from "typebox";
 import { Value } from "typebox/value";
+import { DEFAULT_LOCALE, type Locale } from "./i18n.ts";
 import { redactSecretText } from "./redaction.ts";
 import { TICKET_ACTION_INPUT_SCHEMAS } from "./ticket-actions.ts";
 import { UI_ACTION_INPUT_SCHEMAS, UI_ACTION_TARGET_TYPES, isUiActionTargetType, type UiActionTargetType } from "./ui-actions.ts";
 import { UserActionRequestSchema, userActionProblems } from "./user-actions.ts";
+import { partialSurfaceMessages } from "./ui-surfaces.messages.ts";
 
 // Lead 生成的富交互卡片（generative UI，2026-10-15 用户决定，.scratch/generative-ui/spec.md）。
 //
@@ -56,6 +58,8 @@ export const UI_COMPONENT_LIMITS = {
   steps: 20,
   timeline: 30,
   bars: 24,
+  // 折线图（2026-10-30）最多几个点。
+  sparklinePoints: 120,
   // v3 积木（2026-10-27）。
   tileEyebrow: 12,
   tileValue: 8,
@@ -362,6 +366,20 @@ export const UI_CATALOG = {
       max: Type.Optional(Type.Number({ exclusiveMinimum: 0 })),
     }),
   },
+  // 走势小图（2026-10-30 用户采纳，docs/genui-design.md 第 8 节）：一串按时间排的数画成一条折线，最后一个点是「现在」。
+  // 只追加组件，UI_CATALOG_VERSION 不变；旧客户端遇到它整张卡显示 fallbackText。控件里可以绑数据源（points 写 {"$data": …}）。
+  Sparkline: {
+    container: false,
+    props: StrictObject({
+      points: Type.Array(Type.Number(), { minItems: 2, maxItems: UI_COMPONENT_LIMITS.sparklinePoints }),
+      label: Type.Optional(Type.String({ minLength: 1, maxLength: 60 })),
+      unit: Type.Optional(Type.String({ minLength: 1, maxLength: 12 })),
+      tone: Type.Optional(ToneSchema),
+      baseline: Type.Optional(Type.Number()),
+      start: Type.Optional(Type.String({ minLength: 1, maxLength: 20 })),
+      end: Type.Optional(Type.String({ minLength: 1, maxLength: 20 })),
+    }),
+  },
   // v3 积木（2026-10-27，.scratch/genui-catalog-v3/spec.md 积木 1、2、7、10）。
   // 图块：上面一条小标题，中间一个大的短值，下面一行说明（日期、比分、登机口、版本号）。
   // 宽和高只由 size 和主题决定，不随 value 变：value 太长就校验失败，不截断。
@@ -546,6 +564,9 @@ export const UI_CATALOG_USAGE: Readonly<Record<UiComponentType, string>> = {
   Timeline: `Timeline { items: [{ at, text, tone? }] }：按时间排的事件，最多 ${UI_COMPONENT_LIMITS.timeline} 条；at 是短的时间文字，例如 10-19 09:58`,
   BarChart: `BarChart { bars: [{ label, value, tone? }], unit?, orientation?: horizontal|vertical, max? }：条形图，最多 ${UI_COMPONENT_LIMITS.bars} 根，`
     + "value 不小于 0。horizontal（默认）比较类别，vertical 按时间看趋势；max 是满格的值，缺省用最大的那根",
+  Sparkline: `Sparkline { points: [数字…], label?, unit?, tone?, baseline?, start?, end? }：走势小图，一条折线，2 到 `
+    + `${UI_COMPONENT_LIMITS.sparklinePoints} 个点，按时间从早到晚。点很多、只看走势和高低时用它（逐个读数用竖向 BarChart）；`
+    + "baseline 画一条参照虚线（例如昨天收盘），start、end 写在线下面（例如 10-01、今天）；tone 给线的颜色，例如涨用 success、跌用 danger",
   Tile: `Tile { eyebrow?, value, caption?, tone?, size?: sm|md, emphasis?: quiet|normal|strong }：一个短值的图块，`
     + `上面一条小标题（最多 ${UI_COMPONENT_LIMITS.tileEyebrow} 字），中间一个大值（数字或最多 ${UI_COMPONENT_LIMITS.tileValue} 字），`
     + `下面一行说明。小标题和说明都只占一行：汉字算 2、其他算 1.2，小标题 sm 最多 ${UI_COMPONENT_LIMITS.tileEyebrowWidth.sm}、md 最多 ${UI_COMPONENT_LIMITS.tileEyebrowWidth.md}，`
@@ -984,7 +1005,9 @@ function withoutServerMessages(node: UiNode): UiNode {
   return { ...node, props: reference };
 }
 
-export function partialUiSurface(args: unknown, callId: string): UiSurface | null {
+
+// locale：生成中的卡片在 fallback_text 还没到时显示的那句的语言。daemon 现在传 "zh"。
+export function partialUiSurface(args: unknown, callId: string, locale: Locale = DEFAULT_LOCALE): UiSurface | null {
   if (!args || typeof args !== "object") return null;
   const input = args as { surface_id?: unknown; root?: unknown; nodes?: unknown; fallback_text?: unknown };
   if (typeof input.root !== "string" || !Array.isArray(input.nodes)) return null;
@@ -1017,7 +1040,7 @@ export function partialUiSurface(args: unknown, callId: string): UiSurface | nul
     id: typeof input.surface_id === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(input.surface_id) ? input.surface_id : uiSurfaceIdForCall(callId),
     catalogVersion: UI_CATALOG_VERSION,
     root: input.root,
-    fallbackText: typeof input.fallback_text === "string" && input.fallback_text.trim() ? input.fallback_text : "正在生成卡片…",
+    fallbackText: typeof input.fallback_text === "string" && input.fallback_text.trim() ? input.fallback_text : partialSurfaceMessages(locale).generating,
     nodes: nodes.filter((node) => reached.has(node.id)).map((node) => node.children
       ? { ...node, children: node.children.filter((child) => reached.has(child)) }
       : node.type === "SourceQuote" ? withoutServerQuote(node) : node.type === "Message" ? withoutServerMessages(node) : node),

@@ -161,11 +161,11 @@ describe('the decision card', () => {
     expect(screen.getByText('成果快照与登记机制')).toBeTruthy();
     expect(screen.getByText('核查不通过，返工次数已用完')).toBeTruthy();
     expect(screen.getByText('撤回的完成声明仍被登记成 complete')).toBeTruthy();
-    expect(screen.getByText('已复现')).toBeTruthy();
-    expect(screen.getByText('通过')).toBeTruthy();
-    expect(screen.getByText('我的建议')).toBeTruthy();
+    expect(screen.getByText('Reproduced')).toBeTruthy();
+    expect(screen.getByText('Passed')).toBeTruthy();
+    expect(screen.getByText('My recommendation')).toBeTruthy();
     expect(screen.getByText('F1 和 #72 改的是同一条 outcome-recovery 路径')).toBeTruthy();
-    expect(screen.getByRole('button', { name: /并入 #72/ }).textContent).toContain('推荐');
+    expect(screen.getByRole('button', { name: /并入 #72/ }).textContent).toContain('Recommended');
     expect(screen.getByText('#66 关闭，F1 写进 #72 的验收条件')).toBeTruthy();
   });
 
@@ -187,7 +187,7 @@ describe('the decision card', () => {
 
   it('shows what was chosen once the decision is resolved, from the live decision state', () => {
     renderSurface(surface, 'resolved');
-    expect(screen.getByText('你选了「并入 #72」')).toBeTruthy();
+    expect(screen.getByText('You selected "并入 #72"')).toBeTruthy();
     expect(screen.queryByRole('button', { name: /取消 #66/ })).toBeNull();
   });
 
@@ -245,9 +245,9 @@ describe('a card that shows information', () => {
         ],
       },
     }]));
-    expect(screen.getByLabelText('已完成')).toBeTruthy();
-    expect(screen.getByLabelText('进行中')).toBeTruthy();
-    expect(screen.getByLabelText('未开始')).toBeTruthy();
+    expect(screen.getByLabelText('Done')).toBeTruthy();
+    expect(screen.getByLabelText('In progress')).toBeTruthy();
+    expect(screen.getByLabelText('Not started')).toBeTruthy();
     expect(screen.getByText('改登记顺序')).toBeTruthy();
   });
 
@@ -258,7 +258,7 @@ describe('a card that shows information', () => {
     ]));
     expect(screen.getByText('40%')).toBeTruthy();
     expect(screen.getAllByRole('progressbar')[0]!.getAttribute('aria-valuenow')).toBe('40');
-    expect(screen.getByText('进度未知')).toBeTruthy();
+    expect(screen.getByText('Progress unknown')).toBeTruthy();
   });
 
   it('draws a timeline in the given order', () => {
@@ -274,9 +274,16 @@ describe('a card that shows information', () => {
       { id: 'bars', type: 'BarChart', props: { unit: '次', bars: [{ label: 'codex', value: 31 }, { label: 'claude', value: 18 }] } },
       { id: 'trend', type: 'BarChart', props: { orientation: 'vertical', bars: [{ label: '周一', value: 40 }, { label: '周二', value: 62 }] } },
     ]));
-    expect(screen.getByLabelText('codex：31 次')).toBeTruthy();
-    expect(screen.getByLabelText('周二：62')).toBeTruthy();
+    expect(screen.getByLabelText('codex: 31 次')).toBeTruthy();
+    expect(screen.getByLabelText('周二: 62')).toBeTruthy();
     expect(screen.getByText('周一')).toBeTruthy();
+  });
+
+  // 2026-10-30：走势小图（Sparkline）进了目录，和条形图同一种快照组件。
+  it('draws a sparkline and says its trend in words', () => {
+    renderSurface(info([{ id: 'ndx', type: 'Sparkline', props: { label: '纳斯达克', points: [18110, 18240, 18532], start: '10-24', end: '今天' } }]));
+    expect(screen.getByTestId('surface-sparkline-ndx')).toBeTruthy();
+    expect(screen.getByLabelText('纳斯达克: From 18,110 to 18,532. Highest 18,532, lowest 18,110.')).toBeTruthy();
   });
 
   it('shows the fallback sentence instead of half a card when one of its components is not in the catalog', () => {
@@ -366,7 +373,7 @@ describe('a card built from the v3 blocks', () => {
       messages: [{ at: '2026-10-27T02:04:00.000Z', text: '明哥，这个 pr 记得再帮我看看' }],
     } }]));
     expect(screen.getByText('王小明')).toBeTruthy();
-    expect(screen.getByTestId('surface-message-m-count').textContent).toBe('5 条');
+    expect(screen.getByTestId('surface-message-m-count').textContent).toBe('5 messages');
     expect(getComputedStyle(screen.getByTestId('surface-message-m-bubble-0')).backgroundColor).toBe('var(--c-accent-soft)');
     cleanup();
     renderSurface(card([{ id: 'm', type: 'Message', props: { ref: { type: 'channel_card', id: 3 }, mode: 'latest' } }]));
@@ -417,7 +424,7 @@ describe('a reminder card built only from blocks', () => {
   it('shows the time left, live from the reminder, instead of the snapshot Lead wrote', async () => {
     cleanup();
     renderReminder();
-    expect(await screen.findByText('还有 3 天 1 小时')).toBeTruthy();
+    expect(await screen.findByText('3 days 1 hour left')).toBeTruthy();
     expect(screen.queryByText('周四 14:00')).toBeNull();
     expect(getComputedStyle(screen.getByTestId('surface-tile-date-eyebrow')).backgroundColor).toBe('var(--c-accent-soft)');
   });
@@ -431,7 +438,7 @@ describe('a reminder card built only from blocks', () => {
     fireEvent.click(option);
     // 卡片自己预览改动（绑定了提醒的时刻）：剩余时间先写到新时间的，Field 下面不再另写一行。
     expect(screen.queryByTestId('surface-field-pick-preview')).toBeNull();
-    expect(screen.getAllByText(/^还有 \d+ 分钟$|^还有 1 小时$/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/^\d+ minutes left$|^1 hour left$/).length).toBeGreaterThan(0);
     const before = Date.now();
     await act(async () => { fireEvent.click(await screen.findByRole('button', { name: '改时间' })); });
     expect(perform).toHaveBeenCalledTimes(1);
@@ -459,7 +466,7 @@ describe('a reminder card built only from blocks', () => {
       remindAt: at.toISOString(),
     });
     expect((await screen.findByTestId('surface-tile-date-value')).textContent).toBe('30');
-    expect(screen.getByTestId('surface-tile-date-eyebrow').textContent).toBe('10月');
+    expect(screen.getByTestId('surface-tile-date-eyebrow').textContent).toBe('Oct');
   });
 
   // 2026-10-27 用户对照视觉稿：日历页那一栏要延伸到整个浮层并放大，选了新时间先在卡上预览（旧的划掉、新的强调色），
@@ -483,11 +490,11 @@ describe('a reminder card built only from blocks', () => {
     const panelTile = () => within(screen.getByTestId('surface-media-row-open')).getByTestId('surface-tile-date-value');
     expect((await screen.findByTestId('surface-media-row-open'))).toBeTruthy();
     expect(panelTile().textContent).toBe('29');
-    expect(within(screen.getByTestId('surface-media-row-open')).getByText('周四')).toBeTruthy();
+    expect(within(screen.getByTestId('surface-media-row-open')).getByText('Thu')).toBeTruthy();
     fireEvent.click(screen.getByRole('radio', { name: '明天 09:00' }));
     const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate() + 1);
     expect(panelTile().textContent).toBe(String(tomorrow.getDate()));
-    expect(within(screen.getByTestId('surface-media-row-open')).getByText('原 周四 29')).toBeTruthy();
+    expect(within(screen.getByTestId('surface-media-row-open')).getByText('Was Thu 29')).toBeTruthy();
   });
 
   it('greys out a button the operation cannot do now and says why, without removing it', async () => {
@@ -520,14 +527,14 @@ describe('a reminder card built only from blocks', () => {
     fireEvent.click(await screen.findByRole('button', { name: '取消提醒' }));
     expect(screen.getByTestId('surface-action-cancel-confirm')).toBeTruthy();
     expect(screen.queryByRole('button', { name: '改时间' })).toBeNull();
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '确认取消提醒' })); });
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Confirm: 取消提醒' })); });
     expect(cancel).toHaveBeenCalledWith(REMINDER, 'cancel', { input: {} });
   });
 
   it('stays closed once the reminder is confirmed, and writes the time it was for', async () => {
     cleanup();
     renderReminder('acked');
-    expect(await screen.findByText(/^周. \d{2}-\d{2} \d{2}:\d{2}$/)).toBeTruthy();
+    expect(await screen.findByText(/^[A-Z][a-z]{2} \d{2}-\d{2} \d{2}:\d{2}$/)).toBeTruthy();
     fireEvent.click(screen.getByTestId('surface-disclosure-box-summary'));
     expect(screen.queryByRole('radio', { name: '1 小时后' })).toBeNull();
     expect(getComputedStyle(screen.getByTestId('surface-tile-date-eyebrow')).backgroundColor).toBe('var(--c-success-soft)');
@@ -597,16 +604,16 @@ describe('a card made with a newer component catalog than this app', () => {
     { id: 'chart', type: 'LineChart', props: { points: [1, 2] } },
   ]);
 
-  const UNSUPPORTED = '这张卡用了当前版本还不支持的组件';
+  const UNSUPPORTED = 'This card uses a component that this version does not support';
 
   it('says the card needs the new version when the daemon serves a newer page, and refreshes only when asked', () => {
     const { reloadApp } = renderSurface(newer, 'pending', { web: { current: 'build-a', served: 'build-b' } });
     const note = screen.getByTestId('surface-needs-update');
-    expect(note.textContent).toContain('这张卡需要新版本，刷新后显示');
+    expect(note.textContent).toContain('This card needs a newer version. Refresh to show it.');
     expect(screen.getByText('本周 12 张工单完成，3 张进行中。')).toBeTruthy();
     expect(screen.queryByText('完成')).toBeNull();
     expect(reloadApp).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: '刷新' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
     expect(reloadApp).toHaveBeenCalledTimes(1);
   });
 
@@ -616,46 +623,46 @@ describe('a card made with a newer component catalog than this app', () => {
     renderSurface(newer, 'pending', { web: { current: 'build-a', served: 'build-a' } });
     const note = screen.getByTestId('surface-needs-update');
     expect(note.textContent).toContain(UNSUPPORTED);
-    expect(note.textContent).not.toContain('刷新');
-    expect(screen.queryByRole('button', { name: '刷新' })).toBeNull();
+    expect(note.textContent).not.toContain('Refresh');
+    expect(screen.queryByRole('button', { name: 'Refresh' })).toBeNull();
     expect(screen.getByText('本周 12 张工单完成，3 张进行中。')).toBeTruthy();
   });
 
   // 收起的是顶栏的提示，卡片照样说实话：刷新能拿到新版本，就给刷新。
   it('still offers the refresh on the card after the header notice for that version was dismissed', () => {
     renderSurface(newer, 'pending', { web: { current: 'build-a', served: 'build-b', dismissed: 'build-b' } });
-    expect(screen.getByTestId('surface-needs-update').textContent).toContain('这张卡需要新版本，刷新后显示');
-    expect(screen.getByRole('button', { name: '刷新' })).toBeTruthy();
+    expect(screen.getByTestId('surface-needs-update').textContent).toContain('This card needs a newer version. Refresh to show it.');
+    expect(screen.getByRole('button', { name: 'Refresh' })).toBeTruthy();
   });
 
   // 不知道 daemon 提供的版本时（还没读到、读失败、dev server、原生应用），不承诺刷新有用。
   it('does not promise a refresh when the served version is unknown', () => {
     renderSurface(newer, 'pending', { web: { current: 'build-a', served: null } });
     expect(screen.getByTestId('surface-needs-update').textContent).toContain(UNSUPPORTED);
-    expect(screen.queryByRole('button', { name: '刷新' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Refresh' })).toBeNull();
     cleanup();
     renderSurface(newer);
     expect(screen.getByTestId('surface-needs-update').textContent).toContain(UNSUPPORTED);
-    expect(screen.queryByRole('button', { name: '刷新' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Refresh' })).toBeNull();
     cleanup();
     renderSurface(newer, 'pending', { canReload: false });
     expect(screen.getByTestId('surface-needs-update').textContent).toContain(UNSUPPORTED);
-    expect(screen.queryByRole('button', { name: '刷新' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Refresh' })).toBeNull();
     expect(screen.getByText('本周 12 张工单完成，3 张进行中。')).toBeTruthy();
   });
 
   it('offers the refresh once the check finds a newer page', async () => {
     const { runtime } = renderSurface(newer, 'pending', { web: { current: 'build-a', served: null } });
-    expect(screen.queryByRole('button', { name: '刷新' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Refresh' })).toBeNull();
     await act(async () => { runtime.webVersion.setState({ served: 'build-b' }); });
-    expect(screen.getByRole('button', { name: '刷新' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Refresh' })).toBeTruthy();
   });
 
   it('shows only the fallback sentence when the card is invalid for another reason', () => {
     renderSurface(card([{ id: 'table', type: 'DataTable', props: { columns: [{ label: '工单' }, { label: 'CI' }], rows: [['#66']] } }]));
     expect(screen.getByText('本周 12 张工单完成，3 张进行中。')).toBeTruthy();
     expect(screen.queryByTestId('surface-needs-update')).toBeNull();
-    expect(screen.queryByRole('button', { name: '刷新' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Refresh' })).toBeNull();
   });
 
   // 实时事件里，客户端校验不过的卡以前被直接丢掉，连 fallbackText 都没有。
@@ -772,7 +779,7 @@ describe('a surface that is still being generated', () => {
     runtime.control.setState({ phase: 'ready', connectionState: 'connected' });
     runtime.control.getState().replaceTickets([ticket]);
     renderUI(<CompanionRuntimeProvider runtime={runtime}><SurfaceView surface={surface} partial /></CompanionRuntimeProvider>);
-    expect(screen.getByText('正在生成…')).toBeTruthy();
+    expect(screen.getByText('Generating…')).toBeTruthy();
     expect(screen.getByTestId('surface-choice-merge').getAttribute('aria-disabled')).toBe('true');
   });
 });
@@ -786,13 +793,13 @@ describe('a quoted source', () => {
 
   it('shows the original text and where it comes from', () => {
     renderSurface(quote({ text: '【独立核查报告】\n1. wrapper.ts 的参数可以绕过', label: '工单 #98 正文 ·「【独立核查报告】」' }));
-    expect(screen.getByTestId('surface-source-quote-98').textContent).toContain('原文 · 工单 #98 正文 ·「【独立核查报告】」');
+    expect(screen.getByTestId('surface-source-quote-98').textContent).toContain('Original · 工单 #98 正文 ·「【独立核查报告】」');
     expect(screen.getByText(/wrapper\.ts 的参数可以绕过/)).toBeTruthy();
   });
 
   it('says it is still fetching the original while the card is generated', () => {
     renderSurface(quote({}));
-    expect(screen.getByText('正在取原文…')).toBeTruthy();
+    expect(screen.getByText('Loading the original text…')).toBeTruthy();
   });
 });
 
@@ -804,7 +811,7 @@ describe('an outside message card and a child request as objects', () => {
 
   it('draws the outside message card from the store, with its own actions', () => {
     const { runtime } = renderSurface(object({ id: 'c', type: 'ChannelCard', props: { card: 7 } }));
-    expect(screen.getByTestId('channel-card-slot-7').textContent).toBe('外部消息卡 #7 正在同步。');
+    expect(screen.getByTestId('channel-card-slot-7').textContent).toBe('Channel card #7 is syncing.');
     const dto = {
       id: 7, version: 3, source: 'slack', sourceLabel: 'Slack', objectKey: 'slack:D0ZHANG:main', laneLabel: '张三的私信',
       sender: { id: 'U0ZHANG', name: '张三', trust: 'colleague' }, excerpt: '周五评审的材料收到了吗？谢谢', messageCount: 1,
@@ -822,15 +829,15 @@ describe('an outside message card and a child request as objects', () => {
 
   it('draws the decision request from the ticket, and answers it with the same command', async () => {
     const { resolve } = renderSurface(object({ id: 'i', type: 'Intervention', props: { kind: 'decision', id: 12, ticket: 66 } }));
-    expect(screen.getByTestId('intervention-decision:12').textContent).toContain('child #66：#66 接下来怎么办？');
+    expect(screen.getByTestId('intervention-decision:12').textContent).toContain('child #66: #66 接下来怎么办？');
     fireEvent.click(screen.getByRole('radio', { name: '取消 #66' }));
-    fireEvent.click(screen.getByRole('button', { name: '就这样定' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Use this option' }));
     await waitFor(() => expect(resolve).toHaveBeenCalledWith('decision:12', { authority: 'decision_request', decision: 'select', optionId: 'cancel' }));
   });
 
   it('collapses an answered request into one end line', () => {
     renderSurface(object({ id: 'i', type: 'Intervention', props: { kind: 'decision', id: 12, ticket: 66 } }), 'resolved');
-    expect(screen.getByTestId('intervention-decision:12').textContent).toContain('已解决');
+    expect(screen.getByTestId('intervention-decision:12').textContent).toContain('Resolved');
   });
 });
 
@@ -848,7 +855,7 @@ describe('the Group node', () => {
       ],
     });
     expect(screen.getByText('第 4/13 条没加上：行号不在这次改动里')).toBeTruthy();
-    expect(screen.getByTestId('surface-group-ok-count').textContent).toBe('12 件');
+    expect(screen.getByTestId('surface-group-ok-count').textContent).toBe('12 items');
     expect(screen.queryByText('skills/scope.py:111')).toBeNull();
     fireEvent.click(screen.getByTestId('surface-group-ok-expand'));
     expect(await screen.findByTestId('surface-group-ok-panel')).toBeTruthy();

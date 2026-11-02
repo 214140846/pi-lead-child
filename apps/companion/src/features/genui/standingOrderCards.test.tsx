@@ -36,15 +36,15 @@ describe('the standing order change card', () => {
     await act(async () => { renderWithRuntime(<SurfaceView surface={surface()} />, runtime); });
     expect((client as any).standingOrderProposal).toHaveBeenCalledWith(APPROVAL, expect.any(AbortSignal));
     const card = screen.getByTestId(`surface-standing-order-${APPROVAL}`);
-    expect(card.textContent).toContain('Paimon 想修改「要叫醒 Paimon 的事告诉 Paimon」');
-    expect(screen.getByTestId(`surface-standing-order-${APPROVAL}-reason`).textContent).toBe('Paimon 的原因：blocker 太多，先进摘要');
+    expect(card.textContent).toContain('Paimon wants to change "要叫醒 Paimon 的事告诉 Paimon"');
+    expect(screen.getByTestId(`surface-standing-order-${APPROVAL}-reason`).textContent).toBe('Reason from Paimon: blocker 太多，先进摘要');
     // 只列更放开的几项：这是要你看的理由。
     expect(screen.getByTestId(`surface-standing-order-${APPROVAL}-concern-0`).textContent).toContain('交给人的更少');
     expect(screen.queryByTestId(`surface-standing-order-${APPROVAL}-concern-1`)).toBeNull();
 
     await act(async () => { fireEvent.click(screen.getByTestId(`surface-standing-order-${APPROVAL}-approve`)); });
     expect((client as any).decideStandingOrderProposal).toHaveBeenCalledWith(APPROVAL, true);
-    expect(screen.getByTestId(`surface-standing-order-${APPROVAL}-result`).textContent).toBe('已批准，生效为 v2');
+    expect(screen.getByTestId(`surface-standing-order-${APPROVAL}-result`).textContent).toBe('Approved. The order is now v2.');
     expect(screen.queryByTestId(`surface-standing-order-${APPROVAL}-approve`)).toBeNull();
   });
 
@@ -56,7 +56,7 @@ describe('the standing order change card', () => {
     await act(async () => { renderWithRuntime(<SurfaceView surface={surface()} />, runtime); });
     await act(async () => { fireEvent.click(screen.getByTestId(`surface-standing-order-${APPROVAL}-reject`)); });
     expect((client as any).decideStandingOrderProposal).toHaveBeenCalledWith(APPROVAL, false);
-    expect(screen.getByTestId(`surface-standing-order-${APPROVAL}-result`).textContent).toBe('你没有批准，指令照旧');
+    expect(screen.getByTestId(`surface-standing-order-${APPROVAL}-result`).textContent).toBe('You did not approve. The order stays the same.');
   });
 
   it('shows the current state when the proposal was voided in the meantime', async () => {
@@ -69,7 +69,7 @@ describe('the standing order change card', () => {
     read.mockResolvedValue({ proposal: proposal({ state: 'expired', voidedReason: 'superseded' }), order: null });
     await act(async () => { fireEvent.click(screen.getByTestId(`surface-standing-order-${APPROVAL}-approve`)); });
     expect(read).toHaveBeenCalledTimes(2);
-    expect(screen.getByTestId(`surface-standing-order-${APPROVAL}-result`).textContent).toBe('指令后来又改过，这个提议作废了');
+    expect(screen.getByTestId(`surface-standing-order-${APPROVAL}-result`).textContent).toBe('The order changed again later, so this proposal is void.');
     expect(screen.getByTestId(`surface-standing-order-${APPROVAL}-error`).textContent).toContain('又变了');
     expect(screen.queryByTestId(`surface-standing-order-${APPROVAL}-approve`)).toBeNull();
   });
@@ -79,6 +79,6 @@ describe('the standing order change card', () => {
       standingOrderProposal: vi.fn(async () => { throw new ControlPlaneClientError('没有常设指令的提议 #42', 'not_found', 404); }),
     });
     await act(async () => { renderWithRuntime(<SurfaceView surface={surface()} />, runtime); });
-    expect(screen.getByTestId(`surface-standing-order-${APPROVAL}-gone`).textContent).toBe('找不到这个常设指令的提议。');
+    expect(screen.getByTestId(`surface-standing-order-${APPROVAL}-gone`).textContent).toBe('Could not find this standing order proposal.');
   });
 });

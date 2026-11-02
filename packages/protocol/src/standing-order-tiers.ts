@@ -42,14 +42,13 @@
 // 这一条只加一项「更放开」的判断，不改上面两个维度的比较；升到 tell 及以下仍按原来的规则判断。
 import { EVENT_SOURCES, eventKindDefinition } from "./events.ts";
 import {
-  CHANNEL_INTENT_LABELS, CHANNEL_INTENT_PERMISSION_LABELS, CHANNEL_INTENT_PERMISSION_RANK, CHANNEL_INTENTS, DELEGATION_CATEGORY_LABELS,
-  LOOKUP_PLAYBOOK_LABELS, NEVER_DELEGATED_TRUST, SENDER_TRUST_LABELS,
+  CHANNEL_INTENT_PERMISSION_RANK, CHANNEL_INTENTS, DELEGATION_CATEGORY_LABELS, LOOKUP_PLAYBOOK_LABELS, NEVER_DELEGATED_TRUST, SENDER_TRUST_LABELS,
   type ChannelIntentPermission, type DelegationCategory, type SenderTrust,
 } from "./channel-policy.ts";
 import { LOOKUP_PLAYBOOKS, type LookupPlaybook } from "./channel-lookup.ts";
 import { CHANNEL_AUTO_REPLY_DEFAULT, CHANNEL_CONFIDENCE_DEFAULTS, type ChannelConfidenceParams } from "./channel-confidence.ts";
 import {
-  ChannelHandbookSchema, HANDBOOK_ABILITY_LABELS, HANDBOOK_CAP_SENDERS, HANDBOOK_FALLBACK_ID, HANDBOOK_MODE_LABELS, handbookModeCovers,
+  ChannelHandbookSchema, HANDBOOK_CAP_SENDERS, HANDBOOK_FALLBACK_ID, handbookModeCovers,
   type ChannelHandbook, type HandbookAbility, type HandbookMode, type HandbookSituation,
 } from "./channel-handbook.ts";
 import {
@@ -57,6 +56,8 @@ import {
   type StandingOrderCondition, type StandingOrderDefinition, type StandingOrderFieldTest, type StandingOrderRule,
   type StandingOrderStatus, type TriageLevel,
 } from "./standing-orders.ts";
+import { DEFAULT_LOCALE, type Locale } from "./i18n.ts";
+import { standingOrderChangeText, TRIAGE_LEVEL_LABELS } from "./standing-order-tiers.messages.ts";
 import { Value } from "typebox/value";
 
 export const STANDING_ORDER_CHANGE_TIERS = ["conservative", "permissive", "forbidden"] as const;
@@ -113,6 +114,8 @@ export interface StandingOrderChangeInput {
   before: StandingOrderState | null;
   // 改之后的样子。
   after: StandingOrderState;
+  // finding.detail 用的语言。缺省英文；store 现在传 "zh"。
+  locale?: Locale;
 }
 
 // ── 级别的比较 ────────────────────────────────────────────────────────────────────
@@ -120,11 +123,14 @@ export interface StandingOrderChangeInput {
 const ATTENTION: Record<TriageLevel, number> = { record: 0, digest: 1, auto: 1, tell: 2, interrupt: 3 };
 const AUTOMATION: Record<TriageLevel, number> = { record: 0, digest: 0, auto: 1, tell: 0, interrupt: 0 };
 
-export const TRIAGE_LEVEL_LABELS: Record<TriageLevel, string> = {
-  record: "只记录", digest: "进摘要", auto: "自动处理", tell: "单独告诉", interrupt: "打断",
-};
+// 级别的中文名（store 写事件摘要时用）。定义在 standing-order-tiers.messages.ts，和 finding 的中文共用。
+export { TRIAGE_LEVEL_LABELS };
 
-const levelText = (level: TriageLevel) => `${level}（${TRIAGE_LEVEL_LABELS[level]}）`;
+// 给人看的句子（finding.detail）的文案，按 input.locale 取。classifyStandingOrderChange 是同步的纯函数：
+// 进来时把 t 换成那种语言的文案，出去时还原；下面写句子的函数都读 t，不用一层层传。
+let t = standingOrderChangeText(DEFAULT_LOCALE);
+
+const levelText = (level: TriageLevel) => t.level(level);
 
 /** a 至少和 b 一样保守：交给人的不少于 b，自动做的不多于 b。 */
 export function levelAtLeastAsConservative(a: TriageLevel, b: TriageLevel): boolean {
@@ -146,7 +152,7 @@ function outcome(level: TriageLevel, escalateTo: TriageLevel | null, ladder: Rea
 const outcomeAtLeastAsConservative = (a: Outcome, b: Outcome) =>
   levelAtLeastAsConservative(a.level, b.level) && levelAtLeastAsConservative(a.eventual, b.eventual);
 const sameOutcome = (a: Outcome, b: Outcome) => a.level === b.level && a.eventual === b.eventual;
-const outcomeText = (o: Outcome) => o.eventual === o.level ? levelText(o.level) : `${levelText(o.level)}，到时限升到 ${o.eventual}`;
+const outcomeText = (o: Outcome) => o.eventual === o.level ? levelText(o.level) : t.outcome(levelText(o.level), o.eventual);
 
 function escalationLadder(active: readonly StandingOrderState[]): Readonly<Record<string, TriageLevel>> {
   const order = active.find((candidate) => candidate.action.type === "rule" && candidate.action.rule === "events.escalate_overdue");
@@ -329,29 +335,28 @@ function hardRuleFindings({ before, after }: StandingOrderChangeInput): Standing
   const wakeWhen = after.action.type === "rule" && after.action.rule === "inbox.wake_lead"
     ? params.wakeWhen as StandingOrderCondition | undefined : undefined;
   if ([...fieldPaths(after.condition), ...fieldPaths(wakeWhen)].some((path) => /authorityType/i.test(path))) {
-    found.push(finding("forbidden", "hard_rule", "审批的事件由硬性规则处理（至少单独告诉，不合并），常设指令不能针对它们",
+    found.push(finding("forbidden", "hard_rule", t.hard.approvalEvents,
       STANDING_ORDER_HARD_RULES.approvalReachesUser));
   }
   const level = standingOrderLevel(after);
   if (after.status === "active" && (level === "interrupt" || after.escalateTo === "interrupt")
     && conditionSources(after.condition).some((source) => !isInternalSource(source))) {
-    found.push(finding("forbidden", "hard_rule", "外部来源的事件永远不打断 Lead 的回合，不能定成 interrupt",
+    found.push(finding("forbidden", "hard_rule", t.hard.externalNeverInterrupts,
       STANDING_ORDER_HARD_RULES.externalNeverInterrupts));
   }
   if (isThreshold(after)) {
     const threshold = thresholdParams(after);
     if (!isInternalSource(threshold.source) && (threshold.maxLevel === "interrupt" || threshold.defaultLevel === "interrupt")) {
-      found.push(finding("forbidden", "hard_rule", `外部来源（${threshold.source}）的事件永远不打断 Lead 的回合，阈值最高 tell`,
+      found.push(finding("forbidden", "hard_rule", t.hard.externalThreshold(threshold.source),
         STANDING_ORDER_HARD_RULES.externalNeverInterrupts));
     }
   }
   if (before && before.action.type !== after.action.type) {
-    found.push(finding("forbidden", "hard_rule", "规则类指令和定级别的指令不能互换", STANDING_ORDER_HARD_RULES.ruleIdentityFixed));
+    found.push(finding("forbidden", "hard_rule", t.hard.ruleLevelSwap, STANDING_ORDER_HARD_RULES.ruleIdentityFixed));
   } else if (before?.action.type === "rule" && after.action.type === "rule" && before.action.rule !== after.action.rule) {
-    found.push(finding("forbidden", "hard_rule", `规则不能换：这条指令是 ${before.action.rule}`, STANDING_ORDER_HARD_RULES.ruleIdentityFixed));
+    found.push(finding("forbidden", "hard_rule", t.hard.ruleSwap(before.action.rule), STANDING_ORDER_HARD_RULES.ruleIdentityFixed));
   } else if (!before && after.action.type === "rule" && after.action.rule !== "source.threshold") {
-    found.push(finding("forbidden", "hard_rule",
-      `规则 ${after.action.rule} 已经有自己的指令，只能改它的参数；新指令只能定级别，或者是来源阈值（source.threshold）`,
+    found.push(finding("forbidden", "hard_rule", t.hard.ruleHasOrder(after.action.rule),
       STANDING_ORDER_HARD_RULES.ruleIdentityFixed));
   }
   if (after.action.type === "rule" && (after.action.rule === "channel.delegate" || after.action.rule === "channel.lookup")) {
@@ -359,28 +364,29 @@ function hardRuleFindings({ before, after }: StandingOrderChangeInput): Standing
     const never = trust.filter((level) => (NEVER_DELEGATED_TRUST as readonly string[]).includes(level));
     const lookup = after.action.rule === "channel.lookup";
     if (never.length) {
-      found.push(finding("forbidden", "hard_rule",
-        `${never.map((level) => SENDER_TRUST_LABELS[level as SenderTrust] ?? level).join("、")}的消息永不${lookup ? "代查" : "代回"}，`
-          + `allowedTrust 不能有 ${never.join("、")}`,
+      found.push(finding("forbidden", "hard_rule", t.hard.neverDelegated(never, lookup),
         lookup ? STANDING_ORDER_HARD_RULES.customersNeverLookedUp : STANDING_ORDER_HARD_RULES.customersNeverDelegated));
     }
   }
   if (after.action.type === "rule" && after.action.rule === "channel.authority") {
     const secret = ((params.intents ?? {}) as Record<string, { action?: unknown } | undefined>).secret;
     if (secret?.action === "auto") {
-      found.push(finding("forbidden", "hard_rule", "问涉密信息的永远不替你做，授权表里 secret 不能是 auto",
+      found.push(finding("forbidden", "hard_rule", t.hard.secret,
         STANDING_ORDER_HARD_RULES.secretsNeverDelegated));
     }
   }
   if (after.action.type === "rule" && after.status === "disabled") {
     found.push(after.action.rule === "reminder.fire"
-      ? finding("forbidden", "hard_rule", "提醒到点一定发通知，reminder.fire 不能关", STANDING_ORDER_HARD_RULES.reminderAlwaysFires)
-      : finding("forbidden", "hard_rule", "规则类指令不能停用，只能改参数（例如把次数改成 0）", STANDING_ORDER_HARD_RULES.rulesStayOn));
+      ? finding("forbidden", "hard_rule", t.hard.reminderFires, STANDING_ORDER_HARD_RULES.reminderAlwaysFires)
+      : finding("forbidden", "hard_rule", t.hard.rulesStayOn, STANDING_ORDER_HARD_RULES.rulesStayOn));
   }
   return found;
 }
 
 interface Candidate { label: string; outcome: Outcome }
+
+const candidateList = (candidates: readonly Candidate[]) =>
+  t.list(candidates.map((c) => t.levels.candidate(c.label, outcomeText(c.outcome))));
 
 function levelFindings(input: StandingOrderChangeInput, ladder: Readonly<Record<string, TriageLevel>>): StandingOrderChangeFinding[] {
   const { active, before, after } = input;
@@ -389,7 +395,7 @@ function levelFindings(input: StandingOrderChangeInput, ladder: Readonly<Record<
   if (!levelBefore && !levelAfter) {
     // 停用着的定级别的指令：改了也不起作用，以后启用时再判断。
     return before && standingOrderLevel(after) !== null && behaviourKey(before) !== behaviourKey(after)
-      ? [finding("conservative", "status", "指令停用着，这次修改现在不起作用；以后启用时再判断")]
+      ? [finding("conservative", "status", t.levels.disabled)]
       : [];
   }
   const found: StandingOrderChangeFinding[] = [];
@@ -404,7 +410,7 @@ function levelFindings(input: StandingOrderChangeInput, ladder: Readonly<Record<
     ...others.filter((order) => sortsBefore(position, order) && conditionsMayOverlap(position.condition, order.condition))
       .map(orderCandidate),
     ...relevantThresholds(position.condition, lists).map((order) => ({
-      label: `${order.id} 的默认级别`, outcome: outcome(thresholdParams(order).defaultLevel, order.escalateTo, ladder),
+      label: t.levels.thresholdDefault(order.id), outcome: outcome(thresholdParams(order).defaultLevel, order.escalateTo, ladder),
     })),
   ];
   // 只挪了位置时：只有两个位置之间、可能重叠的指令会接手或被接手。事件仍然匹配这条指令，落不到来源的默认级别。
@@ -414,8 +420,8 @@ function levelFindings(input: StandingOrderChangeInput, ladder: Readonly<Record<
 
   if (outBefore && outAfter && !sameOutcome(outBefore, outAfter)) {
     found.push(outcomeAtLeastAsConservative(outAfter, outBefore)
-      ? finding("conservative", "level", `匹配的事件从 ${outcomeText(outBefore)} 改为 ${outcomeText(outAfter)}，交给人的不会更少`)
-      : finding("permissive", "level", `匹配的事件从 ${outcomeText(outBefore)} 改为 ${outcomeText(outAfter)}，交给人的更少或者自动做的更多`));
+      ? finding("conservative", "level", t.levels.safer(outcomeText(outBefore), outcomeText(outAfter)))
+      : finding("permissive", "level", t.levels.looser(outcomeText(outBefore), outcomeText(outAfter))));
   }
   // 多接手的事件：新增或启用，新条件不能证明是旧条件的子集，或者排到了更前面。
   const narrowerOrSame = outBefore !== null && conditionImplies(after.condition, before!.condition);
@@ -425,8 +431,8 @@ function levelFindings(input: StandingOrderChangeInput, ladder: Readonly<Record<
     const weaker = pool.filter((candidate) => !outcomeAtLeastAsConservative(outAfter!, candidate.outcome));
     found.push(weaker.length
       ? finding("permissive", "condition",
-        `可能接手原来由 ${weaker.map((c) => `${c.label}（${outcomeText(c.outcome)}）`).join("、")} 处理的事件，改成 ${outcomeText(outAfter!)} 以后交给人的更少或者自动做的更多`)
-      : finding("conservative", "condition", `可能多接手一些事件，它们原来的处理都不比 ${outcomeText(outAfter!)} 交给人的更多`));
+        t.levels.captureLooser(candidateList(weaker), outcomeText(outAfter!)))
+      : finding("conservative", "condition", t.levels.captureSafe(outcomeText(outAfter!))));
   }
   // 放掉的事件：停用，旧条件不能证明是新条件的子集，或者排到了更后面。
   const widerOrSame = outAfter !== null && outBefore !== null && conditionImplies(before!.condition, after.condition);
@@ -436,16 +442,15 @@ function levelFindings(input: StandingOrderChangeInput, ladder: Readonly<Record<
     const weaker = pool.filter((candidate) => !outcomeAtLeastAsConservative(candidate.outcome, outBefore!));
     found.push(weaker.length
       ? finding("permissive", outAfter ? "condition" : "status",
-        `不再由这条指令处理的事件会改由 ${weaker.map((c) => `${c.label}（${outcomeText(c.outcome)}）`).join("、")} 处理，比现在的 ${outcomeText(outBefore!)} 交给人的更少或者自动做的更多`)
-      : finding("conservative", outAfter ? "condition" : "status",
-        `不再由这条指令处理的事件改由后面的指令或来源的默认级别处理，交给人的不比现在的 ${outcomeText(outBefore!)} 少`));
+        t.levels.releaseLooser(candidateList(weaker), outcomeText(outBefore!)))
+      : finding("conservative", outAfter ? "condition" : "status", t.levels.releaseSafe(outcomeText(outBefore!))));
   }
   if (outBefore && outAfter && sameOutcome(outBefore, outAfter) && !captures && !releases) {
-    found.push(finding("conservative", "level", `匹配的事件和以前一样：${outcomeText(outAfter)}`));
+    found.push(finding("conservative", "level", t.levels.same(outcomeText(outAfter))));
   }
   // 来源的阈值封顶到 auto 时，上面的比较不可靠：比 auto 高的级别会被压成自动处理。封顶到别的级别不影响比较的结论。
   if (lists.some((list) => list.some((order) => isThreshold(order) && thresholdParams(order).maxLevel === "auto"))) {
-    found.push(finding("permissive", "level", "有来源的打断阈值封顶到 auto，无法判断"));
+    found.push(finding("permissive", "level", t.levels.capAuto));
   }
   return found;
 }
@@ -462,8 +467,6 @@ const LIMIT_DIRECTIONS: Partial<Record<StandingOrderRule, Partial<Record<"count"
   "events.escalate_overdue": { count: "higher", windowMs: "lower" },
 };
 
-const LIMIT_LABELS: Record<string, string> = { count: "次数", windowMs: "时间窗", budget: "预算" };
-
 function limitFindings(rule: StandingOrderRule | null, before: StandingOrderState | null, after: StandingOrderState): StandingOrderChangeFinding[] {
   const found: StandingOrderChangeFinding[] = [];
   const old = (before?.limits ?? {}) as Record<string, number | undefined>;
@@ -471,14 +474,14 @@ function limitFindings(rule: StandingOrderRule | null, before: StandingOrderStat
   for (const key of new Set([...Object.keys(old), ...Object.keys(next)])) {
     if (old[key] === next[key]) continue;
     const direction = rule ? LIMIT_DIRECTIONS[rule]?.[key as "count"] : undefined;
-    const label = `limits.${key}（${LIMIT_LABELS[key] ?? key}）`;
+    const label = t.limits.label(key, t.limits.labels[key] ?? key);
     if (!direction) {
-      found.push(finding("permissive", "limits", `${label} 对这条指令不起作用，无法判断`));
+      found.push(finding("permissive", "limits", t.limits.noEffect(label)));
     } else if (typeof old[key] !== "number" || typeof next[key] !== "number") {
-      found.push(finding("permissive", "limits", `${label} 从 ${old[key] ?? "没写"} 改为 ${next[key] ?? "没写"}，无法判断`));
+      found.push(finding("permissive", "limits", t.limits.changedUnknown(label, String(old[key] ?? t.unset), String(next[key] ?? t.unset))));
     } else {
       const conservative = direction === "higher" ? next[key]! > old[key]! : next[key]! < old[key]!;
-      found.push(finding(conservative ? "conservative" : "permissive", "limits", `${label} 从 ${old[key]} 改为 ${next[key]}`));
+      found.push(finding(conservative ? "conservative" : "permissive", "limits", t.limits.changed(label, String(old[key]), String(next[key]))));
     }
   }
   return found;
@@ -487,11 +490,11 @@ function limitFindings(rule: StandingOrderRule | null, before: StandingOrderStat
 // 一个布尔参数：true 更保守（conservativeWhen=true）或者 false 更保守。
 function booleanParam(name: string, old: unknown, next: unknown, conservativeWhen: boolean, label: string): StandingOrderChangeFinding[] {
   if (old === next) return [];
-  return [finding(next === conservativeWhen ? "conservative" : "permissive", "params", `${name}（${label}）从 ${String(old)} 改为 ${String(next)}`)];
+  return [finding(next === conservativeWhen ? "conservative" : "permissive", "params", t.changed(t.param(name, label), String(old), String(next)))];
 }
 
 function anyChange(name: string, old: unknown, next: unknown, tier: StandingOrderChangeTier, detail: string): StandingOrderChangeFinding[] {
-  return stableJson(old) === stableJson(next) ? [] : [finding(tier, "params", `${name}：${detail}`)];
+  return stableJson(old) === stableJson(next) ? [] : [finding(tier, "params", t.detail(name, detail))];
 }
 
 // 模型目录的去抖（工单 14）：连续几次刷新的结果相同才算变化。数字调大，告诉 Lead 的更少，更放开；调小更保守。
@@ -501,9 +504,11 @@ function stableRefreshesFindings(old: unknown, next: unknown): StandingOrderChan
   const before = value(old);
   const after = value(next);
   if (before === after) return [];
-  const label = `stableRefreshes（连续几次刷新相同才算变化）从 ${String(before)} 改为 ${String(after)}`;
-  if (!Number.isInteger(before) || !Number.isInteger(after)) return [finding("permissive", "params", `${label}，无法判断`)];
-  return [finding(Number(after) < Number(before) ? "conservative" : "permissive", "params", label)];
+  const label = t.param("stableRefreshes", t.params.stableRefreshes);
+  if (!Number.isInteger(before) || !Number.isInteger(after)) {
+    return [finding("permissive", "params", t.changedUnknown(label, String(before), String(after)))];
+  }
+  return [finding(Number(after) < Number(before) ? "conservative" : "permissive", "params", t.changed(label, String(before), String(after)))];
 }
 
 type ParamCheck = (old: Record<string, unknown>, next: Record<string, unknown>, ladder: Readonly<Record<string, TriageLevel>>) => StandingOrderChangeFinding[];
@@ -512,21 +517,22 @@ type ParamCheck = (old: Record<string, unknown>, next: Record<string, unknown>, 
 function numberParam(name: string, old: unknown, next: unknown, conservativeWhen: "higher" | "lower", label: string): StandingOrderChangeFinding[] {
   if (old === next) return [];
   if (typeof old !== "number" || typeof next !== "number") {
-    return [finding("permissive", "params", `${name}（${label}）从 ${String(old)} 改为 ${String(next)}，无法判断`)];
+    return [finding("permissive", "params", t.changedUnknown(t.param(name, label), String(old), String(next)))];
   }
   const conservative = conservativeWhen === "higher" ? next > old : next < old;
-  return [finding(conservative ? "conservative" : "permissive", "params", `${name}（${label}）从 ${old} 改为 ${next}`)];
+  return [finding(conservative ? "conservative" : "permissive", "params", t.changed(t.param(name, label), String(old), String(next)))];
 }
 
 // 一个集合参数：加进去的项更放开（例如开放代回的类别），去掉的项更保守。
 function setParam(name: string, old: unknown, next: unknown, label: (value: string) => string, verb: string): StandingOrderChangeFinding[] {
+  // verb 是 t.set.verbs 里的一个。
   const before = new Set(Array.isArray(old) ? old.map(String) : []);
   const after = new Set(Array.isArray(next) ? next.map(String) : []);
   const added = [...after].filter((value) => !before.has(value));
   const removed = [...before].filter((value) => !after.has(value));
   return [
-    ...(added.length ? [finding("permissive", "params", `${name}：${verb} ${added.map(label).join("、")}`)] : []),
-    ...(removed.length ? [finding("conservative", "params", `${name}：不再${verb} ${removed.map(label).join("、")}`)] : []),
+    ...(added.length ? [finding("permissive", "params", t.set.added(name, verb, t.list(added.map(label))))] : []),
+    ...(removed.length ? [finding("conservative", "params", t.set.removed(name, verb, t.list(removed.map(label))))] : []),
   ];
 }
 
@@ -538,14 +544,12 @@ function deliveryCondition(name: string, old: unknown, next: unknown, label: str
   if (stableJson(a) === stableJson(b)) return [];
   if (push) {
     const wider = a === null || (b !== null && conditionImplies(a, b));
-    return [finding("permissive", "params", wider
-      ? `${name}（${label}）可能放宽：更多消息会推送到用户手机，要用户批准`
-      : `${name}（${label}）可能收窄：有的消息不再推送给用户`)];
+    return [finding("permissive", "params", wider ? t.delivery.pushWider(t.param(name, label)) : t.delivery.pushNarrower(t.param(name, label)))];
   }
   const wider = b !== null && (a === null || conditionImplies(a, b));
   return [wider
-    ? finding("conservative", "params", `${name}（${label}）放宽了：交给用户的不会更少`)
-    : finding("permissive", "params", `${name}（${label}）可能收窄：有的消息交给用户的更少`)];
+    ? finding("conservative", "params", t.delivery.wider(t.param(name, label)))
+    : finding("permissive", "params", t.delivery.narrower(t.param(name, label)))];
 }
 
 // 每条规则的参数：哪个方向更保守。没有方向的参数改了按「无法判断」处理。
@@ -557,24 +561,24 @@ const RULE_PARAM_CHECKS: Record<StandingOrderRule, ParamCheck> = {
     const b = next.wakeWhen as StandingOrderCondition;
     if (stableJson(a) === stableJson(b)) return [];
     return conditionImplies(a, b)
-      ? [finding("conservative", "params", "wakeWhen 放宽了：叫醒 Lead 的 inbox 不会更少")]
-      : [finding("permissive", "params", "wakeWhen 可能收窄：有的 inbox 不再叫醒 Lead")];
+      ? [finding("conservative", "params", t.params.wakeWider)]
+      : [finding("permissive", "params", t.params.wakeNarrower)];
   },
   "run.transient_retry": (old, next) => [
-    ...anyChange("baseMs", old.baseMs, next.baseMs, "permissive", "重试的等待时间变了，无法判断"),
-    ...anyChange("maxMs", old.maxMs, next.maxMs, "permissive", "重试的最长等待变了，无法判断"),
+    ...anyChange("baseMs", old.baseMs, next.baseMs, "permissive", t.params.retryWait),
+    ...anyChange("maxMs", old.maxMs, next.maxMs, "permissive", t.params.retryMax),
   ],
   "model_catalog.announce": (old, next) => [
-    ...booleanParam("announceFirstRefresh", old.announceFirstRefresh, next.announceFirstRefresh, true, "启动后第一次刷新也说明"),
-    ...booleanParam("wakeLead", old.wakeLead, next.wakeLead, true, "叫醒 Lead"),
-    ...anyChange("refreshOnFailureScopes", old.refreshOnFailureScopes, next.refreshOnFailureScopes, "permissive", "失败后自动刷新的范围变了，无法判断"),
+    ...booleanParam("announceFirstRefresh", old.announceFirstRefresh, next.announceFirstRefresh, true, t.params.announceFirst),
+    ...booleanParam("wakeLead", old.wakeLead, next.wakeLead, true, t.params.wakeLead),
+    ...anyChange("refreshOnFailureScopes", old.refreshOnFailureScopes, next.refreshOnFailureScopes, "permissive", t.params.refreshScopes),
     ...stableRefreshesFindings(old.stableRefreshes, next.stableRefreshes),
   ],
   "reminder.fire": (old, next) => [
     ...(old.urgency === next.urgency ? [] : [finding(next.urgency === "immediate" ? "conservative" : "permissive", "params",
-      `urgency 从 ${String(old.urgency)} 改为 ${String(next.urgency)}`)]),
-    ...anyChange("notificationKind", old.notificationKind, next.notificationKind, "permissive", "通知的类型变了，匹配它的指令可能不再匹配"),
-    ...anyChange("titlePrefix", old.titlePrefix, next.titlePrefix, "conservative", "只改了通知标题的前缀"),
+      t.changed("urgency", String(old.urgency), String(next.urgency)))]),
+    ...anyChange("notificationKind", old.notificationKind, next.notificationKind, "permissive", t.params.notificationKind),
+    ...anyChange("titlePrefix", old.titlePrefix, next.titlePrefix, "conservative", t.params.titlePrefix),
   ],
   "events.merge_root_cause": () => [],
   "events.escalate_overdue": (old, next) => {
@@ -584,20 +588,20 @@ const RULE_PARAM_CHECKS: Record<StandingOrderRule, ParamCheck> = {
     for (const key of new Set([...Object.keys(a), ...Object.keys(b)])) {
       if (a[key] === b[key]) continue;
       if (!(key in ATTENTION)) {
-        found.push(finding("permissive", "params", `ladder.${key} 不是级别，无法判断`));
+        found.push(finding("permissive", "params", t.params.notLevel(key)));
         continue;
       }
       const from = key as TriageLevel;
       const eventual = (target: TriageLevel | undefined) => target && triageLevelRank(target) > triageLevelRank(from) ? target : from;
       found.push(finding(levelAtLeastAsConservative(eventual(b[key]), eventual(a[key])) ? "conservative" : "permissive", "params",
-        `${key} 级的事件到时限升到 ${b[key] ?? "不升"}（原来 ${a[key] ?? "不升"}）`));
+        t.params.ladder(key, b[key], a[key])));
     }
     return found;
   },
   "events.digest_batch": (old, next) => [
     ...(old.maxWaitMs === next.maxWaitMs ? [] : [finding(Number(next.maxWaitMs) < Number(old.maxWaitMs) ? "conservative" : "permissive", "params",
-      `maxWaitMs（摘要最长等多久）从 ${String(old.maxWaitMs)} 改为 ${String(next.maxWaitMs)}`)]),
-    ...booleanParam("onUserReturn", old.onUserReturn, next.onUserReturn, true, "用户回来时交给 Lead"),
+      t.changed(t.param("maxWaitMs", t.params.maxWait), String(old.maxWaitMs), String(next.maxWaitMs)))]),
+    ...booleanParam("onUserReturn", old.onUserReturn, next.onUserReturn, true, t.params.onUserReturn),
   ],
   // 来源阈值看的是整份清单（thresholdFindings）。
   "source.threshold": () => [],
@@ -611,45 +615,45 @@ const RULE_PARAM_CHECKS: Record<StandingOrderRule, ParamCheck> = {
     const { enabledKinds: _a, ...oldRest } = old;
     const { enabledKinds: _b, ...nextRest } = next;
     return [
-      ...(added.length ? [finding("permissive", "params", `为 ${added.join("、")} 打开 Jev 分诊`)] : []),
-      ...(removed.length ? [finding("conservative", "params", `为 ${removed.join("、")} 关掉 Jev 分诊`)] : []),
-      ...anyChange("triage.jev", oldRest, nextRest, "permissive", "开关以外的参数变了，无法判断"),
+      ...(added.length ? [finding("permissive", "params", t.params.jevOn(t.list(added)))] : []),
+      ...(removed.length ? [finding("conservative", "params", t.params.jevOff(t.list(removed)))] : []),
+      ...anyChange("triage.jev", oldRest, nextRest, "permissive", t.params.jevOther),
     ];
   },
   // 通道的投递（工单 11）：会话卡、摘要两档放宽更保守；推送这一档两个方向都更放开（见 deliveryCondition）。
   "channel.delivery": (old, next) => [
-    ...anyChange("source", old.source, next.source, "permissive", "换了来源，无法判断"),
-    ...deliveryCondition("pushWhen", old.pushWhen, next.pushWhen, "打断阈值：推送加会话卡", true),
-    ...deliveryCondition("cardWhen", old.cardWhen, next.cardWhen, "会话卡", false),
-    ...deliveryCondition("digestWhen", old.digestWhen, next.digestWhen, "摘要", false),
+    ...anyChange("source", old.source, next.source, "permissive", t.params.sourceChanged),
+    ...deliveryCondition("pushWhen", old.pushWhen, next.pushWhen, t.delivery.push, true),
+    ...deliveryCondition("cardWhen", old.cardWhen, next.cardWhen, t.delivery.card, false),
+    ...deliveryCondition("digestWhen", old.digestWhen, next.digestWhen, t.delivery.digest, false),
   ],
   // 代你行动的闸门（工单 11）：开放更多类别、信任更多发信人、放低门槛、缩短撤回窗口都是更放开，要用户批准。
   "channel.delegate": (old, next) => [
-    ...anyChange("source", old.source, next.source, "permissive", "换了来源，无法判断"),
+    ...anyChange("source", old.source, next.source, "permissive", t.params.sourceChanged),
     ...setParam("openCategories", old.openCategories, next.openCategories,
-      (value) => `${DELEGATION_CATEGORY_LABELS[value as DelegationCategory] ?? value}（${value}）`, "自动代回"),
+      (value) => t.labeled(DELEGATION_CATEGORY_LABELS[value as DelegationCategory], value), t.set.verbs.autoReply),
     ...setParam("allowedTrust", old.allowedTrust, next.allowedTrust,
-      (value) => `${SENDER_TRUST_LABELS[value as SenderTrust] ?? value}（${value}）`, "代回"),
-    ...numberParam("minConfidence", old.minConfidence, next.minConfidence, "higher", "置信度门槛"),
-    ...numberParam("maxSensitivity", old.maxSensitivity, next.maxSensitivity, "lower", "敏感话题的概率上限"),
-    ...numberParam("revokeWindowMs", old.revokeWindowMs, next.revokeWindowMs, "higher", "撤回窗口"),
-    ...numberParam("shadowMinSamples", old.shadowMinSamples, next.shadowMinSamples, "higher", "影子模式的最少样本"),
-    ...numberParam("shadowMinAgreement", old.shadowMinAgreement, next.shadowMinAgreement, "higher", "影子模式的一致率门槛"),
+      (value) => t.labeled(SENDER_TRUST_LABELS[value as SenderTrust], value), t.set.verbs.reply),
+    ...numberParam("minConfidence", old.minConfidence, next.minConfidence, "higher", t.params.minConfidence),
+    ...numberParam("maxSensitivity", old.maxSensitivity, next.maxSensitivity, "lower", t.params.maxSensitivity),
+    ...numberParam("revokeWindowMs", old.revokeWindowMs, next.revokeWindowMs, "higher", t.params.revokeWindow),
+    ...numberParam("shadowMinSamples", old.shadowMinSamples, next.shadowMinSamples, "higher", t.params.shadowMinSamples),
+    ...numberParam("shadowMinAgreement", old.shadowMinAgreement, next.shadowMinAgreement, "higher", t.params.shadowMinAgreement),
   ],
   // 代查闸门（代查与按信心代回 spec D2）：开更多剧本、代查更多发信人、降门槛、加配额、放长时限、多查仓库都是更放开，
   // 要用户批准；反方向（收紧）Lead 可以直接改。
   "channel.lookup": (old, next) => [
-    ...anyChange("source", old.source, next.source, "permissive", "换了来源，无法判断"),
-    ...setParam("playbooks", old.playbooks, next.playbooks, playbookText, "代查"),
+    ...anyChange("source", old.source, next.source, "permissive", t.params.sourceChanged),
+    ...setParam("playbooks", old.playbooks, next.playbooks, playbookText, t.set.verbs.lookup),
     ...setParam("allowedTrust", old.allowedTrust, next.allowedTrust,
-      (value) => `${SENDER_TRUST_LABELS[value as SenderTrust] ?? value}（${value}）`, "代查"),
-    ...numberParam("minAskConfidence", old.minAskConfidence, next.minAskConfidence, "higher", "请求类型的置信度门槛"),
-    ...numberParam("maxSensitiveQuery", old.maxSensitiveQuery, next.maxSensitiveQuery, "lower", "敏感查询的概率上限"),
-    ...numberParam("perRequesterDaily", old.perRequesterDaily, next.perRequesterDaily, "lower", "每个请求者每天的代查次数"),
-    ...numberParam("dailyMax", old.dailyMax, next.dailyMax, "lower", "每天的代查总数"),
-    ...numberParam("concurrent", old.concurrent, next.concurrent, "lower", "同时进行的代查数"),
-    ...numberParam("timeoutMs", old.timeoutMs, next.timeoutMs, "lower", "一次代查的时限"),
-    ...numberParam("maxRepos", old.maxRepos, next.maxRepos, "lower", "一次代查最多查几个仓库"),
+      (value) => t.labeled(SENDER_TRUST_LABELS[value as SenderTrust], value), t.set.verbs.lookup),
+    ...numberParam("minAskConfidence", old.minAskConfidence, next.minAskConfidence, "higher", t.params.minAskConfidence),
+    ...numberParam("maxSensitiveQuery", old.maxSensitiveQuery, next.maxSensitiveQuery, "lower", t.params.maxSensitiveQuery),
+    ...numberParam("perRequesterDaily", old.perRequesterDaily, next.perRequesterDaily, "lower", t.params.perRequesterDaily),
+    ...numberParam("dailyMax", old.dailyMax, next.dailyMax, "lower", t.params.dailyMax),
+    ...numberParam("concurrent", old.concurrent, next.concurrent, "lower", t.params.concurrent),
+    ...numberParam("timeoutMs", old.timeoutMs, next.timeoutMs, "lower", t.params.timeout),
+    ...numberParam("maxRepos", old.maxRepos, next.maxRepos, "lower", t.params.maxRepos),
   ],
   // 代回闸门（spec D2、D7）：打开 autoReply、降低信心门槛、减少校准要求、放宽敏感话题、放长结果的有效期、缩短撤回窗口
   // 都是更放开，要用户批准；反方向 Lead 可以直接改。
@@ -659,17 +663,17 @@ const RULE_PARAM_CHECKS: Record<StandingOrderRule, ParamCheck> = {
     const known = new Set<string>(LOOKUP_PLAYBOOKS);
     const unknownKeys = [...new Set([...Object.keys(before), ...Object.keys(after)])].filter((key) => !known.has(key));
     return [
-      ...anyChange("source", old.source, next.source, "permissive", "换了来源，无法判断"),
+      ...anyChange("source", old.source, next.source, "permissive", t.params.sourceChanged),
       ...LOOKUP_PLAYBOOKS.flatMap((playbook) =>
-        booleanParam(`autoReply.${playbook}`, before[playbook], after[playbook], false, `${LOOKUP_PLAYBOOK_LABELS[playbook]}的自动代回`)),
-      ...unknownKeys.flatMap((key) => anyChange(`autoReply.${key}`, before[key], after[key], "permissive", "不认识的剧本，无法判断")),
-      ...numberParam("threshold", old.threshold, next.threshold, "higher", "自动代回的信心门槛"),
-      ...numberParam("coldStartMin", old.coldStartMin, next.coldStartMin, "higher", "冷启动时的信心门槛"),
-      ...numberParam("calibrationMinSamples", old.calibrationMinSamples, next.calibrationMinSamples, "higher", "校准的最少样本"),
-      ...numberParam("calibrationMinAgreement", old.calibrationMinAgreement, next.calibrationMinAgreement, "higher", "校准的同意率门槛"),
-      ...numberParam("maxSensitivity", old.maxSensitivity, next.maxSensitivity, "lower", "敏感话题的概率上限"),
-      ...numberParam("maxResultAgeMs", old.maxResultAgeMs, next.maxResultAgeMs, "lower", "结果的最长有效时间"),
-      ...numberParam("revokeWindowMs", old.revokeWindowMs, next.revokeWindowMs, "higher", "撤回窗口"),
+        booleanParam(`autoReply.${playbook}`, before[playbook], after[playbook], false, t.params.playbookAutoReply(playbook))),
+      ...unknownKeys.flatMap((key) => anyChange(`autoReply.${key}`, before[key], after[key], "permissive", t.params.unknownPlaybook)),
+      ...numberParam("threshold", old.threshold, next.threshold, "higher", t.params.replyThreshold),
+      ...numberParam("coldStartMin", old.coldStartMin, next.coldStartMin, "higher", t.params.coldStartMin),
+      ...numberParam("calibrationMinSamples", old.calibrationMinSamples, next.calibrationMinSamples, "higher", t.params.calibrationMinSamples),
+      ...numberParam("calibrationMinAgreement", old.calibrationMinAgreement, next.calibrationMinAgreement, "higher", t.params.calibrationMinAgreement),
+      ...numberParam("maxSensitivity", old.maxSensitivity, next.maxSensitivity, "lower", t.params.maxSensitivity),
+      ...numberParam("maxResultAgeMs", old.maxResultAgeMs, next.maxResultAgeMs, "lower", t.params.maxResultAge),
+      ...numberParam("revokeWindowMs", old.revokeWindowMs, next.revokeWindowMs, "higher", t.params.revokeWindow),
     ];
   },
   // 授权表（落地计划 A5）：一个意图从问你、提醒你改成拒绝或替你做，或者降低代你回复的门槛，都是更放开，要用户批准；
@@ -678,9 +682,8 @@ const RULE_PARAM_CHECKS: Record<StandingOrderRule, ParamCheck> = {
     const before = (old.intents ?? {}) as Record<string, { action?: unknown; minConfidence?: unknown } | undefined>;
     const after = (next.intents ?? {}) as Record<string, { action?: unknown; minConfidence?: unknown } | undefined>;
     const rank = (value: unknown) => CHANNEL_INTENT_PERMISSION_RANK[value as ChannelIntentPermission];
-    const label = (value: unknown) => CHANNEL_INTENT_PERMISSION_LABELS[value as ChannelIntentPermission] ?? String(value);
     return [
-      ...anyChange("source", old.source, next.source, "permissive", "换了来源，无法判断"),
+      ...anyChange("source", old.source, next.source, "permissive", t.params.sourceChanged),
       ...CHANNEL_INTENTS.flatMap((intent) => {
         const a = before[intent] ?? {};
         const b = after[intent] ?? {};
@@ -688,16 +691,16 @@ const RULE_PARAM_CHECKS: Record<StandingOrderRule, ParamCheck> = {
         if (a.action !== b.action) {
           const known = rank(a.action) !== undefined && rank(b.action) !== undefined;
           found.push(finding(known && rank(b.action)! <= rank(a.action)! ? "conservative" : "permissive", "params",
-            `${CHANNEL_INTENT_LABELS[intent]}（${intent}）从「${label(a.action)}」改成「${label(b.action)}」`));
+            t.params.intentAction(intent, t.params.permission(a.action), t.params.permission(b.action))));
         }
         if (a.action === "auto" && b.action === "auto") {
           found.push(...numberParam(`intents.${intent}.minConfidence`, a.minConfidence, b.minConfidence, "higher",
-            `${CHANNEL_INTENT_LABELS[intent]}代你回复的信心门槛`));
+            t.params.intentThreshold(intent)));
         }
         return found;
       }),
       // 自动代你处理（2026-10-23）：打开更放开，关掉更保守。没写按开着。
-      ...booleanParam("autoReply", old.autoReply ?? CHANNEL_AUTO_REPLY_DEFAULT, next.autoReply ?? CHANNEL_AUTO_REPLY_DEFAULT, false, "自动代你处理"),
+      ...booleanParam("autoReply", old.autoReply ?? CHANNEL_AUTO_REPLY_DEFAULT, next.autoReply ?? CHANNEL_AUTO_REPLY_DEFAULT, false, t.params.autoHandle),
       ...confidenceFindings(old.model, next.model),
     ];
   },
@@ -712,23 +715,22 @@ const RULE_PARAM_CHECKS: Record<StandingOrderRule, ParamCheck> = {
 // 只改段落不改变助手能做的事。
 function handbookFindings(oldRaw: unknown, nextRaw: unknown): StandingOrderChangeFinding[] {
   if (!Value.Check(ChannelHandbookSchema, oldRaw) || !Value.Check(ChannelHandbookSchema, nextRaw)) {
-    return anyChange("handbook", oldRaw, nextRaw, "permissive", "交接说明的形状不对，无法判断");
+    return anyChange("handbook", oldRaw, nextRaw, "permissive", t.handbook.badShape);
   }
   const old = oldRaw as ChannelHandbook;
   const next = nextRaw as ChannelHandbook;
   const before = new Map(old.situations.map((situation) => [situation.id, situation]));
   const after = new Map(next.situations.map((situation) => [situation.id, situation]));
-  const label = (mode: HandbookMode) => HANDBOOK_MODE_LABELS[mode];
   const modeFinding = (name: string, from: HandbookMode, to: HandbookMode, what: string): StandingOrderChangeFinding[] =>
-    from === to ? [] : [finding(handbookModeCovers(from, to) ? "conservative" : "permissive", "params", `${name}（${what}）从「${label(from)}」改成「${label(to)}」`)];
+    from === to ? [] : [finding(handbookModeCovers(from, to) ? "conservative" : "permissive", "params", t.handbook.modeChange(t.param(name, what), from, to))];
   const extraAbilities = (name: string, granted: readonly HandbookAbility[], wanted: readonly HandbookAbility[]) => {
     const extra = wanted.filter((ability) => !granted.includes(ability));
-    return extra.length ? [finding("permissive", "params", `${name} 多了能力：${extra.map((ability) => HANDBOOK_ABILITY_LABELS[ability]).join("、")}`)] : [];
+    return extra.length ? [finding("permissive", "params", t.handbook.abilities(name, extra))] : [];
   };
   // 和一句（或者兜底的一句）比：做法、例外、能力。
   const compare = (name: string, base: HandbookSituation, wanted: HandbookSituation): StandingOrderChangeFinding[] => [
-    ...modeFinding(name, base.mode, wanted.mode, "做法"),
-    ...(wanted.exception ? modeFinding(`${name}.exception`, base.exception?.mode ?? base.mode, wanted.exception.mode, "例外的做法") : []),
+    ...modeFinding(name, base.mode, wanted.mode, t.handbook.mode),
+    ...(wanted.exception ? modeFinding(`${name}.exception`, base.exception?.mode ?? base.mode, wanted.exception.mode, t.handbook.exceptionMode) : []),
     ...extraAbilities(name, base.abilities, wanted.abilities),
   ];
   const fallbackBefore = before.get(HANDBOOK_FALLBACK_ID);
@@ -738,30 +740,30 @@ function handbookFindings(oldRaw: unknown, nextRaw: unknown): StandingOrderChang
     const name = `situations.${situation.id}`;
     const prior = before.get(situation.id);
     if (!prior) {
-      found.push(finding("conservative", "params", `加了一句：「${situation.text}」`));
+      found.push(finding("conservative", "params", t.handbook.added(situation.text)));
       if (fallbackBefore) found.push(...compare(name, fallbackBefore, situation));
       continue;
     }
     found.push(...compare(name, prior, situation));
     if (prior.text !== situation.text || prior.example !== situation.example || prior.exception?.text !== situation.exception?.text) {
-      found.push(finding("permissive", "params", `${name} 改了说法或例句：哪些消息落到这一句变了，无法判断`));
+      found.push(finding("permissive", "params", t.handbook.wording(name)));
     }
-    if (prior.section !== situation.section) found.push(finding("conservative", "params", `${name} 换了段落：只影响显示`));
+    if (prior.section !== situation.section) found.push(finding("conservative", "params", t.handbook.section(name)));
     if (prior.does !== situation.does || prior.autoPhrase !== situation.autoPhrase) {
-      found.push(finding("conservative", "params", `${name} 改了说明的文字：不改变能做的事`));
+      found.push(finding("conservative", "params", t.handbook.does(name)));
     }
   }
   for (const situation of old.situations) {
     if (after.has(situation.id) || !fallbackAfter) continue;
-    found.push(finding("conservative", "params", `删了一句：「${situation.text}」`));
-    found.push(...compare(`situations.${situation.id}（删了以后落到兜底）`, situation, fallbackAfter));
+    found.push(finding("conservative", "params", t.handbook.removed(situation.text)));
+    found.push(...compare(t.handbook.removedName(situation.id), situation, fallbackAfter));
   }
   if (stableJson(old.situations.map((situation) => situation.id)) !== stableJson(next.situations.map((situation) => situation.id))
     && !found.length) {
-    found.push(finding("conservative", "params", "调整了句子的顺序：只影响显示"));
+    found.push(finding("conservative", "params", t.handbook.reordered));
   }
-  for (const sender of HANDBOOK_CAP_SENDERS) found.push(...modeFinding(`caps.${sender}`, old.caps[sender], next.caps[sender], "对方的上限"));
-  found.push(...booleanParam("autoReply", old.autoReply, next.autoReply, false, "自动代你处理"));
+  for (const sender of HANDBOOK_CAP_SENDERS) found.push(...modeFinding(`caps.${sender}`, old.caps[sender], next.caps[sender], t.handbook.cap));
+  found.push(...booleanParam("autoReply", old.autoReply, next.autoReply, false, t.params.autoHandle));
   return found;
 }
 
@@ -773,24 +775,24 @@ function confidenceFindings(oldRaw: unknown, nextRaw: unknown): StandingOrderCha
   const next = (nextRaw ?? CHANNEL_CONFIDENCE_DEFAULTS) as ChannelConfidenceParams;
   return [
     ...[0, 1, 2, 3].flatMap((index) =>
-      numberParam(`model.tiers[${index}]`, old.tiers?.[index], next.tiers?.[index], "higher", `L${index + 1} 的门槛`)),
-    ...numberParam("model.noReplyBelow", old.noReplyBelow, next.noReplyBelow, "lower", "不打扰线"),
-    ...numberParam("model.weights.needs_reply", old.weights?.needs_reply, next.weights?.needs_reply, "higher", "「要回」的指数"),
-    ...numberParam("model.weights.fulfills", old.weights?.fulfills, next.weights?.fulfills, "higher", "「做到」的指数"),
-    ...anyChange("model.priorStrength", old.priorStrength, next.priorStrength, "permissive", "校准的先验变了，无法判断"),
-    ...numberParam("model.coldStartTiers", old.coldStartTiers, next.coldStartTiers, "higher", "冷启动加几档"),
+      numberParam(`model.tiers[${index}]`, old.tiers?.[index], next.tiers?.[index], "higher", t.confidence.tier(index + 1))),
+    ...numberParam("model.noReplyBelow", old.noReplyBelow, next.noReplyBelow, "lower", t.confidence.noReplyBelow),
+    ...numberParam("model.weights.needs_reply", old.weights?.needs_reply, next.weights?.needs_reply, "higher", t.confidence.needsReply),
+    ...numberParam("model.weights.fulfills", old.weights?.fulfills, next.weights?.fulfills, "higher", t.confidence.fulfills),
+    ...anyChange("model.priorStrength", old.priorStrength, next.priorStrength, "permissive", t.confidence.prior),
+    ...numberParam("model.coldStartTiers", old.coldStartTiers, next.coldStartTiers, "higher", t.confidence.coldStartTiers),
     ...(old.lockMode === next.lockMode ? [] : [finding(next.lockMode === "hard" ? "conservative" : "permissive", "params",
-      `model.lockMode（底线怎么拦）从 ${String(old.lockMode)} 改为 ${String(next.lockMode)}`)]),
-    ...numberParam("model.tuning.topicStep", old.tuning?.topicStep, next.tuning?.topicStep, "lower", "话题加档线"),
-    ...numberParam("model.tuning.draftRiskStep", old.tuning?.draftRiskStep, next.tuning?.draftRiskStep, "lower", "草稿风险加档线"),
-    ...numberParam("model.tuning.verifiedFloor", old.tuning?.verifiedFloor, next.tuning?.verifiedFloor, "lower", "出处全错时乘"),
-    ...numberParam("model.tuning.groundedFloor", old.tuning?.groundedFloor, next.tuning?.groundedFloor, "lower", "「有据」最低乘"),
-    ...numberParam("model.tuning.understoodFloor", old.tuning?.understoodFloor, next.tuning?.understoodFloor, "lower", "「理解」最低乘"),
+      t.changed(t.param("model.lockMode", t.confidence.lockMode), String(old.lockMode), String(next.lockMode)))]),
+    ...numberParam("model.tuning.topicStep", old.tuning?.topicStep, next.tuning?.topicStep, "lower", t.confidence.topicStep),
+    ...numberParam("model.tuning.draftRiskStep", old.tuning?.draftRiskStep, next.tuning?.draftRiskStep, "lower", t.confidence.draftRiskStep),
+    ...numberParam("model.tuning.verifiedFloor", old.tuning?.verifiedFloor, next.tuning?.verifiedFloor, "lower", t.confidence.verifiedFloor),
+    ...numberParam("model.tuning.groundedFloor", old.tuning?.groundedFloor, next.tuning?.groundedFloor, "lower", t.confidence.groundedFloor),
+    ...numberParam("model.tuning.understoodFloor", old.tuning?.understoodFloor, next.tuning?.understoodFloor, "lower", t.confidence.understoodFloor),
   ];
 }
 
 function playbookText(value: string): string {
-  return `${LOOKUP_PLAYBOOK_LABELS[value as LookupPlaybook] ?? value}（${value}）`;
+  return t.labeled(LOOKUP_PLAYBOOK_LABELS[value as LookupPlaybook], value);
 }
 
 function ruleFindings(input: StandingOrderChangeInput, ladder: Readonly<Record<string, TriageLevel>>): StandingOrderChangeFinding[] {
@@ -803,7 +805,7 @@ function ruleFindings(input: StandingOrderChangeInput, ladder: Readonly<Record<s
   const found: StandingOrderChangeFinding[] = [];
   if (before?.action.type === "rule") {
     if (before.status === "disabled" && after.status === "active") {
-      found.push(finding("permissive", "status", "启用一条停用的规则，无法判断"));
+      found.push(finding("permissive", "status", t.rules.enableDisabled));
     }
     found.push(...RULE_PARAM_CHECKS[rule](before.action.params, after.action.params, ladder));
   }
@@ -814,15 +816,15 @@ function ruleFindings(input: StandingOrderChangeInput, ladder: Readonly<Record<s
   const mergeCondition = rule === "events.merge_root_cause";
   if (mergeCondition && stableJson(before.condition) !== stableJson(after.condition)) {
     found.push(conditionImplies(after.condition, before.condition)
-      ? finding("conservative", "condition", "按根因合并的条件收窄了：合并得更少")
-      : finding("permissive", "condition", "按根因合并的条件可能放宽：合并得更多"));
+      ? finding("conservative", "condition", t.rules.mergeNarrower)
+      : finding("permissive", "condition", t.rules.mergeWider));
   }
   // 不定级别的规则不用 priority、escalateTo，除了按根因合并以外也不用 condition。
   for (const [aspect, old, next] of [
     ["condition", mergeCondition ? null : before.condition, mergeCondition ? null : after.condition],
     ["priority", before.priority, after.priority], ["escalate_to", before.escalateTo, after.escalateTo],
   ] as const) {
-    if (stableJson(old) !== stableJson(next)) found.push(finding("permissive", aspect, `${aspect} 对规则 ${rule} 不起作用，无法判断`));
+    if (stableJson(old) !== stableJson(next)) found.push(finding("permissive", aspect, t.rules.noEffect(aspect, rule)));
   }
   return found;
 }
@@ -835,11 +837,11 @@ function thresholdFindings(input: StandingOrderChangeInput, ladder: Readonly<Rec
   const listAfter = withChange(active, after);
   const found: StandingOrderChangeFinding[] = [];
   for (const source of sources) {
-    const name = source === "*" ? "没有自己阈值的来源（外部来源）" : `来源 ${source}`;
+    const name = source === "*" ? t.threshold.fallbackSource : t.threshold.source(source);
     const old = pickThreshold(active, source);
     const next = pickThreshold(listAfter, source);
     if (!old || !next) {
-      found.push(finding("permissive", "params", `${name} 找不到阈值，无法判断`));
+      found.push(finding("permissive", "params", t.threshold.missing(name)));
       continue;
     }
     const oldParams = thresholdParams(old);
@@ -848,11 +850,11 @@ function thresholdFindings(input: StandingOrderChangeInput, ladder: Readonly<Rec
     const b = outcome(nextParams.defaultLevel, next.escalateTo, ladder);
     if (!sameOutcome(a, b)) {
       found.push(finding(outcomeAtLeastAsConservative(b, a) ? "conservative" : "permissive", "params",
-        `${name} 的默认级别从 ${outcomeText(a)} 改为 ${outcomeText(b)}`));
+        t.threshold.defaultLevel(name, outcomeText(a), outcomeText(b))));
     }
     if (oldParams.maxLevel !== nextParams.maxLevel) {
       found.push(finding(levelAtLeastAsConservative(nextParams.maxLevel, oldParams.maxLevel) ? "conservative" : "permissive", "params",
-        `${name} 的打断阈值从 ${oldParams.maxLevel} 改为 ${nextParams.maxLevel}`));
+        t.threshold.maxLevel(name, oldParams.maxLevel, nextParams.maxLevel)));
     }
   }
   return found;
@@ -865,7 +867,7 @@ const reachesInterrupt = (o: Outcome | null) => o !== null && (o.level === "inte
 function interruptFindings(input: StandingOrderChangeInput, ladder: Readonly<Record<string, TriageLevel>>): StandingOrderChangeFinding[] {
   const { active, before, after } = input;
   const found: StandingOrderChangeFinding[] = [];
-  const raise = (detail: string) => found.push(finding("permissive", "interrupt", `${detail}。interrupt 会推送到用户手机并打断 Lead，要用户批准`));
+  const raise = (detail: string) => found.push(finding("permissive", "interrupt", t.interrupt.raise(detail)));
   // 定级别的指令：新状态让事件到 interrupt（一开始或到时限），旧状态没有；或者已经是 interrupt，又可能多接手事件。
   const levelBefore = before && before.status === "active" ? standingOrderLevel(before) : null;
   const levelAfter = after.status === "active" ? standingOrderLevel(after) : null;
@@ -873,9 +875,9 @@ function interruptFindings(input: StandingOrderChangeInput, ladder: Readonly<Rec
   const outAfter = levelAfter ? outcome(levelAfter, after.escalateTo, ladder) : null;
   if (reachesInterrupt(outAfter)) {
     if (!reachesInterrupt(outBefore)) {
-      raise(`匹配的事件会到 ${outcomeText(outAfter!)}`);
+      raise(t.interrupt.matching(outcomeText(outAfter!)));
     } else if (!conditionImplies(after.condition, before!.condition) || sortsBefore(after, before!)) {
-      raise("可能有更多事件到 interrupt");
+      raise(t.interrupt.more);
     }
   }
   // 来源阈值：打断上限或默认级别（含到时限升到的级别）升到 interrupt。
@@ -887,17 +889,17 @@ function interruptFindings(input: StandingOrderChangeInput, ladder: Readonly<Rec
     if (!next) continue;
     const nextParams = thresholdParams(next);
     const oldParams = old ? thresholdParams(old) : null;
-    if (nextParams.maxLevel === "interrupt" && oldParams?.maxLevel !== "interrupt") raise(`来源 ${source} 的打断上限升到 interrupt`);
+    if (nextParams.maxLevel === "interrupt" && oldParams?.maxLevel !== "interrupt") raise(t.interrupt.sourceCap(source));
     const nextDefault = outcome(nextParams.defaultLevel, next.escalateTo, ladder);
     const oldDefault = oldParams ? outcome(oldParams.defaultLevel, old!.escalateTo, ladder) : null;
-    if (reachesInterrupt(nextDefault) && !reachesInterrupt(oldDefault)) raise(`来源 ${source} 的默认级别会到 ${outcomeText(nextDefault)}`);
+    if (reachesInterrupt(nextDefault) && !reachesInterrupt(oldDefault)) raise(t.interrupt.sourceDefault(source, outcomeText(nextDefault)));
   }
   // 到时限升级的 ladder：新增升到 interrupt 的一级。
   if (after.action.type === "rule" && after.action.rule === "events.escalate_overdue") {
     const oldLadder = (before?.action.type === "rule" ? (before.action.params as { ladder?: Record<string, unknown> }).ladder : undefined) ?? {};
     const newLadder = ((after.action.params as { ladder?: Record<string, unknown> }).ladder) ?? {};
     for (const [from, to] of Object.entries(newLadder)) {
-      if (to === "interrupt" && oldLadder[from] !== "interrupt") raise(`${from} 级的事件到时限会升到 interrupt`);
+      if (to === "interrupt" && oldLadder[from] !== "interrupt") raise(t.interrupt.ladder(from));
     }
   }
   return found;
@@ -919,6 +921,16 @@ const TIER_ORDER: Record<StandingOrderChangeTier, number> = { conservative: 0, p
  * 内容变了却没有一项能判断时，按更放开处理。
  */
 export function classifyStandingOrderChange(input: StandingOrderChangeInput): StandingOrderChangeClassification {
+  const previous = t;
+  t = standingOrderChangeText(input.locale ?? DEFAULT_LOCALE);
+  try {
+    return classify(input);
+  } finally {
+    t = previous;
+  }
+}
+
+function classify(input: StandingOrderChangeInput): StandingOrderChangeClassification {
   const { before, after } = input;
   const behaviourChanged = !before || behaviourKey(before) !== behaviourKey(after);
   const titleChanged = Boolean(before && before.title !== after.title);
@@ -933,8 +945,8 @@ export function classifyStandingOrderChange(input: StandingOrderChangeInput): St
       ...interruptFindings(input, ladder),
     ]
     : [];
-  if (titleChanged) findings.push(finding("conservative", "title", `标题从「${before!.title}」改为「${after.title}」`));
-  if (!findings.length) findings.push(finding("permissive", "unknown", "无法判断这项修改的影响"));
+  if (titleChanged) findings.push(finding("conservative", "title", t.title(before!.title, after.title)));
+  if (!findings.length) findings.push(finding("permissive", "unknown", t.unknown));
   const tier = findings.reduce<StandingOrderChangeTier>(
     (worst, item) => TIER_ORDER[item.tier] > TIER_ORDER[worst] ? item.tier : worst, "conservative");
   return { tier, changed: true, findings };

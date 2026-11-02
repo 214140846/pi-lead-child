@@ -69,15 +69,15 @@ describe('the order of the Lead conversation', () => {
     const notice = screen.getByTestId('incident-card');
     const voiced = screen.getByText('通知播报：#66 的对话没答上。');
     // 2026-10-15 用户决定（方案 A）：Lead 主动发起的回合也只写「Lead 的名字 · 时间」（缺省 Paimon）。
-    expect(screen.getByText(`Paimon · ${formatConversationTime(voicing.updatedAt)}`)).toBeTruthy();
+    expect(screen.getByText(`Paimon · ${formatConversationTime(voicing.updatedAt, undefined, 'en')}`)).toBeTruthy();
     expect(before(notice, voiced)).toBe(true);
   });
 
   it('puts a date divider before the first item of each day', () => {
     render();
     const now = new Date('2026-10-13T14:00:00.000Z');
-    const firstDay = screen.getByText(formatConversationDate(yesterday.createdAt, now));
-    const secondDay = screen.getByText(formatConversationDate(fallback.createdAt, now));
+    const firstDay = screen.getByText(formatConversationDate(yesterday.createdAt, now, 'en'));
+    const secondDay = screen.getByText(formatConversationDate(fallback.createdAt, now, 'en'));
     expect(screen.getAllByTestId('conversation-date-divider')).toHaveLength(2);
     expect(before(firstDay, screen.getByText('昨天的回答'))).toBe(true);
     expect(before(screen.getByText('昨天的回答'), secondDay)).toBe(true);
@@ -88,9 +88,9 @@ describe('the order of the Lead conversation', () => {
 describe('formatConversationDate', () => {
   it('names today and yesterday, and spells out older days with the weekday', () => {
     const now = new Date(2026, 9, 13, 22, 0);
-    expect(formatConversationDate(new Date(2026, 9, 13, 8, 0).toISOString(), now)).toBe('今天');
-    expect(formatConversationDate(new Date(2026, 9, 12, 23, 59).toISOString(), now)).toBe('昨天');
-    expect(formatConversationDate(new Date(2026, 9, 5, 9, 0).toISOString(), now)).toBe('10月5日 周一');
-    expect(formatConversationDate(new Date(2025, 11, 31, 9, 0).toISOString(), now)).toBe('2025年12月31日 周三');
+    expect(formatConversationDate(new Date(2026, 9, 13, 8, 0).toISOString(), now, 'zh')).toBe('今天');
+    expect(formatConversationDate(new Date(2026, 9, 12, 23, 59).toISOString(), now, 'zh')).toBe('昨天');
+    expect(formatConversationDate(new Date(2026, 9, 5, 9, 0).toISOString(), now, 'zh')).toBe('10月5日 周一');
+    expect(formatConversationDate(new Date(2025, 11, 31, 9, 0).toISOString(), now, 'zh')).toBe('2025年12月31日 周三');
   });
 });

@@ -19,7 +19,15 @@ describe('the provenance of a reply', () => {
       tool('b', 'get_ticket', { id: 66 }),
       tool('c', 'read_inbox', {}),
       tool('d', 'read_run_events', { run_id: 87, since_seq: 40 }),
-    ])).toEqual(['Run #87 的事件', '工单 #66 的账本', '系统通知']);
+    ], 'en')).toEqual(['Events of Run #87', 'Ledger of ticket #66', 'System notices']);
+  });
+
+  it('writes the labels in Chinese when the interface is Chinese', () => {
+    expect(provenanceLabels([
+      tool('a', 'read_run_events', { run_id: 87 }),
+      tool('b', 'get_ticket', { id: 66 }),
+      tool('c', 'read_inbox', {}),
+    ], 'zh')).toEqual(['Run #87 的事件', '工单 #66 的账本', '系统通知']);
   });
 
   it('ignores calls that failed or never finished, tools that change things, and the card itself', () => {
@@ -28,6 +36,6 @@ describe('the provenance of a reply', () => {
       tool('b', 'get_ticket', { id: 66 }, 'running'),
       tool('c', 'add_comment', { id: 66 }),
       tool('d', 'render_ui', {}),
-    ])).toEqual([]);
+    ], 'en')).toEqual([]);
   });
 });

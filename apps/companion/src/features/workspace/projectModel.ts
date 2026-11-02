@@ -4,9 +4,11 @@
 import type { ProjectOverview } from '@pi-lead-child/protocol';
 
 import { clockTimeLabel } from '@/features/tickets/timeLabels';
+import { DEFAULT_LOCALE, type Locale } from '@/i18n';
 import { leadNameNow } from '@/state/leadName';
 
 import { waitedText } from './inboxModel';
+import { projectsMessages } from './projects.messages';
 import { projectDisplayName, UNASSIGNED_PROJECT } from './model';
 import { milestoneChip } from './timelineModel';
 
@@ -41,9 +43,9 @@ export type ProjectCards = {
 };
 
 // lead 那一格写 Lead 的名字。这里离组件太远，读最近一次取到的名字（leadNameNow）。
-function countLabel(key: ProjectCountKey): string {
+function countLabel(key: ProjectCountKey, locale: Locale): string {
   if (key === 'lead') return leadNameNow();
-  return { user: '等你', running: '在执行', queued: '排队', ended: '已结束' }[key];
+  return projectsMessages(locale).counts[key];
 }
 const COUNT_ORDER: ProjectCountKey[] = ['user', 'running', 'lead', 'queued', 'ended'];
 
@@ -71,29 +73,30 @@ function shortDate(value: string, now: Date): string {
   return date.getFullYear() === now.getFullYear() ? day : `${date.getFullYear()}/${day}`;
 }
 
-function card(project: ProjectOverview, now: Date): ProjectCardView {
+function card(project: ProjectOverview, now: Date, locale: Locale): ProjectCardView {
+  const m = projectsMessages(locale);
   const legend = COUNT_ORDER
     .filter((key) => project.counts[key] > 0)
-    .map((key) => ({ key, label: countLabel(key), count: project.counts[key] }));
+    .map((key) => ({ key, label: countLabel(key, locale), count: project.counts[key] }));
   const open = openCount(project);
   const lastActivity = project.lastActivityAt ? new Date(project.lastActivityAt).getTime() : NaN;
   const stale = open > 0 && Number.isFinite(lastActivity) && now.getTime() - lastActivity >= STALE_AFTER
-    ? `${waitedText(project.lastActivityAt!, now)}没有动静`
+    ? m.noActivity(waitedText(project.lastActivityAt!, now, locale))
     : null;
-  const next = project.nextMilestone ? milestoneChip(project.nextMilestone, now) : null;
+  const next = project.nextMilestone ? milestoneChip(project.nextMilestone, now, locale) : null;
   return {
     id: project.id,
     projectName: project.name,
-    name: projectDisplayName(project.name),
+    name: projectDisplayName(project.name, locale),
     legend,
     leadLine: project.leadStatus
-      ? { text: project.leadStatus.text, when: `${shortDate(project.leadStatus.at, now)} 更新` }
+      ? { text: project.leadStatus.text, when: m.updatedAt(shortDate(project.leadStatus.at, now)) }
       : null,
     nextMilestone: next ? `#${project.nextMilestone!.ticketId} ${next.text}` : null,
     nextMilestoneOverdue: next?.overdue ?? false,
     spend: project.spend.costUsd > 0 ? `$${project.spend.costUsd.toFixed(2)}` : null,
     stale,
-    caption: legend.length > 0 ? legend.map((entry) => `${entry.count} ${entry.label}`).join(' · ') : '没有工单',
+    caption: legend.length > 0 ? legend.map((entry) => `${entry.count} ${entry.label}`).join(' · ') : m.noTickets,
     canArchive: project.id !== UNASSIGNED_PROJECT && project.status === 'active' && open === 0,
   };
 }
@@ -103,7 +106,11 @@ function byRecentActivity(left: ProjectOverview, right: ProjectOverview): number
   return (right.lastActivityAt ?? '').localeCompare(left.lastActivityAt ?? '') || left.name.localeCompare(right.name);
 }
 
-export function buildProjectCards(overviews: readonly ProjectOverview[], now: Date = new Date()): ProjectCards {
+export function buildProjectCards(
+  overviews: readonly ProjectOverview[],
+  now: Date = new Date(),
+  locale: Locale = DEFAULT_LOCALE,
+): ProjectCards {
   const live = overviews.filter((project) => project.status === 'active');
   const active = live
     .filter((project) => openCount(project) > 0)
@@ -117,8 +124,8 @@ export function buildProjectCards(overviews: readonly ProjectOverview[], now: Da
     .filter((project) => project.status === 'archived')
     .sort((left, right) => left.name.localeCompare(right.name));
   return {
-    active: active.map((project) => card(project, now)),
-    quiet: quiet.map((project) => card(project, now)),
-    archived: archived.map((project) => card(project, now)),
+    active: active.map((project) => card(project, now, locale)),
+    quiet: quiet.map((project) => card(project, now, locale)),
+    archived: archived.map((project) => card(project, now, locale)),
   };
 }

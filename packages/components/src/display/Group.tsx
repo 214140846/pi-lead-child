@@ -7,6 +7,8 @@ import { AnchoredPanel } from './AnchoredPanel';
 import { Icon } from './Icon';
 import type { IconName } from './icons';
 import { RecordTag } from './RecordBlock';
+import { useMessages } from '../i18n';
+import { displayMessages } from './display.messages';
 
 export type GroupEntry = {
   key: string;
@@ -33,11 +35,13 @@ export type GroupProps = {
 // 收起时一行：标签、做了什么、件数和时间段、箭头。点开从原位置撑开成锚定浮层（AnchoredPanel），每件一行，会话列表不变高。
 // genui 的 Group 节点、合并后的系统信息行都用它；浮层里的列表是 GroupList。
 export function Group({ label, tag, tone = 'neutral', icon, entries, range, testID }: GroupProps) {
+  const m = useMessages(displayMessages);
   const [open, setOpen] = useState(false);
+  const count = m.groupCount(entries.length);
   const row = (expanded: boolean) => (
     <Pressable
       testID={testID ? `${testID}-${expanded ? 'collapse' : 'expand'}` : undefined}
-      aria-label={expanded ? `收起${label}` : `展开${label}，${entries.length} 件`}
+      aria-label={expanded ? m.groupCollapse(label) : m.groupExpand(label, count)}
       aria-expanded={expanded}
       onPress={() => setOpen(!expanded)}
       feedback="none"
@@ -46,7 +50,7 @@ export function Group({ label, tag, tone = 'neutral', icon, entries, range, test
         {tag ? <RecordTag label={tag} tone={tone} {...(icon ? { icon } : {})} /> : null}
         <Text flex={1} minW={0} size="message-body" tone="strong" numberOfLines={1}>{label}</Text>
         <Text testID={testID ? `${testID}-count` : undefined} size="meta" weight="semibold" tone="secondary" shrink={0}>
-          {range ? `${entries.length} 件 · ${range}` : `${entries.length} 件`}
+          {range ? `${count} · ${range}` : count}
         </Text>
         <Icon name={expanded ? 'chevron-up' : 'chevron-down'} size={12} color="text-secondary" weight="semibold" />
       </Row>
@@ -56,7 +60,7 @@ export function Group({ label, tag, tone = 'neutral', icon, entries, range, test
     <AnchoredPanel
       open={open}
       onClose={() => setOpen(false)}
-      label={`${label} · ${entries.length} 件`}
+      label={`${label} · ${count}`}
       header={<Column px="card" py="card-row">{row(true)}</Column>}
       body={<Column px="card" py="card-row"><GroupList entries={entries} testID={testID ? `${testID}-list` : undefined} /></Column>}
       {...(testID ? { testID } : {})}

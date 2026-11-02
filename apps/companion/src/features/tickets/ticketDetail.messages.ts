@@ -1,0 +1,202 @@
+// 工单详情骨架的文字（ticketDetailSections.ts）和工单里所有时间的写法（timeLabels.ts）。
+import { defineMessages } from '@/i18n';
+
+const EN_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+export const ticketTimeMessages = defineMessages({
+  en: {
+    /** month 从 1 开始。 */
+    monthDay: (month: number, day: number) => `${EN_MONTHS[month - 1] ?? month} ${day}`,
+    withYear: (year: number, monthDay: string) => `${monthDay}, ${year}`,
+    dayOnly: (day: number) => `${day}`,
+    /** year 不是 null 时写年；crossYear 时结束那一天已经带年。 */
+    dayRange: (startDay: string, endDay: string, year: number | null, crossYear: boolean) => (crossYear
+      ? `${startDay}, ${year}–${endDay}`
+      : year === null ? `${startDay}–${endDay}` : `${startDay}–${endDay}, ${year}`),
+    inProgress: (start: string) => `${start} → in progress`,
+  },
+  zh: {
+    monthDay: (month, day) => `${month}月${day}日`,
+    withYear: (year, monthDay) => `${year}年${monthDay}`,
+    dayOnly: (day) => `${day}日`,
+    dayRange: (startDay, endDay, year) => `${year === null ? '' : `${year}年`}${startDay}–${endDay}`,
+    inProgress: (start) => `${start} → 进行中`,
+  },
+});
+
+export const ticketDetailMessages = defineMessages({
+  en: {
+    sections: {
+      relations: 'Relations',
+      task: 'Task description',
+      criteria: 'Acceptance criteria',
+      info: 'Ticket info',
+      execution: 'Execution',
+      delivery: 'Delivery and acceptance',
+      history: 'History and records',
+    },
+    sources: {
+      lead: (leadName: string) => `Written by ${leadName}`,
+      child: 'Executor agent report',
+      system: 'System record',
+      reviewer: 'Reviewer',
+      user: 'Your action',
+    },
+    writer: {
+      user: 'Written by you',
+      child: 'Written by the executor agent',
+    },
+    writerNames: { user: 'you', child: 'the executor agent', system: 'the system' },
+    writtenBy: (names: string[]) => `Written by ${names.join(' and ')}`,
+    criteria: {
+      none: 'No structured acceptance criteria',
+      confirmed: (count: number, confirmed: number) => `${count} ${count === 1 ? 'criterion' : 'criteria'} · ${confirmed}/${count} confirmed`,
+      beforeDelivery: (count: number) => `${count} ${count === 1 ? 'criterion' : 'criteria'} · After delivery, the reviewer and you check each one`,
+    },
+    stepNote: { skipped: 'Skipped: ', blocked: 'Blocked: ' },
+    planUpdated: (done: number, total: number, at: string) => `${done}/${total} · updated ${at}`,
+    usage: {
+      ran: 'Run time',
+      duration: 'Duration',
+      notStarted: 'Not started',
+      tokens: 'Tokens',
+      cost: 'Cost',
+      noRecord: 'No record',
+      captionRunning: 'Includes cache reads and writes. It increases while the run continues.',
+      captionTotal: 'Total of all runs. Includes cache reads and writes.',
+      tokenCount: (text: string) => `${text} tokens`,
+      notRun: 'Not started',
+    },
+    tokens: (tokens: number) => (tokens >= 1_000_000
+      ? `about ${(Math.round(tokens / 100_000) / 10).toLocaleString('en-US', { maximumFractionDigits: 1 })}M`
+      : `about ${Math.round(tokens / 1_000).toLocaleString('en-US')}K`),
+    duration: {
+      hoursMinutes: (hours: number, minutes: number) => `${hours} h ${minutes} min`,
+      minutesSeconds: (minutes: number, seconds: number) => `${minutes} min ${seconds} sec`,
+      minutes: (minutes: number) => `${minutes} min`,
+      seconds: (seconds: number) => `${seconds} sec`,
+    },
+    reviewerStatus: {
+      after_delivery: 'Starts after delivery',
+      queued: 'Queued',
+      suspended: 'Suspended',
+      running: 'Running',
+      done: 'Done',
+      failed: 'Not completed',
+    },
+    integration: {
+      merged: 'Merged',
+      abandoned: 'Abandoned',
+      no_changes: 'No changes',
+      conflict: 'Conflict',
+      unmerged: 'Not merged',
+    },
+    sentence: (title: string, detail: string | null) => (detail ? `${title}. ${detail}` : `${title}.`),
+    child: {
+      done: 'Done',
+      running: 'Running',
+      blocked: 'Blocked',
+      waiting: 'Waiting',
+      cancelled: 'Cancelled',
+      review: 'Waiting for your acceptance',
+    },
+    splitRequest: (ticket: string) => `Split #${ticket} into child tickets:`,
+    criteriaConfirmed: (confirmed: number, count: number) => `${confirmed}/${count} acceptance criteria confirmed`,
+    next: {
+      decision: 'First, answer the decision on this ticket',
+      draft: 'The run starts after you confirm',
+      paused: 'Paused. Click Continue to resume',
+      continues: (agent: string | null) => `${agent ?? 'The executor agent'} continues. You do not need to do anything now`,
+      reviewPullRequest: 'Review the draft PR on GitHub',
+      decideCode: 'Decide what to do with the code',
+      done: 'The ticket is complete. You do not need to do anything',
+      cancelled: 'The ticket is cancelled. You do not need to do anything',
+    },
+  },
+  zh: {
+    sections: {
+      relations: '关系',
+      task: '任务说明',
+      criteria: '验收标准',
+      info: '工单信息',
+      execution: '执行',
+      delivery: '交付与验收',
+      history: '经过与记录',
+    },
+    sources: {
+      lead: (leadName) => `${leadName} 写的`,
+      child: '执行 agent 自述',
+      system: '系统记录',
+      reviewer: '核查员',
+      user: '你的操作',
+    },
+    writer: {
+      user: '你写的',
+      child: '执行 agent 写的',
+    },
+    writerNames: { user: '你', child: '执行 agent', system: '系统' },
+    writtenBy: (names) => `${names.join('和')}写的`,
+    criteria: {
+      none: '没有结构化的验收标准',
+      confirmed: (count, confirmed) => `${count} 条 · 已确认 ${confirmed}/${count}`,
+      beforeDelivery: (count) => `${count} 条 · 交付后，核查员和你逐条对照`,
+    },
+    stepNote: { skipped: '跳过：', blocked: '受阻：' },
+    planUpdated: (done, total, at) => `${done}/${total} · ${at} 更新`,
+    usage: {
+      ran: '已执行',
+      duration: '耗时',
+      notStarted: '还没开始',
+      tokens: 'Token',
+      cost: '成本',
+      noRecord: '没有记录',
+      captionRunning: '含缓存读写，跑的时候会涨。',
+      captionTotal: '所有运行合计，含缓存读写。',
+      tokenCount: (text) => `${text} token`,
+      notRun: '还没开跑',
+    },
+    tokens: (tokens) => `约 ${Math.round(tokens / 10_000).toLocaleString('en-US')} 万`,
+    duration: {
+      hoursMinutes: (hours, minutes) => `${hours} 小时 ${minutes} 分`,
+      minutesSeconds: (minutes, seconds) => `${minutes} 分 ${seconds} 秒`,
+      minutes: (minutes) => `${minutes} 分钟`,
+      seconds: (seconds) => `${seconds} 秒`,
+    },
+    reviewerStatus: {
+      after_delivery: '交付后开始',
+      queued: '排队',
+      suspended: '挂起',
+      running: '在跑',
+      done: '完成',
+      failed: '没做成',
+    },
+    integration: {
+      merged: '已合并',
+      abandoned: '已放弃',
+      no_changes: '没有改动',
+      conflict: '有冲突',
+      unmerged: '还没合并',
+    },
+    sentence: (title, detail) => (detail ? `${title}。${detail}` : `${title}。`),
+    child: {
+      done: '已完成',
+      running: '执行中',
+      blocked: '受阻',
+      waiting: '等待中',
+      cancelled: '已取消',
+      review: '等你验收',
+    },
+    splitRequest: (ticket) => `请把 #${ticket} 拆成几张子工单：`,
+    criteriaConfirmed: (confirmed, count) => `已确认 ${confirmed}/${count} 条验收标准`,
+    next: {
+      decision: '先回答这张工单上的决定',
+      draft: '你确认以后才开跑',
+      paused: '已暂停。点继续，接着做',
+      continues: (agent) => `${agent ?? '执行 agent'} 继续做，现在不需要你`,
+      reviewPullRequest: '你在 GitHub 上审阅草稿 PR',
+      decideCode: '你决定代码怎么处理',
+      done: '工单已完成，不需要你',
+      cancelled: '工单已取消，不需要你',
+    },
+  },
+});

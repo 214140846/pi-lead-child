@@ -7,14 +7,16 @@ import {
 } from '@pi-lead-child/protocol';
 import { useState, type ReactNode } from 'react';
 
+import { useLocale } from '@/i18n';
 import { useCompanionRuntime } from '@/state/CompanionStateProvider';
 import { useLeadName, useMemoryPreferences } from '@/state/hooks';
 
 import {
-  changeIdOf, INVALIDATED_HINT, invalidatedFactLine, invalidatedFactSource, memoryErrorText, preferenceChangeLine, preferenceFormProblem,
+  changeIdOf, invalidatedFactLine, invalidatedFactSource, memoryErrorText, preferenceChangeLine, preferenceFormProblem,
   preferenceReasonLine, preferencesEffectNote, preferencesEmptyNote, preferencesFull, preferencesHint, preferencesUsageLabel, preferenceUpdateInput,
   type PreferenceForm,
 } from './memoryModel';
+import { memoryMessages } from './memory.messages';
 
 // 设置 → 记忆里用户自己管的两样（2026-10-29，.scratch/hindsight-primary-memory/spec.md D5、D15）：
 //   - 常驻偏好：每一条的标题、正文、最近一次谁在什么时候改的、依据。能改（就地编辑）、能删、能撤销最近一次改动。
@@ -54,17 +56,19 @@ type Removed = { entry: CoreMemoryEntryDto; index: number; changeId: number | nu
 export function MemoryPreferences() {
   const { memoryPreferences: preferences, resource } = useMemoryPreferences();
   const leadName = useLeadName();
+  const locale = useLocale();
+  const m = memoryMessages(locale);
   const [removed, setRemoved] = useState<Removed[]>([]);
   if (!preferences) {
     if (resource?.state === 'error') {
       return (
         <Text testID="memory-preferences-error" size="note" tone="danger-dark">
-          {`读不到常驻偏好：${resource.error ? memoryErrorText(resource.error) : '记忆服务的控制没有启动'}`}
+          {m.preferencesLoadFailed(resource.error ? memoryErrorText(resource.error, locale) : m.controlNotStarted)}
         </Text>
       );
     }
     if (!resource || resource.state === 'unsupported') return null;
-    return <Text testID="memory-preferences-loading" size="note" tone="muted">正在读取常驻偏好…</Text>;
+    return <Text testID="memory-preferences-loading" size="note" tone="muted">{m.preferencesLoading}</Text>;
   }
   // 删掉的行插回原来的位置。撤销以后重建的那一条编号不同，重取后它出现在列表里，这一行就去掉了。
   const rows: Array<{ kind: 'entry'; entry: CoreMemoryEntryDto } | { kind: 'removed'; removed: Removed }> =
@@ -76,11 +80,11 @@ export function MemoryPreferences() {
   const forget = (id: number) => setRemoved((current) => current.filter((item) => item.entry.id !== id));
   return (
     <MemoryGroup
-      title="常驻偏好"
-      hint={preferencesHint(leadName)}
+      title={m.preferences}
+      hint={preferencesHint(leadName, locale)}
       aside={(
         <Text testID="memory-preferences-usage" size="meta" mono tone={preferencesFull(preferences) ? 'warning-dark' : 'secondary'}>
-          {preferencesUsageLabel(preferences)}
+          {preferencesUsageLabel(preferences, locale)}
         </Text>
       )}
     >
@@ -100,11 +104,11 @@ export function MemoryPreferences() {
           <RemovedRow key={`removed-${row.removed.entry.id}`} removed={row.removed} first={index === 0} onRestored={() => forget(row.removed.entry.id)} />
         ))) : (
           <Column px="page-card" py="row-y">
-            <Text testID="memory-preferences-empty" size="body" tone="secondary">{preferencesEmptyNote(leadName)}</Text>
+            <Text testID="memory-preferences-empty" size="body" tone="secondary">{preferencesEmptyNote(leadName, locale)}</Text>
           </Column>
         )}
         <Column px="page-card" py="row-y" borderTopWidth={1} borderTopColor="border-soft">
-          <Text testID="memory-preferences-effect" size="note" tone="muted">{preferencesEffectNote(leadName)}</Text>
+          <Text testID="memory-preferences-effect" size="note" tone="muted">{preferencesEffectNote(leadName, locale)}</Text>
         </Column>
       </Card>
     </MemoryGroup>
@@ -118,20 +122,22 @@ function PreferenceRow({ entry, first, leadName, onDeleted }: {
   onDeleted: (changeId: number | null) => void;
 }) {
   const runtime = useCompanionRuntime();
+  const locale = useLocale();
+  const m = memoryMessages(locale);
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState<PreferenceForm>({ title: entry.title, content: entry.content });
   // 正在做的操作：按钮写「正在……」，同一条的其他操作停用（P5.4）。
   const [pending, setPending] = useState<string | null>(null);
   const [message, setMessage] = useState<Message | null>(null);
   const change = entry.lastChange;
-  const reason = preferenceReasonLine(entry);
+  const reason = preferenceReasonLine(entry, locale);
   const undo = change && (change.canUndo || change.undoBlocked) ? change : null;
 
   const run = (busy: string, perform: () => Promise<void>) => {
     setPending(busy);
     setMessage(null);
     perform()
-      .catch((error: unknown) => setMessage({ text: memoryErrorText(error), error: true }))
+      .catch((error: unknown) => setMessage({ text: memoryErrorText(error, locale), error: true }))
       .finally(() => setPending(null));
   };
   const startEdit = () => {
@@ -140,7 +146,7 @@ function PreferenceRow({ entry, first, leadName, onDeleted }: {
     setEditing(true);
   };
   const save = () => {
-    const problem = preferenceFormProblem(form);
+    const problem = preferenceFormProblem(form, locale);
     if (problem) {
       setMessage({ text: problem, error: true });
       return;
@@ -150,21 +156,21 @@ function PreferenceRow({ entry, first, leadName, onDeleted }: {
       setEditing(false);
       return;
     }
-    run('正在保存…', async () => {
+    run(m.saving, async () => {
       await runtime.memoryAction('core_memory', String(entry.id), 'update', input);
       setEditing(false);
-      setMessage({ text: '已保存。', error: false });
+      setMessage({ text: m.saved, error: false });
     });
   };
-  const remove = () => run('正在删掉…', async () => {
+  const remove = () => run(m.deleting, async () => {
     const result = await runtime.memoryAction('core_memory', String(entry.id), 'delete');
     onDeleted(changeIdOf(result));
   });
   const undoLast = () => {
     if (!change) return;
-    run('正在撤销…', async () => {
+    run(m.undoing, async () => {
       await runtime.memoryAction('core_memory_change', String(change.changeId), 'undo');
-      setMessage({ text: '已撤销上一次改动。', error: false });
+      setMessage({ text: m.undone, error: false });
     });
   };
 
@@ -181,10 +187,10 @@ function PreferenceRow({ entry, first, leadName, onDeleted }: {
         <Column gap="field">
           <TextField
             testID={`memory-preference-title-input-${entry.id}`}
-            accessibilityLabel="标题"
+            accessibilityLabel={m.title}
             value={form.title}
             onChangeText={(title) => setForm((current) => ({ ...current, title }))}
-            placeholder="标题"
+            placeholder={m.title}
             variant="filled"
             size="sm"
             maxLength={CORE_MEMORY_TITLE_MAX}
@@ -192,10 +198,10 @@ function PreferenceRow({ entry, first, leadName, onDeleted }: {
           />
           <TextField
             testID={`memory-preference-content-input-${entry.id}`}
-            accessibilityLabel="内容"
+            accessibilityLabel={m.content}
             value={form.content}
             onChangeText={(content) => setForm((current) => ({ ...current, content }))}
-            placeholder="内容"
+            placeholder={m.content}
             variant="filled"
             size="sm"
             multiline
@@ -203,8 +209,8 @@ function PreferenceRow({ entry, first, leadName, onDeleted }: {
             maxLength={CORE_MEMORY_CONTENT_MAX}
           />
           <Row gap="actions" flexWrap="wrap">
-            <Button testID={`memory-preference-save-${entry.id}`} label={pending ?? '保存'} size="sm" disabled={pending !== null} onPress={save} />
-            <Button testID={`memory-preference-cancel-${entry.id}`} label="取消" size="sm" variant="ghost" tone="neutral" disabled={pending !== null}
+            <Button testID={`memory-preference-save-${entry.id}`} label={pending ?? m.save} size="sm" disabled={pending !== null} onPress={save} />
+            <Button testID={`memory-preference-cancel-${entry.id}`} label={m.cancel} size="sm" variant="ghost" tone="neutral" disabled={pending !== null}
               onPress={() => { setEditing(false); setMessage(null); }} />
           </Row>
         </Column>
@@ -216,13 +222,13 @@ function PreferenceRow({ entry, first, leadName, onDeleted }: {
               <Text testID={`memory-preference-content-${entry.id}`} size="body">{entry.content}</Text>
             </Column>
             <Column gap="text-stack">
-              <Text testID={`memory-preference-change-${entry.id}`} size="meta" tone="secondary">{preferenceChangeLine(entry, leadName)}</Text>
+              <Text testID={`memory-preference-change-${entry.id}`} size="meta" tone="secondary">{preferenceChangeLine(entry, leadName, locale)}</Text>
               {reason ? <Text testID={`memory-preference-reason-${entry.id}`} size="secondary" tone="secondary">{reason}</Text> : null}
             </Column>
           </Column>
           <Popover
             testID={`memory-preference-more-${entry.id}`}
-            label={`「${entry.title}」的操作：改、删掉${undo ? '、撤销上一次改动' : ''}`}
+            label={m.actionsFor(entry.title, Boolean(undo))}
             title={entry.title}
             width={300}
             trigger={<Icon name="more" size={16} color="text-secondary" />}
@@ -231,15 +237,15 @@ function PreferenceRow({ entry, first, leadName, onDeleted }: {
               <Column>
                 <RecordRow
                   testID={`memory-preference-edit-${entry.id}`}
-                  title="改"
-                  detail="就地改标题和内容"
+                  title={m.edit}
+                  detail={m.editDetail}
                   onPress={pending === null ? () => { close(); startEdit(); } : undefined}
                 />
                 <RecordRow
                   divider
                   testID={`memory-preference-delete-${entry.id}`}
-                  title="删掉"
-                  detail="删掉以后，这一页上可以撤销"
+                  title={m.delete}
+                  detail={m.deleteDetail}
                   onPress={pending === null ? () => { close(); remove(); } : undefined}
                 />
                 {undo ? (
@@ -247,8 +253,8 @@ function PreferenceRow({ entry, first, leadName, onDeleted }: {
                   <RecordRow
                     divider
                     testID={`memory-preference-undo-${entry.id}`}
-                    title="撤销上一次改动"
-                    detail={undo.canUndo ? preferenceChangeLine(entry, leadName) : undo.undoBlocked ?? ''}
+                    title={m.undoLast}
+                    detail={undo.canUndo ? preferenceChangeLine(entry, leadName, locale) : undo.undoBlocked ?? ''}
                     onPress={undo.canUndo && pending === null ? () => { close(); undoLast(); } : undefined}
                   />
                 ) : null}
@@ -268,6 +274,8 @@ function PreferenceRow({ entry, first, leadName, onDeleted }: {
 // 删掉的那一条：标题划掉，「已删掉」，后面是「撤销」（撤销提示，不弹确认）。
 function RemovedRow({ removed, first, onRestored }: { removed: Removed; first: boolean; onRestored: () => void }) {
   const runtime = useCompanionRuntime();
+  const locale = useLocale();
+  const m = memoryMessages(locale);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { entry, changeId } = removed;
@@ -276,7 +284,7 @@ function RemovedRow({ removed, first, onRestored }: { removed: Removed; first: b
     setBusy(true);
     setError(null);
     runtime.memoryAction('core_memory_change', String(changeId), 'undo')
-      .then(onRestored, (reason: unknown) => setError(memoryErrorText(reason)))
+      .then(onRestored, (reason: unknown) => setError(memoryErrorText(reason, locale)))
       .finally(() => setBusy(false));
   };
   return (
@@ -290,9 +298,9 @@ function RemovedRow({ removed, first, onRestored }: { removed: Removed; first: b
     >
       <Row items="center" gap="inline-item">
         <Text flex={1} minW={0} size="card-title" tone="muted" numberOfLines={1} textDecorationLine="line-through">{entry.title}</Text>
-        <Text size="meta" tone="secondary">已删掉</Text>
+        <Text size="meta" tone="secondary">{m.deleted}</Text>
         {changeId !== null ? (
-          <Button testID={`memory-preference-restore-${entry.id}`} label={busy ? '正在撤销…' : '撤销'} variant="link" tone="neutral" size="xs" disabled={busy} onPress={restore} />
+          <Button testID={`memory-preference-restore-${entry.id}`} label={busy ? m.undoing : m.undo} variant="link" tone="neutral" size="xs" disabled={busy} onPress={restore} />
         ) : null}
       </Row>
       {error ? <Text testID={`memory-preference-restore-error-${entry.id}`} size="note" tone="danger-dark">{error}</Text> : null}
@@ -305,6 +313,8 @@ function RemovedRow({ removed, first, onRestored }: { removed: Removed; first: b
 export function InvalidatedFacts({ facts }: { facts: readonly MemoryInvalidatedFactDto[] }) {
   const runtime = useCompanionRuntime();
   const leadName = useLeadName();
+  const locale = useLocale();
+  const m = memoryMessages(locale);
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -316,7 +326,7 @@ export function InvalidatedFacts({ facts }: { facts: readonly MemoryInvalidatedF
       return next;
     });
     runtime.memoryAction('memory_fact', fact.memoryId, 'restore')
-      .catch((reason: unknown) => setErrors((current) => ({ ...current, [fact.memoryId]: memoryErrorText(reason) })))
+      .catch((reason: unknown) => setErrors((current) => ({ ...current, [fact.memoryId]: memoryErrorText(reason, locale) })))
       .finally(() => setBusy(null));
   };
   return (
@@ -325,34 +335,34 @@ export function InvalidatedFacts({ facts }: { facts: readonly MemoryInvalidatedF
         testID="memory-invalidated-toggle"
         onPress={() => setOpen(!open)}
         feedback="none"
-        aria-label={open ? '收起最近失效的事实' : '展开最近失效的事实'}
+        aria-label={open ? m.collapseInvalidated : m.expandInvalidated}
         aria-expanded={open}
       >
         <Row items="center" gap="inline-item">
-          <Text size="card-title" weight="semibold">最近失效的事实</Text>
-          <Text testID="memory-invalidated-count" flex={1} size="meta" tone="muted">{`${facts.length} 条`}</Text>
+          <Text size="card-title" weight="semibold">{m.invalidated}</Text>
+          <Text testID="memory-invalidated-count" flex={1} size="meta" tone="muted">{m.factCount(facts.length)}</Text>
           <Icon name={open ? 'chevron-up' : 'chevron-down'} size={16} color="text-secondary" weight="semibold" />
         </Row>
       </Pressable>
       {open ? (
         <Column gap="card-row">
-          <Text size="secondary" tone="secondary">{INVALIDATED_HINT}</Text>
+          <Text size="secondary" tone="secondary">{m.invalidatedHint}</Text>
           {facts.map((fact) => {
-            const source = invalidatedFactSource(fact);
+            const source = invalidatedFactSource(fact, locale);
             const error = errors[fact.memoryId];
             return (
               <Row key={fact.memoryId} testID={`memory-fact-${fact.memoryId}`} items="flex-start" gap="side-item" pt="card-row" borderTopWidth={1} borderTopColor="border-soft">
                 <Column flex={1} minW={0} gap="text-stack">
-                  <Text testID={`memory-fact-text-${fact.memoryId}`} size="body" tone={fact.text ? 'default' : 'muted'}>{fact.text ? `「${fact.text}」` : '读不到原文'}</Text>
+                  <Text testID={`memory-fact-text-${fact.memoryId}`} size="body" tone={fact.text ? 'default' : 'muted'}>{fact.text ? m.quoted(fact.text) : m.noOriginal}</Text>
                   <Text testID={`memory-fact-meta-${fact.memoryId}`} size="meta" tone="secondary">
-                    {[invalidatedFactLine(fact, leadName), source].filter(Boolean).join(' · ')}
+                    {[invalidatedFactLine(fact, leadName, locale), source].filter(Boolean).join(' · ')}
                   </Text>
-                  {fact.reason.trim() ? <Text testID={`memory-fact-reason-${fact.memoryId}`} size="secondary" tone="secondary">{`依据：${fact.reason.trim()}`}</Text> : null}
+                  {fact.reason.trim() ? <Text testID={`memory-fact-reason-${fact.memoryId}`} size="secondary" tone="secondary">{m.reason(fact.reason.trim())}</Text> : null}
                   {error ? <Text testID={`memory-fact-error-${fact.memoryId}`} size="note" tone="danger-dark">{error}</Text> : null}
                 </Column>
                 <Button
                   testID={`memory-fact-restore-${fact.memoryId}`}
-                  label={busy === fact.memoryId ? '正在恢复…' : '恢复'}
+                  label={busy === fact.memoryId ? m.restoring : m.restore}
                   variant="outline"
                   tone="neutral"
                   size="xs"

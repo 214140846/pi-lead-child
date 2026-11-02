@@ -121,7 +121,7 @@ function failure(hub: ConnectionHub, error: unknown) {
   const action = connectionUserAction(hub, error);
   // user_action 写在正文里给 Lead 看（它原样抄进 UserAction 卡）；系统只认 details.userAction（protocol 的 userActionOfToolResult）。
   return json({
-    ok: false, error: error.code, connection: error.key, message: error.message, next: next[error.code] ?? null,
+    ok: false, error: error.code, connection: error.key, message: error.message, next: error.next ?? next[error.code] ?? null,
     ...(action ? { user_action: action } : {}),
   }, action ? { userAction: action } : {});
 }

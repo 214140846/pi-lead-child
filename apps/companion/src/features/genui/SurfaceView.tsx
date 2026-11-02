@@ -3,9 +3,11 @@ import {
   dataToneBadge, dataToneText, type BadgeTone, type QuotedMessage, type SegmentItem, type TileEmphasis,
 } from '@pi-lead-child/components';
 import {
-  surfaceNeedsNewerCatalog, validateUiSurface, type UiBinding, type UiNode, type UiSurface, type UiTone, type UserActionRequest,
+  intlLocale, surfaceNeedsNewerCatalog, validateUiSurface, type UiBinding, type UiNode, type UiSurface, type UiTone, type UserActionRequest,
 } from '@pi-lead-child/protocol';
 import { createContext, useContext, type ReactNode } from 'react';
+
+import { useLocale, useMessages } from '@/i18n';
 
 import { useCompanionRuntime, useControlPlaneStore, useWorkspaceStore } from '../../state/CompanionStateProvider';
 import { useConnectionState, useReloadApp, useServedWebVersion, useTicketInterventions } from '../../state/hooks';
@@ -15,12 +17,13 @@ import { ReminderCard } from '../chat/ReminderCard';
 import { useOpenTicket } from '../chat/useOpenTicket';
 import { ConnectionConfirmCard, ConnectionConnectCard } from './ConnectionCards';
 import {
-  BarChartView, DataTableView, ProgressView, StatsView, StepsView, TimelineView,
-  type BarChartProps, type DataTableProps, type ProgressProps, type StatsProps, type StepsProps, type TimelineProps,
+  BarChartView, DataTableView, ProgressView, SparklineView, StatsView, StepsView, TimelineView,
+  type BarChartProps, type DataTableProps, type ProgressProps, type SparklineProps, type StatsProps, type StepsProps, type TimelineProps,
 } from './InfoViews';
 import { MemorySwitchConfirmCard } from './MemoryCards';
+import { genuiMessages } from './genui.messages';
 import {
-  ActionButton, ActionGroup, DisclosureView, FieldView, SurfaceFormProvider, useBinding,
+  ActionButton, ActionGroup, DisclosureView, FieldView, SurfaceFormProvider, useBinding, weekdayWord,
   type ActionProps, type ActionTargets, type DisclosureProps, type FieldProps,
 } from './SurfaceControls';
 import { StandingOrderChangeConfirmCard } from './StandingOrderCards';
@@ -35,6 +38,7 @@ import { UserActionCard } from './UserActionCard';
 // 外观是方案 A 的决定卡：有待做的决定时整张卡是琥珀色的边，工单头写「等你决定」。
 // partial：模型还在写这张卡（流式），先画已经完整的部分，说一句「正在生成…」，选项先不能点。
 export function SurfaceView({ surface, partial = false }: { surface: UiSurface; partial?: boolean }) {
+  const m = useMessages(genuiMessages).surface;
   const checked = validateUiSurface(surface);
   if (!checked.ok) {
     if (surfaceNeedsNewerCatalog(checked)) return <NeedsNewerApp fallbackText={surface.fallbackText} />;
@@ -63,7 +67,7 @@ export function SurfaceView({ surface, partial = false }: { surface: UiSurface; 
         <SurfaceFormProvider>
           <Column gap="card-row">
             <SurfaceNode node={root} byId={byId} partial={partial} bleed={bleed} />
-            {partial ? <Text size="note" tone="secondary">正在生成…</Text> : null}
+            {partial ? <Text size="note" tone="secondary">{m.generating}</Text> : null}
           </Column>
         </SurfaceFormProvider>
       </CardInfo.Provider>
@@ -79,12 +83,13 @@ export function SurfaceView({ surface, partial = false }: { surface: UiSurface; 
 function NeedsNewerApp({ fallbackText }: { fallbackText: string }) {
   const served = useServedWebVersion();
   const reload = useReloadApp();
+  const m = useMessages(genuiMessages).surface;
   const refresh = served === 'newer' ? reload : null;
   return (
     <Column gap="text-stack">
       <Row testID="surface-needs-update" items="center" gap="inline-item" flexWrap="wrap">
-        <Text size="secondary" tone="secondary">{refresh ? '这张卡需要新版本，刷新后显示' : '这张卡用了当前版本还不支持的组件'}</Text>
-        {refresh ? <Button label="刷新" onPress={refresh} variant="link" tone="accent" size="xs" /> : null}
+        <Text size="secondary" tone="secondary">{refresh ? m.needsRefresh : m.unsupported}</Text>
+        {refresh ? <Button label={m.refresh} onPress={refresh} variant="link" tone="accent" size="xs" /> : null}
       </Row>
       <Text size="body">{fallbackText}</Text>
     </Column>
@@ -141,6 +146,7 @@ const GAP = { sm: 'chips', md: 'card-row', lg: 'card-section' } as const;
 function SurfaceNode({ node, byId, partial, bleed = false }: {
   node: UiNode; byId: ReadonlyMap<string, UiNode>; partial: boolean; bleed?: boolean;
 }): ReactNode {
+  const m = useMessages(genuiMessages).surface;
   const children = (node.children ?? []).map((id) => byId.get(id)).filter((child): child is UiNode => Boolean(child));
   const props = node.props as Record<string, unknown>;
   switch (node.type) {
@@ -208,6 +214,8 @@ function SurfaceNode({ node, byId, partial, bleed = false }: {
       return <TimelineView id={node.id} {...(props as unknown as TimelineProps)} />;
     case 'BarChart':
       return <BarChartView id={node.id} {...(props as unknown as BarChartProps)} />;
+    case 'Sparkline':
+      return <SparklineView id={node.id} {...(props as unknown as SparklineProps)} />;
     // v3 积木（2026-10-27）：图块、前导 + 正文、一排小格、别人说的话（packages/components 的 Tile、MediaRow、Segments、QuotedMessages）。
     case 'Tile':
       return <SurfaceTile node={node} />;
@@ -263,7 +271,7 @@ function SurfaceNode({ node, byId, partial, bleed = false }: {
       return Array.isArray(props.messages) && props.messages.length ? (
         <QuotedMessages
           testID={`surface-message-${node.id}`}
-          sender={typeof props.sender === 'string' ? props.sender : '对方'}
+          sender={typeof props.sender === 'string' ? props.sender : m.otherSender}
           messages={props.messages as QuotedMessage[]}
           total={typeof props.total === 'number' ? props.total : props.messages.length}
           mode={props.mode === 'stack' ? 'stack' : 'latest'}
@@ -282,6 +290,7 @@ function SurfaceNode({ node, byId, partial, bleed = false }: {
 // 用的是和积木同一套组件（Tile、MediaRow、DisclosureView）。贴边（attach）时是票根，整张卡是根节点时贴住卡片的边。
 function SurfaceItem({ node, byId, partial, bleed }: { node: UiNode; byId: ReadonlyMap<string, UiNode>; partial: boolean; bleed: boolean }) {
   const facts = useContext(CardInfo);
+  const m = useMessages(genuiMessages).surface;
   const props = node.props as {
     lead: Record<string, unknown>; attach?: boolean; title?: string; text?: string; meta?: string; metaBind?: UiBinding; label?: string;
   };
@@ -325,7 +334,7 @@ function SurfaceItem({ node, byId, partial, bleed }: { node: UiNode; byId: Reado
   return (
     <ItemDisclosure
       id={node.id}
-      label={props.label ?? props.title ?? '细节'}
+      label={props.label ?? props.title ?? m.details}
       partial={partial}
       bind={bound}
       targets={facts.targets}
@@ -350,11 +359,12 @@ function ItemDisclosure({ bind, ...rest }: Omit<DisclosureProps, 'ended'> & { bi
 // 对象组件 Reminder：和会话里的系统提醒卡是同一个组件，只按编号取数据。
 // 对象组件（三层的最上层）：账本里的一个对象，只有编号。画成和会话里同一张系统卡：提醒卡、外部消息卡、介入请求卡。
 function ObjectNode({ node }: { node: UiNode }) {
+  const m = useMessages(genuiMessages).surface;
   const props = node.props as Record<string, unknown>;
   if (node.type === 'ChannelCard') return <ChannelCardObject cardId={Number(props.card)} />;
   if (node.type === 'Intervention') {
     // ticket、checkpoint 是服务端在 render_ui 定稿时填的。没有 ticket 的旧卡画不出来，只留说明。
-    if (typeof props.ticket !== 'number') return <Text size="secondary" tone="secondary">{`${props.kind === 'approval' ? '审批' : '决定'} #${String(props.id)}`}</Text>;
+    if (typeof props.ticket !== 'number') return <Text size="secondary" tone="secondary">{props.kind === 'approval' ? m.approval(String(props.id)) : m.decision(String(props.id))}</Text>;
     return (
       <InterventionSlot
         kind={props.kind === 'approval' ? 'approval' : 'decision'}
@@ -370,7 +380,8 @@ function ObjectNode({ node }: { node: UiNode }) {
 // 外部消息卡：这台设备的会话里有这张卡时，就是会话里那一张；还没同步到时先写一行占位。
 function ChannelCardObject({ cardId }: { cardId: number }) {
   const held = useControlPlaneStore((state) => state.channelCards.some((card) => card.id === cardId));
-  if (!held) return <Text testID={`channel-card-slot-${cardId}`} size="secondary" tone="secondary">{`外部消息卡 #${cardId} 正在同步。`}</Text>;
+  const m = useMessages(genuiMessages).surface;
+  if (!held) return <Text testID={`channel-card-slot-${cardId}`} size="secondary" tone="secondary">{m.channelSyncing(cardId)}</Text>;
   return <ChannelCardSlot cardId={cardId} />;
 }
 
@@ -390,18 +401,20 @@ function SurfaceTile({ node, attached = false, expanded = false }: { node: UiNod
   // 绑定了工单时，色调跟着它现在的状态；绑定的是时间时，说明行实时写这个时间（取不到时用快照）。
   const bind = props.bind as UiBinding | undefined;
   const live = useBinding(bind);
+  const locale = useLocale();
+  const m = useMessages(genuiMessages).surface;
   // 绑定时间、format 是 date：图块就是一页日历，小标题写月份、大值写日期，改了时间跟着变。
   // 浮层里选了新时间、还没按下时，日历页先换成新的一天（强调色），最下面划掉原来那天。
   // 展开的日历页多写星期和时刻（视觉稿：周五 / 30 / 14:00）。其他时间格式写在说明行。取不到时都用 Lead 写的快照。
   const calendar = bind?.field === 'remindAt' && bind.format === 'date' && live.at ? live.pending ?? live.at : null;
   const clock = (at: Date) => `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`;
-  const weekday = (at: Date) => `周${'日一二三四五六'[at.getDay()]}`;
+  const weekday = (at: Date) => weekdayWord(at, locale);
   const caption = calendar ? (expanded ? clock(calendar) : props.caption)
     : bind && bind.field !== 'stage' && live.text ? live.pendingText ?? live.text : props.caption;
-  const eyebrow = calendar ? `${calendar.getMonth() + 1}月` : props.eyebrow;
+  const eyebrow = calendar ? new Intl.DateTimeFormat(intlLocale(locale), { month: 'short' }).format(calendar) : props.eyebrow;
   const value = calendar ? calendar.getDate() : props.value as number | string;
   const tone = live.tone ?? (props.tone as UiTone | undefined);
-  const was = calendar && live.pending && live.at ? `原 ${weekday(live.at)} ${live.at.getDate()}` : undefined;
+  const was = calendar && live.pending && live.at ? m.was(weekday(live.at), live.at.getDate()) : undefined;
   return (
     <Tile
       testID={`surface-tile-${node.id}`}
@@ -484,19 +497,21 @@ function SurfaceText({ text, variant, tone, bind }: { text: string; variant?: st
 }
 
 type FactItem = { label?: string; text: string; status?: 'reproduced' | 'passed' | 'failed' | 'info' };
-const FACT_STATUS: Record<NonNullable<FactItem['status']>, { label: string; tone: BadgeTone } | null> = {
-  reproduced: { label: '已复现', tone: 'neutral' },
-  passed: { label: '通过', tone: 'success' },
-  failed: { label: '失败', tone: 'danger' },
+const FACT_STATUS: Record<NonNullable<FactItem['status']>, BadgeTone | null> = {
+  reproduced: 'neutral',
+  passed: 'success',
+  failed: 'danger',
   info: null,
 };
 
 // 事实列表画在 packages/components 的 FactList 里；这里把卡片里的 status 换成状态标签。
 function FactListView({ items }: { items: readonly FactItem[] }) {
+  const m = useMessages(genuiMessages).surface;
   return (
     <FactList
       items={items.map((item) => {
-        const status = item.status ? FACT_STATUS[item.status] : null;
+        const tone = item.status ? FACT_STATUS[item.status] : null;
+        const status = tone && item.status && item.status !== 'info' ? { label: m.factStates[item.status], tone } : null;
         return { label: item.label, value: item.text, ...(status ? { badge: status } : {}) };
       })}
     />
@@ -534,19 +549,20 @@ function TicketHead({ ticketId }: { ticketId: number }) {
 // 生成中（还没定稿）没有 text：只写「正在取原文…」。
 function SourceQuote({ ticketId, text, label, truncated }: { ticketId: number; text: string | null; label: string | null; truncated: boolean }) {
   const openTicket = useOpenTicket();
+  const m = useMessages(genuiMessages).surface;
   return (
     <Column testID={`surface-source-quote-${ticketId}`} gap="card-row" pl="inset-x" borderLeftWidth={3} borderColor="border-strong">
       <Pressable
-        aria-label={`打开工单 #${ticketId}`}
+        aria-label={m.openTicket(ticketId)}
         onPress={() => openTicket(ticketId)}
         feedback="highlight"
         rounded="sm"
         self="flex-start"
       >
-        <Text size="meta" tone="secondary">{label ? `原文 · ${label}` : `原文 · 工单 #${ticketId}`}</Text>
+        <Text size="meta" tone="secondary">{label ? m.sourceLabel(label) : m.sourceTicket(ticketId)}</Text>
       </Pressable>
-      <Text size="body">{text ?? '正在取原文…'}</Text>
-      {truncated ? <Text size="note" tone="secondary">只显示了开头，全文在工单里。</Text> : null}
+      <Text size="body">{text ?? m.sourceLoading}</Text>
+      {truncated ? <Text size="note" tone="secondary">{m.truncated}</Text> : null}
     </Column>
   );
 }
@@ -564,6 +580,7 @@ type ChoiceGroupProps = {
 // 选项卡片画在 packages/components 的 ChoiceGroup 里；这里读决策请求、提交选择。
 function DecisionChoices({ ticket, prompt, choices, recommendation, decision, partial }: ChoiceGroupProps & { partial: boolean }) {
   const runtime = useCompanionRuntime();
+  const m = useMessages(genuiMessages).surface;
   const connected = useConnectionState() === 'connected';
   const { interventions } = useTicketInterventions(ticket);
   const interventionId = decision ? `decision:${decision}` : null;
@@ -584,13 +601,13 @@ function DecisionChoices({ ticket, prompt, choices, recommendation, decision, pa
       {prompt ? <Text size="card-title" weight="semibold">{prompt}</Text> : null}
       {recommendation ? (
         <Column gap="text-stack" px="inset-x" py="inset-y" rounded="lg" bg="accent-wash">
-          <Text size="label" weight="bold" tone="accent">我的建议</Text>
+          <Text size="label" weight="bold" tone="accent">{m.recommendation}</Text>
           <Text size="body">{recommendation.reason}</Text>
         </Column>
       ) : null}
       {closed ? (
         <Text size="label" weight="semibold" tone="secondary">
-          {chosen ? `你选了「${chosen}」` : intervention?.state === 'expired' ? '这个决定已过期' : '这个决定已经处理'}
+          {chosen ? m.chosen(chosen) : intervention?.state === 'expired' ? m.decisionExpired : m.decisionHandled}
         </Text>
       ) : (
         <ChoiceGroup
@@ -601,7 +618,7 @@ function DecisionChoices({ ticket, prompt, choices, recommendation, decision, pa
           optionTestID={(id) => `surface-choice-${id}`}
         />
       )}
-      {command?.state === 'error' ? <Text size="note" tone="danger-dark">{command.error ?? '没能提交这个选择'}</Text> : null}
+      {command?.state === 'error' ? <Text size="note" tone="danger-dark">{command.error ?? m.submitFailed}</Text> : null}
     </Column>
   );
 }

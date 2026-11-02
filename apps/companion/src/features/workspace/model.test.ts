@@ -2,7 +2,7 @@ import type { KernelCheckpoint, KernelTicketPow, KernelTicketWorkItem, TicketSum
 import { describe, expect, it } from 'vitest';
 
 import {
-  TICKET_DETAIL_TABS,
+  ticketDetailTabs,
   buildTicketDetailPresentation,
   buildPowMetricPresentation,
   buildTicketRailPresentation,
@@ -43,11 +43,12 @@ describe('workspace model', () => {
 
   it('projects the user action separately from the ticket lifecycle status', () => {
     expect(ticketNextActionPresentation(groupedTickets[2]!)).toMatchObject({
-      label: '需要你验收',
+      label: 'You must accept',
       tone: 'attention',
     });
+    expect(ticketNextActionPresentation(groupedTickets[2]!, 'zh')).toMatchObject({ label: '需要你验收' });
     expect(ticketNextActionPresentation(groupedTickets[0]!)).toMatchObject({
-      label: '系统正在执行',
+      label: 'The system is working',
       tone: 'info',
     });
     expect(ticketNextActionPresentation(groupedTickets[4]!)).toBeNull();
@@ -61,8 +62,8 @@ describe('workspace model', () => {
     } as Ticket;
 
     expect(ticketAttentionReason(mergeConflict)).toBe('merge_conflict');
-    expect(ticketNextActionPresentation(mergeConflict)).toMatchObject({ label: '需要你处理合并冲突', tone: 'danger' });
-    expect(ticketRailCaption(mergeConflict)).toBe('#42 · 运行中 · 需要介入');
+    expect(ticketNextActionPresentation(mergeConflict)).toMatchObject({ label: 'You must resolve a merge conflict', tone: 'danger' });
+    expect(ticketRailCaption(mergeConflict)).toBe('#42 · 运行中 · Needs action');
   });
 
   it('groups tickets without a project into unknown', () => {
@@ -123,10 +124,10 @@ describe('workspace model', () => {
     };
 
     expect(groupForTicket(doneWithHistoricalAttention)).toBe('completed');
-    expect(ticketRailCaption(doneWithHistoricalAttention)).toBe('#40 · 已完成');
+    expect(ticketRailCaption(doneWithHistoricalAttention)).toBe('#40 · Completed');
     expect(buildTicketRailPresentation([doneWithHistoricalAttention], { filter: 'todo' }).state).toBe('no_results');
     expect(groupForTicket(failedReview)).toBe('needs_intervention');
-    expect(ticketRailCaption(failedReview)).toBe('#41 · 核查不通过，等你决定 · 需要处理');
+    expect(ticketRailCaption(failedReview)).toBe('#41 · 核查不通过，等你决定 · Needs action');
   });
 
   it('returns the populated, first-use, all-completed, and no-results rail states', () => {
@@ -145,9 +146,9 @@ describe('workspace model', () => {
   });
 
   it('formats the detail heartbeat with authoritative progress', () => {
-    expect(formatTicketHeartbeatLabel(groupedTickets[0]!)).toBe('心跳 · 62%');
-    expect(formatTicketHeartbeatLabel(groupedTickets[2]!)).toBe('待验收 · 100%');
-    expect(formatTicketHeartbeatLabel(groupedTickets[3]!)).toBe('需要介入');
+    expect(formatTicketHeartbeatLabel(groupedTickets[0]!)).toBe('Heartbeat · 62%');
+    expect(formatTicketHeartbeatLabel(groupedTickets[2]!)).toBe('To accept · 100%');
+    expect(formatTicketHeartbeatLabel(groupedTickets[3]!)).toBe('Needs action');
   });
 
   it('projects capability coverage from structured checkpoint facts without conflating proof counts', () => {
@@ -179,7 +180,7 @@ describe('workspace model', () => {
     const week = buildWeek('2026-07-23');
 
     expect(week.map((day) => day.dateLabel)).toEqual(['20', '21', '22', '23', '24', '25', '26']);
-    expect(week.find((day) => day.isToday)?.weekdayLabel).toBe('四');
+    expect(week.find((day) => day.isToday)?.weekdayLabel).toBe('Thu');
   });
 
   it('maps protocol runtime and attention without inventing a progress percentage', () => {
@@ -210,7 +211,7 @@ describe('workspace model', () => {
     // 协议的 stage 直接透传（kernel spec §5 命名映射表）。
     expect(ticket).toMatchObject({
       id: '77', status: 'active', kind: 'task', hasRun: true, priority: 'urgent',
-      runtimeLabel: '停滞', heartbeat: false, needsAttention: true,
+      runtimeLabel: 'Stalled', heartbeat: false, needsAttention: true,
       runtimeName: 'codex', agentLabel: 'child #9', sessionId: 'session-9', elapsedMs: 3_600_000,
     });
     expect(ticket).not.toHaveProperty('project');
@@ -234,7 +235,7 @@ describe('workspace model', () => {
     });
     expect(failedReview.statusLabel).toBe('核查不通过，等你决定');
     expect(failedReview.needsAttention).toBe(true);
-    expect(formatTicketHeartbeatLabel(failedReview)).toBe('需要你');
+    expect(formatTicketHeartbeatLabel(failedReview)).toBe('Needs you');
 
     expect(formatTicketHeartbeatLabel({
       ...failedReview,
@@ -249,7 +250,7 @@ describe('workspace model', () => {
         reason: 'Selected model is at capacity',
         updatedAt: '2026-08-19T09:42:01.000Z',
       },
-    })).toBe('需要你');
+    })).toBe('Needs you');
 
     const queuedRework = ticketSummaryToTicket({
       id: 89, title: 'queued rework', summary: '',
@@ -319,10 +320,10 @@ describe('workspace model', () => {
     expect(handled).toMatchObject({ needsAttention: false, needsUser: null, leadHandling: true, turn: 'lead' });
     // 它是 Lead 的回合（ticketTurn），进展开的「Lead 处理中」组，不进「等你」，也不标红。
     expect(groupForTicket(handled)).toBe('lead');
-    expect(formatTicketHeartbeatLabel(handled)).toBe('Paimon 处理中');
-    expect(ticketRailCaption(handled)).toBe('#91 · Paimon 处理中');
+    expect(formatTicketHeartbeatLabel(handled)).toBe('Paimon is handling it');
+    expect(ticketRailCaption(handled)).toBe('#91 · Paimon is handling it');
     expect(ticketAttentionReason(handled)).toBeNull();
-    expect(ticketNextActionPresentation(handled)).toMatchObject({ label: 'Paimon 正在处理', tone: 'info' });
+    expect(ticketNextActionPresentation(handled)).toMatchObject({ label: 'Paimon is handling it', tone: 'info' });
 
     // Lead 处理不了、升级给了用户：又是「需要你介入」。
     const escalated = ticketSummaryToTicket({ ...base, attention: { pendingApprovalCount: 0, blockerCount: 1 } });
@@ -346,9 +347,9 @@ describe('workspace model', () => {
     };
     const ticket = ticketSummaryToTicket(owed);
     expect(ticket.needsUser).toBe('decision');
-    expect(ticket.statusLabel).not.toBe('Paimon 处理中');
-    expect(ticket.runtimeLabel).not.toBe('Paimon 处理中');
-    expect(formatTicketHeartbeatLabel(ticket)).not.toBe('Paimon 处理中');
+    expect(ticket.statusLabel).not.toBe('Paimon is handling it');
+    expect(ticket.runtimeLabel).not.toBe('Paimon is handling it');
+    expect(formatTicketHeartbeatLabel(ticket)).not.toBe('Paimon is handling it');
   });
 
   it('keeps ticket details focused on tabs and ticket-level elapsed timing', () => {
@@ -359,14 +360,14 @@ describe('workspace model', () => {
 
     // tab 只装执行细节。说明文字归头部，不另开一个 tab 重复渲染同一段字；
     // 没有 Run 时 visibleTicketTabs 返回空数组，整条 tab 栏都不出现（kernel spec §11）。
-    expect(TICKET_DETAIL_TABS.map((tab) => tab.label)).toEqual(['验收证据', '产物', '日志']);
-    expect(detail.properties).toContainEqual({ id: 'elapsed', label: '耗时', value: '6m' });
+    expect(ticketDetailTabs().map((tab) => tab.label)).toEqual(['Acceptance evidence', 'Artifacts', 'Logs']);
+    expect(detail.properties).toContainEqual({ id: 'elapsed', label: 'Time used', value: '6m' });
     expect(detail.properties.map((property) => property.id)).not.toEqual(
       expect.arrayContaining(['capability_coverage', 'gaps', 'tool_calls']),
     );
     expect(detail.artifactState).toMatchObject({
       kind: 'unsupported',
-      title: '产物能力尚未接入',
+      title: 'Artifacts are not available yet',
     });
   });
 

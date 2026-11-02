@@ -18,10 +18,10 @@ describe('workspace rail and lists', () => {
     expect(workRail).toContain('testID="ticket-search"');
     // 项目 tab 是项目卡片，卡片的内容由 buildProjectCards 算（projectModel.test.ts 直接测它）。
     expect(projectList).toContain('testID="project-list"');
-    expect(projectList).toContain('buildProjectCards(overviews)');
+    expect(projectList).toContain('buildProjectCards(overviews, undefined, locale)');
     // 日程（阶段 3）：分区、标签、出处和一句话在纯函数 buildTimelineView 里（agendaTimeline.test.tsx 直接测它），
     // 过期和风险由服务端算（/v1/timeline）。
-    expect(agendaTimeline).toContain('buildTimelineView(timeline, now, selectedDate)');
+    expect(agendaTimeline).toContain('buildTimelineView(timeline, now, selectedDate, locale)');
     expect(agendaTimeline).toContain('<TextField');
   });
 
@@ -57,7 +57,7 @@ describe('workspace rail and lists', () => {
 
     // 品牌行高 36；视图页签用 SegmentedControl（md 高 32，选中块带阴影）；筛选用 Chip（sm 高 27，圆角 8）。
     expect(workRail).toContain('<Row testID="work-rail-header" h={36} items="center" gap="side-item" mb="page-section">');
-    expect(workRail).toMatch(/<SegmentedControl\s+options=\{RAIL_VIEWS\}/);
+    expect(workRail).toMatch(/<SegmentedControl\s+options=\{railViews\}/);
     expect(workRail).not.toMatch(/<SegmentedControl[^>]*size="sm"/);
     expect(workRail).not.toMatch(/<Chip[^>]*size="md"/);
     expect(ticketList).toMatch(/testID=\{`ticket-group-\$\{group\.id\}`\}[^]*?h=\{36\}/);

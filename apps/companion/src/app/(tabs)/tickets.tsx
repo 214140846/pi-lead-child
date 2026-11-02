@@ -4,10 +4,12 @@ import { useRouter } from 'expo-router';
 import { CollectionScreen } from '@/components/CollectionScreen';
 import { TicketList } from '@/features/workspace/TicketList';
 import {
-  TICKET_RAIL_FILTERS,
   buildTicketRailPresentation,
   resolveWorkspaceTickets,
+  ticketRailFilters,
 } from '@/features/workspace/model';
+import { useLocale, useMessages } from '@/i18n';
+import { navigationMessages } from '@/navigation/navigation.messages';
 import { useWorkspaceStore } from '@/state/CompanionStateProvider';
 import { useConnectionPhase, useLeadName, useTickets, useWorkItems } from '@/state/hooks';
 
@@ -15,6 +17,8 @@ export default function TicketsScreen() {
   const router = useRouter();
   const phase = useConnectionPhase();
   const leadName = useLeadName();
+  const locale = useLocale();
+  const m = useMessages(navigationMessages);
   const tickets = useTickets();
   const { items: workItems } = useWorkItems();
   const ticketFilter = useWorkspaceStore((state) => state.ticketFilter);
@@ -24,11 +28,12 @@ export default function TicketsScreen() {
   const setComposerDraft = useWorkspaceStore((state) => state.setComposerDraft);
   const setCompactDestination = useWorkspaceStore((state) => state.setCompactDestination);
   const loading = phase === 'loading' || phase === 'connecting';
-  const items = resolveWorkspaceTickets(phase === 'ready', tickets, workItems);
+  const items = resolveWorkspaceTickets(phase === 'ready', tickets, workItems, locale);
   const projection = buildTicketRailPresentation(items, {
     filter: ticketFilter,
     query: ticketQuery,
     loading,
+    locale,
   });
 
   const clearFilters = () => {
@@ -43,10 +48,10 @@ export default function TicketsScreen() {
   };
 
   return (
-    <CollectionScreen title="工单" subtitle={`${leadName} 创建和监督的任务工作单`}>
+    <CollectionScreen title={m.tickets} subtitle={m.ticketsSubtitle(leadName)}>
       {/* spacing-exempt: 筛选条自己的规格；补齐筛选条和标题的对齐 */}
       <Row role="tablist" items="center" gap="chips" mb="stacked-card" px={6} py={4}>
-        {TICKET_RAIL_FILTERS.map((filter) => (
+        {ticketRailFilters(locale).map((filter) => (
           <Chip
             key={filter.id}
             label={filter.label}

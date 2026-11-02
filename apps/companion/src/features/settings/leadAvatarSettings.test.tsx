@@ -53,8 +53,8 @@ describe('the avatar card', () => {
   it('says where each state comes from and resets an uploaded one', async () => {
     const { runtime, client } = avatarRuntime(AVATAR);
     renderWithRuntime(<LeadAvatarSection />, runtime);
-    expect(screen.getByTestId('lead-avatar-status-default').textContent).toBe('已上传 · 2 KB');
-    expect(screen.getByTestId('lead-avatar-status-thinking').textContent).toBe('用默认图');
+    expect(screen.getByTestId('lead-avatar-status-default').textContent).toBe('Uploaded · 2 KB');
+    expect(screen.getByTestId('lead-avatar-status-thinking').textContent).toBe('Uses the default image');
     expect(screen.queryByTestId('lead-avatar-reset-thinking')).toBeNull();
     // FairyEye 关着时卡片上不提它。
     expect(screen.queryByTestId('lead-avatar-fairy-eye-note')).toBeNull();
@@ -63,8 +63,8 @@ describe('the avatar card', () => {
 
     await act(async () => { fireEvent.click(screen.getByTestId('lead-avatar-reset-default')); });
     expect(client.clearLeadAvatarSlot).toHaveBeenCalledWith('default');
-    expect(screen.getByTestId('lead-avatar-status-default').textContent).toBe('系统素材');
-    expect(screen.getByTestId('lead-avatar-status-thinking').textContent).toBe('系统素材');
+    expect(screen.getByTestId('lead-avatar-status-default').textContent).toBe('System image');
+    expect(screen.getByTestId('lead-avatar-status-thinking').textContent).toBe('System image');
   });
 
   it('tells how to switch FairyEye off only while it is on, and still previews the assets', () => {
@@ -83,7 +83,7 @@ describe('the avatar card', () => {
 
     // 写法不对：说明，不能保存，不去查。
     fireEvent.change(screen.getByTestId('slack-byline-emoji-input'), { target: { value: 'Fairy ZZ' } });
-    expect(screen.getByTestId('slack-byline-preview-note').textContent).toContain('写法不对');
+    expect(screen.getByTestId('slack-byline-preview-note').textContent).toContain('The format is not correct');
     expect(screen.getByTestId('slack-byline-emoji-save').getAttribute('aria-disabled')).toBe('true');
 
     // 清空：只有文字。
@@ -96,10 +96,10 @@ describe('the avatar card', () => {
     fireEvent.change(screen.getByTestId('slack-byline-emoji-input'), { target: { value: 'sparkles' } });
     await waitFor(() => expect(client.previewSlackEmoji).toHaveBeenLastCalledWith(':sparkles:', expect.anything()));
     await waitFor(() => expect(screen.getByTestId('slack-byline-preview-code').textContent).toBe(':sparkles:'));
-    expect(screen.getByTestId('slack-byline-preview-note').textContent).toContain('Slack 自带的 emoji');
+    expect(screen.getByTestId('slack-byline-preview-note').textContent).toContain('built-in Slack emoji');
     await act(async () => { fireEvent.click(screen.getByTestId('slack-byline-emoji-save')); });
     expect(client.setLeadAvatarSlackEmoji).toHaveBeenCalledWith({ emoji: ':sparkles:' });
-    expect(screen.getByTestId('slack-byline-emoji-message').textContent).toContain('已保存');
+    expect(screen.getByTestId('slack-byline-emoji-message').textContent).toContain('Saved.');
     expect(screen.getByTestId('slack-byline-emoji-reset')).toBeTruthy();
   });
 });

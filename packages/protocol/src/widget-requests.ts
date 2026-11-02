@@ -1,4 +1,6 @@
 import { Type, type Static, type TProperties } from "typebox";
+import { DEFAULT_LOCALE, type Locale } from "./i18n.ts";
+import { viewMessages } from "./widget-requests.messages.ts";
 
 // 控件的操作的 input（widgets.ts）。单独一个文件：ui-actions.ts 要引用这些 schema，
 // 而 ui-surfaces.ts 引用 ui-actions.ts，从 ui-surfaces.ts 取 schema 会循环引用。
@@ -38,11 +40,15 @@ export type WidgetSourceInput = Static<typeof WidgetSourceInputSchema>;
 
 // 缺省的视图（用户 2026-10-30）：控件不说属于哪个视图时就在这里。只有它一个视图时面板不显示 tab。
 export const DEFAULT_VIEW = "default";
-export const DEFAULT_VIEW_LABEL = "常用";
 
-/** 视图在 tab 上的名字。 */
-export function viewLabel(view: string): string {
-  return view === DEFAULT_VIEW ? DEFAULT_VIEW_LABEL : view;
+/** 缺省视图的名字（按界面语言）。 */
+export function defaultViewLabel(locale: Locale = DEFAULT_LOCALE): string {
+  return viewMessages(locale).defaultView;
+}
+
+/** 视图在 tab 上的名字（按界面语言）。 */
+export function viewLabel(view: string, locale: Locale = DEFAULT_LOCALE): string {
+  return view === DEFAULT_VIEW ? defaultViewLabel(locale) : view;
 }
 
 export const ViewNameSchema = Type.String({ minLength: 1, maxLength: WIDGET_LIMITS.viewName });

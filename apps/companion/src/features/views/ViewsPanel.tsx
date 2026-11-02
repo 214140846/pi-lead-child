@@ -5,10 +5,12 @@ import { viewLabel, widgetViews, type WidgetDto } from '@pi-lead-child/protocol'
 import { useState } from 'react';
 
 import { SurfaceView } from '@/features/genui/SurfaceView';
+import { useLocale, useMessages } from '@/i18n';
 import { useCompanionRuntime, useWorkspaceStore } from '@/state/CompanionStateProvider';
 import { useLeadName, useWidgets } from '@/state/hooks';
 import { DAEMON_OLDER_THAN_WEB, type ResourceState } from '@/state/types';
 
+import { viewsMessages } from './views.messages';
 import { currentView, movedOrder, widgetErrorText, widgetMetaLine, widgetsEmptyNote, widgetSourceProblem } from './widgetsModel';
 
 // 右侧的「自定义视图」面板（2026-10-30，用户 2026-10-30 定名，.scratch/custom-views/spec.md D2，patterns P16）：用户让 Lead 做的常驻控件，从上到下。
@@ -21,6 +23,8 @@ import { currentView, movedOrder, widgetErrorText, widgetMetaLine, widgetsEmptyN
 export function ViewsPanel({ onClose, standalone = false }: { onClose: () => void; standalone?: boolean }) {
   const { widgets, resource } = useWidgets();
   const leadName = useLeadName();
+  const locale = useLocale();
+  const m = useMessages(viewsMessages);
   const selectedView = useWorkspaceStore((state) => state.selectedView);
   const selectView = useWorkspaceStore((state) => state.selectView);
   const views = widgets ? widgetViews(widgets) : [];
@@ -30,9 +34,9 @@ export function ViewsPanel({ onClose, standalone = false }: { onClose: () => voi
     <Column testID="views-panel" flex={1} minH={0} bg="surface">
       <DetailHeader
         testID="views-panel-header"
-        title="自定义视图"
+        title={m.title}
         onClose={standalone ? undefined : onClose}
-        closeLabel="收起自定义视图"
+        closeLabel={m.close}
         onBack={standalone ? onClose : undefined}
         dense={standalone}
       />
@@ -41,7 +45,7 @@ export function ViewsPanel({ onClose, standalone = false }: { onClose: () => voi
         <Density zone="conversation">
           <Box testID="views-tabs" px="page-x" pt="card-section">
             <SegmentedControl
-              options={views.map((value) => ({ value, label: viewLabel(value) }))}
+              options={views.map((value) => ({ value, label: viewLabel(value, locale) }))}
               value={view}
               onChange={selectView}
               optionTestID={(value) => `views-tab-${value}`}
@@ -56,8 +60,8 @@ export function ViewsPanel({ onClose, standalone = false }: { onClose: () => voi
               <WidgetsNotLoaded state={resource?.state ?? 'idle'} error={resource?.error ?? null} />
             ) : widgets.length === 0 ? (
               <Column testID="views-empty" gap="text-stack">
-                <Text size="card-title" weight="semibold">还没有控件</Text>
-                <Text size="body" tone="secondary">{widgetsEmptyNote(leadName)}</Text>
+                <Text size="card-title" weight="semibold">{m.empty}</Text>
+                <Text size="body" tone="secondary">{widgetsEmptyNote(leadName, locale)}</Text>
               </Column>
             ) : (
               shown.map((widget) => (
@@ -73,11 +77,12 @@ export function ViewsPanel({ onClose, standalone = false }: { onClose: () => voi
 
 // 还没取到控件：在取、取不到，或者 daemon 比网页旧（还没有 GET /v1/widgets）。
 function WidgetsNotLoaded({ state, error }: { state: ResourceState; error: string | null }) {
+  const m = useMessages(viewsMessages);
   if (state === 'unsupported' && error === DAEMON_OLDER_THAN_WEB) {
-    return <Text testID="views-daemon-older" size="note" tone="muted">后台服务还没更新到有自定义视图的版本。更新以后这里就能用了。</Text>;
+    return <Text testID="views-daemon-older" size="note" tone="muted">{m.daemonOlder}</Text>;
   }
-  if (state === 'error') return <Text testID="views-error" size="note" tone="danger-dark">{`控件读不到：${error ?? '请稍后再试'}`}</Text>;
-  return <Text testID="views-loading" size="note" tone="muted">正在读取控件…</Text>;
+  if (state === 'error') return <Text testID="views-error" size="note" tone="danger-dark">{m.loadFailed(error ?? m.tryLater)}</Text>;
+  return <Text testID="views-loading" size="note" tone="muted">{m.loading}</Text>;
 }
 
 function WidgetBlock({ widget, widgets, views, leadName }: {
@@ -87,28 +92,30 @@ function WidgetBlock({ widget, widgets, views, leadName }: {
   leadName: string;
 }) {
   const runtime = useCompanionRuntime();
+  const locale = useLocale();
+  const m = useMessages(viewsMessages);
   const [pending, setPending] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const run = (label: string, action: () => Promise<unknown>) => {
     setPending(label);
     setError(null);
     action()
-      .catch((reason: unknown) => setError(widgetErrorText(reason)))
+      .catch((reason: unknown) => setError(widgetErrorText(reason, locale)))
       .finally(() => setPending(null));
   };
   const up = movedOrder(widgets, widget.id, -1);
   const down = movedOrder(widgets, widget.id, 1);
-  const reorder = (ids: number[]) => run('正在移动…', () => runtime.widgetAction('widget_board', 'widgets', 'reorder', { ids }));
-  const moveTo = (view: string) => run('正在移动…', () => runtime.widgetAction('widget', String(widget.id), 'update', { view }));
-  const remove = () => run('正在删掉…', () => runtime.widgetAction('widget', String(widget.id), 'delete', { confirm: true }));
-  const refresh = () => run('正在刷新…', () => runtime.widgetAction('widget', String(widget.id), 'refresh'));
-  const problem = widgetSourceProblem(widget);
+  const reorder = (ids: number[]) => run(m.moving, () => runtime.widgetAction('widget_board', 'widgets', 'reorder', { ids }));
+  const moveTo = (view: string) => run(m.moving, () => runtime.widgetAction('widget', String(widget.id), 'update', { view }));
+  const remove = () => run(m.deleting, () => runtime.widgetAction('widget', String(widget.id), 'delete', { confirm: true }));
+  const refresh = () => run(m.refreshing, () => runtime.widgetAction('widget', String(widget.id), 'refresh'));
+  const problem = widgetSourceProblem(widget, locale);
   return (
     <Column testID={`widget-${widget.id}`} gap="card-row">
       <Row items="flex-start" gap="side-item">
         <Column flex={1} minW={0} gap="text-stack">
           <Text testID={`widget-title-${widget.id}`} size="card-title" weight="semibold" numberOfLines={1}>{widget.title}</Text>
-          <Text testID={`widget-meta-${widget.id}`} size="meta" tone="secondary">{widgetMetaLine(widget, leadName)}</Text>
+          <Text testID={`widget-meta-${widget.id}`} size="meta" tone="secondary">{widgetMetaLine(widget, leadName, locale)}</Text>
         </Column>
         <WidgetMenu
           widget={widget}
@@ -141,11 +148,12 @@ function WidgetMenu({ widget, otherViews, disabled, onUp, onDown, onMoveTo, onRe
   onDelete: () => void;
 }) {
   const [confirming, setConfirming] = useState(false);
-  const moves = otherViews.length ? `、移到${otherViews.map((view) => `「${viewLabel(view)}」`).join('')}` : '';
+  const locale = useLocale();
+  const m = useMessages(viewsMessages);
   return (
     <Popover
       testID={`widget-more-${widget.id}`}
-      label={`「${widget.title}」的操作：${onRefresh ? '立即刷新、' : ''}上移、下移${moves}、删掉`}
+      label={m.menuLabel(widget.title, Boolean(onRefresh), otherViews.map((view) => viewLabel(view, locale)))}
       title={widget.title}
       width={300}
       trigger={<Icon name="more" size={16} color="text-secondary" />}
@@ -156,10 +164,10 @@ function WidgetMenu({ widget, otherViews, disabled, onUp, onDown, onMoveTo, onRe
         if (confirming) {
           return (
             <Column testID={`widget-delete-confirm-${widget.id}`} gap="card-row">
-              <Text size="body">{`删掉控件「${widget.title}」？删了不能恢复。`}</Text>
+              <Text size="body">{m.deleteConfirm(widget.title)}</Text>
               <Row gap="actions">
-                <Button testID={`widget-delete-confirm-yes-${widget.id}`} label="删掉" size="sm" tone="danger" onPress={() => { done(); onDelete(); }} />
-                <Button label="取消" size="sm" variant="ghost" tone="neutral" onPress={() => setConfirming(false)} />
+                <Button testID={`widget-delete-confirm-yes-${widget.id}`} label={m.delete} size="sm" tone="danger" onPress={() => { done(); onDelete(); }} />
+                <Button label={m.cancel} size="sm" variant="ghost" tone="neutral" onPress={() => setConfirming(false)} />
               </Row>
             </Column>
           );
@@ -169,23 +177,23 @@ function WidgetMenu({ widget, otherViews, disabled, onUp, onDown, onMoveTo, onRe
             {onRefresh ? (
               <RecordRow
                 testID={`widget-refresh-${widget.id}`}
-                title={widget.source?.paused ? '重新开始更新' : '立即刷新'}
-                detail={widget.source?.paused ? '先跑一次，成功了就接着按时更新' : undefined}
+                title={widget.source?.paused ? m.resume : m.refreshNow}
+                detail={widget.source?.paused ? m.resumeDetail : undefined}
                 onPress={disabled ? undefined : () => { done(); onRefresh(); }}
               />
             ) : null}
             <RecordRow
               divider={Boolean(onRefresh)}
               testID={`widget-move-up-${widget.id}`}
-              title="上移"
-              detail={onUp ? undefined : '已经在最上面'}
+              title={m.moveUp}
+              detail={onUp ? undefined : m.atTop}
               onPress={onUp && !disabled ? () => { done(); onUp(); } : undefined}
             />
             <RecordRow
               divider
               testID={`widget-move-down-${widget.id}`}
-              title="下移"
-              detail={onDown ? undefined : '已经在最下面'}
+              title={m.moveDown}
+              detail={onDown ? undefined : m.atBottom}
               onPress={onDown && !disabled ? () => { done(); onDown(); } : undefined}
             />
             {/* 只有一个视图时没有「移到」：分视图由 Lead 在用户要求时做（用户 2026-10-30）。 */}
@@ -194,15 +202,15 @@ function WidgetMenu({ widget, otherViews, disabled, onUp, onDown, onMoveTo, onRe
                 key={view}
                 divider
                 testID={`widget-move-to-${widget.id}-${view}`}
-                title={`移到「${viewLabel(view)}」`}
+                title={m.moveTo(viewLabel(view, locale))}
                 onPress={disabled ? undefined : () => { done(); onMoveTo(view); }}
               />
             ))}
             <RecordRow
               divider
               testID={`widget-delete-${widget.id}`}
-              title="删掉"
-              detail="删了不能恢复"
+              title={m.delete}
+              detail={m.deleteDetail}
               onPress={disabled ? undefined : () => setConfirming(true)}
             />
           </Column>

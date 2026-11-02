@@ -34,20 +34,20 @@ describe('ticket detail components', () => {
     // 生命周期、执行尝试和运行日志在「完整记录」里（工单 12：工单详情的关系那一块自己画）。
     expect.soft(records).toMatch(/sections=\{\['attempts'\]\}/);
     expect.soft(records).toMatch(/sections=\{\['lifecycle'\]\}/);
-    expect.soft(records).toContain('title="运行日志"');
+    expect.soft(records).toContain('title={m.runLogs}');
     expect.soft(history).toContain('ticket-history-retry');
-    expect.soft(history).toContain('历史读取失败');
+    expect.soft(history).toContain('{m.readFailed}');
     expect.soft(connected).toContain('useTicketExecution(ticketId)');
     expect.soft(connected).toContain('useTicketDetail(ticketId)');
     expect.soft(connected).toContain('const logAttemptIds = useMemo(() => attempts.map((attempt) => attempt.id), [attempts])');
     expect.soft(connected).toContain('useAttemptLogsByAttempt(logAttemptIds)');
-    expect.soft(connected).toContain('buildTicketLogPresentation(logsByAttemptId[attempt.id] ?? [])');
+    expect.soft(connected).toContain('buildTicketLogPresentation(logsByAttemptId[attempt.id] ?? [], locale)');
     expect.soft(records).toContain('<RunLogGroups runs={logRuns} />');
     expect.soft(records).toContain('logRuns.length > 1');
-    expect.soft(history).toContain('生命周期');
-    expect.soft(history).toContain('执行尝试');
-    expect.soft(history).toContain('尚未执行');
-    expect.soft(history).toContain('工单关系');
+    expect.soft(history).toContain('<SectionTitle title={m.lifecycle} />');
+    expect.soft(history).toContain('<SectionTitle title={m.attempts} />');
+    expect.soft(history).toContain('{m.notRun}');
+    expect.soft(history).toContain('<SectionTitle title={m.relations} />');
     expect.soft(history).toContain('ticket-relation-create-toggle');
     expect.soft(history).toContain('ticket-relation-create-submit');
     expect.soft(history).toContain('ticket-relation-revoke-submit');
@@ -56,12 +56,14 @@ describe('ticket detail components', () => {
     expect.soft(history).toContain("type: 'duplicates'");
     expect.soft(history).toContain("type: 'supersedes'");
     expect.soft(history).toContain("type: 'relates_to'");
-    expect.soft(history).toContain('高影响关系会改变调度、canonical 或有效事项判断');
+    expect.soft(history).toContain('<RiskText>{m.highImpact}</RiskText>');
+    expect.soft(source('./ticketRecords.messages.ts')).toContain('高影响关系会改变调度、canonical 或有效事项判断');
     // 关联工单走工单操作 link（工单 03），和 Lead 的 ticket_action 是同一个函数。
     expect.soft(connected).toContain('runtime.runTicketAction(ticketId, action, request)');
-    expect.soft(presentation).toContain('关系账本');
-    expect.soft(presentation).toContain('已撤销');
-    expect.soft(history).toContain('展开失败详情');
+    expect.soft(presentation).toContain('m.relationSource.ledger');
+    expect.soft(presentation).toContain('m.relationRevoked');
+    expect.soft(source('./ticketHistory.messages.ts')).toContain('关系账本');
+    expect.soft(history).toContain('m.showFailure');
   });
 
   it('does not wrap approval controls in extra button roles', () => {
@@ -145,17 +147,18 @@ describe('ticket detail components', () => {
     expect.soft(pow).not.toContain("label: '能力覆盖'");
     expect.soft(pow).not.toContain("label: '发现缺口'");
     expect.soft(pow).not.toContain("label: '耗时'");
-    expect.soft(pow).toContain('buildEvidencePresentation(pow, outcome)');
+    expect.soft(pow).toContain('buildEvidencePresentation(pow, outcome, locale)');
     expect.soft(pow).toContain('testID="pow-history"');
     // F7：不再用正则把 agent 的借口改判成"环境限制"。
     expect.soft(pow).not.toContain('EPERM');
     expect.soft(evidence).not.toContain('EPERM|');
     expect.soft(evidence).not.toContain('环境限制');
-    expect.soft(evidence).toContain('项待补证据');
+    expect.soft(source('./ticketHistory.messages.ts')).toContain('项待补证据');
     expect.soft(pow).not.toContain('项待你处理');
     // 工具调用次数对验收没有帮助，挪到日志页签的标题里。
     expect.soft(pow).not.toContain('>工具调用</Text>');
-    expect.soft(source('./TicketRecords.tsx')).toContain('次工具调用');
+    expect.soft(source('./TicketRecords.tsx')).toContain('m.toolCalls(');
+    expect.soft(source('./ticketRecords.messages.ts')).toContain('次工具调用');
   });
 
   it('matches the prototype artifact cards and 22px timelines', () => {
@@ -181,7 +184,7 @@ describe('ticket detail components', () => {
     const checkpoints = source('./CheckpointFeed.tsx');
 
     // F17：时间跨天时带日期。24 小时制和日期写法由 timeLabels.test.ts 保证。
-    expect.soft(checkpoints).toContain('timeLabel(checkpoint.createdAt)');
+    expect.soft(checkpoints).toContain('timeLabel(checkpoint.createdAt, undefined, locale)');
     expect.soft(checkpoints).toMatch(/<Column\s+key=\{checkpoint\.id\}\s+pb="stacked-card"\s+borderBottomWidth=\{1\}/);
     expect.soft(checkpoints).not.toMatch(/<Column\s+key=\{checkpoint\.id\}[^>]*\b(?:rounded|boxShadow|bg)=/);
     expect.soft(checkpoints).not.toContain('checkpointCard');

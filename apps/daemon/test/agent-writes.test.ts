@@ -16,6 +16,7 @@ import {
   createItem, createRun, insertRunGrant, listActivities, listEvents, listNotifications, listRunWrites, openDb, type Db,
 } from "@pi-lead-child/store";
 import { recordAgentWrite } from "../src/agent-writes.js";
+import { updateDesignPreferences } from "@pi-lead-child/engine";
 
 const PR = { owner: "Acme", repo: "x", number: 101 };
 const DIFF = ["diff --git a/a.ts b/a.ts", "--- a/a.ts", "+++ b/a.ts", "@@ -1 +1,2 @@", " const a = 1;", "+const b = 2;"].join("\n");
@@ -26,6 +27,8 @@ let gh: FakeGithub;
 
 beforeEach(() => {
   db = openDb(join(tempDir("plc-agent-writes-"), "plc.db"));
+  // 这个文件的断言是中文：先把界面语言设成中文（缺省是英文）。
+  updateDesignPreferences(db, { request: { locale: "zh" }, caller: { kind: "user" } });
   gh = new FakeGithub();
   gh.addPullRequest({ ...PR, title: "t", body: "b", headSha: "a".repeat(40), diff: DIFF });
 });
@@ -89,5 +92,20 @@ describe("recording a sub-agent's writes in the action layer", () => {
     expect(notification).toMatchObject({ kind: OWNER_ACTION_ON_BEHALF_NOTIFICATION_KIND, urgency: "immediate" });
     expect(notification!.body).toContain("Paimon 派的子 agent 按工单");
     expect(notification!.body).toContain("链接：https://github.com/Acme/x/pull/101");
+  });
+
+  it("writes the owner action in English when the user chose English", async () => {
+    updateDesignPreferences(db, { request: { locale: "en" }, caller: { kind: "user" } });
+    const h = await hub();
+    const { itemId, runId } = reviewRun();
+    await postReview(h, runId);
+    const [performed] = listEvents(db, { kind: "owner_action.performed" });
+    // 连接中心给的那句（description.summary）也按写入时的语言写。
+    expect(performed!.payload).toMatchObject({
+      target: { label: `Run #${runId} (Ticket #${itemId} "slack 代码 review：王小明 的请求")` },
+      summary: "A sub-agent that Paimon sent did this for you: Submitted a review (COMMENT) on Acme/x#101",
+    });
+    const [notification] = listNotifications(db, { state: ["pending"] });
+    expect(notification!.body).toContain("Link: https://github.com/Acme/x/pull/101");
   });
 });

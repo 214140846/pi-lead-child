@@ -2,6 +2,8 @@ import { useReducedMotion } from 'react-native-reanimated';
 
 import { AvatarImage } from './AvatarImage';
 import { FairyEye, type FairyEyeState, type FairyEyeTone } from './FairyEye';
+import { useMessages } from '../i18n';
+import { displayMessages } from './display.messages';
 
 // 形象从哪来（主题 11.12）：fairy-eye 是隐藏的 FairyEye 模式；image 是一张图（系统素材或用户上传的）。
 // stillUri：系统开了「减少动态效果」时换成的静止图（思考中的动图用默认的静止图，F-8）。
@@ -22,11 +24,12 @@ export type LeadAvatarProps = {
 
 // Lead 的形象（P12.8，主题 11.12）。调用方决定用哪个来源，这里只负责画。
 export function LeadAvatar({ source, size = 18, state = 'idle', tone = 'color', name = 'Fairy', testID }: LeadAvatarProps) {
+  const m = useMessages(displayMessages);
   const reduced = useReducedMotion();
   if (source.kind === 'fairy-eye') {
     return <FairyEye testID={testID} size={size} name={name} state={state} tone={tone} />;
   }
   const thinking = state === 'thinking' && tone === 'color';
   const uri = reduced && source.stillUri ? source.stillUri : source.uri;
-  return <AvatarImage testID={testID} uri={uri} size={size} label={thinking ? `${name} 在想` : name} />;
+  return <AvatarImage testID={testID} uri={uri} size={size} label={thinking ? m.thinking(name) : name} />;
 }

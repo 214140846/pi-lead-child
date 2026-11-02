@@ -2,6 +2,7 @@ import {
   Avatar, Box, Button, Card, Column, EmptyState, ListItem, Row, Skeleton, Text, type IconName,
 } from '@pi-lead-child/components';
 
+import { useLocale, useMessages } from '@/i18n';
 import { useLeadName } from '@/state/hooks';
 import type { InterventionCommandState } from '@/state/types';
 
@@ -17,6 +18,7 @@ import {
 } from '@/features/workspace/model';
 
 import { InterventionPanel } from './InterventionPanel';
+import { ticketRecordsMessages } from './ticketRecords.messages';
 
 type CheckpointFeedProps = {
   checkpoints: CheckpointPresentationInput[];
@@ -54,35 +56,38 @@ export function CheckpointFeed({
   runs,
 }: CheckpointFeedProps) {
   const leadName = useLeadName();
-  const feed = buildCheckpointFeedPresentation(checkpoints, interventions, resource, { ticketStatus, deliveryRunId, runs });
+  const locale = useLocale();
+  const messages = useMessages(ticketRecordsMessages);
+  const m = messages.feed;
+  const feed = buildCheckpointFeedPresentation(checkpoints, interventions, resource, { ticketStatus, deliveryRunId, runs, locale });
   const pagination = resource.pagination;
 
   if (feed.state === 'loading') {
     return (
-      <Card aria-label="正在读取关键进展" gap="card-row" p="card" borderColor="border-soft" rounded="2xl">
+      <Card aria-label={m.loading} gap="card-row" p="card" borderColor="border-soft" rounded="2xl">
         <Skeleton w="72%" h={12} rounded="full" />
         <Skeleton w="44%" h={10} rounded="full" />
       </Card>
     );
   }
-  if (feed.state === 'empty') return <FeedEmpty icon="inbox" title="这张工单还没有关键进展" body="child 在关键阶段提交进度记录后会显示在这里。" />;
-  if (feed.state === 'disconnected') return <FeedEmpty icon="offline" title="等待重新连接" body={`连接 ${leadName} 后读取这张工单的真实关键进展。`} />;
-  if (feed.state === 'error') return <FeedEmpty icon="error-outline" title="进展读取失败" body={feed.pageError ?? '暂时无法读取进度记录。'} actionLabel="重试" onAction={onRetry} />;
+  if (feed.state === 'empty') return <FeedEmpty icon="inbox" title={m.emptyTitle} body={m.emptyBody} />;
+  if (feed.state === 'disconnected') return <FeedEmpty icon="offline" title={m.disconnectedTitle} body={m.disconnectedBody(leadName)} />;
+  if (feed.state === 'error') return <FeedEmpty icon="error-outline" title={m.errorTitle} body={feed.pageError ?? m.errorBody} actionLabel={messages.retry} onAction={onRetry} />;
 
   return (
     <Column>
       {resource.state === 'disconnected' ? (
-        <Text px="section-label-x" size="secondary" weight="bold" tone="warning-dark">显示已缓存进展 · 等待重新连接</Text>
+        <Text px="section-label-x" size="secondary" weight="bold" tone="warning-dark">{m.cached}</Text>
       ) : null}
       {pagination && (pagination.hasMore || pagination.loading || pagination.error) ? (
         <Column items="center" gap="card-row" py="banner-y">
           {pagination.error ? (
-            <Text role="alert" size="secondary" tone="danger-dark" align="center">{`更早的进展加载失败：${pagination.error}`}</Text>
+            <Text role="alert" size="secondary" tone="danger-dark" align="center">{m.olderFailed(pagination.error)}</Text>
           ) : null}
           <Button
-            accessibilityLabel={pagination.loading ? '正在加载更早的进展' : '加载更早的进展'}
+            accessibilityLabel={pagination.loading ? m.loadingOlder : m.loadOlder}
             disabled={pagination.loading || !pagination.onLoadOlder}
-            label={pagination.loading ? '正在加载更早的进展…' : pagination.error ? '重试加载更早的进展' : '加载更早的进展'}
+            label={pagination.loading ? m.loadingOlderNow : pagination.error ? m.retryOlder : m.loadOlder}
             onPress={pagination.onLoadOlder}
             testID="checkpoint-load-older"
             variant="outline"
@@ -108,7 +113,7 @@ export function CheckpointFeed({
             subtitle={[checkpoint.sourceLabel, checkpoint.kindLabel, checkpoint.stage].filter(Boolean).join(' · ')}
             subtitleLines={2}
             leading={<Avatar label={checkpoint.source === 'system_derived' ? 'S' : 'π'} size={24} tone="surface" textSize="11" />}
-            trailing={<Text size="meta" mono tone="faint">{timeLabel(checkpoint.createdAt)}</Text>}
+            trailing={<Text size="meta" mono tone="faint">{timeLabel(checkpoint.createdAt, undefined, locale)}</Text>}
           />
           <Text px="row-x" size="body" tone="secondary">{checkpoint.summary}</Text>
           {checkpoint.keyFacts && checkpoint.keyFacts.length > 0 ? (
@@ -137,7 +142,7 @@ export function CheckpointFeed({
               {checkpoint.relatedTicketIds.map((ticketId) => (
                 <Button
                   key={ticketId}
-                  accessibilityLabel={`打开关联工单 #${ticketId}`}
+                  accessibilityLabel={m.openRelated(ticketId)}
                   disabled={!onOpenTicket}
                   label={`#${ticketId}`}
                   onPress={() => onOpenTicket?.(ticketId)}
@@ -151,7 +156,7 @@ export function CheckpointFeed({
           ) : null}
           {checkpoint.nextStep ? (
             <Row mt="card-section" pt="card-section" borderTopWidth={1} borderTopColor="border-soft" items="flex-start" gap="inline-item">
-              <Text size="label" weight="bold">下一步</Text>
+              <Text size="label" weight="bold">{m.nextStep}</Text>
               <Text flex={1} minW={0} size="secondary" tone="secondary">{checkpoint.nextStep}</Text>
             </Row>
           ) : null}
@@ -160,9 +165,9 @@ export function CheckpointFeed({
       ))}
       {feed.pageError ? (
         <Row items="center" gap="side-item" px="banner-x" py="banner-y" rounded="lg" bg="warning-soft">
-          <Text flex={1} minW={0} size="secondary" tone="warning-dark">{`更早的进展读取失败：${feed.pageError}`}</Text>
+          <Text flex={1} minW={0} size="secondary" tone="warning-dark">{m.olderReadFailed(feed.pageError)}</Text>
           {onRetry ? (
-            <Button accessibilityLabel="重试读取更早进展" label="重试" onPress={onRetry} testID="checkpoint-page-retry" variant="link" size="xs" />
+            <Button accessibilityLabel={m.retryOlderLabel} label={messages.retry} onPress={onRetry} testID="checkpoint-page-retry" variant="link" size="xs" />
           ) : null}
         </Row>
       ) : null}

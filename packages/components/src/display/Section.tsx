@@ -4,6 +4,8 @@ import { Pressable } from '../primitives/Pressable';
 import { Column, Row } from '../primitives/layout';
 import { Text } from '../primitives/Text';
 import { Icon } from './Icon';
+import { useMessages } from '../i18n';
+import { displayMessages } from './display.messages';
 
 export type SectionProps = {
   /** 不给时没有标题行，只有内容（例如执行卡片最上面的执行者和核查员两行）。 */
@@ -66,6 +68,7 @@ export function Section({
   title, source, summary, summaryMono = false, collapsed = false, onToggle, variant = 'card', inset = true, divider = true,
   children, testID,
 }: SectionProps) {
+  const m = useMessages(displayMessages);
   const frame = variant === 'part' && !divider ? {} : FRAME[variant];
   if (title === undefined) {
     // 没有标题行：内容上面留和标题行一样的白。
@@ -99,7 +102,7 @@ export function Section({
         <Pressable
           testID={testID ? `${testID}-toggle` : undefined}
           aria-expanded={!collapsed}
-          aria-label={`${title}，${collapsed ? '展开' : '折叠'}`}
+          aria-label={m.sectionToggle(title, collapsed)}
           onPress={() => onToggle(!collapsed)}
           feedback="opacity"
           {...pad}

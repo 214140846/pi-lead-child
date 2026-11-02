@@ -217,7 +217,7 @@ export function planStandingOrderChange(db: Db, request: StandingOrderChangeRequ
     const hint = errors.some((error) => error.startsWith("escalateTo")) ? "（改级别时，escalate_to 要一起改成更高的级别或者 null）" : "";
     throw new StandingOrderChangeError("invalid_request", `新内容不合格：${errors.join("；")}${hint}`);
   }
-  const classification = classifyStandingOrderChange({ active: activeStandingOrders(db), before, after });
+  const classification = classifyStandingOrderChange({ active: activeStandingOrders(db), before, after, locale: "zh" });
   const plan = { op: request.op, id: request.id, reason, before, baseVersion, after, rollbackTo, classification };
   return { ...plan, summary: planSummary(plan) };
 }
@@ -524,7 +524,7 @@ export function resolveStandingOrderProposal(
     // 按现在生效的指令再判断一次：碰到硬性规则就不生效（例如代码在这之间加了规则）。
     const before = currentOrder(db, payload.orderId);
     const after: StandingOrderState = { ...payload.definition, status: payload.status };
-    const classification = classifyStandingOrderChange({ active: activeStandingOrders(db), before, after });
+    const classification = classifyStandingOrderChange({ active: activeStandingOrders(db), before, after, locale: "zh" });
     if (classification.tier === "forbidden" || validateStandingOrderDefinition(after).length) {
       voidProposal(db, approval, "hard_rule", now);
       tellLead(db, ref, "refused", `你提议的常设指令修改 #${approvalId} 不能生效：${classification.findings.map((item) => item.detail).join("；")}`);

@@ -18,8 +18,11 @@ import {
   type MemorySwitch,
   type MemorySwitchConfirmResponse,
   type MemoryTestResponse,
+  type Locale,
   type Scope,
+  DEFAULT_LOCALE,
 } from "@pi-lead-child/protocol";
+import { routeMessages } from "./routes.messages.js";
 
 export interface MemoryService {
   get(): MemorySettingsDto;
@@ -70,6 +73,8 @@ export interface MemoryRouteContext {
   requireAuth(scope: Scope): string;
   // 切换确认成功以后，记一次主人操作（工单 15）。凭证是上一次 requireAuth 的调用方。
   ownerAction?(input: OwnerActionInput): void;
+  // 用户现在选的界面语言（store 的 getLocale）：回给界面的错误和主人操作的摘要按它写。不给时按缺省语言。
+  locale?: Locale;
 }
 
 const SWITCH_ID = /^msw_[A-Za-z0-9_-]{8,40}$/;
@@ -92,13 +97,14 @@ export async function handleMemoryRoute(ctx: MemoryRouteContext): Promise<boolea
   const isMemory = url.pathname === "/v1/memory" || url.pathname.startsWith("/v1/memory/");
   const isDecision = url.pathname === "/v1/decision-model" || url.pathname.startsWith("/v1/decision-model/");
   if (!isMemory && !isDecision) return false;
+  const m = routeMessages(ctx.locale ?? DEFAULT_LOCALE);
   const fail = (status: number, reason: string, message: string) =>
     // reason 放在 details 里：客户端用严格的 HttpErrorResponseSchema 校验错误响应，多一个字段整条错误就会被丢掉。
     ctx.json(status, { error: { code: HTTP_CODE[status] ?? "internal_error", message, details: { reason } } });
   const run = async <S>(scope: Scope, service: S | undefined, action: (svc: S) => Promise<unknown> | unknown) => {
     ctx.requireAuth(scope);
     if (!service) {
-      fail(503, "unavailable", "记忆设置还没有启动");
+      fail(503, "unavailable", m.memoryUnavailable);
       return true;
     }
     try {
@@ -176,8 +182,8 @@ export async function handleMemoryRoute(ctx: MemoryRouteContext): Promise<boolea
     const result = await svc.confirmSwitch(id, approve, `user via ${by}`);
     ctx.ownerAction?.({
       action: "memory.switch_confirm",
-      target: { key: `memory_switch:${id}`, label: "记忆切换", ticketId: null },
-      summary: `${approve ? "同意" : "不同意"}记忆切换：${result.switch.summary}`,
+      target: { key: `memory_switch:${id}`, label: m.memorySwitchTarget, ticketId: null },
+      summary: m.memorySwitchConfirmed(approve, result.switch.summary),
       detail: { approve, state: result.switch.state },
       undo: { kind: "memory_switch", switchId: id, approve },
     });

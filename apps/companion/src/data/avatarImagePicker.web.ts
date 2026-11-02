@@ -1,6 +1,9 @@
 import type { LeadAvatarUploadRequest } from '@pi-lead-child/protocol';
 
+import { DEFAULT_LOCALE, type Locale } from '@/i18n';
+
 import { AvatarImageError, avatarImageType } from './avatarImagePicker.types';
+import { imagePickerMessages } from './imagePicker.messages';
 
 export { AvatarImageError } from './avatarImagePicker.types';
 
@@ -27,19 +30,19 @@ export function pickAvatarFile(): Promise<Blob | null> {
 }
 
 // 原样上传，不缩小、不重新编码：动图要保留它的帧。daemon 还会按文件头再核对一次格式。
-export async function prepareAvatarImage(file: Blob): Promise<LeadAvatarUploadRequest> {
-  const mimeType = avatarImageType(file);
-  return { mimeType, data: await base64Of(file) };
+export async function prepareAvatarImage(file: Blob, locale: Locale = DEFAULT_LOCALE): Promise<LeadAvatarUploadRequest> {
+  const mimeType = avatarImageType(file, locale);
+  return { mimeType, data: await base64Of(file, locale) };
 }
 
-function base64Of(blob: Blob): Promise<string> {
+function base64Of(blob: Blob, locale: Locale): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => {
       const url = String(reader.result);
       resolve(url.slice(url.indexOf(',') + 1));
     };
-    reader.onerror = () => reject(new AvatarImageError('这张图片读不出来'));
+    reader.onerror = () => reject(new AvatarImageError(imagePickerMessages(locale).unreadable));
     reader.readAsDataURL(blob);
   });
 }

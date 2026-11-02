@@ -1,9 +1,12 @@
 import { Card, Column, Icon, Pressable, Row, Text } from '@pi-lead-child/components';
 import type { TicketOperationProjection } from '@pi-lead-child/protocol';
 
+import { useMessages, type Locale } from '@/i18n';
+
 import type { ConversationCardEntity } from '../../state/types';
 import type { Ticket } from '../workspace/model';
 import { EmbeddedTicketCard } from './EmbeddedTicketCard';
+import { ticketCardMessages } from './ticketCard.messages';
 
 const MAX_VISIBLE_OPERATIONS = 16;
 const MAX_COLLAPSED_OPERATIONS = 4;
@@ -23,10 +26,11 @@ export type TicketExecutionViewModel = {
 export function buildTicketExecutionViewModel(
   card: TicketExecutionConversationCard,
   ticket?: Ticket,
+  locale: Locale = 'en',
 ): TicketExecutionViewModel {
   return {
     ticketId: String(card.ticketId),
-    title: ticket?.title ?? `工单 #${card.ticketId}`,
+    title: ticket?.title ?? ticketCardMessages(locale).ticketNumber(card.ticketId),
     statusLabel: ticket?.statusLabel ?? null,
     priorityLabel: ticket?.priorityLabel ?? null,
     project: ticket?.project ?? null,
@@ -51,6 +55,7 @@ export function TicketExecutionCard({
   onOpenTicket: (ticketId: number) => void;
   fallback?: string | null;
 }) {
+  const m = useMessages(ticketCardMessages);
   if (!ticket) {
     return (
       <Card w="100%" rounded="xl" overflow="hidden">
@@ -58,7 +63,7 @@ export function TicketExecutionCard({
           <Row items="center" gap="side-item">
             <Column flex={1} minW={0} gap="text-stack">
               <Text size="meta" mono tone="secondary">{`#${card.ticketId}`}</Text>
-              <Text size="secondary" tone="secondary">{fallback ?? '点开查看这张工单。'}</Text>
+              <Text size="secondary" tone="secondary">{fallback ?? m.openToSee}</Text>
             </Column>
             <Icon name="chevron-right" size={12} color="text-secondary" weight="semibold" />
           </Row>

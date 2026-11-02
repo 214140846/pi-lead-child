@@ -216,14 +216,14 @@ describe('normalized Lead message parts', () => {
     expect(conversation).toContain('useConnectionState');
     expect(conversation).toContain("const hydrated = phase === 'ready'");
     expect(conversation).toContain("const connected = connectionState === 'connected'");
-    expect(conversation).toContain('显示已缓存会话 · 等待重新连接');
+    expect(conversation).toContain('{m.cached}');
     // 断线时输入框照样能用：消息先进本机发件箱（outbox.test.tsx）。
-    expect(conversation).toContain('连接恢复后发送');
+    expect(conversation).toContain('m.composer.offline');
     expect(conversation).not.toContain('disabled={!connected}');
     expect(conversation).toContain('if (!connected || historyRequest.loading) return');
     expect(conversation).toContain('disabled={!connected || historyRequest.loading || !conversationCardPage?.hasMore}');
     // 状态点不再只看连接：连接正常时还要看 Lead 的模型调用（./leadPresence，渲染测试在 leadHealthHeader.test.tsx）。
-    expect(identity).toContain('leadPresence({ connectionState, phase, lead, now, name })');
+    expect(identity).toContain('leadPresence({ connectionState, phase, lead, now, name, locale })');
   });
 
   it('preserves the compact destination before opening a web ticket thread', () => {
@@ -342,16 +342,16 @@ describe('normalized Lead message parts', () => {
     };
 
     expect(buildCheckpointCardViewModel(childCheckpoint, currentTicket)).toMatchObject({
-      sourceLabel: expect.stringContaining('来自 child #73 的消息'),
-      kindLabel: '已提交复核',
-      nowLabel: '现在：核查不通过，等你决定',
+      sourceLabel: expect.stringContaining('Message from child #73'),
+      kindLabel: 'Sent for review',
+      nowLabel: 'Now: 核查不通过，等你决定',
       title: '实现完成',
       facts: [{ label: 'tests', value: '35 passing' }],
       artifactRefs: ['artifact:patch-12'],
     });
     expect(buildCheckpointCardViewModel(systemCheckpoint)).toMatchObject({
-      sourceLabel: expect.stringContaining('系统更新'),
-      kindLabel: '进展',
+      sourceLabel: expect.stringContaining('System update'),
+      kindLabel: 'Progress',
     });
     expect(JSON.stringify(buildCheckpointCardViewModel(childCheckpoint))).not.toMatch(/progress|percent|coverage/i);
   });
@@ -391,8 +391,10 @@ describe('normalized Lead message parts', () => {
       attention: { pendingApprovalCount: 0, blockerCount: 1 },
     } as unknown as TicketSummary;
 
-    expect(checkpointDisplayTitle(checkpoint)).toBe('授权已记录，等待执行状态确认');
-    expect(checkpointCurrentStateHint(checkpoint, ticket)).toContain('工单仍处于阻塞');
+    expect(checkpointDisplayTitle(checkpoint)).toBe('Authorization recorded. Waiting for the run state.');
+    expect(checkpointDisplayTitle(checkpoint, 'zh')).toBe('授权已记录，等待执行状态确认');
+    expect(checkpointCurrentStateHint(checkpoint, ticket)).toContain('the ticket is still blocked');
+    expect(checkpointCurrentStateHint(checkpoint, ticket, 'zh')).toContain('工单仍处于阻塞');
   });
 
   it('maps only explicit intervention actions to strict authority commands', () => {
@@ -436,19 +438,19 @@ describe('normalized Lead message parts', () => {
       resolvedAt: null,
     };
 
-    expect(buildInterventionActionCommand(approval, 'approve_session')).toEqual({
+    expect(buildInterventionActionCommand(approval, 'approve_session', undefined, 'en')).toEqual({
       authority: 'approval', decision: 'approve_session',
     });
-    expect(buildInterventionActionCommand(decision, 'option:strict')).toEqual({
+    expect(buildInterventionActionCommand(decision, 'option:strict', undefined, 'en')).toEqual({
       authority: 'decision_request', decision: 'select', optionId: 'strict',
     });
-    expect(buildInterventionActionCommand(decision, 'respond', '保持 v2')).toEqual({
+    expect(buildInterventionActionCommand(decision, 'respond', '保持 v2', 'en')).toEqual({
       authority: 'decision_request', decision: 'respond', resolution: '保持 v2',
     });
-    expect(buildInterventionActionCommand(decision, 'dismiss')).toEqual({
+    expect(buildInterventionActionCommand(decision, 'dismiss', undefined, 'en')).toEqual({
       authority: 'decision_request', decision: 'dismiss',
     });
-    expect(() => buildInterventionActionCommand(decision, 'respond', '  ')).toThrow(/回复内容/);
+    expect(() => buildInterventionActionCommand(decision, 'respond', '  ', 'en')).toThrow(/Write a reply/);
   });
 
   it('projects only display-safe intervention fields and never forwards opaque payloads', () => {
@@ -470,16 +472,16 @@ describe('normalized Lead message parts', () => {
       rawPayload: { authorization: 'Bearer privileged-secret' },
     } as unknown as KernelIntervention;
 
-    const projection = buildInterventionCardViewModel(intervention, 'Paimon');
+    const projection = buildInterventionCardViewModel(intervention, 'Paimon', 'en');
     expect(projection).toMatchObject({
       title: '需要系统授权',
       detail: 'Operation not permitted: /Library/LaunchDaemons',
       pending: true,
       // 和收件箱、状态标签同一种说法（2026-10-16）。
-      stateLabel: '待审批',
+      stateLabel: 'Needs approval',
     });
-    expect(buildInterventionCardViewModel({ ...intervention, kind: 'decision', options: [], allowCustom: false } as unknown as KernelIntervention, 'Paimon').stateLabel)
-      .toBe('待你决定');
+    expect(buildInterventionCardViewModel({ ...intervention, kind: 'decision', options: [], allowCustom: false } as unknown as KernelIntervention, 'Paimon', 'en').stateLabel)
+      .toBe('Needs your decision');
     expect(JSON.stringify(projection)).not.toContain('privileged-secret');
     expect(JSON.stringify(projection)).not.toContain('rawPayload');
   });

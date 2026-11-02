@@ -7,12 +7,14 @@ import type {
 } from '@pi-lead-child/protocol';
 import { useEffect, useState } from 'react';
 
+import { useLocale } from '@/i18n';
 import { useCompanionRuntime } from '@/state/CompanionStateProvider';
 import { useLeadName } from '@/state/hooks';
 
+import { handbookMessages } from './handbook.messages';
 import {
-  addedMeta, addProblem, capLead, capOptions, floorCountText, HANDBOOK_CAP_SENDERS, HANDBOOK_FLOORS, handbookErrorText, handbookSections,
-  loosenFor, modeLabel, modeOptions, modePhrase, notInEffect, orderLine, proposalView, REHEARSAL_EXAMPLES, REHEARSAL_SENDERS, rehearsalView,
+  addedMeta, addProblem, capLead, capOptions, floorCountText, floorText, HANDBOOK_CAP_SENDERS, HANDBOOK_FLOORS, handbookErrorText, handbookSections,
+  loosenFor, modeLabel, modeOptions, modePhrase, notInEffect, orderLine, proposalView, rehearsalExamples, rehearsalSenders, rehearsalView,
   sentenceLead, suggestionView, withAdded, withCap, withExceptionMode, withMode, withoutSituation, withSwitch, type AddInput,
 } from './handbookModel';
 import { ReplyStyleSection } from './ReplyStyleSection';
@@ -29,27 +31,32 @@ type Message = { text: string; error: boolean };
 
 export function HandbookSection() {
   const runtime = useCompanionRuntime();
+  const locale = useLocale();
+  const m = handbookMessages(locale);
   const [dto, setDto] = useState<ChannelHandbookDto | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  // 存原始的错误，显示时按当前语言写。
+  const [loadError, setLoadError] = useState<{ reason: unknown } | null>(null);
 
   useEffect(() => {
     let live = true;
     runtime.channelHandbook()
       .then((next) => live && setDto(next))
-      .catch((reason: unknown) => live && setLoadError(handbookErrorText(reason)));
+      .catch((reason: unknown) => live && setLoadError({ reason }));
     return () => {
       live = false;
     };
   }, [runtime]);
 
-  if (loadError) return <Text testID="handbook-error" size="note" tone="danger-dark">{`读不到自动代你处理的设置：${loadError}`}</Text>;
-  if (!dto) return <Text testID="handbook-loading" size="note" tone="muted">正在读取交接说明…</Text>;
+  if (loadError) return <Text testID="handbook-error" size="note" tone="danger-dark">{m.loadFailed(handbookErrorText(loadError.reason, locale))}</Text>;
+  if (!dto) return <Text testID="handbook-loading" size="note" tone="muted">{m.loading}</Text>;
   return <Panel dto={dto} onSaved={setDto} />;
 }
 
 function Panel({ dto, onSaved }: { dto: ChannelHandbookDto; onSaved: (next: ChannelHandbookDto) => void }) {
   const runtime = useCompanionRuntime();
   const leadName = useLeadName();
+  const locale = useLocale();
+  const m = handbookMessages(locale);
   const handbook = dto.handbook;
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<Message | null>(null);
@@ -65,13 +72,13 @@ function Panel({ dto, onSaved }: { dto: ChannelHandbookDto; onSaved: (next: Chan
         return true;
       })
       .catch((reason: unknown) => {
-        setMessage({ text: `没有保存：${handbookErrorText(reason)}`, error: true });
+        setMessage({ text: m.notSaved(handbookErrorText(reason, locale)), error: true });
         return false;
       })
       .finally(() => setSaving(false));
   };
   const on = handbook.autoReply;
-  const pending = notInEffect(dto);
+  const pending = notInEffect(dto, locale);
   // 页边批注读不到时不显示，不影响交接说明。
   const [suggestions, setSuggestions] = useState<HandbookSuggestions | null>(null);
   useEffect(() => {
@@ -90,15 +97,15 @@ function Panel({ dto, onSaved }: { dto: ChannelHandbookDto; onSaved: (next: Chan
       .then((next) => {
         onSaved(next.handbook);
         setSuggestions(next.suggestions);
-        setMessage({ text: suggestion.kind === 'loosen' ? `已放宽：「${suggestion.situation?.text ?? ''}」。` : '已加上这一句。', error: false });
+        setMessage({ text: suggestion.kind === 'loosen' ? m.loosened(suggestion.situation?.text ?? '') : m.added, error: false });
       })
-      .catch((reason: unknown) => setMessage({ text: `没有改：${handbookErrorText(reason)}`, error: true }))
+      .catch((reason: unknown) => setMessage({ text: m.notChanged(handbookErrorText(reason, locale)), error: true }))
       .finally(() => setSaving(false));
   };
   const dismiss = (suggestion: HandbookSuggestion) => {
     runtime.dismissChannelHandbookSuggestion(suggestion.key)
       .then(setSuggestions)
-      .catch((reason: unknown) => setMessage({ text: `没有记下：${handbookErrorText(reason)}`, error: true }));
+      .catch((reason: unknown) => setMessage({ text: m.notDismissed(handbookErrorText(reason, locale)), error: true }));
   };
   const additions = suggestions?.suggestions.filter((item) => item.kind === 'add') ?? [];
 
@@ -107,22 +114,20 @@ function Panel({ dto, onSaved }: { dto: ChannelHandbookDto; onSaved: (next: Chan
       <Card testID="handbook-switch-card" rounded="xl" p="page-card" gap="card-section">
         <Row items="flex-start" gap="side-item">
           <Column flex={1} minW={0} gap="text-stack">
-            <Text size="card-title" weight="bold">自动代你处理</Text>
+            <Text size="card-title" weight="bold">{m.title}</Text>
             <Text size="secondary" tone="secondary">
-              {on
-                ? `别人在 Slack、Jira、GitHub 上找你时，${leadName} 照下面的交接说明办。带下划线的词点一下就能改，改了马上生效。`
-                : `关着：${leadName} 不代你在外面做任何事，来的消息都交给你。机器人发的、不用回的照旧只记录。`}
+              {on ? m.onDescription(leadName) : m.offDescription(leadName)}
             </Text>
           </Column>
           <Switch
             testID="handbook-switch"
             value={on}
-            label={on ? '开' : '关'}
+            label={on ? m.on : m.off}
             disabled={saving}
-            onValueChange={(next) => void save(withSwitch(handbook, next), next ? '已打开：按交接说明代你处理。' : '已关掉：来的消息都交给你。')}
+            onValueChange={(next) => void save(withSwitch(handbook, next), next ? m.turnedOn : m.turnedOff)}
           />
         </Row>
-        <Text testID="handbook-order" size="meta" tone="muted">{orderLine(dto, leadName)}</Text>
+        <Text testID="handbook-order" size="meta" tone="muted">{orderLine(dto, leadName, locale)}</Text>
         {on ? (
           <>
             <Box borderTopWidth={1} borderColor="border-soft" />
@@ -135,17 +140,17 @@ function Panel({ dto, onSaved }: { dto: ChannelHandbookDto; onSaved: (next: Chan
 
       <Card testID="handbook-letter" rounded="xl" p="page-card" gap="card-section" opacity={on ? 1 : 0.6}>
         <Column gap="text-stack">
-          <Text size="card-title" weight="bold">{`给 ${leadName} 的交接说明`}</Text>
-          <Text size="secondary" tone="secondary">{`${leadName}，别人在 Slack、Jira、GitHub 上找我的时候，按下面说的办。`}</Text>
+          <Text size="card-title" weight="bold">{m.letterTitle(leadName)}</Text>
+          <Text size="secondary" tone="secondary">{m.letterIntro(leadName)}</Text>
         </Column>
         {message ? <Text testID="handbook-message" size="note" tone={message.error ? 'danger-dark' : 'secondary'}>{message.text}</Text> : null}
         {pending.length ? (
           <Text testID="handbook-pending" size="note" tone="warning-dark">
-            {`这几处是 ${leadName} 写的放宽，没有生效，要你本人改：${pending.join('；')}`}
+            {m.pending(leadName, pending)}
           </Text>
         ) : null}
 
-        {handbookSections(handbook).map((group) => (
+        {handbookSections(handbook, locale).map((group) => (
           <Column key={group.section} testID={`handbook-section-${group.section}`} gap="card-row">
             <Text size="label" tone="secondary">{group.title}</Text>
             {group.situations.map((situation) => (
@@ -154,10 +159,10 @@ function Panel({ dto, onSaved }: { dto: ChannelHandbookDto; onSaved: (next: Chan
                 situation={situation}
                 leadName={leadName}
                 disabled={saving}
-                onPick={(mode) => void save(withMode(handbook, situation.id, mode), `已保存：${sentenceLead(situation)}${modePhrase(situation, mode)}。`)}
-                onPickException={(mode) => void save(withExceptionMode(handbook, situation.id, mode), `已保存：例外按「${modeLabel(mode)}」。`)}
+                onPick={(mode) => void save(withMode(handbook, situation.id, mode), m.savedSentence(`${sentenceLead(situation, locale)}${modePhrase(situation, mode, locale)}`))}
+                onPickException={(mode) => void save(withExceptionMode(handbook, situation.id, mode), m.savedException(modeLabel(mode, locale)))}
                 onRemove={situation.section === 'mine'
-                  ? () => void save(withoutSituation(handbook, situation.id), `已删掉：「${situation.text}」。这类消息按「上面都不像的」处理。`)
+                  ? () => void save(withoutSituation(handbook, situation.id), m.removed(situation.text))
                   : undefined}
                 note={loosenFor(suggestions, situation.id)}
                 onAccept={accept}
@@ -168,7 +173,7 @@ function Panel({ dto, onSaved }: { dto: ChannelHandbookDto; onSaved: (next: Chan
         ))}
 
         <Column testID="handbook-caps" gap="card-row">
-          <Text size="label" tone="secondary">看对方是谁</Text>
+          <Text size="label" tone="secondary">{m.capsTitle}</Text>
           {HANDBOOK_CAP_SENDERS.map((sender) => (
             <CapRow
               key={sender}
@@ -176,7 +181,7 @@ function Panel({ dto, onSaved }: { dto: ChannelHandbookDto; onSaved: (next: Chan
               mode={handbook.caps[sender]}
               leadName={leadName}
               disabled={saving}
-              onPick={(mode) => void save(withCap(handbook, sender, mode), `已保存：${capLead(sender)}${modePhrase({}, mode)}。`)}
+              onPick={(mode) => void save(withCap(handbook, sender, mode), m.savedSentence(`${capLead(sender, locale)}${modePhrase({}, mode, locale)}`))}
             />
           ))}
         </Column>
@@ -184,13 +189,13 @@ function Panel({ dto, onSaved }: { dto: ChannelHandbookDto; onSaved: (next: Chan
         <Column testID="handbook-floors" gap="card-row">
           <Row items="center" gap="icon-label">
             <Icon name="shield" size={14} color="text-secondary" />
-            <Text size="label" tone="secondary">一直生效的底线（写在代码里，改不了）</Text>
+            <Text size="label" tone="secondary">{m.floorsTitle}</Text>
           </Row>
           {HANDBOOK_FLOORS.map((floor) => {
-            const count = floorCountText(suggestions, floor.id);
+            const count = floorCountText(suggestions, floor.id, locale);
             return (
               <Column key={floor.id} gap="text-stack">
-                <Text testID={`handbook-floor-${floor.id}`} size="body" tone="strong">{floor.text}</Text>
+                <Text testID={`handbook-floor-${floor.id}`} size="body" tone="strong">{floorText(floor.id, locale)}</Text>
                 {count ? <Text testID={`handbook-floor-count-${floor.id}`} size="meta" tone="muted">{count}</Text> : null}
               </Column>
             );
@@ -201,7 +206,7 @@ function Panel({ dto, onSaved }: { dto: ChannelHandbookDto; onSaved: (next: Chan
         {additions.map((suggestion) => (
           <MarginNote key={suggestion.key} suggestion={suggestion} disabled={saving} onAccept={accept} onDismiss={dismiss} />
         ))}
-        <AddSentence leadName={leadName} disabled={saving} onAdd={(input) => save(withAdded(handbook, input), `已加上：${sentenceLead(input)}${modePhrase({}, input.mode)}。`)} />
+        <AddSentence leadName={leadName} disabled={saving} onAdd={(input) => save(withAdded(handbook, input), m.addedSentence(`${sentenceLead(input, locale)}${modePhrase({}, input.mode, locale)}`))} />
       </Card>
     </Column>
   );
@@ -211,14 +216,15 @@ function Panel({ dto, onSaved }: { dto: ChannelHandbookDto; onSaved: (next: Chan
 function MarginNote({ suggestion, disabled, onAccept, onDismiss }: {
   suggestion: HandbookSuggestion; disabled: boolean; onAccept: (suggestion: HandbookSuggestion) => void; onDismiss: (suggestion: HandbookSuggestion) => void;
 }) {
-  const view = suggestionView(suggestion);
+  const locale = useLocale();
+  const view = suggestionView(suggestion, locale);
   return (
     <Column testID={`handbook-suggestion-${suggestion.key}`} gap="text-stack" pl="group-indent">
       <Text size="note" tone="secondary">{view.text}</Text>
       <Row gap="actions">
         <Button testID={`handbook-suggestion-accept-${suggestion.key}`} label={view.accept} variant="outline" tone="neutral" size="sm"
           disabled={disabled} onPress={() => onAccept(suggestion)} />
-        <Button testID={`handbook-suggestion-dismiss-${suggestion.key}`} label="不用" variant="ghost" tone="neutral" size="sm"
+        <Button testID={`handbook-suggestion-dismiss-${suggestion.key}`} label={handbookMessages(locale).notNow} variant="ghost" tone="neutral" size="sm"
           disabled={disabled} onPress={() => onDismiss(suggestion)} />
       </Row>
     </Column>
@@ -231,30 +237,33 @@ function SentenceRow({ situation, leadName, disabled, onPick, onPickException, o
   onPick: (mode: HandbookMode) => void; onPickException: (mode: HandbookMode) => void; onRemove?: () => void;
   note: HandbookSuggestion | null; onAccept: (suggestion: HandbookSuggestion) => void; onDismiss: (suggestion: HandbookSuggestion) => void;
 }) {
+  const locale = useLocale();
+  const m = handbookMessages(locale);
+  const options = modeOptions(leadName, locale).map((option) => ({ ...option, phrase: modePhrase(situation, option.mode, locale), disabled: null }));
   return (
     <Column testID={`handbook-sentence-${situation.id}`} gap="text-stack">
       <Row items="center" gap="side-item">
         <Row flex={1} minW={0} items="center" flexWrap="wrap">
-          <Text size="body">{sentenceLead(situation)}</Text>
+          <Text size="body">{sentenceLead(situation, locale)}</Text>
           <PhraseMenu
             testID={`handbook-mode-${situation.id}`}
-            label={`改「${situation.text}」的做法，现在是「${modePhrase(situation, situation.mode)}」`}
+            label={m.changeMode(situation.text, modePhrase(situation, situation.mode, locale))}
             title={situation.text}
             current={situation.mode}
-            options={modeOptions(leadName).map((option) => ({ ...option, phrase: modePhrase(situation, option.mode), disabled: null }))}
+            options={options}
             disabled={disabled}
             onPick={onPick}
           />
-          <Text size="body">。</Text>
+          <Text size="body">{m.periodEnd}</Text>
         </Row>
         {onRemove ? (
-          <Popover testID={`handbook-more-${situation.id}`} label={`「${situation.text}」的操作：删掉这一句`} title={situation.text} width={300}
+          <Popover testID={`handbook-more-${situation.id}`} label={m.moreActions(situation.text)} title={situation.text} width={300}
             trigger={<Icon name="more" size={16} color="text-secondary" />}>
             {(close) => (
               <RecordRow
                 testID={`handbook-remove-${situation.id}`}
-                title="删掉这一句"
-                detail="删掉以后，这类消息按「上面都不像的」处理。改了马上生效。"
+                title={m.removeSentence}
+                detail={m.removeDetail}
                 onPress={disabled ? undefined : () => { close(); onRemove(); }}
               />
             )}
@@ -262,21 +271,21 @@ function SentenceRow({ situation, leadName, disabled, onPick, onPickException, o
         ) : null}
       </Row>
       {situation.does && (situation.mode === 'auto' || situation.mode === 'review') ? (
-        <Text size="meta" tone="muted">{`${leadName} 会${situation.does}`}</Text>
+        <Text size="meta" tone="muted">{m.does(leadName, situation.does)}</Text>
       ) : null}
       {situation.exception ? (
         <Row pl="group-indent" items="center" flexWrap="wrap">
-          <Text size="body" tone="strong">{`例外：${situation.exception.text}，你`}</Text>
+          <Text size="body" tone="strong">{m.exceptionLead(situation.exception.text)}</Text>
           <PhraseMenu
             testID={`handbook-exception-${situation.id}`}
-            label={`改「${situation.text}」的例外的做法，现在是「${modePhrase(situation, situation.exception.mode)}」`}
-            title={`例外：${situation.exception.text}`}
+            label={m.changeException(situation.text, modePhrase(situation, situation.exception.mode, locale))}
+            title={m.exceptionTitle(situation.exception.text)}
             current={situation.exception.mode}
-            options={modeOptions(leadName).map((option) => ({ ...option, phrase: modePhrase(situation, option.mode), disabled: null }))}
+            options={options}
             disabled={disabled}
             onPick={onPickException}
           />
-          <Text size="body" tone="strong">。</Text>
+          <Text size="body" tone="strong">{m.periodEnd}</Text>
         </Row>
       ) : null}
       {note ? <MarginNote suggestion={note} disabled={disabled} onAccept={onAccept} onDismiss={onDismiss} /> : null}
@@ -287,19 +296,22 @@ function SentenceRow({ situation, leadName, disabled, onPick, onPickException, o
 function CapRow({ sender, mode, leadName, disabled, onPick }: {
   sender: HandbookCapSender; mode: HandbookMode; leadName: string; disabled: boolean; onPick: (mode: HandbookMode) => void;
 }) {
+  const locale = useLocale();
+  const m = handbookMessages(locale);
+  const lead = capLead(sender, locale);
   return (
     <Row testID={`handbook-cap-${sender}`} items="center" flexWrap="wrap">
-      <Text size="body">{capLead(sender)}</Text>
+      <Text size="body">{lead}</Text>
       <PhraseMenu
         testID={`handbook-cap-mode-${sender}`}
-        label={`改「${capLead(sender)}」的上限，现在是「${modePhrase({}, mode)}」`}
-        title={capLead(sender)}
+        label={m.changeCap(lead, modePhrase({}, mode, locale))}
+        title={lead}
         current={mode}
-        options={capOptions(sender, leadName).map((option) => ({ ...option, phrase: modePhrase({}, option.mode) }))}
+        options={capOptions(sender, leadName, locale).map((option) => ({ ...option, phrase: modePhrase({}, option.mode, locale) }))}
         disabled={disabled}
         onPick={onPick}
       />
-      <Text size="body">。</Text>
+      <Text size="body">{m.periodEnd}</Text>
     </Row>
   );
 }
@@ -310,6 +322,7 @@ function PhraseMenu({ testID, label, title, current, options, disabled, onPick }
   options: Array<{ mode: HandbookMode; phrase: string; detail: string; disabled: string | null }>;
   onPick: (mode: HandbookMode) => void;
 }) {
+  const m = handbookMessages(useLocale());
   const selected = options.find((option) => option.mode === current);
   return (
     <Popover testID={testID} label={label} title={title} width={320}
@@ -332,7 +345,7 @@ function PhraseMenu({ testID, label, title, current, options, disabled, onPick }
               onPress={disabled || option.disabled || option.mode === current ? undefined : () => { close(); onPick(option.mode); }}
             />
           ))}
-          <Text size="meta" tone="muted" px="row-x" py="row-y">选了马上保存，下一条消息起生效。</Text>
+          <Text size="meta" tone="muted" px="row-x" py="row-y">{m.pickHint}</Text>
         </Column>
       )}
     </Popover>
@@ -345,6 +358,8 @@ function AddSentence({ leadName, disabled, onAdd }: {
   leadName: string; disabled: boolean; onAdd: (input: AddInput) => Promise<boolean>;
 }) {
   const runtime = useCompanionRuntime();
+  const locale = useLocale();
+  const m = handbookMessages(locale);
   const [text, setText] = useState('');
   const [example, setExample] = useState('');
   const [mode, setMode] = useState<HandbookMode>('hand');
@@ -363,7 +378,7 @@ function AddSentence({ leadName, disabled, onAdd }: {
     setNote(null);
   };
   const add = () => {
-    const found = addProblem(text, example);
+    const found = addProblem(text, example, locale);
     setProblem(found);
     if (found) return;
     void onAdd({ text, example, mode, does, abilities }).then((ok) => {
@@ -377,7 +392,7 @@ function AddSentence({ leadName, disabled, onAdd }: {
     setNote(null);
     runtime.proposeChannelHandbookSituation({ text: text.trim() })
       .then((result) => {
-        const view = proposalView(result);
+        const view = proposalView(result, locale);
         if (view.fill) {
           setText(view.fill.text);
           setExample(view.fill.example);
@@ -387,38 +402,38 @@ function AddSentence({ leadName, disabled, onAdd }: {
         }
         setNote(view.note);
       })
-      .catch((reason: unknown) => setNote(`没有整理成：${handbookErrorText(reason)}`))
+      .catch((reason: unknown) => setNote(m.proposeFailed(handbookErrorText(reason, locale))))
       .finally(() => setProposing(false));
   };
-  const meta = addedMeta({ mode, does, abilities }, leadName);
+  const meta = addedMeta({ mode, does, abilities }, leadName, locale);
   return (
     <Column testID="handbook-add" gap="card-row">
-      <Text size="label" tone="secondary">加一种情况</Text>
+      <Text size="label" tone="secondary">{m.addTitle}</Text>
       <TextField testID="handbook-add-text" value={text} onChangeText={setText} variant="filled" size="sm" maxLength={120}
-        placeholder="是什么情况，可以随口写，再点「帮我整理」。例如：有人请我看线上日志" accessibilityLabel="是什么情况" />
+        placeholder={m.addTextPlaceholder} accessibilityLabel={m.addTextLabel} />
       <TextField testID="handbook-add-example" value={example} onChangeText={setExample} variant="filled" size="sm" maxLength={120}
-        placeholder="例句（可选），例如：帮我看下 tracking 服务的报错日志" accessibilityLabel="例句" />
+        placeholder={m.addExamplePlaceholder} accessibilityLabel={m.addExampleLabel} />
       <Row items="center" flexWrap="wrap">
-        <Text size="body" tone="strong">{`${text.trim() ? sentenceLead({ text: text.trim(), example: example.trim() || undefined }) : '这类消息，你'}`}</Text>
+        <Text size="body" tone="strong">{text.trim() ? sentenceLead({ text: text.trim(), example: example.trim() || undefined }, locale) : m.addLeadEmpty}</Text>
         <PhraseMenu
           testID="handbook-add-mode"
-          label={`新的一句的做法，现在是「${modePhrase({}, mode)}」`}
-          title="新的一句"
+          label={m.newSentenceMode(modePhrase({}, mode, locale))}
+          title={m.newSentence}
           current={mode}
-          options={modeOptions(leadName).map((option) => ({ ...option, phrase: modePhrase({}, option.mode), disabled: null }))}
+          options={modeOptions(leadName, locale).map((option) => ({ ...option, phrase: modePhrase({}, option.mode, locale), disabled: null }))}
           disabled={disabled}
           onPick={setMode}
         />
-        <Text size="body" tone="strong">。</Text>
+        <Text size="body" tone="strong">{m.periodEnd}</Text>
       </Row>
       {meta ? <Text testID="handbook-add-meta" size="meta" tone="muted">{meta}</Text> : null}
       {note ? <Text testID="handbook-add-note" size="note" tone="secondary">{note}</Text> : null}
       {problem ? <Text testID="handbook-add-problem" size="note" tone="danger-dark">{problem}</Text> : null}
       <Row gap="actions">
-        <Button testID="handbook-add-button" label={disabled ? '正在保存…' : '加上'} size="sm" disabled={disabled || proposing} onPress={add} />
+        <Button testID="handbook-add-button" label={disabled ? m.saving : m.add} size="sm" disabled={disabled || proposing} onPress={add} />
         <Button
           testID="handbook-add-propose"
-          label={proposing ? '正在整理…' : '帮我整理'}
+          label={proposing ? m.proposing : m.propose}
           variant="outline"
           tone="neutral"
           size="sm"
@@ -433,6 +448,8 @@ function AddSentence({ leadName, disabled, onAdd }: {
 // 预演一条消息：收件判断真的读一遍，再按交接说明算结论。只读，不发任何东西。
 function RehearsalCard({ leadName }: { leadName: string }) {
   const runtime = useCompanionRuntime();
+  const locale = useLocale();
+  const m = handbookMessages(locale);
   const [text, setText] = useState('');
   const [sender, setSender] = useState<HandbookRehearsalSender>('colleague');
   const [result, setResult] = useState<HandbookRehearsal | null>(null);
@@ -444,34 +461,34 @@ function RehearsalCard({ leadName }: { leadName: string }) {
     setError(null);
     runtime.rehearseChannelHandbook({ text: text.trim(), sender })
       .then(setResult)
-      .catch((reason: unknown) => setError(handbookErrorText(reason)))
+      .catch((reason: unknown) => setError(handbookErrorText(reason, locale)))
       .finally(() => setBusy(false));
   };
-  const view = result ? rehearsalView(result, leadName) : null;
+  const view = result ? rehearsalView(result, leadName, locale) : null;
   return (
     <Card testID="handbook-rehearsal" rounded="xl" p="page-card" gap="card-section">
       <Column gap="text-stack">
-        <Text size="card-title" weight="bold">预演一条消息</Text>
-        <Text size="secondary" tone="secondary">{`收件判断真的读一遍，再按下面的交接说明算出 ${leadName} 会怎么做。只读，不发任何东西。`}</Text>
+        <Text size="card-title" weight="bold">{m.rehearsalTitle}</Text>
+        <Text size="secondary" tone="secondary">{m.rehearsalIntro(leadName)}</Text>
       </Column>
       <Row gap="chips" flexWrap="wrap">
-        {REHEARSAL_EXAMPLES.map((example) => (
+        {rehearsalExamples(locale).map((example) => (
           <Chip key={example} label={example} selected={text === example} onPress={() => setText(example)} />
         ))}
       </Row>
       <TextField testID="handbook-rehearsal-text" value={text} onChangeText={setText} variant="filled" size="sm" maxLength={1_500}
-        placeholder="写一条别人可能发给你的消息" accessibilityLabel="要预演的消息" onSubmit={() => run()} />
+        placeholder={m.rehearsalPlaceholder} accessibilityLabel={m.rehearsalLabel} onSubmit={() => run()} />
       {/* 四段的字长短不一（「认不出的人」）：分段控件单独占一行，不和按钮挤在一行里被截断。 */}
       <Column gap="text-stack">
-        <Text size="label" tone="secondary">对方是</Text>
+        <Text size="label" tone="secondary">{m.rehearsalSender}</Text>
         <Box w="100%">
-          <SegmentedControl testID="handbook-rehearsal-sender" options={REHEARSAL_SENDERS} value={sender} onChange={setSender} size="sm" />
+          <SegmentedControl testID="handbook-rehearsal-sender" options={rehearsalSenders(locale)} value={sender} onChange={setSender} size="sm" />
         </Box>
       </Column>
       <Row>
-        <Button testID="handbook-rehearsal-run" label={busy ? '正在预演…' : '预演'} disabled={busy || !text.trim()} onPress={run} />
+        <Button testID="handbook-rehearsal-run" label={busy ? m.rehearsing : m.rehearse} disabled={busy || !text.trim()} onPress={run} />
       </Row>
-      {error ? <Text testID="handbook-rehearsal-error" size="note" tone="danger-dark">{`没有预演成：${error}`}</Text> : null}
+      {error ? <Text testID="handbook-rehearsal-error" size="note" tone="danger-dark">{m.rehearsalError(error)}</Text> : null}
       {view ? (
         <Column testID="handbook-rehearsal-result" gap="text-stack" px="inset-x" py="inset-y" rounded="lg" bg="surface-subtle">
           <Text testID="handbook-rehearsal-sentence" size="body" weight="semibold">{view.sentence}</Text>

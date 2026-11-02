@@ -6,13 +6,14 @@
 import type { Item, Run, RuntimeId } from "@pi-lead-child/core";
 import { canTransitionStage, GrantError, widenRunGrant } from "@pi-lead-child/protocol";
 import {
-  activeDelegationPolicy, activeLeadGrant, addActivity, applyRunGrantChange, getRunGrant, latestRunGrantOfItem, leadGrantAuthorityLabel,
+  activeDelegationPolicy, activeLeadGrant, addActivity, applyRunGrantChange, getLocale, getRunGrant, latestRunGrantOfItem, leadGrantAuthorityLabel,
   RunGrantConflictError, transition,
   type RunGrantRecord, canonicalProjectId, createProject, findProject, getItem, getProject, getRun,
   isTerminalRunState, itemOwnerAction, linkTickets, revokeTicketRelation, runOwnerAction, setItemDue, setItemTime,
   updateItemAttrs,
   type Db, type LinkTicketResult, type RevokeTicketRelationResult, type TicketRelationInputType,
 } from "@pi-lead-child/store";
+import { engineOwnerActionMessages } from "../owner-actions.messages.js";
 import { changeReviewer, reviewerInfo, suspendedReviewRuntime } from "../coordinator/change-reviewer.js";
 import { applyReviewAutomation } from "../coordinator/delegated-review.js";
 import { deliveryFileOpenBlocker, openDeliveryFile } from "../coordinator/delivery-open.js";
@@ -654,7 +655,7 @@ export const TICKET_ACTIONS: TicketActionCatalog = {
       if (!record) throw new TicketActionError("unavailable", why!);
       let widened: ReturnType<typeof widenRunGrant>;
       try {
-        widened = widenRunGrant(record.grant, input.scope, env.host.resolveLocalRepo ?? (() => null));
+        widened = widenRunGrant(record.grant, input.scope, env.host.resolveLocalRepo ?? (() => null), "zh");
       } catch (error) {
         if (error instanceof GrantError) throw new TicketActionError("invalid_input", error.message);
         throw error;
@@ -685,10 +686,11 @@ export const TICKET_ACTIONS: TicketActionCatalog = {
     ownerActionInput: ({ db, item }, result) => {
       const widened = result as GrantWidenResult | undefined;
       if (!widened) return null;
+      const m = engineOwnerActionMessages(getLocale(db));
       return {
         action: "run.grant",
-        target: { key: `run:${widened.runId}`, label: `Run #${widened.runId}（${noun(item)} #${item.id}）`, ticketId: item.id },
-        summary: `放宽了 Run #${widened.runId} 的权限：${widened.added.join("；")}`,
+        target: { key: `run:${widened.runId}`, label: m.runGrantTarget(widened.runId, item.kind === "reminder", item.id), ticketId: item.id },
+        summary: m.runGrantWidened(widened.runId, widened.added),
         detail: { added: widened.added, revision: widened.revision },
         undo: { kind: "run_grant", runId: widened.runId, changeId: widened.changeId },
       };

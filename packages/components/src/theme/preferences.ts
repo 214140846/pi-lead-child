@@ -5,7 +5,8 @@
 //   - lineHeight、textScale：行高和字号各三档。withDensity 在换密度值的同时加上差值。字号不小于 11（可读性底线）。
 //   - colors：主色、成功、警告、危险、信息。同色系的深浅按缺省调色板里的关系推导（designColorOverrides），
 //     web 上写成 CSS 变量覆盖（DesignPreferencesProvider）；原生上这一版不改颜色。
-import { createContext, useContext } from 'react';
+//   - locale：界面语言（2026-11-01），en 或 zh，缺省 en。组件和功能代码用 useLocale() 取，按它选文案目录。
+import { createContext, useContext, useMemo } from 'react';
 
 import { palette, radius as radiusTokens, type RadiusToken } from './tokens';
 import type { Density } from './tokens';
@@ -15,6 +16,8 @@ export type RadiusLevel = 'sharp' | 'soft' | 'round';
 export type LineHeightLevel = 'tight' | 'normal' | 'loose';
 export type TextScaleLevel = 'small' | 'medium' | 'large';
 export type PaletteRole = 'accent' | 'success' | 'warning' | 'danger' | 'info';
+// 和 protocol 的 Locale 一样（组件库不依赖 protocol）。
+export type Locale = 'en' | 'zh';
 
 export interface DesignPreferences {
   density: Record<DensityZone, Density>;
@@ -22,6 +25,7 @@ export interface DesignPreferences {
   lineHeight: LineHeightLevel;
   textScale: TextScaleLevel;
   colors: Record<PaletteRole, string>;
+  locale: Locale;
 }
 
 export const DEFAULT_PREFERENCES: DesignPreferences = {
@@ -30,12 +34,21 @@ export const DEFAULT_PREFERENCES: DesignPreferences = {
   lineHeight: 'normal',
   textScale: 'medium',
   colors: { accent: palette.accent, success: palette.success, warning: palette.warning, danger: palette.danger, info: palette.cyan },
+  locale: 'en',
 };
 
 export const DesignPreferencesContext = createContext<DesignPreferences>(DEFAULT_PREFERENCES);
 
 export function useDesignPreferences(): DesignPreferences {
   return useContext(DesignPreferencesContext);
+}
+
+/**
+ * 界面语言。外观的其他旋钮只在组件库里读；语言是例外：功能代码要按它选文案，所以开放这一个。
+ * 用法：`const m = useMessages(settingsMessages)`（apps/companion 的 i18n），或者 `catalog(useLocale())`。
+ */
+export function useLocale(): Locale {
+  return useContext(DesignPreferencesContext).locale;
 }
 
 export const MIN_TEXT_SIZE = 11;
@@ -165,6 +178,16 @@ export function designColorOverrides(colors: Record<PaletteRole, string>): Parti
     }
   }
   return out;
+}
+
+/**
+ * 一个颜色 token 现在的色值：用户在外观里改过的颜色先换掉调色板里对应的键（和 web 的 CSS 变量、原生的主题同一套算法）。
+ * 给读不到 CSS 变量的地方用，例如 SVG 的 stroke。
+ */
+export function useColorValue(token: keyof typeof palette): string {
+  const { colors } = useDesignPreferences();
+  const overrides = useMemo(() => designColorOverrides(colors), [colors]);
+  return overrides[token] ?? palette[token];
 }
 
 /** web 上的 CSS 变量覆盖（Tamagui 的颜色 token 是 --c-<键>）。没有要换的时返回空串。 */

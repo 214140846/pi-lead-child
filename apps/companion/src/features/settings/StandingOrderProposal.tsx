@@ -2,9 +2,11 @@ import { Badge, Button, Column, Row, Text } from '@pi-lead-child/components';
 import type { StandingOrderProposalDto } from '@pi-lead-child/protocol';
 import { useState } from 'react';
 
+import { useLocale, useMessages } from '@/i18n';
 import { useCompanionRuntime } from '@/state/CompanionStateProvider';
 import { useLeadName } from '@/state/hooks';
 
+import { standingOrdersMessages } from './standingOrders.messages';
 import { proposalConcerns, proposalOutcome, proposalTitle, shortTime, standingOrderErrorText } from './standingOrderModel';
 
 // Lead 提议的一次常设指令修改（更放开的那一档，工单 10）。设置页和会话里的 StandingOrderChangeConfirm 卡用同一个。
@@ -19,9 +21,11 @@ export function StandingOrderProposalView({ proposal, onChange, testID }: {
 }) {
   const runtime = useCompanionRuntime();
   const leadName = useLeadName();
+  const locale = useLocale();
+  const m = useMessages(standingOrdersMessages);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const outcome = proposalOutcome(proposal);
+  const outcome = proposalOutcome(proposal, locale);
   const id = testID ?? `standing-order-proposal-${proposal.approvalId}`;
 
   const decide = (approve: boolean) => {
@@ -29,7 +33,7 @@ export function StandingOrderProposalView({ proposal, onChange, testID }: {
     setError(null);
     runtime.decideStandingOrderProposal(proposal.approvalId, approve)
       .then((response) => onChange(response.proposal), (reason: unknown) => {
-        setError(standingOrderErrorText(reason));
+        setError(standingOrderErrorText(reason, locale));
         // 已经处理过、过期或者作废（409）：重读一次，显示它现在的状态。
         runtime.standingOrderProposal(proposal.approvalId).then((response) => onChange(response.proposal), () => {});
       })
@@ -39,12 +43,12 @@ export function StandingOrderProposalView({ proposal, onChange, testID }: {
   return (
     <Column testID={id} gap="card-row">
       <Row items="center" gap="inline-item">
-        <Text flex={1} size="card-title" weight="bold">{proposalTitle(proposal, leadName)}</Text>
-        {proposal.state === 'pending' ? <Badge label="要你批准" tone="warning" dot size="sm" /> : null}
+        <Text flex={1} size="card-title" weight="bold">{proposalTitle(proposal, leadName, locale)}</Text>
+        {proposal.state === 'pending' ? <Badge label={m.needsApproval} tone="warning" dot size="sm" /> : null}
       </Row>
-      <Text testID={`${id}-reason`} size="body">{`${leadName} 的原因：${proposal.reason}`}</Text>
+      <Text testID={`${id}-reason`} size="body">{m.reason(leadName, proposal.reason)}</Text>
       <Column gap="text-stack">
-        <Text size="eyebrow" weight="bold" tone="secondary">系统的判断</Text>
+        <Text size="eyebrow" weight="bold" tone="secondary">{m.assessment}</Text>
         {proposalConcerns(proposal, leadName).map((line, index) => (
           <Text key={index} testID={`${id}-concern-${index}`} size="secondary" tone="secondary">{`· ${line}`}</Text>
         ))}
@@ -52,11 +56,11 @@ export function StandingOrderProposalView({ proposal, onChange, testID }: {
       {proposal.state === 'pending' ? (
         <Column gap="card-section">
           <Text size="note" tone="muted">
-            {`不批准时指令照旧。${shortTime(proposal.expiresAt)} 前没有决定就作废。以后也可以在设置 → 常设指令里回滚。`}
+            {m.pendingNote(shortTime(proposal.expiresAt))}
           </Text>
           <Row gap="actions" flexWrap="wrap">
-            <Button testID={`${id}-approve`} label="批准" disabled={submitting} onPress={() => decide(true)} />
-            <Button testID={`${id}-reject`} label="不批准" variant="outline" tone="neutral" disabled={submitting} onPress={() => decide(false)} />
+            <Button testID={`${id}-approve`} label={m.approve} disabled={submitting} onPress={() => decide(true)} />
+            <Button testID={`${id}-reject`} label={m.reject} variant="outline" tone="neutral" disabled={submitting} onPress={() => decide(false)} />
           </Row>
         </Column>
       ) : null}

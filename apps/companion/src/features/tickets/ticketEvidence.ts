@@ -7,7 +7,9 @@
 //
 // 现在：本次交付的证据 = 它的成果快照里的验证结果 + 它自己报的 proof items；更早 Run 的条目
 // 按 Run 分组放进"历史证据"，并写明被哪次交付取代。条目的状态只用数据里的状态，不再猜。
-import type { KernelOutcomeSnapshotResource, KernelTicketPow } from '@pi-lead-child/protocol';
+import type { KernelOutcomeSnapshotResource, KernelTicketPow, Locale } from '@pi-lead-child/protocol';
+
+import { ticketHistoryMessages } from './ticketHistory.messages';
 
 export type EvidenceState = 'passed' | 'failed' | 'pending' | 'not_run';
 
@@ -33,21 +35,17 @@ export type EvidencePresentation = {
   needsAttention: boolean;
 };
 
-const STATE_WORD: Record<EvidenceState, string> = {
-  passed: '项通过',
-  failed: '项未通过',
-  pending: '项待补证据',
-  not_run: '项未运行',
-};
-
-function powRow(item: KernelTicketPow['items'][number]): EvidenceRow {
-  return { id: `proof-${item.id}`, label: item.label, detail: item.evidence ?? '等待新的 Checkpoint 证据', state: item.state };
+function powRow(item: KernelTicketPow['items'][number], waiting: string): EvidenceRow {
+  return { id: `proof-${item.id}`, label: item.label, detail: item.evidence ?? waiting, state: item.state };
 }
 
 export function buildEvidencePresentation(
   pow: KernelTicketPow | null,
   outcome: KernelOutcomeSnapshotResource | null | undefined,
+  locale: Locale = 'en',
 ): EvidencePresentation {
+  const m = ticketHistoryMessages(locale).evidence;
+  const row = (item: KernelTicketPow['items'][number]) => powRow(item, m.waiting);
   const snapshot = outcome?.latest ?? null;
   const delivery = pow?.deliveryAttemptId ?? snapshot?.executorAttemptId ?? null;
   const items = pow?.items ?? [];
@@ -69,19 +67,19 @@ export function buildEvidencePresentation(
           state: validation.outcome,
         }))
       : []),
-    ...items.filter(isCurrent).map(powRow),
+    ...items.filter(isCurrent).map(row),
   ];
 
   const historyById = new Map<number | null, EvidenceRow[]>();
   for (const item of items.filter((entry) => !isCurrent(entry))) {
     const key = deliveryOf(item);
-    historyById.set(key, [...(historyById.get(key) ?? []), powRow(item)]);
+    historyById.set(key, [...(historyById.get(key) ?? []), row(item)]);
   }
   const history = [...historyById.entries()]
     .sort(([left], [right]) => (right ?? 0) - (left ?? 0))
     .map(([attemptId, rows]): EvidenceGroup => ({
       attemptId,
-      title: `${attemptId === null ? '系统记录' : `Run #${attemptId}`} 的证据 · 已被 Run #${delivery} 取代`,
+      title: m.historyTitle(attemptId, delivery),
       rows,
     }));
 
@@ -91,18 +89,18 @@ export function buildEvidencePresentation(
   );
   const open = counts.failed + counts.pending + counts.not_run;
   const summary = current.length === 0
-    ? { title: delivery === null ? '还没有可验证证据' : `Run #${delivery} 没有登记验证结果`, tone: 'muted' as const, mark: '·' as const }
+    ? { title: delivery === null ? m.none : m.noValidation(delivery), tone: 'muted' as const, mark: '·' as const }
     : {
         title: (['passed', 'failed', 'not_run', 'pending'] as const)
           .filter((state) => counts[state] > 0)
-          .map((state) => `${counts[state]} ${STATE_WORD[state]}`)
+          .map((state) => m.counts[state](counts[state]))
           .join(' · '),
         tone: open > 0 ? 'attention' as const : 'passed' as const,
         mark: open > 0 ? '!' as const : '✓' as const,
       };
   return {
     deliveryAttemptId: delivery,
-    currentTitle: delivery === null ? '当前证据' : `本次交付 · Run #${delivery}`,
+    currentTitle: delivery === null ? m.current : m.thisDelivery(delivery),
     current,
     history,
     summary,

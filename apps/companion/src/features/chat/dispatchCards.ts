@@ -1,7 +1,10 @@
 import type { KernelCheckpoint, TicketSummary } from '@pi-lead-child/protocol';
 
+import type { Locale } from '@/i18n';
+
 import type { ConversationCardEntity } from '../../state/types';
 import { buildCheckpointCardViewModel } from './CheckpointCard';
+import { dispatchMessages } from './dispatch.messages';
 import type { LeadTimelineItem } from './LeadConversation';
 
 // 一件事，一张卡（2026-10-17，会话方案第五版，用户定的）：
@@ -111,11 +114,13 @@ const KEY_KINDS = new Set<KernelCheckpoint['kind']>(['milestone', 'completed', '
 // 派活卡片和第一条 child 消息之间可能差几十毫秒的时钟误差。
 const CLOCK_SKEW_MS = 5_000;
 
-export function dispatchUpdates({ ticketId, scope, checkpoints, ticket }: {
+export function dispatchUpdates({ ticketId, scope, checkpoints, ticket, locale = 'en' }: {
   ticketId: number;
   scope: DispatchWindow;
   checkpoints: readonly KernelCheckpoint[];
   ticket?: TicketSummary;
+  // 文案的语言（dispatch.messages.ts、checkpoint.messages.ts）。
+  locale?: Locale;
 }): DispatchUpdate[] {
   const from = Date.parse(scope.from);
   const until = scope.until ? Date.parse(scope.until) : Number.POSITIVE_INFINITY;
@@ -130,45 +135,46 @@ export function dispatchUpdates({ ticketId, scope, checkpoints, ticket }: {
     if (checkpoint.ticketId !== ticketId || seen.has(checkpoint.id)) continue;
     if (!folded.has(checkpoint.id) && !(KEY_KINDS.has(checkpoint.kind) && inWindow(checkpoint.createdAt))) continue;
     seen.add(checkpoint.id);
-    const model = buildCheckpointCardViewModel(checkpoint, ticket);
+    const model = buildCheckpointCardViewModel(checkpoint, ticket, locale);
     rows.push({
       id: `checkpoint:${checkpoint.id}`,
       at: checkpoint.createdAt,
       label: model.kindLabel,
       tone: model.tone,
-      source: checkpointAuthor(checkpoint),
+      source: checkpointAuthor(checkpoint, locale),
       title: model.title,
       body: checkpoint.kind === 'completed' || checkpoint.kind === 'blocked' ? model.summary.trim() || null : null,
     });
   }
   rows.sort((left, right) => Date.parse(left.at) - Date.parse(right.at));
-  const ending = ticket ? stageUpdate(ticket, inWindow) : null;
+  const ending = ticket ? stageUpdate(ticket, inWindow, locale) : null;
   if (ending) rows.push(ending);
   return rows;
 }
 
-const ENDINGS: Partial<Record<TicketSummary['stage'], { title: string; tone: DispatchUpdateTone }>> = {
-  done: { title: '工单已完成', tone: 'success' },
-  cancelled: { title: '工单已取消', tone: 'neutral' },
+const ENDINGS: Partial<Record<TicketSummary['stage'], { title: 'ticketDone' | 'ticketCancelled'; tone: DispatchUpdateTone }>> = {
+  done: { title: 'ticketDone', tone: 'success' },
+  cancelled: { title: 'ticketCancelled', tone: 'neutral' },
 };
 
 // 这一段里工单走到了头（完成、取消），或者还在 review、核查出了结论：最后一条。时间是进入当前阶段的时间。
 // 核查结论只在 review 阶段有（gateway 的 reviewState）：结单以后不知道是谁、怎样验收的，就不说。
-function stageUpdate(ticket: TicketSummary, inWindow: (value: string) => boolean): DispatchUpdate | null {
+function stageUpdate(ticket: TicketSummary, inWindow: (value: string) => boolean, locale: Locale): DispatchUpdate | null {
+  const m = dispatchMessages(locale);
   const at = ticket.stageChangedAt;
   if (!at || !inWindow(at)) return null;
   const ending = ENDINGS[ticket.stage];
-  if (ending) return { id: 'stage', at, label: '进入终态', tone: ending.tone, source: null, title: ending.title, body: null };
+  if (ending) return { id: 'stage', at, label: m.ended, tone: ending.tone, source: null, title: m[ending.title], body: null };
   const review = ticket.reviewState;
   if (ticket.stage !== 'review' || !review || review.verdict === null) return null;
   const reviewer = review.reviewerAttemptId ? `reviewer #${review.reviewerAttemptId}` : null;
   return review.verdict === 'pass'
-    ? { id: 'stage', at, label: '核查通过', tone: 'success', source: reviewer, title: review.label, body: null }
-    : { id: 'stage', at, label: '核查不通过', tone: 'danger', source: reviewer, title: review.label, body: review.reason };
+    ? { id: 'stage', at, label: m.reviewPassed, tone: 'success', source: reviewer, title: review.label, body: null }
+    : { id: 'stage', at, label: m.reviewFailed, tone: 'danger', source: reviewer, title: review.label, body: review.reason };
 }
 
-function checkpointAuthor(checkpoint: KernelCheckpoint): string {
-  if (checkpoint.source === 'system_derived' || checkpoint.author.kind === 'system') return '系统';
+function checkpointAuthor(checkpoint: KernelCheckpoint, locale: Locale): string {
+  if (checkpoint.source === 'system_derived' || checkpoint.author.kind === 'system') return dispatchMessages(locale).system;
   const role = checkpoint.author.kind === 'reviewer' ? 'reviewer' : 'child';
   return checkpoint.attemptId === null ? role : `${role} #${checkpoint.attemptId}`;
 }

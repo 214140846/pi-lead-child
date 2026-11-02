@@ -9,8 +9,8 @@
 //     一个服务商第一次拉目录时就有的那些不知道什么时候出的：不记时间，排在最后。以后新出现的才有「首见」时间。
 // 直觉（决策模型）：config.json 的 decision（decision-models.ts）。改了以后记忆的重排跟着主用换（MemoryController）。
 import {
-  leadModelSpec, MODEL_MAX_BACKUPS, MODEL_MAX_CHAIN, modelChainProblem, parseLeadModelSpec, SERVICE_URL_MESSAGES, normalizeServiceUrl,
-  serviceUrlHost, serviceUrlProblem,
+  leadModelSpec, MODEL_MAX_BACKUPS, MODEL_MAX_CHAIN, modelChainProblem, parseLeadModelSpec, normalizeServiceUrl,
+  serviceUrlHost, serviceUrlMessages, serviceUrlProblem, type Locale,
   type BrainModel, type FastModel, type LeadModelChoice, type MemoryTestResponse, type ModelKeySource, type ModelProvider,
   type ModelProviderApi, type ModelSettingsDto, type SaveFastModelRequest, type SaveModelProviderRequest, type SetBrainChainRequest,
   type SetFastChainRequest,
@@ -22,11 +22,12 @@ import {
 import { resolveEnvSpec } from "@pi-lead-child/core";
 import { UiActionError, type ModelSettingsChange, type ModelSettingsService, type ModelSettingsSummary } from "@pi-lead-child/engine";
 import type { SecretVault } from "@pi-lead-child/connections";
-import type { Db } from "@pi-lead-child/store";
+import { getLocale, leadDisplayName, type Db } from "@pi-lead-child/store";
 import {
   decisionEntryInputs, decisionKeyFor, decisionSecretName, loadDecisionModels, writeDecisionModels, type DecisionEntryInput,
 } from "./decision-models.js";
 import { MemoryError, type MemoryController } from "./memory-controller.js";
+import { modelSettingsMessages } from "./model-settings.messages.js";
 import { SealedSecrets } from "./sealed-secrets.js";
 
 const FIRST_SEEN_KEY = "lead.model_first_seen";
@@ -82,9 +83,9 @@ function invalid(message: string): never {
   throw new UiActionError("invalid_input", message);
 }
 
-function checkedUrl(raw: string): string {
+function checkedUrl(raw: string, locale: Locale): string {
   const problem = serviceUrlProblem(raw);
-  if (problem) invalid(SERVICE_URL_MESSAGES[problem]);
+  if (problem) invalid(serviceUrlMessages(locale)[problem]);
   return normalizeServiceUrl(raw)!;
 }
 
@@ -108,6 +109,11 @@ export class ModelSettings implements ModelSettingsService {
     this.secrets = new SealedSecrets<string>(options.db, options.vault);
     // Lead 的会话、查找会话、Hindsight 的 LLM 取服务商的 key 时先问这里：页面存的、绑定现在主机的那一个。
     setLeadProviderKeySource((name, provider) => this.storedProviderKey(name, provider)?.value ?? null);
+  }
+
+  // 用户现在选的界面语言：设置页直接显示这里返回的摘要、说明和错误。
+  private locale(): Locale {
+    return getLocale(this.options.db);
   }
 
   stop(): void {
@@ -285,7 +291,9 @@ export class ModelSettings implements ModelSettingsService {
 
   setBrainChain(request: SetBrainChainRequest): Promise<ModelSettingsChange> {
     return this.serial(async () => {
-      const problem = modelChainProblem(request.models, (choice) => choice.model);
+      const locale = this.locale();
+      const m = modelSettingsMessages(locale);
+      const problem = modelChainProblem(request.models, (choice) => choice.model, { locale });
       if (problem) invalid(problem);
       const specs = request.models.map(leadModelSpec);
       const config = this.config();
@@ -300,17 +308,19 @@ export class ModelSettings implements ModelSettingsService {
       this.options.publish();
       const [primary, ...backups] = specs;
       return {
-        summary: `大脑：主用 ${primary}${backups.length ? `，备用 ${backups.join("、")}` : "，没有备用"}`,
+        summary: m.brainSummary(primary!, backups),
         applied,
-        note: applied === "after_turn" ? "Lead 正在回答，这一轮结束后换主用。" : null,
+        note: applied === "after_turn" ? m.afterTurn(leadDisplayName(this.options.db)) : null,
       };
     });
   }
 
   saveProvider(request: SaveModelProviderRequest): Promise<ModelSettingsChange> {
     return this.serial(async () => {
-      if (!(OPENAI_COMPATIBLE_APIS as readonly string[]).includes(request.api)) invalid(`接口格式只能是 ${OPENAI_COMPATIBLE_APIS.join("、")}`);
-      const baseUrl = checkedUrl(request.baseUrl);
+      const locale = this.locale();
+      const m = modelSettingsMessages(locale);
+      if (!(OPENAI_COMPATIBLE_APIS as readonly string[]).includes(request.api)) invalid(m.apiFormat(OPENAI_COMPATIBLE_APIS));
+      const baseUrl = checkedUrl(request.baseUrl, locale);
       const host = serviceUrlHost(baseUrl);
       const existed = request.name in this.config().providers;
       const { droppedConfigKey } = saveLeadProviderInConfig(request.name, { baseUrl, api: request.api }, serviceUrlHost, this.options.dataDir);
@@ -324,30 +334,31 @@ export class ModelSettings implements ModelSettingsService {
         const stored = this.secrets.get(secret);
         if (stored && stored.host !== host) {
           this.secrets.set(secret, null);
-          notes.push(`地址换到了 ${host}，原来的 key 只给 ${stored.host}，已经删掉。`);
+          notes.push(m.keyDropped(host, stored.host));
         }
       }
-      if (droppedConfigKey) notes.push("地址换了主机，config.json 里原来的 key 已经删掉。");
+      if (droppedConfigKey) notes.push(m.configKeyDropped);
       this.catalogCache = null;
       await this.options.brain.providersChanged();
       this.options.publish();
       this.options.log(`[models] provider ${request.name} ${existed ? "updated" : "added"} (${host})`);
       return {
-        summary: existed ? `改了服务商 ${request.name}（${host}）` : `接入了服务商 ${request.name}（${host}）`,
-        note: notes.length ? notes.join("") : null,
+        summary: existed ? m.providerChanged(request.name, host) : m.providerAdded(request.name, host),
+        note: notes.length ? m.joinNotes(notes) : null,
       };
     });
   }
 
   removeProvider(name: string): Promise<ModelSettingsChange> {
     return this.serial(async () => {
+      const m = modelSettingsMessages(this.locale());
       const config = this.config();
-      if (!(name in config.providers)) throw new UiActionError("not_found", `没有这个服务商：${name}`);
+      if (!(name in config.providers)) throw new UiActionError("not_found", m.noProvider(name));
       const used = config.models.filter((spec) => parseLeadModelSpec(spec).provider === name);
-      if (used.length) invalid(`大脑的分工里还在用 ${used.join("、")}。先在「现在的分工」里换掉，再删服务商。`);
+      if (used.length) invalid(m.providerInBrain(used));
       const fallback = loadDecisionModels(this.options.dataDir).llmFallback;
       if (fallback && parseLeadModelSpec(fallback).provider === name) {
-        invalid(`直觉都用不了时问的是 ${fallback}。先换掉它，再删服务商。`);
+        invalid(m.providerIsFallback(fallback));
       }
       removeLeadProviderInConfig(name, this.options.dataDir);
       this.secrets.set(providerSecretName(name), null);
@@ -355,7 +366,7 @@ export class ModelSettings implements ModelSettingsService {
       await this.options.brain.providersChanged();
       this.options.publish();
       this.options.log(`[models] provider ${name} removed`);
-      return { summary: `删掉了服务商 ${name}` };
+      return { summary: m.providerRemoved(name) };
     });
   }
 
@@ -368,16 +379,18 @@ export class ModelSettings implements ModelSettingsService {
 
   saveFastModel(request: SaveFastModelRequest): Promise<ModelSettingsChange> {
     return this.serial(async () => {
-      const baseUrl = checkedUrl(request.baseUrl);
+      const locale = this.locale();
+      const m = modelSettingsMessages(locale);
+      const baseUrl = checkedUrl(request.baseUrl, locale);
       const host = serviceUrlHost(baseUrl);
       const current = loadDecisionModels(this.options.dataDir);
       const inputs = decisionEntryInputs(this.options.dataDir);
       let id = request.id;
       let added = false;
       if (id !== undefined) {
-        if (!inputs.some((entry) => entry.id === id)) throw new UiActionError("not_found", `没有这条直觉：${id}`);
+        if (!inputs.some((entry) => entry.id === id)) throw new UiActionError("not_found", m.noFastModel([id]));
       } else {
-        if (inputs.length >= MAX_FAST_MODELS) invalid(`直觉最多 ${MAX_FAST_MODELS} 条`);
+        if (inputs.length >= MAX_FAST_MODELS) invalid(m.tooManyFastModels(MAX_FAST_MODELS));
         id = fastModelId(request.name, new Set(inputs.map((entry) => entry.id)));
         added = true;
       }
@@ -396,21 +409,22 @@ export class ModelSettings implements ModelSettingsService {
         const stored = this.secrets.get(secret);
         if (stored && stored.host !== host) {
           this.secrets.set(secret, null);
-          note = `地址换到了 ${host}，原来的 key 只给 ${stored.host}，已经删掉。`;
+          note = m.keyDropped(host, stored.host);
         }
       }
       await this.fastChanged();
       this.options.log(`[models] decision model ${id} ${added ? "added" : "updated"} (${host})`);
-      return { summary: added ? `添加了直觉 ${entry.name}（${host}）` : `改了直觉 ${entry.name}（${host}）`, note, id };
+      return { summary: added ? m.fastAdded(entry.name, host) : m.fastChanged(entry.name, host), note, id };
     });
   }
 
   removeFastModel(id: string): Promise<ModelSettingsChange> {
     return this.serial(async () => {
+      const m = modelSettingsMessages(this.locale());
       const current = loadDecisionModels(this.options.dataDir);
       const entry = current.entries.find((candidate) => candidate.id === id);
-      if (!entry) throw new UiActionError("not_found", `没有这条直觉：${id}`);
-      if (current.chain.includes(id)) invalid(`${entry.name} 还在直觉的分工里。先在「现在的分工」里移出，再删。`);
+      if (!entry) throw new UiActionError("not_found", m.noFastModel([id]));
+      if (current.chain.includes(id)) invalid(m.fastInChain(entry.name));
       writeDecisionModels(this.options.dataDir, {
         models: decisionEntryInputs(this.options.dataDir).filter((candidate) => candidate.id !== id),
         chain: current.chain, llmFallback: current.llmFallback,
@@ -418,17 +432,19 @@ export class ModelSettings implements ModelSettingsService {
       this.secrets.set(decisionSecretName(id), null);
       await this.fastChanged();
       this.options.log(`[models] decision model ${id} removed`);
-      return { summary: `删掉了直觉 ${entry.name}` };
+      return { summary: m.fastRemoved(entry.name) };
     });
   }
 
   setFastChain(request: SetFastChainRequest): Promise<ModelSettingsChange> {
     return this.serial(async () => {
+      const locale = this.locale();
+      const m = modelSettingsMessages(locale);
       const current = loadDecisionModels(this.options.dataDir);
       const known = new Set(current.entries.map((entry) => entry.id));
       const unknown = request.chain.filter((id) => !known.has(id));
-      if (unknown.length) throw new UiActionError("not_found", `没有这条直觉：${unknown.join("、")}`);
-      const problem = modelChainProblem(request.chain, (id) => id, { allowEmpty: true });
+      if (unknown.length) throw new UiActionError("not_found", m.noFastModel(unknown));
+      const problem = modelChainProblem(request.chain, (id) => id, { allowEmpty: true, locale });
       if (problem) invalid(problem);
       let llmFallback = current.llmFallback;
       if (request.llmFallback !== undefined) {
@@ -448,15 +464,14 @@ export class ModelSettings implements ModelSettingsService {
       const names = request.chain.map((id) => current.entries.find((entry) => entry.id === id)?.name ?? id);
       const [primary, ...backups] = names;
       return {
-        summary: (primary ? `直觉：主用 ${primary}${backups.length ? `，备用 ${backups.join("、")}` : "，没有备用"}` : "直觉：不用决策模型，判断都问大脑")
-          + `；都用不了时问 ${llmFallback ?? "系统选的大脑模型"}`,
+        summary: m.fastSummary(primary ?? null, backups, llmFallback),
       };
     });
   }
 
   async testFastModel(id: string): Promise<MemoryTestResponse> {
     const memory = this.options.memory;
-    if (!memory) throw new UiActionError("unavailable", "这台 daemon 没有托管记忆服务，测不了决策模型");
+    if (!memory) throw new UiActionError("unavailable", modelSettingsMessages(this.locale()).noMemoryService);
     try {
       return await memory.testDecisionEntry(id);
     } catch (error) {

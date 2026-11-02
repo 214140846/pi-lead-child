@@ -35,7 +35,8 @@ description: 用 render_ui 画卡片之前读。讲怎样按信息的形状选�
 | 一件事的完成比例 | Progress；不知道进度时不给 value |
 | 按时间发生的事 | Timeline |
 | 类别之间比数量 | BarChart，横向（缺省） |
-| 按时间看趋势 | BarChart，`orientation: "vertical"` |
+| 按时间看趋势：几个时间点，要逐个读数 | BarChart，`orientation: "vertical"` |
+| 按时间看趋势：很多个点（指数、气温、耗时），只看走势和高低 | Sparkline，最多 120 个点；控件里可以绑数据源 |
 | 账本里的一条提醒（用户要看它、可能要改时间或取消） | Reminder：`{ "reminder": 编号 }`，卡片只讲它时就是根节点 |
 | 一条外部消息（Slack 等，用户要看对方说了什么、你的建议回复、要不要回） | ChannelCard：`{ "card": 编号 }`（消息事件和 read_channel_conversation 里写的卡号），卡片只讲它时就是根节点。对方的话、草稿、信心、回复按钮都在卡里，不要再用 Message、Text 拼一遍 |
 | child 等用户审批的一步，或者要用户回答的一个决策请求 | Intervention：`{ "kind": "approval", "id": 审批编号 }` 或 `{ "kind": "decision", "id": 决策请求编号 }`。命令原文、三个审批按钮、决定的选项都在卡里；用户在会话里只看到这一张 |

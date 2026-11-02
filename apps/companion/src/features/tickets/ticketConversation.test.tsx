@@ -72,12 +72,12 @@ describe('ticket conversation messages', () => {
     expect(bubbles).toHaveLength(1);
     expect(bubbles[0]!.textContent).toBe('现在还需要我做什么');
     const card = screen.getByTestId('failure-card');
-    expect(card.textContent).toContain('没能回答这条消息，工单本身没有变化');
+    expect(card.textContent).toContain('did not answer this message. The ticket did not change.');
     expect(card.textContent).not.toContain(error);
-    expect(within(card).queryByRole('button', { name: '技术详情' })).toBeNull();
-    fireEvent.click(within(card).getByRole('button', { name: /展开详情$/ }));
+    expect(within(card).queryByRole('button', { name: 'Technical details' })).toBeNull();
+    fireEvent.click(within(card).getByRole('button', { name: /, show details$/ }));
     expect(card.textContent).toContain(error);
-    fireEvent.click(within(card).getByRole('button', { name: '重发' }));
+    fireEvent.click(within(card).getByRole('button', { name: 'Resend' }));
     expect(onResend).toHaveBeenCalledWith('现在还需要我做什么');
   });
 
@@ -87,7 +87,7 @@ describe('ticket conversation messages', () => {
       turn({ id: 'turn_72', userText: '现在需要我做什么', assistantText: '派一次核查。', createdAt: '2026-10-14T09:57:07.000Z', updatedAt: '2026-10-14T09:58:43.000Z' }),
     ]);
     expect(screen.getAllByTestId('conversation-date-divider').map((divider) => divider.textContent))
-      .toEqual([expect.stringMatching(/^8月21日/), '今天']);
+      .toEqual([expect.stringMatching(/Aug 21/), 'Today']);
   });
 
   it('keeps the bubble of an answer', () => {
@@ -107,10 +107,10 @@ describe('ticket conversation messages', () => {
 
     const toggles = screen.getAllByTestId('ticket-reply-toggle');
     expect(toggles).toHaveLength(1);
-    expect(toggles[0]!.textContent).toBe(`展开全文 · 约 ${(Math.round(long.length / 100) * 100).toLocaleString('en-US')} 字`);
+    expect(toggles[0]!.textContent).toBe(`Show full text · about ${(Math.round(long.length / 100) * 100).toLocaleString('en-US')} characters`);
 
     fireEvent.click(toggles[0]!);
 
-    expect(screen.getByTestId('ticket-reply-toggle').textContent).toBe('收起');
+    expect(screen.getByTestId('ticket-reply-toggle').textContent).toBe('Collapse');
   });
 });

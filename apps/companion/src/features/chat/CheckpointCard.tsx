@@ -3,19 +3,13 @@ import {
   ticketNeedsUser, type KernelCheckpoint, type LeadStatus, type TicketStatus, type TicketSummary,
 } from '@pi-lead-child/protocol';
 
+import { intlLocale, useLocale, type Locale } from '@/i18n';
+
 import { leadNameNow } from '../../state/leadName';
 import { isRuntimeRecoveryActive, ticketSummaryToTicket } from '../workspace/model';
 import { FailureCard } from './FailureCard';
+import { checkpointMessages } from './checkpoint.messages';
 import { presentRunFailureCheckpoint, presentSystemCheckpoint } from './failurePresentation';
-
-const checkpointKindLabel: Record<KernelCheckpoint['kind'], string> = {
-  progress: '进展',
-  milestone: '阶段完成',
-  decision: '方向调整',
-  delegation: '已委派',
-  blocked: '需要介入',
-  completed: '已提交复核',
-};
 
 export type CheckpointCardViewModel = {
   sourceLabel: string;
@@ -36,10 +30,11 @@ export type CheckpointCardViewModel = {
 export function buildCheckpointCardViewModel(
   checkpoint: KernelCheckpoint,
   currentTicket?: TicketSummary,
+  locale: Locale = 'en',
 ): CheckpointCardViewModel {
   return {
-    sourceLabel: checkpointSourceLabel(checkpoint),
-    kindLabel: checkpointKindLabel[checkpoint.kind],
+    sourceLabel: checkpointSourceLabel(checkpoint, locale),
+    kindLabel: checkpointMessages(locale).kind[checkpoint.kind],
     tone: checkpoint.kind === 'blocked'
       ? 'danger'
       : checkpoint.kind === 'completed' || checkpoint.kind === 'milestone'
@@ -47,15 +42,15 @@ export function buildCheckpointCardViewModel(
         : checkpoint.kind === 'decision'
           ? 'warning'
           : 'accent',
-    title: checkpointDisplayTitle(checkpoint),
+    title: checkpointDisplayTitle(checkpoint, locale),
     summary: checkpoint.summary,
     stage: checkpoint.stage,
     facts: checkpoint.keyFacts.map((fact) => ({ label: fact.label, value: fact.value })),
     artifactRefs: [...checkpoint.artifactRefs],
     relatedTicketIds: [...checkpoint.relatedTicketIds],
     nextStep: checkpoint.nextStep,
-    nowLabel: checkpointNowLabel(checkpoint, currentTicket),
-    currentStateHint: checkpointCurrentStateHint(checkpoint, currentTicket),
+    nowLabel: checkpointNowLabel(checkpoint, currentTicket, locale),
+    currentStateHint: checkpointCurrentStateHint(checkpoint, currentTicket, locale),
   };
 }
 
@@ -73,20 +68,22 @@ export function CheckpointCard({
   onOpenTicket: (ticketId: number) => void;
   showOpenTicket?: boolean;
 }) {
+  const locale = useLocale();
+  const m = checkpointMessages(locale);
   const leadHandling = currentTicket?.attention.leadHandling === true && currentTicket.attention.blockerCount === 0;
   const failure = presentRunFailureCheckpoint(checkpoint, {
     lead, settled: runFailureSettled(checkpoint, currentTicket), leadHandling,
     escalated: (currentTicket?.attention.blockerCount ?? 0) > 0,
-  });
-  const nowLabel = checkpointNowLabel(checkpoint, currentTicket);
+  }, locale);
+  const nowLabel = checkpointNowLabel(checkpoint, currentTicket, locale);
   // 系统写的检查点（Run 被收回、启动失败、崩溃……）：模式「系统信息行」，居中一行中文（2026-10-27 用户）。
   // 要你处理时图标红色、行尾「打开工单」；原文（写给 Lead 的英文和键值）点开再看。
   const system = presentSystemCheckpoint(checkpoint, {
     lead, settled: runFailureSettled(checkpoint, currentTicket), leadHandling,
     escalated: (currentTicket?.attention.blockerCount ?? 0) > 0, nowLabel,
-  });
+  }, locale);
   if (system) {
-    const time = formatCheckpointTime(checkpoint.createdAt);
+    const time = formatCheckpointTime(checkpoint.createdAt, undefined, locale);
     return (
       <Box testID={`checkpoint-card-${checkpoint.id}`} w="100%" py="banner-y">
         <SystemLine
@@ -95,7 +92,7 @@ export function CheckpointCard({
           iconTone={system.needsUser ? 'danger' : 'secondary'}
           text={time ? `${system.text} · ${time}` : system.text}
           details={system.details}
-          {...(system.needsUser ? { action: { label: `打开工单 #${checkpoint.ticketId}`, onPress: () => onOpenTicket(checkpoint.ticketId), tone: 'danger' as const } } : {})}
+          {...(system.needsUser ? { action: { label: m.openTicket(checkpoint.ticketId), onPress: () => onOpenTicket(checkpoint.ticketId), tone: 'danger' as const } } : {})}
         />
       </Box>
     );
@@ -122,7 +119,7 @@ export function CheckpointCard({
     const tone = failure.tone === 'danger' ? 'danger' : 'warning';
     return (
       <Column testID={`checkpoint-card-${checkpoint.id}`} w="100%" gap="reply-block" py="banner-y">
-        <Text size="meta" weight="semibold" tone="secondary">{checkpointSourceLabel(checkpoint)}</Text>
+        <Text size="meta" weight="semibold" tone="secondary">{checkpointSourceLabel(checkpoint, locale)}</Text>
         {/* spacing-exempt: 光学对齐 */}
         <Row items="center" gap="icon-label" pl={2}>
           <Dot color={TONE_DOT[tone]} size={7} />
@@ -136,13 +133,13 @@ export function CheckpointCard({
           tone={failure.tone}
           details={failure.details}
           actions={failure.needsUser || showOpenTicket
-            ? [{ label: `打开工单 #${checkpoint.ticketId}`, onPress: () => onOpenTicket(checkpoint.ticketId) }]
+            ? [{ label: m.openTicket(checkpoint.ticketId), onPress: () => onOpenTicket(checkpoint.ticketId) }]
             : []}
         />
       </Column>
     );
   }
-  const model = buildCheckpointCardViewModel(checkpoint, currentTicket);
+  const model = buildCheckpointCardViewModel(checkpoint, currentTicket, locale);
   // 会话栏是白底：进展通知铺一层浅底，和 Lead 的正文分开。不加边框和阴影，比待处理的介入卡片轻一档。
   return (
     <Column testID={`checkpoint-card-${checkpoint.id}`} w="100%" gap="card-section" px="card" py="card" rounded="xl" bg="surface-subtle">
@@ -188,11 +185,11 @@ export function CheckpointCard({
         {model.relatedTicketIds.length > 0 || showOpenTicket ? (
           <Row minH={25} items="center" flexWrap="wrap" gap="actions">
             {model.relatedTicketIds.map((ticketId) => (
-              <Button key={ticketId} label={`子工单 #${ticketId}`} onPress={() => onOpenTicket(ticketId)} variant="soft" tone="neutral" size="xs" />
+              <Button key={ticketId} label={m.childTicket(ticketId)} onPress={() => onOpenTicket(ticketId)} variant="soft" tone="neutral" size="xs" />
             ))}
             <Spacer />
             {showOpenTicket ? (
-              <Button label={`打开工单 #${checkpoint.ticketId}`} onPress={() => onOpenTicket(checkpoint.ticketId)} variant="link" />
+              <Button label={m.openTicket(checkpoint.ticketId)} onPress={() => onOpenTicket(checkpoint.ticketId)} variant="link" />
             ) : null}
           </Row>
         ) : null}
@@ -232,13 +229,13 @@ const EVENT_PHASE: Record<KernelCheckpoint['kind'], TicketStatus> = {
  * 历史卡片旁边的「现在：…」。以前卡片里一行粗体「当前工单：完成」挨着「已提交复核」，看起来像这条消息自己在说完成。
  * 只在工单后来变了时给：阶段不一样了（完成了、恢复中），或者它现在在等用户（例如核查不通过），而这件事本身不是阻塞。
  */
-export function checkpointNowLabel(checkpoint: KernelCheckpoint, currentTicket?: TicketSummary): string | null {
+export function checkpointNowLabel(checkpoint: KernelCheckpoint, currentTicket?: TicketSummary, locale: Locale = 'en'): string | null {
   if (!currentTicket) return null;
   const phase = isRuntimeRecoveryActive(currentTicket) ? 'recovering' : currentTicket.stage;
   const moved = phase !== EVENT_PHASE[checkpoint.kind];
   const waitsForUser = checkpoint.kind !== 'blocked' && ticketNeedsUser(currentTicket) !== null;
   if (!moved && !waitsForUser) return null;
-  return `现在：${ticketSummaryToTicket(currentTicket).statusLabel}`;
+  return checkpointMessages(locale).now(ticketSummaryToTicket(currentTicket).statusLabel);
 }
 
 function NowChip({ label }: { label: string }) {
@@ -251,40 +248,43 @@ function NowChip({ label }: { label: string }) {
   );
 }
 
-export function checkpointSourceLabel(checkpoint: KernelCheckpoint): string {
-  const time = formatCheckpointTime(checkpoint.createdAt);
-  if (checkpoint.source === 'system_derived' || checkpoint.author.kind === 'system') {
-    return `系统更新${time ? ` · ${time}` : ''}`;
-  }
+// locale 可选：InterventionCard 还没传。
+export function checkpointSourceLabel(checkpoint: KernelCheckpoint, locale: Locale = 'en'): string {
+  const m = checkpointMessages(locale);
+  const time = formatCheckpointTime(checkpoint.createdAt, undefined, locale);
+  if (checkpoint.source === 'system_derived' || checkpoint.author.kind === 'system') return m.systemUpdate(time);
   const role = checkpoint.author.kind === 'reviewer' ? 'reviewer' : 'child';
   const identity = checkpoint.attemptId === null ? role : `${role} #${checkpoint.attemptId}`;
-  return `来自 ${identity} 的消息${time ? ` · ${time}` : ''}`;
+  return m.messageFrom(identity, time);
 }
 
-export function checkpointDisplayTitle(checkpoint: KernelCheckpoint): string {
-  if (checkpoint.title === 'Authorization approved, execution resumed') return '授权已记录，等待执行状态确认';
+export function checkpointDisplayTitle(checkpoint: KernelCheckpoint, locale: Locale = 'en'): string {
+  if (checkpoint.title === 'Authorization approved, execution resumed') return checkpointMessages(locale).authorizationRecordedTitle;
   return checkpoint.title;
 }
 
-export function checkpointCurrentStateHint(checkpoint: KernelCheckpoint, currentTicket?: TicketSummary): string | null {
+export function checkpointCurrentStateHint(checkpoint: KernelCheckpoint, currentTicket?: TicketSummary, locale: Locale = 'en'): string | null {
   if (!currentTicket) return null;
+  const m = checkpointMessages(locale);
   const current = ticketSummaryToTicket(currentTicket);
   if (checkpoint.title === 'Authorization approved, execution resumed' && current.status === 'blocked') {
-    return `授权已经记录，但工单仍处于阻塞；等待 child/${leadNameNow()} 重新上报执行结果。`;
+    return m.authorizationStillBlocked(leadNameNow());
   }
   if (checkpoint.title === 'Authorization approved, execution resumed' && current.status === 'active') {
-    return '授权已经记录，child 正在继续执行。';
+    return m.authorizationContinues;
   }
   return null;
 }
 
-export function formatCheckpointTime(value: string, timeZone?: string): string {
+// 两种语言都是 24 小时制的「14:00」。
+export function formatCheckpointTime(value: string, timeZone?: string, locale: Locale = 'en'): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '';
-  return new Intl.DateTimeFormat('zh-CN', {
+  return new Intl.DateTimeFormat(intlLocale(locale), {
     hour: '2-digit',
     minute: '2-digit',
-    hour12: false,
+    // h23 而不是 hour12: false：en-US 的 hour12: false 在零点会写成「24:05」。
+    hourCycle: 'h23',
     ...(timeZone ? { timeZone } : {}),
   }).format(date);
 }

@@ -107,7 +107,7 @@ describe('the needs-you count', () => {
     expect(screen.getByText('工单 66')).toBeTruthy();
 
     act(() => runtime.workspace.getState().setCompactDestination('conversation'));
-    expect(screen.getByTestId('lead-running-count').getAttribute('aria-label')).toBe('执行中 1');
+    expect(screen.getByTestId('lead-running-count').getAttribute('aria-label')).toBe('Running 1');
     expect(screen.queryByText(/需处理|需要处理/)).toBeNull();
   });
 
@@ -117,7 +117,7 @@ describe('the needs-you count', () => {
     renderUI(<CompanionRuntimeProvider runtime={runtime}><Workbench /></CompanionRuntimeProvider>);
 
     expect(chipCount('inbox-needs-count')).toBe(String(NEEDS_YOU));
-    expect(screen.getByTestId('lead-running-count').getAttribute('aria-label')).toBe('执行中 1');
+    expect(screen.getByTestId('lead-running-count').getAttribute('aria-label')).toBe('Running 1');
     expect(screen.queryByText(/需要处理/)).toBeNull();
   });
 });

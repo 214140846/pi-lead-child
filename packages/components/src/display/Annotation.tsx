@@ -7,6 +7,8 @@ import { Text } from '../primitives/Text';
 import { AnchoredPanel } from './AnchoredPanel';
 import { FairyMark } from './FairyMark';
 import { Icon } from './Icon';
+import { useMessages } from '../i18n';
+import { displayMessages } from './display.messages';
 
 export type AnnotationDetail = {
   label: string;
@@ -35,6 +37,7 @@ export type AnnotationProps = {
 // 从左到右：安静版的 Fairy 标记，灰色文字说做了什么，然后是深色文字按钮和展开箭头。
 // 点开从原位置撑开成浮层（会话列表不跳），一条细竖线引出几行细节。
 export function Annotation({ text, action, done, details = [], toggleLabel, strong, testID }: AnnotationProps) {
+  const m = useMessages(displayMessages);
   const at = strong ? text.indexOf(strong) : -1;
   const words = at < 0 ? text : (
     <>
@@ -64,7 +67,7 @@ export function Annotation({ text, action, done, details = [], toggleLabel, stro
         </>
       ) : null}
       {expandable ? (
-        <Pressable aria-label={`${text}，${expanded ? '收起' : '展开'}`} aria-expanded={expanded} onPress={() => setOpen(!expanded)} feedback="none"
+        <Pressable aria-label={m.toggle(text, expanded)} aria-expanded={expanded} onPress={() => setOpen(!expanded)} feedback="none"
           testID={testID ? `${testID}-${expanded ? 'collapse' : 'expand'}` : undefined}>
           <Row items="center" gap="text-stack">
             {toggleLabel ? <Text size="meta" weight="semibold" tone="strong">{toggleLabel}</Text> : null}
@@ -118,12 +121,14 @@ export type AnnotationConfirmProps = {
 
 // 注脚和系统信息行的确认：原地换成一句问话和两个按钮，和原来那一行一样高，会话列表不跳（主题 11.6 状态 3）。
 export function AnnotationConfirm({
-  question, confirmLabel, cancelLabel = '算了', onConfirm, onCancel, busy = false, tone = 'neutral', centered = false, confirmTestID, testID,
+  question, confirmLabel, cancelLabel: cancelLabelProp, onConfirm, onCancel, busy = false, tone = 'neutral', centered = false, confirmTestID, testID,
 }: AnnotationConfirmProps) {
+  const m = useMessages(displayMessages);
+  const cancelLabel = cancelLabelProp ?? m.annotationCancel;
   return (
     <Row testID={testID} w="100%" justify={centered ? 'center' : 'flex-end'} items="center" gap="inline-item">
       <Text shrink={1} size="meta" tone="strong" numberOfLines={centered ? 2 : 1}>{question}</Text>
-      <Button testID={confirmTestID} label={busy ? '正在处理…' : confirmLabel} onPress={onConfirm} disabled={busy}
+      <Button testID={confirmTestID} label={busy ? m.busy : confirmLabel} onPress={onConfirm} disabled={busy}
         variant="solid" tone={tone === 'danger' ? 'danger' : 'neutral'} size="xs" />
       <Button label={cancelLabel} onPress={onCancel} disabled={busy} variant="ghost" tone="neutral" size="xs" />
     </Row>

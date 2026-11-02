@@ -35,16 +35,16 @@ describe('the Fairy in the rail header', () => {
   it('replaces the π avatar and is named after Lead', () => {
     renderUI(<WorkRail selectedTicketId={null} onSelectTicket={() => {}} leadName="Paimon" fairy={{ state: 'thinking', tone: 'color', note: null }} />);
     const header = screen.getByTestId('work-rail-header');
-    expect(within(header).getByRole('img', { name: 'Paimon 在想' })).toBeTruthy();
+    expect(within(header).getByRole('img', { name: 'Paimon is thinking' })).toBeTruthy();
     expect(within(header).queryByText('π')).toBeNull();
-    expect(within(header).getByText('没有 Run 在跑')).toBeTruthy();
+    expect(within(header).getByText('No Run is running')).toBeTruthy();
   });
 
   it('shows the presence note instead of the run count when Lead is offline', () => {
     renderUI(<WorkRail selectedTicketId={null} onSelectTicket={() => {}} leadName="Paimon" fairy={{ state: 'idle', tone: 'quiet', note: '离线 · 正在重连' }} />);
     const header = screen.getByTestId('work-rail-header');
     expect(within(header).getByText('离线 · 正在重连')).toBeTruthy();
-    expect(within(header).queryByText('没有 Run 在跑')).toBeNull();
+    expect(within(header).queryByText('No Run is running')).toBeNull();
   });
 });
 

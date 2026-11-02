@@ -4,14 +4,17 @@
 // 「是不是系统通知」看来源（isDaemonNoticeOrigin），不看标签文字：Lead 的名字可以是任何字。
 import { isDaemonNoticeOrigin, systemTurnLabel } from '@pi-lead-child/protocol';
 
+import type { Locale } from '@/i18n';
+
 import { leadNameNow } from '../../state/leadName';
 
 /** daemon 自己写的系统通知的标签，例如「系统通知 · blocker」。Lead 的回合（用户发起的、Lead 自己发起的）返回 null。 */
-export function systemNoticeLabel(originKind: string | null | undefined): string | null {
-  return isDaemonNoticeOrigin(originKind) ? systemTurnLabel(originKind) : null;
+// locale 是界面语言。state 里还有不传它的调用（测试），缺省英文。
+export function systemNoticeLabel(originKind: string | null | undefined, locale: Locale = 'en'): string | null {
+  return isDaemonNoticeOrigin(originKind) ? systemTurnLabel(originKind, locale) : null;
 }
 
 /** 发送者标签：系统通知写「系统通知 …」，Lead 的回合写 Lead 的名字。组件传 useLeadName() 的结果。 */
-export function leadSenderLabel(originKind: string | null | undefined, name: string = leadNameNow()): string {
-  return systemNoticeLabel(originKind) ?? name;
+export function leadSenderLabel(originKind: string | null | undefined, name: string = leadNameNow(), locale: Locale = 'en'): string {
+  return systemNoticeLabel(originKind, locale) ?? name;
 }

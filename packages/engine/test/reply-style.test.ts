@@ -9,6 +9,7 @@ import { randomUUID } from "node:crypto";
 import { tempDir } from "@pi-lead-child/core/testing";
 import { REPLY_STYLE_TEXT_MAX_LENGTH, UI_ACTION_PERFORMED_KIND } from "@pi-lead-child/protocol";
 import { createLoopbackBinding, createTurn, getReplyStyle, listEvents, openDb, type Db } from "@pi-lead-child/store";
+import { updateDesignPreferences } from "../src/design-preferences.js";
 import {
   REPLY_STYLE_COPY_RUN, REPLY_STYLE_MIN_MESSAGES, copiesSource, extractReplyStyle, listLeadUiActions, mentionsName,
   parseReplyStyleAnswer, revertReplyStyle, runUiAction, type SmartTextComplete,
@@ -55,7 +56,7 @@ describe("reply_style.update from the settings page", () => {
     expect(getReplyStyle(db)).toEqual({ text: "- 极其精简，不寒暄\n- 对方回 ok 时回 :heart:", updatedAt: NOW.toISOString(), updatedBy: "user" });
     expect(ownerActions()).toHaveLength(1);
     expect(ownerActions()[0]!.payload).toMatchObject({
-      action: "channel.reply_style", summary: "写了代回复风格",
+      action: "channel.reply_style", summary: "Wrote the reply style", target: { label: "Reply style" },
       undo: { kind: "reply_style", before: "", after: "- 极其精简，不寒暄\n- 对方回 ok 时回 :heart:" },
     });
     expect(ledger()).toEqual([expect.objectContaining({ action: "update", detail: { mode: "replace", changed: true, length: 30 } })]);
@@ -68,14 +69,25 @@ describe("reply_style.update from the settings page", () => {
     await save("- 极其精简");
     await save("- 确认只说「好」", "append", "从 Slack 提炼：最近 15 天，87 条");
     expect(getReplyStyle(db).text).toBe("- 极其精简\n\n### 从 Slack 提炼：最近 15 天，87 条（10-28）\n- 确认只说「好」");
-    expect(ownerActions().at(-1)!.payload).toMatchObject({ summary: "在代回复风格后面追加了一段" });
+    expect(ownerActions().at(-1)!.payload).toMatchObject({ summary: "Added a section to the end of the reply style" });
   });
 
   it("refuses an append that would go over the limit, and says by how much", async () => {
     await save("甲".repeat(REPLY_STYLE_TEXT_MAX_LENGTH - 10));
-    await expect(save("乙".repeat(20), "append")).rejects.toMatchObject({ code: "invalid_input", message: expect.stringContaining("超了") });
+    await expect(save("乙".repeat(20), "append")).rejects.toMatchObject({ code: "invalid_input", message: expect.stringContaining("too many") });
     expect([...getReplyStyle(db).text]).toHaveLength(REPLY_STYLE_TEXT_MAX_LENGTH - 10);
+    await expect(save("  ", "append")).rejects.toMatchObject({ code: "invalid_input", message: "The text to append is empty." });
+  });
+
+  it("writes the errors and the owner action in Chinese when the user chose Chinese", async () => {
+    updateDesignPreferences(db, { request: { locale: "zh" }, caller: { kind: "user" } });
+    await save("- 极其精简");
+    expect(ownerActions().at(-1)!.payload).toMatchObject({ summary: "写了代回复风格", target: { label: "代回复风格" } });
+    await save("- 不寒暄", "append");
+    expect(ownerActions().at(-1)!.payload).toMatchObject({ summary: "在代回复风格后面追加了一段" });
     await expect(save("  ", "append")).rejects.toMatchObject({ code: "invalid_input", message: "追加的内容是空的" });
+    await save("甲".repeat(REPLY_STYLE_TEXT_MAX_LENGTH - 10));
+    await expect(save("乙".repeat(20), "append")).rejects.toMatchObject({ code: "invalid_input", message: expect.stringContaining("超了") });
   });
 
   it("writes nothing when the text is the same", async () => {
@@ -123,7 +135,7 @@ describe("reply_style.update from Lead", () => {
     });
     expect(getReplyStyle(db)).toMatchObject({ text: "### 追加（10-28）\n- 不用感叹号", updatedBy: "lead" });
     expect(ledger()[0]).toMatchObject({ actor: "lead", authority: "on_behalf", onBehalfOf: "user", sourceTurnId: "turn-clean", bindingId: binding.id });
-    expect(ownerActions()[0]!.payload).toMatchObject({ summary: expect.stringContaining("代你在代回复风格后面追加了一段") });
+    expect(ownerActions()[0]!.payload).toMatchObject({ summary: expect.stringContaining("Added a section to the end of the reply style") });
   });
 });
 

@@ -1,5 +1,7 @@
 import { Box, Button, Card, Column, Divider, Icon, ListItem, Row, Text, type IconName } from '@pi-lead-child/components';
 
+import { useMessages } from '@/i18n';
+
 import { useCompanionRuntime } from '../../state/CompanionStateProvider';
 import {
   useApproval,
@@ -14,6 +16,7 @@ import { ticketDisplayTitle, ticketSummaryToTicket } from '../workspace/model';
 
 import { EmbeddedTicketCard } from './EmbeddedTicketCard';
 import { MarkdownMessage } from './MarkdownMessage';
+import { messagePartMessages } from './messagePart.messages';
 import { ReminderCard } from './ReminderCard';
 import { useOpenAgenda } from './useOpenAgenda';
 import { useOpenTicket } from './useOpenTicket';
@@ -39,6 +42,7 @@ export function MessagePartView({
   suppressedTicketIds = [],
 }: MessagePartViewProps) {
   const part = useMessagePart(partId);
+  const m = useMessages(messagePartMessages);
   if (!part) return null;
 
   if (part.kind === 'text') {
@@ -70,7 +74,7 @@ export function MessagePartView({
     <InfoRow
       icon="agent"
       label={`Agent ${part.state}`}
-      detail={[part.ticketId ? `工单 #${part.ticketId}` : null, part.attemptId ? `attempt #${part.attemptId}` : null].filter(Boolean).join(' · ') || '状态已更新'}
+      detail={[part.ticketId ? m.ticketNumber(part.ticketId) : null, part.attemptId ? `attempt #${part.attemptId}` : null].filter(Boolean).join(' · ') || m.stateUpdated}
     />
   );
 }
@@ -99,6 +103,7 @@ function TicketMessagePart({ ticketId, compact }: { ticketId: number; compact: b
   const { detail, resource } = useConversationItemDetail(ticketId, !ticketSummary);
   const openTicket = useOpenTicket();
   const openAgenda = useOpenAgenda();
+  const m = useMessages(messagePartMessages);
   const item = ticketSummary ?? detail?.ticket;
   if (item?.kind === 'reminder') {
     return (
@@ -111,7 +116,7 @@ function TicketMessagePart({ ticketId, compact }: { ticketId: number; compact: b
     );
   }
   if (!item) {
-    return <InfoRow icon="ticket" label={`#${ticketId}`} detail={resource?.state === 'error' ? '读不到这条事项的详情' : '正在读取'} />;
+    return <InfoRow icon="ticket" label={`#${ticketId}`} detail={resource?.state === 'error' ? m.itemUnreadable : m.loading} />;
   }
   return (
     <EmbeddedTicketCard
@@ -125,9 +130,10 @@ function TicketMessagePart({ ticketId, compact }: { ticketId: number; compact: b
 function ApprovalMessagePart({ approvalId }: { approvalId: number }) {
   const runtime = useCompanionRuntime();
   const approval = useApproval(approvalId);
-  if (!approval) return <InfoRow icon="approval-request" label={`审批 #${approvalId}`} detail="正在同步审批详情" />;
+  const m = useMessages(messagePartMessages);
+  if (!approval) return <InfoRow icon="approval-request" label={m.approvalNumber(approvalId)} detail={m.approvalSyncing} />;
   const pending = approval.status === 'pending';
-  if (!pending) return <InfoRow icon="approval-request" label={`审批 · ${approval.tool}`} detail={approval.status} />;
+  if (!pending) return <InfoRow icon="approval-request" label={m.approvalTool(approval.tool)} detail={approval.status} />;
 
   return (
     <Card gap="card-section" p="card" borderColor="warning-line">
@@ -136,13 +142,13 @@ function ApprovalMessagePart({ approvalId }: { approvalId: number }) {
           <Icon name="approval" color="warning-dark" size={14} />
         </Box>
         <Column flex={1} minW={0} gap="text-stack">
-          <Text size="card-title" weight="bold">{`需要审批 · ${approval.tool}`}</Text>
+          <Text size="card-title" weight="bold">{m.needsApproval(approval.tool)}</Text>
           <Text size="secondary" tone="secondary">{approval.action}</Text>
         </Column>
       </Row>
       <Row justify="flex-end" gap="actions">
-        <Button label="拒绝" variant="outline" tone="neutral" size="sm" onPress={() => void runtime.resolveApproval(approval.id, 'reject')} />
-        <Button label="批准" tone="inverse" size="sm" onPress={() => void runtime.resolveApproval(approval.id, 'approve')} />
+        <Button label={m.reject} variant="outline" tone="neutral" size="sm" onPress={() => void runtime.resolveApproval(approval.id, 'reject')} />
+        <Button label={m.approve} tone="inverse" size="sm" onPress={() => void runtime.resolveApproval(approval.id, 'approve')} />
       </Row>
     </Card>
   );

@@ -5,7 +5,7 @@
 // TicketSummary，却各自做了有损的映射。现在只有这一个函数做映射：徽章、状态区块、选项区块、
 // 托管说明和底部栏都读它的输出，不再各自推导（AGENTS.md：每个界面从同一个 TicketSummary
 // 推导当前状态）。
-import type { KernelOutcomeSnapshotResource } from '@pi-lead-child/protocol';
+import type { KernelOutcomeSnapshotResource, Locale } from '@pi-lead-child/protocol';
 
 import {
   formatCompactElapsed,
@@ -18,7 +18,8 @@ import {
 
 import { leadNameNow } from '@/state/leadName';
 
-import { elapsedText, type TicketRunProgress } from './ticketChatStatus';
+import { durationWords, type TicketRunProgress } from './ticketChatStatus';
+import { ticketStateMessages } from './ticketState.messages';
 
 export type TicketStateTone = 'info' | 'attention' | 'danger' | 'success' | 'neutral';
 
@@ -59,6 +60,8 @@ export type TicketStateInput = {
   liveRun?: TicketRunProgress | null;
   /** Lead 的名字（useLeadName）。不给时读最近一次取到的名字（leadNameNow）。 */
   leadName?: string;
+  /** 界面语言。不给时按英文。 */
+  locale?: Locale;
 };
 
 type ReviewState = NonNullable<Ticket['reviewState']>;
@@ -68,11 +71,12 @@ const VERDICT_TEXT = { pass: 'PASS', fail: 'FAIL' } as const;
 // 核查自动化只在出结论的那一笔事务里跑一次（delegated-review.ts 的 applyReviewAutomation）：
 // FAIL 时要么打回 active 并派返工，要么停手；PASS 时要么直接结单，要么停手。所以工单还停在
 // review、又已经有了结论，就说明自动化已经停手了（#66 的 FAIL 发生在授权之前）。这时卡片不能
-// 再说"Lead 会返工 / 会交付"，只能照实说没有自动动作，并给用户一个推荐。
-const NO_AUTOMATION = '当前没有自动动作在进行。';
+// 再说"Lead 会返工 / 会交付"，只能照实说没有自动动作，并给用户一个推荐（文案的 noAutomation）。
+// 核查走到哪一步（文案的 progress）。排队、挂起、在跑是三种不同的状态，不能都写成"正在进行"。
 
-// 核查走到哪一步。排队、挂起、在跑是三种不同的状态，不能都写成"正在进行"。
-const PROGRESS_FACT = { queued: '排队中', suspended: '已暂停', running: '进行中' } as const;
+function messagesOf(input: TicketStateInput) {
+  return ticketStateMessages(input.locale ?? 'en');
+}
 
 function budgetUsed(review: ReviewState): { used: number; max: number } | null {
   if (review.reworkCyclesUsed === undefined || review.maxReworkCycles === undefined || review.maxReworkCycles === null) {
@@ -93,35 +97,37 @@ function reviewFacts(
   const delivery = deliveryRunOf(review, input.outcome);
   const snapshot = input.outcome?.latest && input.outcome.latest.executorAttemptId === delivery ? input.outcome.latest : null;
   const budget = budgetUsed(review);
-  const superseded = supersededReviewText(review);
+  const superseded = supersededReviewText(review, input.locale ?? 'en');
   const stayed = formatCompactElapsed(input.timing?.statusDurationMs);
+  const m = messagesOf(input);
   return [
     ...(delivery === null ? [] : [{
-      label: '最新交付',
-      value: snapshot ? `Run #${delivery} · 成果快照 #${snapshot.id}` : `Run #${delivery}`,
+      label: m.facts.latestDelivery,
+      value: snapshot ? m.facts.deliveryWithSnapshot(delivery, snapshot.id) : `Run #${delivery}`,
     }]),
     {
-      label: '独立核查',
+      label: m.facts.review,
       value: review.reviewerAttemptId !== null
-        ? `Run #${review.reviewerAttemptId} · ${review.verdict ? VERDICT_TEXT[review.verdict] : '结论未知'}`
+        ? `Run #${review.reviewerAttemptId} · ${review.verdict ? VERDICT_TEXT[review.verdict] : m.facts.verdictUnknown}`
         : review.reviewProgress
-          ? PROGRESS_FACT[review.reviewProgress]
+          ? m.progress[review.reviewProgress]
           : options.reviewing
-            ? '即将开始'
-            : delivery === null ? '未核查' : `Run #${delivery} 未核查`,
+            ? m.facts.startsSoon
+            : m.facts.notReviewed(delivery),
     },
-    ...(superseded ? [{ label: '上次核查', value: superseded }] : []),
-    ...(budget ? [{ label: '返工额度', value: `${budget.used}/${budget.max} 已用` }] : []),
-    ...(stayed ? [{ label: '停留', value: `${stayed} 未变化` }] : []),
+    ...(superseded ? [{ label: m.facts.previousReview, value: superseded }] : []),
+    ...(budget ? [{ label: m.facts.reworkBudget, value: m.facts.budgetUsed(budget.used, budget.max) }] : []),
+    ...(stayed ? [{ label: m.facts.stayed, value: m.facts.stayedValue(stayed) }] : []),
   ];
 }
 
 // 用户发起的返工不占 Lead 的返工额度（2026-10-13 用户确认）；有额度时把这一点说出来。
 function reworkConsequence(review: ReviewState, input: TicketStateInput): string {
   const delivery = deliveryRunOf(review, input.outcome);
-  const base = delivery === null ? '重新执行这张工单' : `从 Run #${delivery} 的交付继续返工`;
+  const m = messagesOf(input);
+  const base = m.rework.base(delivery);
   const leadName = input.leadName ?? leadNameNow();
-  return budgetUsed(review) ? `${base}；这是你发起的返工，不占用 ${leadName} 的返工额度。` : `${base}。`;
+  return budgetUsed(review) ? m.rework.own(base, leadName) : m.rework.plain(base);
 }
 
 /** 把合法动作翻成带后果的选项。只翻 review 阶段用得到的三个；其余动作保持原样。 */
@@ -138,13 +144,13 @@ function reviewOptions(
   },
 ): TicketOptionPresentation[] {
   const delivery = deliveryRunOf(review, input.outcome);
+  const m = messagesOf(input);
   const options: TicketOptionPresentation[] = [];
   if (copy.requestReview) {
     options.push({
       id: 'request_review',
-      label: copy.requestReviewLabel ?? '派发独立核查',
-      consequence: copy.requestReviewConsequence
-        ?? (delivery === null ? '派一个独立 reviewer 核查最新的交付。' : `派一个独立 reviewer 核查 Run #${delivery} 的成果。`),
+      label: copy.requestReviewLabel ?? m.requestReview,
+      consequence: copy.requestReviewConsequence ?? m.requestReviewConsequence(delivery),
       tone: 'primary',
       recommended: copy.recommended === 'request_review',
     });
@@ -152,19 +158,19 @@ function reviewOptions(
   for (const action of input.actions) {
     if (action.id === 'complete') {
       if (copy.complete === null) continue;
-      const complete = copy.complete ?? { label: '验收通过', consequence: null, tone: 'primary' as const };
+      const complete = copy.complete ?? { label: m.accept, consequence: null, tone: 'primary' as const };
       options.push({ id: 'complete', ...complete, recommended: copy.recommended === 'complete' });
     } else if (action.id === 'rework') {
       if (copy.rework === null) continue;
       options.push({
         id: 'rework',
-        label: copy.rework?.label ?? '手动返工',
+        label: copy.rework?.label ?? m.reworkManually,
         consequence: reworkConsequence(review, input),
         tone: copy.recommended === 'rework' ? 'primary' : 'neutral',
         recommended: copy.recommended === 'rework',
       });
     } else if (action.id === 'cancel') {
-      options.push({ id: 'cancel', label: '取消工单', consequence: '放弃这次交付，工单结束。', tone: 'danger', recommended: false });
+      options.push({ id: 'cancel', label: m.cancelTicket, consequence: m.cancelConsequence, tone: 'danger', recommended: false });
     } else {
       options.push({ id: action.id, label: action.label, consequence: null, tone: action.tone, recommended: false });
     }
@@ -172,14 +178,14 @@ function reviewOptions(
   return options;
 }
 
-// 挂起的核查重新排（user-actions.ts 的 requestReview）。服务端只在有能用的核查员时才给这个按钮。
-const REPICK_REVIEW_LABEL = '重新排核查';
-const REPICK_REVIEW_CONSEQUENCE = '原来的核查员能用就用它，不能用就换一个能用的。';
+// 挂起的核查重新排（user-actions.ts 的 requestReview，文案的 repickReview）。服务端只在有能用的核查员时才给这个按钮。
 
 function reviewPresentation(input: TicketStateInput, review: ReviewState): TicketStatePresentation {
   const { ticket } = input;
   const delivery = deliveryRunOf(review, input.outcome);
-  const deliveryName = delivery === null ? '最新的交付' : `Run #${delivery}`;
+  const m = messagesOf(input);
+  const NO_AUTOMATION = m.noAutomation;
+  const skipReview = { label: m.skipReview, consequence: m.skipReviewConsequence, tone: 'danger' as const };
   const budget = budgetUsed(review);
   const exhausted = budget !== null && budget.used >= budget.max;
 
@@ -187,15 +193,15 @@ function reviewPresentation(input: TicketStateInput, review: ReviewState): Ticke
   // 挂起的核查也能重新派（换一个能用的核查员），但它派过了，走下面「核查已暂停」的分支（2026-10-21）。
   if (review.canRequestReview && review.state === 'independent_review' && (review.reviewProgress ?? null) === null) {
     return {
-      chip: '核查未派发',
+      chip: m.notRequested.chip,
       tone: 'attention',
-      headline: `${deliveryName} 已交付，但还没有被独立核查。`,
-      why: `系统不会自动派发核查，需要你决定下一步。${exhausted ? '返工额度已用完。' : ''}`,
+      headline: m.notRequested.headline(delivery),
+      why: m.notRequested.why(exhausted),
       facts: reviewFacts(review, input, { reviewing: false }),
       options: reviewOptions(input, review, {
         requestReview: true,
         recommended: 'request_review',
-        complete: { label: '仍要验收通过', consequence: '没有核查结论就结单。', tone: 'danger' },
+        complete: { label: m.acceptAnyway, consequence: m.notRequested.consequence, tone: 'danger' },
       }),
       automation: NO_AUTOMATION,
     };
@@ -204,19 +210,15 @@ function reviewPresentation(input: TicketStateInput, review: ReviewState): Ticke
   switch (review.state) {
     case 'rework_exhausted':
       return {
-        chip: '卡住',
+        chip: m.exhausted.chip,
         tone: 'danger',
-        headline: review.outcomeRecoveryFailed
-          ? `最后一次交付（${deliveryName}）没有登记成果，自动化已停止。`
-          : '返工额度已用完，自动化已停止。',
+        headline: review.outcomeRecoveryFailed ? m.exhausted.noOutcome(delivery) : m.exhausted.budgetUsedUp,
         why: review.reason,
         facts: reviewFacts(review, input, { reviewing: false }),
         options: reviewOptions(input, review, {
           complete: {
-            label: '仍要验收通过',
-            consequence: review.outcomeRecoveryFailed
-              ? '最后一次交付没有成果可核查，现在验收等于在没有证据的情况下结单。'
-              : '当前没有通过的核查结论，现在验收等于在没有通过证据的情况下结单。',
+            label: m.acceptAnyway,
+            consequence: review.outcomeRecoveryFailed ? m.exhausted.noOutcomeConsequence : m.exhausted.noPassConsequence,
             tone: 'danger',
           },
           recommended: 'rework',
@@ -225,37 +227,37 @@ function reviewPresentation(input: TicketStateInput, review: ReviewState): Ticke
       };
     case 'evidence_conflict':
       return {
-        chip: '证据冲突',
+        chip: m.conflict.chip,
         tone: 'danger',
-        headline: '核查证据互相矛盾，需要你判断。',
+        headline: m.conflict.headline,
         why: review.reason,
         facts: reviewFacts(review, input, { reviewing: false }),
         options: reviewOptions(input, review, {
-          complete: { label: '仍要验收通过', consequence: '验收前请先确认以哪一份证据为准。', tone: 'danger' },
+          complete: { label: m.acceptAnyway, consequence: m.conflict.consequence, tone: 'danger' },
           recommended: 'rework',
         }),
         automation: NO_AUTOMATION,
       };
     case 'review_failed':
       return {
-        chip: '核查不通过',
+        chip: m.failed.chip,
         tone: 'attention',
-        headline: '独立核查不通过。',
+        headline: m.failed.headline,
         why: review.reason,
         facts: reviewFacts(review, input, { reviewing: false }),
         // 核查不通过时不提供"验收通过"：与以前的规则相同（TicketThread 一直把它去掉）。
         options: reviewOptions(input, review, {
           complete: null,
-          rework: { label: '打回返工' },
+          rework: { label: m.sendBack },
           recommended: 'rework',
         }),
         automation: NO_AUTOMATION,
       };
     case 'review_passed':
       return {
-        chip: '核查通过',
+        chip: m.passed.chip,
         tone: 'success',
-        headline: '核查通过，等你验收。',
+        headline: m.passed.headline,
         why: review.reason,
         facts: reviewFacts(review, input, { reviewing: false }),
         options: reviewOptions(input, review, { recommended: 'complete' }),
@@ -265,19 +267,17 @@ function reviewPresentation(input: TicketStateInput, review: ReviewState): Ticke
       // 你派的核查被挂起时，按钮是重新排它，不是再派一个（2026-10-21 审查 M4）。
       const paused = review.reviewProgress === 'suspended';
       return {
-        chip: '待验收',
+        chip: m.waitingUser.chip,
         tone: 'attention',
-        headline: '执行已结束，等你验收。',
-        why: review.reason ?? '这张工单没有独立核查，由你判断是否完成。',
+        headline: m.waitingUser.headline,
+        why: review.reason ?? m.waitingUser.why,
         facts: reviewFacts(review, input, { reviewing: false }),
         options: reviewOptions(input, review, {
           recommended: 'complete',
-          rework: { label: '打回返工' },
+          rework: { label: m.sendBack },
           requestReview: review.canRequestReview === true,
-          ...(paused ? { requestReviewLabel: REPICK_REVIEW_LABEL } : {}),
-          requestReviewConsequence: paused
-            ? REPICK_REVIEW_CONSEQUENCE
-            : `派一个独立 reviewer 核查 ${deliveryName} 的成果；结论出来前你仍然可以直接验收。`,
+          ...(paused ? { requestReviewLabel: m.repickReview } : {}),
+          requestReviewConsequence: paused ? m.repickReviewConsequence : m.waitingUser.requestReviewConsequence(delivery),
         }),
         automation: NO_AUTOMATION,
       };
@@ -289,14 +289,12 @@ function reviewPresentation(input: TicketStateInput, review: ReviewState): Ticke
       if (stalled) {
         // #66：核查 Run #73 停在 starting，状态卡却写着「核查中」。准备超过一分钟就照实说。
         return {
-          chip: '核查没有开始',
+          chip: m.stalled.chip,
           tone: 'attention',
-          headline: `核查 Run #${stalled.runId} 准备了 ${elapsedText(stalled.elapsedMs).replace(/^已 /, '')}，还没有开始。`,
-          why: '通常 10 秒内开始，这次可能卡住了。',
+          headline: m.stalled.headline(stalled.runId, durationWords(stalled.elapsedMs, input.locale ?? 'en')),
+          why: m.stalled.why,
           facts: reviewFacts(review, input, { reviewing: true }),
-          options: reviewOptions(input, review, {
-            complete: { label: '跳过核查直接验收', consequence: '独立核查尚未给出结论，现在验收等于跳过核查。', tone: 'danger' },
-          }),
+          options: reviewOptions(input, review, { complete: skipReview }),
           automation: null,
         };
       }
@@ -309,40 +307,38 @@ function reviewPresentation(input: TicketStateInput, review: ReviewState): Ticke
       if (progress === null && runInFlight) {
         const live = input.liveRun && input.liveRun.purpose !== 'review' ? input.liveRun : null;
         return {
-          chip: '等 Run 结束',
+          chip: m.runInFlight.chip,
           tone: 'info',
           headline: live?.purpose === 'conversation'
-            ? `工单对话 Run #${live.runId} 还在回答，答完才能派发独立核查。`
+            ? m.runInFlight.conversation(live.runId)
             : live
-              ? `Run #${live.runId} 还在进行，结束后才能派发独立核查。`
-              : '这张工单还有一个 Run 在进行，结束后才能派发独立核查。',
-          why: '有 Run 在进行时不派核查：核查要看一个不再变化的工作区。',
+              ? m.runInFlight.live(live.runId)
+              : m.runInFlight.unknown,
+          why: m.runInFlight.why,
           facts: reviewFacts(review, input, { reviewing: false }),
-          options: reviewOptions(input, review, {
-            complete: { label: '跳过核查直接验收', consequence: '独立核查尚未给出结论，现在验收等于跳过核查。', tone: 'danger' },
-          }),
-          automation: 'Run 结束后状态会自动更新。',
+          options: reviewOptions(input, review, { complete: skipReview }),
+          automation: m.runInFlight.automation,
         };
       }
       return {
-        chip: progress === 'suspended' ? '核查已暂停' : progress === 'queued' ? '核查排队中' : '核查中',
+        chip: progress === 'suspended' ? m.reviewing.chipPaused : progress === 'queued' ? m.reviewing.chipQueued : m.reviewing.chipRunning,
         tone: progress === 'suspended' ? 'attention' : 'info',
         headline: progress === 'running'
-          ? '独立核查正在进行。'
+          ? m.reviewing.running
           : progress === 'queued'
-            ? '独立核查已排队，等待开始。'
+            ? m.reviewing.queued
             : progress === 'suspended'
-              ? '独立核查已排队，但暂时不能开始。'
-              : '执行已结束，独立核查即将开始。',
+              ? m.reviewing.paused
+              : m.reviewing.soon,
         why: progress === 'suspended' ? review.reason : null,
         facts: reviewFacts(review, input, { reviewing: true }),
         options: reviewOptions(input, review, {
-          complete: { label: '跳过核查直接验收', consequence: '独立核查尚未给出结论，现在验收等于跳过核查。', tone: 'danger' },
+          complete: skipReview,
           requestReview: progress === 'suspended' && review.canRequestReview === true,
-          requestReviewLabel: REPICK_REVIEW_LABEL,
-          requestReviewConsequence: REPICK_REVIEW_CONSEQUENCE,
+          requestReviewLabel: m.repickReview,
+          requestReviewConsequence: m.repickReviewConsequence,
         }),
-        automation: '核查结束后状态会自动更新。',
+        automation: m.reviewing.automation,
       };
     }
   }
@@ -358,8 +354,8 @@ export function ticketStatePresentation(input: TicketStateInput): TicketStatePre
       ...presentation,
       chip: input.ticket.statusLabel,
       tone: 'attention',
-      headline: '等你决定',
-      why: `先回答这张工单上的决定。你选完以后，${input.leadName ?? leadNameNow()} 或 agent 会接着做。`,
+      headline: messagesOf(input).pendingDecision.headline,
+      why: messagesOf(input).pendingDecision.why(input.leadName ?? leadNameNow()),
       options: presentation.options.map((option) => ({ ...option, recommended: false })),
       automation: null,
     };
@@ -375,21 +371,22 @@ function stagePresentation(input: TicketStateInput): TicketStatePresentation {
     ? ticket.executionState
     : null;
   const executionStopped = execution?.state === 'failed' || execution?.state === 'blocked';
+  const m = messagesOf(input);
   // 优先级与以前分散在卡片上的几块相同：已处理介入 > 执行状态 > 阻塞记录 > 通用下一步。
   const next = input.awaitingAfterIntervention && ticket.status === 'blocked'
     ? {
-      label: '授权已记录，等待执行状态确认',
-      body: `当前工单仍处于阻塞；等待 child 或 ${input.leadName ?? leadNameNow()} 重新上报执行结果。`,
+      label: m.afterIntervention.label,
+      body: m.afterIntervention.body(input.leadName ?? leadNameNow()),
       tone: 'attention' as const,
     }
     : execution
       ? { label: execution.label, body: execution.reason ?? '', tone: executionStopped ? 'danger' as const : 'info' as const }
       : input.blocker && ticket.status === 'blocked'
         ? { label: input.blocker.title, body: input.blocker.summary, tone: 'danger' as const }
-        : ticketNextActionPresentation(ticket);
+        : ticketNextActionPresentation(ticket, input.locale ?? 'en');
   const options = input.actions.map((action): TicketOptionPresentation => ({
     id: action.id,
-    label: action.id === 'cancel' ? '取消工单' : action.label,
+    label: action.id === 'cancel' ? m.cancelTicket : action.label,
     consequence: null,
     tone: action.tone,
     recommended: false,

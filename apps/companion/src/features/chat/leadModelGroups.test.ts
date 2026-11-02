@@ -23,12 +23,12 @@ describe('groupLeadModels', () => {
       option('vibeproxy/as1/claude-sonnet-5', 'anthropic'),
       option('vibeproxy/as1/claude-opus-5-5', 'anthropic'),
       option('vibeproxy/as10/claude-opus-5-5', 'anthropic'),
-    ]);
+    ], 'en');
     expect(groups.map((group) => [group.title, group.models.map((model) => model.id)])).toEqual([
       ['as1 · Anthropic', ['as1/claude-sonnet-5', 'as1/claude-opus-5-5']],
       ['as4 · Anthropic', ['as4/claude-sonnet-5']],
       ['as10 · Anthropic', ['as10/claude-opus-5-5']],
-      ['Anthropic · 不指定账号', ['claude-sonnet-5']],
+      ['Anthropic · Any account', ['claude-sonnet-5']],
       ['Antigravity', ['gemini-3.8-flash-high']],
     ]);
   });
@@ -37,8 +37,8 @@ describe('groupLeadModels', () => {
     const groups = groupLeadModels([
       option('vibeproxy/claude-sonnet-5', 'anthropic'),
       option('openrouter/gpt-6', null),
-    ]);
-    expect(groups.map((group) => group.title)).toEqual(['vibeproxy · Anthropic', 'openrouter · 其他']);
+    ], 'en');
+    expect(groups.map((group) => group.title)).toEqual(['vibeproxy · Anthropic', 'openrouter · Other']);
   });
 });
 

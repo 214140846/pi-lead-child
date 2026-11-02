@@ -7,7 +7,7 @@
 //   - 删掉的、拿出常驻的、已经撤销过的、之后又改过的：available 写明原因。
 import type { CoreMemoryUpdateRequest } from "@pi-lead-child/protocol";
 import {
-  getCoreMemoryChange, getNote, isCoreKind, latestCoreMemoryChange, type CoreMemoryChange, type Note,
+  getCoreMemoryChange, getLocale, getNote, isCoreKind, latestCoreMemoryChange, type CoreMemoryChange, type Note,
 } from "@pi-lead-child/store";
 import {
   CoreMemoryError, coreMemoryUndoBlocker, deleteCoreMemory, undoCoreMemoryChange, updateCoreMemory,
@@ -15,6 +15,7 @@ import {
 } from "../memory/core-memory.js";
 import { NotesMemory } from "../memory/notes-memory.js";
 import { AVAILABLE, unavailable } from "../ticket-actions/types.js";
+import { engineOwnerActionMessages, type CoreMemoryOwnerVerb } from "../owner-actions.messages.js";
 import { UiActionError, type UiActionDefinition, type UiActionEnv, type UiActionRun, type UiActionTargetKind } from "./types.js";
 
 export const CORE_MEMORY_WHERE = "设置 → 记忆 → 常驻偏好";
@@ -47,16 +48,18 @@ const clip = (text: string, max = 200) => (text.length > max ? `${text.slice(0, 
 // 用户改、删、撤销常驻偏好记成主人操作（memory.preferences，和代回复风格一样）：它进 Lead 的系统提示词，冒充用户改它
 // 就能改 Lead 的行为。来自扫码配对的手机时只记录，来自别的凭证时推送，「不是我」按这次的改动编号恢复。
 // Lead 自己改的走 Lead 动态（带撤销），不记主人操作。
-function ownerAction(verb: string) {
+function ownerAction(verb: CoreMemoryOwnerVerb) {
   return (run: UiActionRun<unknown, unknown>, result: unknown) => {
     if (run.by.actor !== "user") return null;
     const change = (result as CoreMemoryWriteOutcome).change;
     if (!change) return null;
     const title = (change.after ?? change.before)!.title;
+    // 摘要按写入时用户选的语言写。
+    const m = engineOwnerActionMessages(getLocale(run.db));
     return {
       action: "memory.preferences" as const,
-      target: { key: `core_memory:${change.noteId}`, label: `常驻偏好「${clip(title, 40)}」`, ticketId: null },
-      summary: `${verb}常驻偏好「${clip(title, 40)}」`,
+      target: { key: `core_memory:${change.noteId}`, label: m.coreMemoryTarget(clip(title, 40)), ticketId: null },
+      summary: m.coreMemory(verb, clip(title, 40)),
       detail: { changeId: change.id, noteId: change.noteId, action: change.action },
       undo: { kind: "core_memory" as const, changeId: change.id },
     };
@@ -125,7 +128,7 @@ export const CORE_MEMORY_ACTIONS = {
       return { result: "updated", ...changeResult(outcome), next: outcome.eventSeq !== null ? NEXT_REPORTED : NEXT_QUIET };
     },
     detail: (_run, result) => changeResult(result as CoreMemoryWriteOutcome),
-    ownerActionInput: ownerAction("改了"),
+    ownerActionInput: ownerAction("updated"),
   },
   delete: {
     target: "core_memory", id: "delete", label: "删掉常驻偏好", scope: "tickets:create",
@@ -142,7 +145,7 @@ export const CORE_MEMORY_ACTIONS = {
       return { result: "deleted", ...changeResult(outcome), next: outcome.eventSeq !== null ? NEXT_REPORTED : NEXT_QUIET };
     },
     detail: (_run, result) => changeResult(result as CoreMemoryWriteOutcome),
-    ownerActionInput: ownerAction("删了"),
+    ownerActionInput: ownerAction("deleted"),
   },
 } satisfies Record<string, UiActionDefinition<CoreMemoryTarget, any>>;
 
@@ -186,6 +189,6 @@ export const CORE_MEMORY_CHANGE_ACTIONS = {
       };
     },
     detail: (_run, result) => ({ undone: (result as CoreMemoryUndoOutcome).undone.id, ...changeResult(result as CoreMemoryUndoOutcome) }),
-    ownerActionInput: ownerAction("撤销了一次改动："),
+    ownerActionInput: ownerAction("undone"),
   },
 } satisfies Record<string, UiActionDefinition<CoreMemoryChange, any>>;

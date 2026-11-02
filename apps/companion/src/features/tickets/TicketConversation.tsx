@@ -9,9 +9,12 @@ import { formatConversationDate, formatConversationTime } from '@/features/chat/
 import { MarkdownMessage } from '@/features/chat/MarkdownMessage';
 import { MessagePartView } from '@/features/chat/MessagePartView';
 import { assistantMessageHasContent } from '@/features/chat/assistantContent';
-import { FAILURE_ACTION_LABELS, presentTurnFailure } from '@/features/chat/failurePresentation';
+import { failureActionLabels, presentTurnFailure } from '@/features/chat/failurePresentation';
+import { useLocale, useMessages, type Locale } from '@/i18n';
 import { useControlPlaneStore } from '@/state/CompanionStateProvider';
 import { useLeadName, useMessage, useMessagePart, useMessagePartIds, useMessageParts, useOverview, useTurn } from '@/state/hooks';
+
+import { ticketChatMessages } from './ticketChat.messages';
 
 // 工单对话：你和这张工单的执行 agent 之间的消息。和主会话一样：你的消息是浅灰气泡，agent 的回复直接排在白底上，
 // 跨天时插日期分隔线，失败用白话的失败卡（原文在展开以后）。
@@ -27,12 +30,13 @@ export function TicketConversation({
   onResend?: (text: string) => void;
   now?: Date;
 }) {
+  const locale = useLocale();
   const dates = useControlPlaneStore(useShallow((state) => messageIds.map((id) => state.messagesById[id]?.createdAt ?? '')));
   let previousDay = '';
   return (
     <Column testID="ticket-conversation" gap="conversation-block">
       {messageIds.map((messageId, index) => {
-        const day = dates[index] ? formatConversationDate(dates[index]!, now) : '';
+        const day = dates[index] ? formatConversationDate(dates[index]!, now, locale) : '';
         const divider = day && day !== previousDay ? day : null;
         if (day) previousDay = day;
         return (
@@ -71,6 +75,8 @@ function TicketConversationMessage({
   const userPart = useMessagePart(turn ? `${turn.userMessageId}:text` : '');
   const lead = useOverview()?.lead;
   const leadName = useLeadName();
+  const locale = useLocale();
+  const m = useMessages(ticketChatMessages);
   if (!message) return null;
   // agent 这一轮一个字也没说时不画气泡，失败了就只显示错误（工单 #66 的 Run #71）。还在回答的那一轮照常画。
   const bubble = message.role !== 'assistant' || message.state === 'streaming'
@@ -78,28 +84,29 @@ function TicketConversationMessage({
   if (!bubble && !message.failure) return null;
   const user = message.role === 'user';
   const stateCopy = message.state === 'queued'
-    ? '发送中'
+    ? m.sending
     : message.state === 'streaming'
-      ? '正在回答'
-      : formatConversationTime(message.updatedAt);
+      ? m.answering
+      : formatConversationTime(message.updatedAt, undefined, locale);
   const userText = userPart?.kind === 'text' ? userPart.text : null;
   const failure = message.failure ? presentTurnFailure({
+    locale,
     failure: message.failure,
     originKind: turn?.originKind,
     ticketId,
     userText,
     lead,
-    clock: (value) => formatConversationTime(value),
+    clock: (value) => formatConversationTime(value, undefined, locale),
     tools: parts.flatMap((part) => part.kind === 'tool' ? [part] : []),
   }) : null;
   const failureActions = (failure?.actions ?? []).flatMap((action) => action === 'resend' && userText && onResend
-    ? [{ label: FAILURE_ACTION_LABELS.resend, onPress: () => onResend(userText) }]
+    ? [{ label: failureActionLabels(locale).resend, onPress: () => onResend(userText) }]
     : []);
   return (
     // 你的气泡靠内容列的右边，最宽 70%，和主会话一样（2026-10-16）。
     <Column gap="reply-block" {...(user ? { self: 'flex-end', maxW: '70%', testID: 'ticket-user-message' } as const : { self: 'stretch', maxW: '100%' } as const)}>
       <Text size="meta" weight="semibold" tone="secondary" align={user ? 'right' : 'left'}>
-        {`${user ? '你' : ticketConversationSenderLabel(turn?.originKind, leadName)} · ${stateCopy}`}
+        {`${user ? m.you : ticketConversationSenderLabel(turn?.originKind, leadName, locale)} · ${stateCopy}`}
       </Text>
       {bubble && user ? (
         <MessageBubble testID="ticket-message-bubble">
@@ -138,6 +145,7 @@ export const LONG_REPLY_CHARS = 600;
 // 长回复默认只显示开头几行，带「展开全文 · 约 N 字」（复核 P2-5）。#66 的三条回复约 1,700、2,900、700 字，
 // 挤在窄栏里要翻好几屏。最后一条和还在写的那条不折：你正在看它。
 function FoldableReply({ markdown, foldable }: { markdown: string; foldable: boolean }) {
+  const m = useMessages(ticketChatMessages);
   const [open, setOpen] = useState(false);
   if (!foldable || markdown.length <= LONG_REPLY_CHARS) return <MarkdownMessage markdown={markdown} />;
   const size = (Math.round(markdown.length / 100) * 100).toLocaleString('en-US');
@@ -148,7 +156,7 @@ function FoldableReply({ markdown, foldable }: { markdown: string; foldable: boo
       </Box>
       <Box self="flex-start">
         <Button
-          label={open ? '收起' : `展开全文 · 约 ${size} 字`}
+          label={open ? m.collapse : m.showAll(size)}
           onPress={() => setOpen((value) => !value)}
           testID="ticket-reply-toggle"
           variant="link"
@@ -163,8 +171,9 @@ function FoldableReply({ markdown, foldable }: { markdown: string; foldable: boo
 // 在那之前（工单 08 的第一版），一些消息由 Lead 回答，它的轮次和主会话一样是 paired:<kind>（带工单号），
 // 更早 daemon 合成的回执是 paired:<kind>:ticket。这些旧轮次照样写 Lead 的名字（leadName）。
 // 还不知道来源（例如这一轮还没开始，占位的 originKind 是 live）时按以前的写法写执行 agent。
-export function ticketConversationSenderLabel(originKind: string | undefined, leadName: string): string {
-  if (originKind?.endsWith(':ticket-system')) return '系统';
+export function ticketConversationSenderLabel(originKind: string | undefined, leadName: string, locale: Locale = 'en'): string {
+  const m = ticketChatMessages(locale).sender;
+  if (originKind?.endsWith(':ticket-system')) return m.system;
   if (originKind?.startsWith('paired:') && !originKind.endsWith(':ticket-agent')) return leadName;
-  return '执行 agent';
+  return m.child;
 }

@@ -1,9 +1,13 @@
 import { Badge, Box, Button, Column, Icon, Row, Text } from '@pi-lead-child/components';
 
 import type { TimelineStep } from '@/features/workspace/model';
+import { useMessages } from '@/i18n';
+
+import { ticketRecordsMessages } from './ticketRecords.messages';
 
 // 执行时间线的一步：左侧状态圆点和竖线，右侧工具名、状态、说明和时间。等待批准的一步带批准按钮。
 export function TimelineRow({ step, isLast, onApprove }: { step: TimelineStep; isLast: boolean; onApprove?: () => void }) {
+  const m = useMessages(ticketRecordsMessages);
   const complete = step.state === 'complete';
   const running = step.state === 'running';
   const waiting = step.state === 'waiting';
@@ -41,7 +45,7 @@ export function TimelineRow({ step, isLast, onApprove }: { step: TimelineStep; i
         <Text mt="text-stack" size="meta" mono tone="faint">{step.time}</Text>
         {waiting && onApprove ? (
           <Box self="flex-start" mt="card-section">
-            <Button label="批准" onPress={onApprove} size="sm" />
+            <Button label={m.approve} onPress={onApprove} size="sm" />
           </Box>
         ) : null}
       </Column>

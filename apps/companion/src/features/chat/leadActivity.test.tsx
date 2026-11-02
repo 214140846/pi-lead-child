@@ -87,8 +87,8 @@ describe('Lead activity in the timeline', () => {
   });
 
   it('says the time range and how many things in the header', () => {
-    expect(leadActivityRange(items)).toMatch(/^\d{2}:\d{2}–\d{2}:\d{2}$/);
-    expect(leadActivityRange(items.slice(0, 1))).toMatch(/^\d{2}:\d{2}$/);
+    expect(leadActivityRange(items, 'en')).toMatch(/^\d{2}:\d{2}–\d{2}:\d{2}$/);
+    expect(leadActivityRange(items.slice(0, 1), 'en')).toMatch(/^\d{2}:\d{2}$/);
   });
 });
 
@@ -102,13 +102,13 @@ describe('the Lead activity block', () => {
   it('lists each thing with its disposition and reason, and collapses again', async () => {
     renderUI(<LeadActivityBlockView items={items} leadName="Paimon" defaultExpanded onOpenTicket={() => {}} />);
     const panel = await screen.findByTestId('lead-activity-panel');
-    expect(screen.getAllByText(/^Paimon 在后台处理了 2 件事 · /).length).toBeGreaterThan(0);
-    expect(within(panel).getByText('延后')).toBeTruthy();
-    expect(within(panel).getByText('不处理')).toBeTruthy();
-    expect(within(panel).getByText('Paimon：这些是核查的发现，不是故障')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: '收起记录' }));
+    expect(screen.getAllByText(/^Paimon handled 2 items in the background · /).length).toBeGreaterThan(0);
+    expect(within(panel).getByText('Deferred')).toBeTruthy();
+    expect(within(panel).getByText('No action')).toBeTruthy();
+    expect(within(panel).getByText('Paimon: 这些是核查的发现，不是故障')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse the record' }));
     expect(screen.queryByTestId('lead-activity-panel')).toBeNull();
-    expect(screen.getByRole('button', { name: '展开' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Expand' })).toBeTruthy();
   });
 
   // 2026-10-24 用户反馈：收起时只有一行「动态 · 4 件」，每次都要点开。收起时每件事一行摘要；展开才看依据。
@@ -120,9 +120,9 @@ describe('the Lead activity block', () => {
     expect(screen.getByTestId('lead-activity-inbox:110').textContent).toContain('事件 110');
     expect(screen.queryByTestId('lead-activity-note')).toBeNull();
     expect(screen.queryByTestId('lead-activity-basis')).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: '展开' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Expand' }));
     expect((await screen.findAllByTestId('lead-activity-note')).map((note) => note.textContent))
-      .toEqual(['Paimon：等最终结论一起说', 'Paimon：这些是核查的发现，不是故障']);
+      .toEqual(['Paimon: 等最终结论一起说', 'Paimon: 这些是核查的发现，不是故障']);
     expect(screen.getAllByTestId('lead-activity-basis')).toHaveLength(2);
   });
 
@@ -133,8 +133,8 @@ describe('the Lead activity block', () => {
     renderUI(<LeadActivityBlockView items={same} leadName="Paimon" defaultExpanded onOpenTicket={() => {}} />);
     const panel = await screen.findByTestId('lead-activity-panel');
     expect(screen.getAllByTestId(/^lead-activity-inbox:/)).toHaveLength(1);
-    expect(within(panel).getByText('4 件')).toBeTruthy();
-    expect(screen.getAllByText('Paimon：已明确原因并提供终端切换命令')).toHaveLength(1);
+    expect(within(panel).getByText('4 items')).toBeTruthy();
+    expect(screen.getAllByText('Paimon: 已明确原因并提供终端切换命令')).toHaveLength(1);
     expect(screen.getAllByTestId('lead-activity-thing').map((thing) => thing.textContent)).toEqual(['事件 265', '事件 267', '事件 266']);
   });
 });
@@ -172,13 +172,13 @@ describe('what you approved, carried on the record', () => {
   it('merges approvals of the same kind into one row, and writes the failed one on its own', async () => {
     renderUI(<LeadActivityBlockView items={cards} leadName="Fairy" onOpenTicket={() => {}} />);
     const ok = screen.getByTestId('lead-activity-inbox:1');
-    expect(ok.textContent).toContain('你允许了');
+    expect(ok.textContent).toContain('You allowed it');
     expect(ok.textContent).toContain('GitHub 的写入确认');
-    expect(ok.textContent).toContain('3 件');
+    expect(ok.textContent).toContain('3 items');
     expect(ok.textContent).not.toContain('用户允许了写入');
-    expect(screen.getByTestId('lead-activity-inbox:4').textContent).toContain('你允许了，没做成');
+    expect(screen.getByTestId('lead-activity-inbox:4').textContent).toContain('You allowed it, but it failed');
     expect(screen.getByTestId('lead-activity-inbox:4').textContent).toContain('允许GitHub写入：在 PR #119 加第 4/13 条行内评论');
-    fireEvent.click(screen.getByRole('button', { name: '展开' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Expand' }));
     const entries = await screen.findByTestId('lead-activity-owner-entries');
     expect(entries.textContent).toContain('加第 2/13 条行内评论');
   });

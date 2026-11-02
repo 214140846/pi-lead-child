@@ -138,7 +138,7 @@ describe("memory settings through the daemon", () => {
     expect(memory.reranker).toMatchObject({ effective: "none", external: { host: "api.typesafe.ai", maxCandidates: 50 } });
     expect(memory.pendingSwitch.dataFlows).toEqual([{ kind: "rerank", host: "api.typesafe.ai", maxCandidates: 50 }]);
     expect(memoryRows().find((row) => row.payload.state === "pending")).toMatchObject({
-      payload: { switch: memory.pendingSwitch.id, wakeLead: true }, summary: expect.stringMatching(/最多 50 条记忆片段发给 api\.typesafe\.ai/),
+      payload: { switch: memory.pendingSwitch.id, wakeLead: true }, summary: expect.stringMatching(/at most 50 memory fragments to api\.typesafe\.ai/),
     });
     const confirmed = await call("POST", `/v1/memory/switches/${memory.pendingSwitch.id}/confirm`, { approve: true });
     expect(confirmed.body.memory.reranker.effective).toBe("decision");
@@ -149,7 +149,7 @@ describe("memory settings through the daemon", () => {
     const { call } = await boot(harness);
     const refused = await call("POST", "/v1/decision-model/settings", { baseUrl: "https://user:pass@decide.example.com" });
     expect(refused).toMatchObject({ status: 400, body: { error: { code: "invalid_request", details: { reason: "invalid_url" } } } });
-    expect(refused.body.error.message).toMatch(/用户名或密码/);
+    expect(refused.body.error.message).toMatch(/user name or password/);
   });
 
   it("keeps the decision-model key write-only, and hands the Lead's SmartModel the current key", async () => {

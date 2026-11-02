@@ -5,9 +5,13 @@
 // 读用 tickets:view，改用 tickets:create（和 /v1/lead/trust 一样，tickets:create 表示「这台设备是主人」）。
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { connectionSettingsOwnerAction, type OwnerActionInput } from "./owner-actions.js";
+import { routeMessages } from "./routes.messages.js";
 import { Value } from "typebox/value";
 import {
   AddCustomConnectionRequestSchema,
+  DEFAULT_LEAD_NAME,
+  DEFAULT_LOCALE,
+  type Locale,
   ResolveConnectionConfirmationRequestSchema,
   type ConnectionConfirmationDto,
   ConnectionSettingsRequestSchema,
@@ -77,6 +81,8 @@ export interface ConnectionRouteContext {
   requireAuth(scope: Scope): string;
   // 写入确认成功以后，记一次主人操作（工单 15）。凭证是上一次 requireAuth 的调用方。
   ownerAction?(input: OwnerActionInput): void;
+  // 用户现在选的界面语言（store 的 getLocale）：回给界面的错误和主人操作的摘要按它写。不给时按缺省语言。
+  locale?: Locale;
 }
 
 const KEY = /^[a-z][a-z0-9-]{0,39}$/;
@@ -88,13 +94,15 @@ export async function handleConnectionRoute(ctx: ConnectionRouteContext): Promis
   const { req, url } = ctx;
   if (url.pathname !== "/v1/connections" && !url.pathname.startsWith("/v1/connections/")) return false;
   const service = ctx.service;
+  const locale = ctx.locale ?? DEFAULT_LOCALE;
+  const m = routeMessages(locale);
   const fail = (status: number, reason: string, message: string) =>
     // reason 放在 details 里：客户端用严格的 HttpErrorResponseSchema 校验错误响应，多一个字段整条错误就会被丢掉。
     ctx.json(status, { error: { code: HTTP_CODE[status] ?? "internal_error", message, details: { reason } } });
   const run = async (scope: Scope, action: (svc: ConnectionsService) => Promise<unknown> | unknown, status = 200) => {
     ctx.requireAuth(scope);
     if (!service) {
-      fail(503, "unavailable", "连接功能还没有启动");
+      fail(503, "unavailable", m.connectionsUnavailable);
       return true;
     }
     try {
@@ -147,8 +155,8 @@ export async function handleConnectionRoute(ctx: ConnectionRouteContext): Promis
         const confirmation = await svc.resolveConfirmation(id, approve, `user via ${by}`);
         ctx.ownerAction?.({
           action: "connection.confirm",
-          target: { key: `connection_confirmation:${id}`, label: `${confirmation.label} 的写入确认`, ticketId: null },
-          summary: `${approve ? "允许" : "不允许"}${confirmation.label}写入：${confirmation.summary}`,
+          target: { key: `connection_confirmation:${id}`, label: m.connectionConfirmationTarget(confirmation.label), ticketId: null },
+          summary: m.connectionConfirmed(approve, confirmation.label, confirmation.summary),
           detail: { approve, tool: confirmation.tool, state: confirmation.state },
           undo: { kind: "connection_confirmation", confirmationId: id, approve, state: confirmation.state },
         });
@@ -200,7 +208,7 @@ export async function handleConnectionRoute(ctx: ConnectionRouteContext): Promis
     return run("tickets:create", (svc) => {
       const before = svc.list().items.find((item) => item.key === key);
       const connection = svc.updateSettings(key, body as ConnectionSettingsRequest);
-      ctx.ownerAction?.(connectionSettingsOwnerAction(before, connection));
+      ctx.ownerAction?.(connectionSettingsOwnerAction(before, connection, locale));
       return { connection };
     });
   }
@@ -212,8 +220,8 @@ function escapeHtml(text: string): string {
   return text.replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]!);
 }
 
-function callbackPage(res: ServerResponse, status: number, title: string, detail: string): void {
-  const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title>
+function callbackPage(res: ServerResponse, status: number, title: string, detail: string, lang: string): void {
+  const html = `<!doctype html><html lang="${escapeHtml(lang)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title>
 <style>body{margin:0;font:15px/1.6 -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;background:#F5F6F8;color:#10131A;display:flex;min-height:100vh;align-items:center;justify-content:center}main{background:#fff;border:1px solid #E8EAEF;border-radius:16px;padding:28px 32px;max-width:420px;margin:16px}h1{font-size:19px;margin:0 0 8px}p{margin:0;color:#475467}</style>
 </head><body><main><h1>${escapeHtml(title)}</h1><p>${escapeHtml(detail)}</p></main></body></html>`;
   res.writeHead(status, {
@@ -235,13 +243,17 @@ export async function handleOAuthCallback(
   service: ConnectionsService | undefined,
   isLoopback: boolean,
   log: (line: string) => void,
+  // 页面的语言（用户现在选的界面语言）和称呼 Lead 的名字（设置 → 身份与风格）。
+  text: { locale: Locale; leadName: string } = { locale: DEFAULT_LOCALE, leadName: DEFAULT_LEAD_NAME },
 ): Promise<void> {
+  const m = routeMessages(text.locale);
+  const page = (status: number, title: string, detail: string) => callbackPage(res, status, title, detail, m.htmlLang);
   if (!isLoopback) {
-    callbackPage(res, 403, "不能在这里完成授权", "授权只能回到运行 Paimon 的这台 Mac。");
+    page(403, m.oauthNotHereTitle, m.oauthNotHereDetail(text.leadName));
     return;
   }
   if (!service) {
-    callbackPage(res, 503, "连接功能还没有启动", "请稍后回到 Paimon 重新连接。");
+    page(503, m.connectionsUnavailable, m.oauthUnavailableDetail(text.leadName));
     return;
   }
   const param = (name: string) => {
@@ -253,10 +265,10 @@ export async function handleOAuthCallback(
       state: param("state"), code: param("code"), iss: param("iss"),
       error: param("error"), errorDescription: param("error_description"),
     });
-    callbackPage(res, 200, `${label} 已连接`, "可以关闭这个页面，回到 Paimon。");
+    page(200, m.oauthConnectedTitle(label), m.oauthConnectedDetail(text.leadName));
   } catch (error) {
     const mapped = connectionError(error);
     if (!mapped) log(`[gateway] OAuth callback failed: ${error instanceof Error ? error.message : String(error)}`);
-    callbackPage(res, mapped && mapped.status < 500 ? 400 : 502, "授权没有完成", mapped?.message ?? "出了点问题，请回到 Paimon 重新连接。");
+    page(mapped && mapped.status < 500 ? 400 : 502, m.oauthFailedTitle, mapped?.message ?? m.oauthFailedDetail(text.leadName));
   }
 }

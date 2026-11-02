@@ -10,9 +10,9 @@
 import {
   bindingOriginOf, isOnBehalfOwnerActionSource, ITEM_ACTION_RISK, OWNER_ACTION_DISOWNED_KIND, OWNER_ACTION_NOTIFICATION_KIND,
   OWNER_ACTION_ON_BEHALF_NOTIFICATION_KIND, OWNER_ACTION_PERFORMED_KIND,
-  ownerActionAlertText, ownerActionDefinition, ownerActionDelivery, ownerActionLevel, ownerActionNotificationDedupKey, ownerActionText,
+  ownerActionAlertText, ownerActionDefinition, ownerActionLabel, ownerActionUndoNote, ownerActionDelivery, ownerActionLevel, ownerActionNotificationDedupKey,
   type ConnectionSettings, type DesignPreferencesFields, type LeadProfileFields, type OwnerActionDelivery, type OwnerActionDto, type OwnerActionId, type OwnerActionRevertStatus,
-  type OwnerActionSource, type UserItemActionId,
+  type Locale, type OwnerActionSource, type UserItemActionId,
 } from "@pi-lead-child/protocol";
 import type { Approval, DecisionRequest, Item, Run } from "@pi-lead-child/core";
 import type { Db } from "./db.js";
@@ -24,6 +24,8 @@ import { getRun, isTerminalRunState } from "./runs.js";
 import { getBinding, type Binding } from "./gateway.js";
 import { ackNotification, addNotification } from "./notifications.js";
 import { leadDisplayName } from "./lead-profile.js";
+import { getLocale } from "./design-preferences.js";
+import { ownerActionTextMessages } from "./owner-actions.messages.js";
 
 export interface OwnerActionTarget {
   // 对象键，例如 ticket:5、approval:3、run:9、standing_order:inbox.wake_lead。
@@ -99,17 +101,14 @@ export interface OwnerActionInput {
   undo: OwnerActionUndo;
 }
 
-const ITEM_VERBS: Partial<Record<OwnerActionId, string>> = {
-  "ticket.confirm": "确认了", "ticket.complete": "验收了", "ticket.stop": "停止了", "ticket.cancel": "取消了",
-};
-
-export function itemLabel(item: Pick<Item, "id" | "kind" | "title" | "display_title">): string {
-  const noun = item.kind === "reminder" ? "提醒" : "工单";
-  return `${noun} #${item.id}「${item.display_title ?? item.title}」`;
+// 摘要和对象的名字按写入时用户选的语言写（getLocale）。工单的名字在别的句子里也要用，所以 itemLabel 收 locale。
+// 不给 locale 时按中文：还没迁的调用方（daemon 的 agent-writes.ts）拼的是中文句子。
+export function itemLabel(item: Pick<Item, "id" | "kind" | "title" | "display_title">, locale: Locale = "zh"): string {
+  return ownerActionTextMessages(locale).item(item.kind === "reminder", item.id, item.display_title ?? item.title);
 }
 
 export function itemTarget(db: Db, item: Pick<Item, "id" | "kind" | "title" | "display_title">): OwnerActionTarget {
-  return { key: itemEntityKey(db, item.id), label: itemLabel(item), ticketId: item.id };
+  return { key: itemEntityKey(db, item.id), label: itemLabel(item, getLocale(db)), ticketId: item.id };
 }
 
 /** 一个工单动作算不算主人操作（protocol 的 ITEM_ACTION_RISK）。不算时返回 null。item 是操作之前的工单。 */
@@ -117,10 +116,11 @@ export function itemOwnerAction(db: Db, action: UserItemActionId, item: Item, fr
   const ownerAction = ITEM_ACTION_RISK[action].ownerAction;
   if (!ownerAction) return null;
   const after = getItem(db, item.id) ?? item;
+  const locale = getLocale(db);
   return {
     action: ownerAction,
     target: itemTarget(db, item),
-    summary: `${ITEM_VERBS[ownerAction] ?? `${action} `}${itemLabel(item)}`,
+    summary: ownerActionTextMessages(locale).itemAction(ownerAction, itemLabel(item, locale)),
     detail: { from, to: after.stage },
     undo: { kind: "item", itemId: item.id, from, to: after.stage },
   };
@@ -131,19 +131,21 @@ export function itemOwnerAction(db: Db, action: UserItemActionId, item: Item, fr
 export function delegationOwnerAction(
   db: Db, itemId: number, change: { granted: true; policyId: number; reworkStarted: boolean } | { granted: false; revoked: number },
 ): OwnerActionInput {
+  const locale = getLocale(db);
+  const m = ownerActionTextMessages(locale);
   const item = getItem(db, itemId);
-  const label = item ? itemLabel(item) : `工单 #${itemId}`;
+  const label = item ? itemLabel(item, locale) : m.ticketFallback(itemId);
   const target = item ? itemTarget(db, item) : { key: `ticket:${itemId}`, label, ticketId: itemId };
   if (!change.granted) {
     return {
-      action: "lead.delegation", target, summary: `撤回了${label}的委托验收`,
+      action: "lead.delegation", target, summary: m.delegationRevoked(label),
       detail: { granted: false, revoked: change.revoked },
       undo: { kind: "lead_delegation", ticketId: itemId, granted: false, policyId: null, reworkStarted: false },
     };
   }
   return {
     action: "lead.delegation", target,
-    summary: `把${label}委托给 ${leadDisplayName(db)} 验收${change.reworkStarted ? "，并开始返工" : ""}`,
+    summary: m.delegationGranted(label, leadDisplayName(db), change.reworkStarted),
     detail: { granted: true, policyId: change.policyId, reworkStarted: change.reworkStarted },
     undo: { kind: "lead_delegation", ticketId: itemId, granted: true, policyId: change.policyId, reworkStarted: change.reworkStarted },
   };
@@ -153,24 +155,28 @@ export function delegationOwnerAction(
 export function workspaceOwnerAction(
   db: Db, workspaceId: number, action: "release" | "cleanup", result: { itemId: number; status: string },
 ): OwnerActionInput {
+  const locale = getLocale(db);
+  const m = ownerActionTextMessages(locale);
   const owner = getItem(db, result.itemId);
-  const of = owner ? itemLabel(owner) : `工单 #${result.itemId}`;
+  const of = owner ? itemLabel(owner, locale) : m.ticketFallback(result.itemId);
   return {
     action: action === "release" ? "workspace.release" : "workspace.cleanup",
-    target: { key: `workspace:${workspaceId}`, label: `工作区 #${workspaceId}（${of}）`, ticketId: result.itemId },
-    summary: `${action === "release" ? "释放" : "清理"}了工作区 #${workspaceId}（${of}）`,
+    target: { key: `workspace:${workspaceId}`, label: m.workspaceTarget(workspaceId, of), ticketId: result.itemId },
+    summary: m.workspaceSummary(action, workspaceId, of),
     detail: { status: result.status },
     undo: { kind: "workspace", workspaceId, action, status: result.status },
   };
 }
 
 export function runOwnerAction(db: Db, run: Run, action: "pause" | "stop", to: string): OwnerActionInput {
+  const locale = getLocale(db);
+  const m = ownerActionTextMessages(locale);
   const item = getItem(db, run.item_id);
-  const of = item ? itemLabel(item) : `工单 #${run.item_id}`;
+  const of = item ? itemLabel(item, locale) : m.ticketFallback(run.item_id);
   return {
     action: action === "pause" ? "run.pause" : "run.stop",
-    target: { key: `run:${run.id}`, label: `Run #${run.id}（${of}）`, ticketId: run.item_id },
-    summary: `${action === "pause" ? "暂停" : "停止"}了 Run #${run.id}（${of}）`,
+    target: { key: `run:${run.id}`, label: m.runTarget(run.id, of), ticketId: run.item_id },
+    summary: m.runSummary(action, run.id, of),
     detail: { from: run.state, to },
     undo: { kind: "run", runId: run.id, action, from: run.state },
   };
@@ -180,24 +186,27 @@ export function runOwnerAction(db: Db, run: Run, action: "pause" | "stop", to: s
 // approval 是处理之前的审批。
 
 export function approvalOwnerAction(db: Db, approval: Approval, decision: string, consumerLive: boolean): OwnerActionInput {
+  const locale = getLocale(db);
+  const m = ownerActionTextMessages(locale);
   const item = approval.item_id === null ? null : getItem(db, approval.item_id);
-  const verb = decision === "reject" ? "拒绝了" : decision === "approve_session" ? "批准了（本工单内免批）" : "批准了";
   return {
     action: "approval.resolve",
-    target: { key: `approval:${approval.id}`, label: `审批 #${approval.id}（${approval.tool}）`, ticketId: approval.item_id },
-    summary: `${verb}审批 #${approval.id}：${approval.action}${item ? `（${itemLabel(item)}）` : ""}`,
+    target: { key: `approval:${approval.id}`, label: m.approvalTarget(approval.id, approval.tool), ticketId: approval.item_id },
+    summary: m.approvalSummary(decision, approval.id, approval.action, item ? itemLabel(item, locale) : null),
     detail: { decision, tool: approval.tool },
     undo: { kind: "approval", approvalId: approval.id, decision, consumerLive },
   };
 }
 
 export function decisionOwnerAction(db: Db, request: DecisionRequest, decision: string): OwnerActionInput {
+  const locale = getLocale(db);
+  const m = ownerActionTextMessages(locale);
   const item = getItem(db, request.itemId);
   const prompt = request.prompt.length > 120 ? `${request.prompt.slice(0, 120)}…` : request.prompt;
   return {
     action: "decision.resolve",
-    target: { key: `decision:${request.id}`, label: `决定请求 #${request.id}`, ticketId: request.itemId },
-    summary: `${decision === "dismiss" ? "驳回了" : "回答了"}决定请求 #${request.id}：${prompt}${item ? `（${itemLabel(item)}）` : ""}`,
+    target: { key: `decision:${request.id}`, label: m.decisionTarget(request.id), ticketId: request.itemId },
+    summary: m.decisionSummary(decision === "dismiss", request.id, prompt, item ? itemLabel(item, locale) : null),
     detail: { decision },
     undo: { kind: "decision", requestId: request.id, decision },
   };
@@ -222,11 +231,13 @@ export function recordOwnerAction(db: Db, input: RecordOwnerActionInput): Record
   };
   const summary = clipEventText(input.summary, 300);
   const leadName = leadDisplayName(db);
+  // 推送的正文和操作的名字按写入时用户选的语言写。
+  const locale = getLocale(db);
   return db.transaction((): RecordedOwnerAction => {
     const eventId = newEventId();
     let notificationId: number | null = null;
     if (delivery === "push") {
-      const text = ownerActionAlertText({ summary, credential, source: input.source, note: input.alertNote ?? null, leadName });
+      const text = ownerActionAlertText({ summary, credential, source: input.source, note: input.alertNote ?? null, leadName, locale });
       notificationId = addNotification(db, {
         kind: isOnBehalfOwnerActionSource(input.source) ? OWNER_ACTION_ON_BEHALF_NOTIFICATION_KIND : OWNER_ACTION_NOTIFICATION_KIND,
         urgency: "immediate", title: text.title, body: text.body, createdAt: at,
@@ -243,7 +254,7 @@ export function recordOwnerAction(db: Db, input: RecordOwnerActionInput): Record
       level: ownerActionLevel(delivery),
       payload: {
         action: input.action,
-        label: ownerActionText(definition.label, leadName),
+        label: ownerActionLabel(definition.id, locale, leadName),
         summary,
         target: { key: input.target.key, label: input.target.label, ticketId: input.target.ticketId ?? null },
         detail: input.detail ?? {},
@@ -352,6 +363,9 @@ export function ownerActionView(db: Db, eventId: string): OwnerActionDto | null 
   const bindingId = typeof credential.bindingId === "number" ? credential.bindingId : 0;
   const binding = bindingId > 0 ? getBinding(db, bindingId) : null;
   const delivery = payload.delivery === "record" ? "record" : "push";
+  // 操作的名字和撤销说明由定义推出来，按读的时候用户选的语言算。不认识的操作用记录里存的名字。
+  const locale = getLocale(db);
+  const leadName = leadDisplayName(db);
   let disowned: OwnerActionDto["disowned"] = null;
   if (found.disowned) {
     const detail = found.disowned.payload;
@@ -375,7 +389,7 @@ export function ownerActionView(db: Db, eventId: string): OwnerActionDto | null 
   return {
     eventId: found.performed.eventId,
     action: text(payload.action, "unknown"),
-    label: text(payload.label, definition?.label ?? ""),
+    label: definition ? ownerActionLabel(definition.id, locale, leadName) : text(payload.label),
     summary: text(payload.summary),
     target: {
       key: text(target.key, found.performed.entityKey),
@@ -394,7 +408,7 @@ export function ownerActionView(db: Db, eventId: string): OwnerActionDto | null 
     },
     delivery,
     performedAt: found.performed.occurredAt,
-    undo: { possible: definition?.undo ?? "none", note: definition ? ownerActionText(definition.undoNote, leadDisplayName(db)) : "" },
+    undo: { possible: definition?.undo ?? "none", note: definition ? ownerActionUndoNote(definition.id, locale, leadName) : "" },
     disownable: delivery === "push" && disowned === null,
     disowned,
   };

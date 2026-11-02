@@ -1,6 +1,9 @@
 import { Button, IconButton, Row, Text } from '@pi-lead-child/components';
 
+import { useMessages } from '@/i18n';
 import { useWebUpdate } from '@/state/hooks';
+
+import { componentsMessages } from './components.messages';
 
 // 有新版本（2026-10-20）：daemon 提供的网页比这个页面新（state/webVersion.ts）。放在会话顶栏里，安静：
 // 灰字、细描边，和「等待重新连接」的提示同一个样子，不用警告色。
@@ -8,6 +11,7 @@ import { useWebUpdate } from '@/state/hooks';
 // compact：手机宽度的顶栏放不下整句，只写「有新版本」。
 export function WebUpdateNotice({ compact = false }: { compact?: boolean }) {
   const update = useWebUpdate();
+  const m = useMessages(componentsMessages);
   if (!update.available) return null;
   return (
     <Row
@@ -24,9 +28,9 @@ export function WebUpdateNotice({ compact = false }: { compact?: boolean }) {
       bg="surface"
     >
       {/* spacing-exempt: 徽标字号 */}
-      <Text size="11" weight="semibold" tone="secondary" numberOfLines={1} shrink={1}>{compact ? '有新版本' : '有新版本，刷新后生效'}</Text>
-      {update.reload ? <Button label="刷新" onPress={update.reload} variant="link" tone="accent" size="xs" /> : null}
-      <IconButton icon="close" label="不再提示这个版本" onPress={update.dismiss} variant="ghost" tone="neutral" size="xs" iconSize={9} />
+      <Text size="11" weight="semibold" tone="secondary" numberOfLines={1} shrink={1}>{compact ? m.updateShort : m.updateLong}</Text>
+      {update.reload ? <Button label={m.reload} onPress={update.reload} variant="link" tone="accent" size="xs" /> : null}
+      <IconButton icon="close" label={m.dismissUpdate} onPress={update.dismiss} variant="ghost" tone="neutral" size="xs" iconSize={9} />
     </Row>
   );
 }

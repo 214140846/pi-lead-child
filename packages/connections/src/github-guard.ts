@@ -1,7 +1,7 @@
 // GitHub 连接的守卫（guards.ts）。工具名和参数是 GitHub 远程 MCP（github/github-mcp-server）的线上名字。
 //   - check（对所有调用方生效）：
 //       · APPROVE 以前代码查四条（landing.md 第 3 节 C2），有一条不过就拒绝并给出原因：
-//         检查都通过（check run 和 commit status）、review 线程都 resolve、不是 draft（并且 PR 是打开的）、
+//         没有失败的检查（check run 和 commit status；还在跑的不拦）、review 线程都 resolve、不是 draft（并且 PR 是打开的）、
 //         head 就是 review 过的那个提交。「review 过的提交」：带清单的 Run 看它的读取记录（最后一次读 PR 时的 head，
 //         并且之后读过这个 head 的 diff）；别的调用方（Lead、daemon）要在 commitID 里写明。读不到、读不懂的一律拒绝。
 //       · 读文件过禁止名单（硬性底线：仓库里提交了的 .env、私钥、凭据文件、日志也不读），和本地读取同一份名单。
@@ -12,6 +12,7 @@
 //     没有 org:、user:、owner: 一类限定词时，认出 owner 和 repo，清单按它们检查；否则认不出，按清单的规则拒绝。
 //   - observe：读到的文件内容、PR 的 head 和 diff 记进 Run 的读取记录，出处和「review 的是哪个提交」都按它核实。
 //   - describe：写操作做了什么、对象和链接。
+import { githubGuardMessages } from "./github-guard.messages.js";
 import { deniedSegment } from "./repo-paths.js";
 import { parseUnifiedDiff } from "./unified-diff.js";
 import type { RunReadLedger } from "./run-reads.js";
@@ -141,14 +142,16 @@ function describe(context: ToolCallContext, result: ToolCallResult): WriteDescri
   const target = targetText(tool, args);
   const prUrl = repo && number !== null ? `https://github.com/${repo}/pull/${number}` : null;
   const link = htmlUrl(result.text);
+  const m = githubGuardMessages(context.locale);
   if (tool === "pull_request_review_write") {
     const method = str(args.method);
     const event = str(args.event);
-    const summary = method === "delete_pending" ? `删掉了 ${target ?? "PR"} 上没提交的 review`
-      : method === "create" && !event ? `在 ${target ?? "PR"} 上建了一个没提交的 review`
-      : method === "resolve_thread" ? `在 ${target ?? "PR"} 上把一个 review 线程标成已解决`
-      : method === "unresolve_thread" ? `在 ${target ?? "PR"} 上重新打开一个 review 线程`
-      : `在 ${target ?? "PR"} 上提交了 review（${event ?? "COMMENT"}）`;
+    const pr = target ?? "PR";
+    const summary = method === "delete_pending" ? m.deletedPendingReview(pr)
+      : method === "create" && !event ? m.createdPendingReview(pr)
+      : method === "resolve_thread" ? m.resolvedThread(pr)
+      : method === "unresolve_thread" ? m.unresolvedThread(pr)
+      : m.submittedReview(pr, event ?? "COMMENT");
     // 没提交的 pending review（建、删）只有自己看得到。
     const visible = !(method === "delete_pending" || (method === "create" && !event));
     return { summary, target, url: link ?? prUrl, visible };
@@ -156,12 +159,12 @@ function describe(context: ToolCallContext, result: ToolCallResult): WriteDescri
   if (tool === "add_comment_to_pending_review") {
     const line = num(args.line);
     // 加在 pending review 里：提交以前别人看不到，提交时那一次写操作会记下来。
-    return { summary: `在 ${target ?? "PR"} 的 review 里加了一条行内评论${path ? `（${path}${line ? `:${line}` : ""}）` : ""}`, target, url: link ?? prUrl, visible: false };
+    return { summary: m.addedLineComment(target ?? "PR", path ? `${path}${line ? `:${line}` : ""}` : null), target, url: link ?? prUrl, visible: false };
   }
   if (tool === "add_issue_comment") {
-    return { summary: `在 ${target ?? "issue"} 上发了一条评论`, target, url: link ?? (repo && number !== null ? `https://github.com/${repo}/issues/${number}` : null), visible: true };
+    return { summary: m.addedIssueComment(target ?? "issue"), target, url: link ?? (repo && number !== null ? `https://github.com/${repo}/issues/${number}` : null), visible: true };
   }
-  return { summary: `调用了 GitHub 的 ${tool}${target ? `（${target}）` : ""}`, target, url: link ?? prUrl, visible: true };
+  return { summary: m.calledTool(tool, target), target, url: link ?? prUrl, visible: true };
 }
 
 const REVIEW_EVENTS: ReadonlySet<string> = new Set(["COMMENT", "APPROVE", "REQUEST_CHANGES"]);
@@ -308,22 +311,19 @@ async function approveProblem(context: ToolCallContext): Promise<string | null> 
     return "不知道 review 的是哪个提交：commitID 要写 review 过的那个提交";
   }
 
-  // 检查都通过。
+  // 没有失败的检查。
   const runs = await read("get_check_runs");
   const statuses = await read("get_status");
   const runList = runs.isError ? null : checkRuns(runs.text);
   const statusList = statuses.isError ? null : commitStatuses(statuses.text);
-  if (runList === null || statusList === null) return "读不到 PR 的检查结果，不能确认检查都通过";
+  if (runList === null || statusList === null) return "读不到 PR 的检查结果，不能确认没有失败的检查";
   const failing = [
     ...runList.filter((run) => run.status === "completed" && !PASSING_CONCLUSIONS.has(run.conclusion ?? "")).map((run) => run.name),
     ...statusList.filter((entry) => entry.state === "failure" || entry.state === "error").map((entry) => entry.context),
   ];
   if (failing.length) return `检查没通过：${failing.slice(0, 5).join("、")}`;
-  const pending = [
-    ...runList.filter((run) => run.status !== "completed").map((run) => run.name),
-    ...statusList.filter((entry) => entry.state !== "success").map((entry) => entry.context),
-  ];
-  if (pending.length) return `检查还没跑完：${pending.slice(0, 5).join("、")}`;
+  // 还在跑的检查不拦：有的检查要等有人 approve 才会变绿（例如 human-approval 一类的状态），拦了就是死锁。
+  // approve 不是合并，合并时分支保护还会再查一次。
 
   // review 线程都 resolve。
   const threads = await read("get_review_comments");

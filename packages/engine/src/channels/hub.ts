@@ -2638,7 +2638,7 @@ export class ChannelHub {
     });
     return {
       status: intake.status, situation: decided.situation, picked: intake.situation, mode: decided.mode, final: decided.final, by: decided.by,
-      phrase: situation ? handbookModePhrase(situation, decided.mode) : HANDBOOK_MODE_PHRASES[decided.mode], ruleChange: decided.ruleChange,
+      phrase: situation ? handbookModePhrase(situation, decided.mode, "zh") : HANDBOOK_MODE_PHRASES[decided.mode], ruleChange: decided.ruleChange,
       limit: decided.limit, abilities: decided.abilities, exception: decided.exception, action: decided.action.kind, reason: decided.action.reason,
       backend: intake.backend, model: intake.model, ms: Math.max(0, Date.now() - started),
       error: intake.error ? clipEventText(redactSecretText(intake.error), 300) : null,
@@ -4337,7 +4337,7 @@ function awaitingTaskNote(cardId: number, task: { itemId: number | null; runId: 
 function intakeSummary(result: ChannelIntakeResult): string {
   if (result.status !== "answered") return "收件判断没有做成（快模型不可用、超时或出错），不代查";
   const rules = result.ruleChange !== null && result.ruleChange >= CHANNEL_RULE_CHANGE_FLAG
-    ? `，${channelRuleChangeNotice(result.ruleChangeKinds)}` : "";
+    ? `，${channelRuleChangeNotice(result.ruleChangeKinds, "zh")}` : "";
   const by = result.fallback ? `，决策模型没有回答（${clipEventText(result.fallback.reason, 80)}），由 ${result.backend ?? "LLM"} 判断` : "";
   return `收件判断：按「${result.situation}」（意图 ${result.askKind}，置信度 ${pctText(result.askConfidence)}）`
     + `${result.target ? `，仓库 ${result.target.repo}` : ""}${rules}${by}`;

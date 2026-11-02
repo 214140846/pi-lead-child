@@ -53,7 +53,7 @@ export function ensurePullRequestReviewGrant(
   if (!template) return { created: false, writes: false };
   const reviewEvents = template.deliver === "post" ? template.reviewEvents : [];
   const scope = { pullRequest: template.pr, reviewEvents };
-  const { grant, dropped } = computeRunGrant({ intent: "code_review", scope, bound: USER_PR_REVIEW_BOUND, resolveLocalRepo: () => null });
+  const { grant, dropped } = computeRunGrant({ intent: "code_review", scope, bound: USER_PR_REVIEW_BOUND, resolveLocalRepo: () => null, locale: "zh" });
   insertRunGrant(db, {
     runId: run.runId, itemId: run.itemId, grant, bound: USER_PR_REVIEW_BOUND, scope, dropped, actor: "system",
     reason: template.deliver === "post"

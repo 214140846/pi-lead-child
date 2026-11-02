@@ -141,7 +141,7 @@ describe("user-requested rework dispatch", () => {
     expect(listActivities(db, itemId, 1000).some((activity) =>
       JSON.parse(activity.payload).decision === "dispatch_blocked_by_ticket_relation")).toBe(true);
     expect(createControlPlaneService(db, { runtime }).getItem(itemId)?.ticket.executionState)
-      .toMatchObject({ kind: "rework", state: "blocked", label: "返工派发受阻" });
+      .toMatchObject({ kind: "rework", state: "blocked", label: "Rework dispatch is blocked" });
   });
 
   it("surfaces dispatch startup failure as a blocked item with a failed request", async () => {
@@ -160,7 +160,7 @@ describe("user-requested rework dispatch", () => {
       "SELECT state, error_code FROM runs WHERE item_id=? AND role='executor' ORDER BY id DESC LIMIT 1",
     ).get(itemId)).toEqual({ state: "failed", error_code: "dispatch_start_failed" });
     expect(createControlPlaneService(db, { runtime }).getItem(itemId)?.ticket.executionState)
-      .toMatchObject({ kind: "rework", state: "failed", label: "返工启动失败" });
+      .toMatchObject({ kind: "rework", state: "failed", label: "The rework did not start" });
 
     expect(createControlPlaneService(db, { runtime }).getItem(itemId)?.ticket.executionState?.reason)
       .toMatch(/Pi agent .*Run #.*runtime missing.*runtime_unavailable/);

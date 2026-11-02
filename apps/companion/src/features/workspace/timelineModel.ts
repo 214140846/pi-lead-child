@@ -4,8 +4,10 @@
 import type { TimelineEntry, TimelineResponse } from '@pi-lead-child/protocol';
 
 import { clockTimeLabel } from '@/features/tickets/timeLabels';
+import { DEFAULT_LOCALE, type Locale } from '@/i18n';
 import { leadNameNow } from '@/state/leadName';
 
+import { agendaMessages } from './agenda.messages';
 import { waitedText } from './inboxModel';
 import { localDateKey } from './model';
 
@@ -44,7 +46,7 @@ export type TimelineView = {
   days: Record<string, TimelineDayMark>;
 };
 
-const WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六'];
+type AgendaWords = ReturnType<typeof agendaMessages>;
 
 const MILESTONE_TONE: Record<string, TimelineTagTone> = {
   due: 'danger',
@@ -55,9 +57,9 @@ const MILESTONE_TONE: Record<string, TimelineTagTone> = {
 };
 
 // lead 记下的写 Lead 的名字。这里离组件太远，读最近一次取到的名字（leadNameNow）。
-function provenanceLabel(actor: string): string | undefined {
-  if (actor === 'lead') return `${leadNameNow()} 记下`;
-  return ({ child: 'child 汇报', user: '你定的', system: '原来的截止' } as Record<string, string>)[actor];
+function provenanceLabel(actor: string, m: AgendaWords): string | undefined {
+  if (actor === 'lead') return m.notedByLead(leadNameNow());
+  return m.provenance[actor];
 }
 
 function addDays(date: Date, days: number): Date {
@@ -70,55 +72,65 @@ function shortDate(date: Date): string {
   return `${date.getMonth() + 1}/${date.getDate()}`;
 }
 
+function dayKind(at: string, now: Date): 'today' | 'tomorrow' | 'other' {
+  const key = localDateKey(new Date(at));
+  if (key === localDateKey(now)) return 'today';
+  if (key === localDateKey(addDays(now, 1))) return 'tomorrow';
+  return 'other';
+}
+
 /** 「今天」「明天」「周日」（一周内）或「10/20」。 */
-export function dayWord(at: string, now: Date): string {
+export function dayWord(at: string, now: Date, locale: Locale = DEFAULT_LOCALE): string {
+  const m = agendaMessages(locale);
   const date = new Date(at);
-  const key = localDateKey(date);
-  if (key === localDateKey(now)) return '今天';
-  if (key === localDateKey(addDays(now, 1))) return '明天';
+  const kind = dayKind(at, now);
+  if (kind === 'today') return m.today;
+  if (kind === 'tomorrow') return m.tomorrow;
   const start = new Date(now);
   start.setHours(0, 0, 0, 0);
   const days = Math.floor((date.getTime() - start.getTime()) / 86_400_000);
-  if (days > 1 && days < 7) return `周${WEEKDAYS[date.getDay()]}`;
+  if (days > 1 && days < 7) return m.weekday(date.getDay());
   return shortDate(date);
 }
 
-function tag(entry: TimelineEntry): TimelineRowView['tag'] {
+function tag(entry: TimelineEntry, m: AgendaWords): TimelineRowView['tag'] {
   if (entry.kind === 'milestone' && entry.milestone) {
     return { label: entry.milestone.label, tone: MILESTONE_TONE[entry.milestone.kind] ?? 'neutral' };
   }
-  if (entry.kind === 'reminder') return { label: '提醒', tone: 'accent' };
-  if (entry.kind === 'deferred_start') return { label: '开始', tone: 'neutral' };
-  return { label: '例行', tone: entry.status === 'failed' ? 'danger' : 'success' };
+  if (entry.kind === 'reminder') return { label: m.tagReminder, tone: 'accent' };
+  if (entry.kind === 'deferred_start') return { label: m.tagStart, tone: 'neutral' };
+  return { label: m.tagRoutine, tone: entry.status === 'failed' ? 'danger' : 'success' };
 }
 
-function sub(entry: TimelineEntry, now: Date, inOverdue: boolean): string | null {
+function sub(entry: TimelineEntry, now: Date, inOverdue: boolean, locale: Locale): string | null {
+  const m = agendaMessages(locale);
   if (entry.kind === 'milestone') {
-    const provenance = entry.provenance ? provenanceLabel(entry.provenance.actor) ?? null : null;
-    if (entry.milestone?.state === 'done') return '已完成';
-    if (entry.status === 'done') return '工单已结束';
-    if (entry.status === 'failed') return '没赶上';
+    const provenance = entry.provenance ? provenanceLabel(entry.provenance.actor, m) ?? null : null;
+    if (entry.milestone?.state === 'done') return m.done;
+    if (entry.status === 'done') return m.ticketEnded;
+    if (entry.status === 'failed') return m.missed;
     if (inOverdue || entry.status === 'overdue') {
-      return [`过期 ${waitedText(entry.at, now)}`, provenance].filter(Boolean).join(' · ');
+      return [m.overdueBy(waitedText(entry.at, now, locale)), provenance].filter(Boolean).join(' · ');
     }
     return provenance;
   }
   if (entry.kind === 'reminder') {
-    return entry.status === 'unacked' ? '已触发，未确认' : entry.status === 'done' ? '已确认' : null;
+    return entry.status === 'unacked' ? m.firedNotAcked : entry.status === 'done' ? m.acknowledged : null;
   }
-  if (entry.kind === 'deferred_start') return '计划开始';
+  if (entry.kind === 'deferred_start') return m.plannedStart;
   return entry.detail ?? null;
 }
 
-function row(entry: TimelineEntry, now: Date, inOverdue = false): TimelineRowView {
+function row(entry: TimelineEntry, now: Date, locale: Locale, inOverdue = false): TimelineRowView {
+  const m = agendaMessages(locale);
   const date = new Date(entry.at);
   const numbered = entry.ticketId !== null && (entry.kind === 'milestone' || entry.kind === 'deferred_start');
   return {
     id: entry.id,
-    time: inOverdue ? shortDate(date) : entry.allDay ? '全天' : clockTimeLabel(entry.at),
-    tag: tag(entry),
+    time: inOverdue ? shortDate(date) : entry.allDay ? m.allDay : clockTimeLabel(entry.at),
+    tag: tag(entry, m),
     title: numbered ? `#${entry.ticketId} ${entry.title}` : entry.title,
-    sub: sub(entry, now, inOverdue),
+    sub: sub(entry, now, inOverdue, locale),
     risk: entry.risk?.label ?? null,
     muted: entry.status === 'done',
     ticketId: entry.ticketId,
@@ -132,14 +144,15 @@ function row(entry: TimelineEntry, now: Date, inOverdue = false): TimelineRowVie
 
 // 明天以后：有事的每一天一节（「周二 · 10/20」），行里只写时刻。例行任务每个只列一次（第一次），写明之后还有几次：
 // 工作日的例行任务不该把节点挤下去。
-function laterSections(entries: readonly TimelineEntry[], now: Date): TimelineSection[] {
+function laterSections(entries: readonly TimelineEntry[], now: Date, locale: Locale): TimelineSection[] {
+  const m = agendaMessages(locale);
   const sections = new Map<string, TimelineSection>();
-  for (const view of laterRows(entries, now)) {
+  for (const view of laterRows(entries, now, locale)) {
     const date = new Date(view.at);
     const key = localDateKey(date);
     let section = sections.get(key);
     if (!section) {
-      section = { key, label: `周${WEEKDAYS[date.getDay()]} · ${shortDate(date)}`, rows: [] };
+      section = { key, label: `${m.weekday(date.getDay())} · ${shortDate(date)}`, rows: [] };
       sections.set(key, section);
     }
     section.rows.push(view);
@@ -147,7 +160,8 @@ function laterSections(entries: readonly TimelineEntry[], now: Date): TimelineSe
   return [...sections.values()];
 }
 
-function laterRows(entries: readonly TimelineEntry[], now: Date): TimelineRowView[] {
+function laterRows(entries: readonly TimelineEntry[], now: Date, locale: Locale): TimelineRowView[] {
+  const m = agendaMessages(locale);
   const routineCounts = new Map<string, number>();
   for (const entry of entries) {
     if (entry.kind === 'routine') routineCounts.set(routineKey(entry), (routineCounts.get(routineKey(entry)) ?? 0) + 1);
@@ -156,15 +170,15 @@ function laterRows(entries: readonly TimelineEntry[], now: Date): TimelineRowVie
   const rows: TimelineRowView[] = [];
   for (const entry of entries) {
     if (entry.kind !== 'routine') {
-      rows.push(row(entry, now));
+      rows.push(row(entry, now, locale));
       continue;
     }
     const key = routineKey(entry);
     if (shown.has(key)) continue;
     shown.add(key);
     const more = (routineCounts.get(key) ?? 1) - 1;
-    const view = row(entry, now);
-    rows.push(more > 0 ? { ...view, sub: [view.sub, `之后还有 ${more} 次`].filter(Boolean).join(' · ') } : view);
+    const view = row(entry, now, locale);
+    rows.push(more > 0 ? { ...view, sub: [view.sub, m.moreTimes(more)].filter(Boolean).join(' · ') } : view);
   }
   return rows;
 }
@@ -174,13 +188,14 @@ function routineKey(entry: TimelineEntry): string {
   return entry.id.split(':')[1] ?? entry.id;
 }
 
-function sectionLabel(date: Date, prefix?: string): string {
-  const day = `周${WEEKDAYS[date.getDay()]} ${date.getDate()}`;
-  return prefix ? `${prefix} · ${day}` : `${day}日`;
+function sectionLabel(date: Date, m: AgendaWords, prefix?: string): string {
+  const weekday = m.weekday(date.getDay());
+  return prefix ? `${prefix} · ${m.dayInSection(weekday, date.getDate())}` : m.dayOnly(weekday, date.getDate());
 }
 
 // 没有 Lead 今天写的一句话时，用同样的事实写一句：还剩几件、最近的是哪件、哪个日期有风险、过期几件。
-function factNote(entries: readonly TimelineEntry[], overdue: readonly TimelineEntry[], now: Date): string {
+function factNote(entries: readonly TimelineEntry[], overdue: readonly TimelineEntry[], now: Date, locale: Locale): string {
+  const m = agendaMessages(locale);
   const today = localDateKey(now);
   const nowIso = now.toISOString();
   const remaining = entries.filter((entry) => localDateKey(new Date(entry.at)) === today
@@ -188,21 +203,23 @@ function factNote(entries: readonly TimelineEntry[], overdue: readonly TimelineE
   const parts: string[] = [];
   const first = remaining[0];
   parts.push(first
-    ? `今天还剩 ${remaining.length} 件：${clockTimeLabel(first.at)} ${first.kind === 'milestone' ? `#${first.ticketId} ` : ''}${first.title}。`
-    : '今天没有剩下的安排。');
+    ? m.leftToday(remaining.length, `${clockTimeLabel(first.at)} ${first.kind === 'milestone' ? `#${first.ticketId} ` : ''}${first.title}`)
+    : m.nothingLeftToday);
   const risky = entries.find((entry) => entry.risk !== null && entry.status === 'upcoming');
   if (risky?.risk && risky.milestone) {
-    parts.push(`${dayWord(risky.at, now)} ${clockTimeLabel(risky.at)} #${risky.ticketId} ${risky.milestone.label}，但${risky.risk.label}。`);
+    parts.push(m.atRisk(`${dayWord(risky.at, now, locale)} ${clockTimeLabel(risky.at)}`, risky.ticketId, risky.milestone.label, risky.risk.label));
   }
-  if (overdue.length > 0) parts.push(`另有 ${overdue.length} 件已过期。`);
-  return parts.join('');
+  if (overdue.length > 0) parts.push(m.moreOverdue(overdue.length));
+  return m.joinSentences(parts);
 }
 
 export function buildTimelineView(
   timeline: TimelineResponse | null,
   now: Date,
   selectedDate: string = localDateKey(now),
+  locale: Locale = DEFAULT_LOCALE,
 ): TimelineView {
+  const m = agendaMessages(locale);
   const entries = timeline?.entries ?? [];
   const overdueEntries = timeline?.overdue ?? [];
   const today = localDateKey(now);
@@ -216,23 +233,23 @@ export function buildTimelineView(
     days[key] = mark;
   }
 
-  const rowsOn = (date: string) => entries.filter((entry) => localDateKey(new Date(entry.at)) === date).map((entry) => row(entry, now));
+  const rowsOn = (date: string) => entries.filter((entry) => localDateKey(new Date(entry.at)) === date).map((entry) => row(entry, now, locale));
   const sections: TimelineSection[] = selectedDate === today
     ? [
-        { key: 'today', label: sectionLabel(now, '今天'), rows: rowsOn(today) },
-        { key: 'tomorrow', label: sectionLabel(addDays(now, 1), '明天'), rows: rowsOn(tomorrow) },
-        ...laterSections(entries.filter((entry) => localDateKey(new Date(entry.at)) > tomorrow), now),
+        { key: 'today', label: sectionLabel(now, m, m.today), rows: rowsOn(today) },
+        { key: 'tomorrow', label: sectionLabel(addDays(now, 1), m, m.tomorrow), rows: rowsOn(tomorrow) },
+        ...laterSections(entries.filter((entry) => localDateKey(new Date(entry.at)) > tomorrow), now, locale),
       ].filter((section) => section.key === 'today' || section.rows.length > 0)
-    : [{ key: selectedDate, label: sectionLabel(new Date(`${selectedDate}T00:00:00`)), rows: rowsOn(selectedDate) }];
+    : [{ key: selectedDate, label: sectionLabel(new Date(`${selectedDate}T00:00:00`), m), rows: rowsOn(selectedDate) }];
 
   const leadNote = timeline?.leadNote ?? null;
   const note = leadNote && localDateKey(new Date(leadNote.at)) === today
-    ? { text: leadNote.text, when: `${clockTimeLabel(leadNote.at)} 更新`, byLead: true }
-    : { text: factNote(entries, overdueEntries, now), when: null, byLead: false };
+    ? { text: leadNote.text, when: m.updatedAt(clockTimeLabel(leadNote.at)), byLead: true }
+    : { text: factNote(entries, overdueEntries, now, locale), when: null, byLead: false };
 
   return {
     note,
-    overdue: overdueEntries.map((entry) => row(entry, now, true)),
+    overdue: overdueEntries.map((entry) => row(entry, now, locale, true)),
     sections,
     days,
   };
@@ -269,10 +286,11 @@ export function milestoneInputValue(at: string): string {
 export function milestoneChip(
   milestone: { label: string; at: string; allDay?: boolean },
   now: Date = new Date(),
+  locale: Locale = DEFAULT_LOCALE,
 ): { text: string; overdue: boolean } {
   const overdue = new Date(milestone.at).getTime() < now.getTime();
-  if (overdue) return { text: `${milestone.label}已过 ${waitedText(milestone.at, now)}`, overdue };
-  const word = dayWord(milestone.at, now);
-  const withTime = (word === '今天' || word === '明天') && !milestone.allDay;
+  if (overdue) return { text: agendaMessages(locale).chipOverdue(milestone.label, waitedText(milestone.at, now, locale)), overdue };
+  const word = dayWord(milestone.at, now, locale);
+  const withTime = dayKind(milestone.at, now) !== 'other' && !milestone.allDay;
   return { text: `${milestone.label} ${word}${withTime ? ` ${clockTimeLabel(milestone.at)}` : ''}`, overdue };
 }

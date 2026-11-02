@@ -38,30 +38,30 @@ describe('evidence presentation', () => {
   it('regression #66: shows the latest delivery evidence and moves older runs into history', () => {
     const evidence = buildEvidencePresentation(pow, outcome);
 
-    expect(evidence.currentTitle).toBe('本次交付 · Run #49');
+    expect(evidence.currentTitle).toBe('This delivery · Run #49');
     expect(evidence.current).toEqual([
       { id: 'validation-0', label: './node_modules/.bin/vitest run', detail: 'Full root suite green: 158 files / 1238 tests passed', state: 'passed' },
       { id: 'validation-1', label: 'npm run typecheck', detail: 'Blocked: requires-approval', state: 'not_run' },
     ]);
     expect(evidence.history.map((group) => [group.title, group.rows.map((row) => row.state)])).toEqual([
-      ['Run #45 的证据 · 已被 Run #49 取代', ['passed']],
-      ['Run #42 的证据 · 已被 Run #49 取代', ['failed', 'passed', 'failed']],
+      ['Evidence of Run #45 · replaced by Run #49', ['passed']],
+      ['Evidence of Run #42 · replaced by Run #49', ['failed', 'passed', 'failed']],
     ]);
-    expect(evidence.summary).toEqual({ title: '1 项通过 · 1 项未运行', tone: 'attention', mark: '!' });
+    expect(evidence.summary).toEqual({ title: '1 passed · 1 not run', tone: 'attention', mark: '!' });
   });
 
   it('never relabels a failed item as an environment limit', () => {
     const evidence = buildEvidencePresentation({ ...pow, deliveryAttemptId: 42 }, null);
 
-    expect(evidence.summary.title).toBe('1 项通过 · 2 项未通过');
-    expect(evidence.summary.title).not.toContain('环境');
+    expect(evidence.summary.title).toBe('1 passed · 2 failed');
+    expect(evidence.summary.title).not.toContain('environment');
   });
 
   it('marks a fully passed delivery with a check, and an empty one plainly', () => {
     expect(buildEvidencePresentation(null, { ...outcome, latest: { ...outcome.latest!, validations: [outcome.latest!.validations[0]!] } }).summary)
-      .toEqual({ title: '1 项通过', tone: 'passed', mark: '✓' });
+      .toEqual({ title: '1 passed', tone: 'passed', mark: '✓' });
     expect(buildEvidencePresentation({ ...pow, items: [], deliveryAttemptId: 49 }, null).summary)
-      .toEqual({ title: 'Run #49 没有登记验证结果', tone: 'muted', mark: '·' });
+      .toEqual({ title: 'Run #49 registered no validation results', tone: 'muted', mark: '·' });
   });
 
   // release review 4：reviewer 和对话 Run 报的条目属于它们之前那次交付。
@@ -77,8 +77,8 @@ describe('evidence presentation', () => {
 
     expect(evidence.current.map((row) => [row.id, row.state])).toEqual([['proof-regression', 'passed'], ['proof-manual', 'failed']]);
     expect(evidence.history.map((group) => group.title)).toEqual([
-      'Run #45 的证据 · 已被 Run #49 取代',
-      'Run #42 的证据 · 已被 Run #49 取代',
+      'Evidence of Run #45 · replaced by Run #49',
+      'Evidence of Run #42 · replaced by Run #49',
     ]);
     expect(evidence.needsAttention).toBe(true);
   });

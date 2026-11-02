@@ -3,7 +3,7 @@
 // 另一张橙色的「Lead 的模型服务暂时连不上，这次没能处理新的 blocker … 共 2 次」。
 // 现在是一张系统卡片："Lead 离线 19:11–20:07（网络中断）· 期间积压 1 件 · 20:07 已恢复并补处理"，积压的事写给用户看。
 import { describe, expect, it } from "vitest";
-import { leadOutageCause, leadOutageHeadline, userFacingBacklogText } from "../src/index.ts";
+import { isLeadOutageHeadline, leadOutageCause, leadOutageHeadline, userFacingBacklogText } from "../src/index.ts";
 
 describe("the outage card's words", () => {
   it("say when, why, how much waited, and whether Lead is back", () => {
@@ -44,3 +44,17 @@ describe("an outage that started and ended in the same minute", () => {
   });
 });
 
+// 界面语言是英文时（2026-11-01）：同样的标题和积压的事，英文写；标题照样认得出。
+describe("the outage card's words in English", () => {
+  it("writes the headline in English and still recognizes it", () => {
+    const headline = leadOutageHeadline({
+      start: "19:11", end: "20:07", cause: leadOutageCause("network", "en"), pending: 1, resumed: true, name: "Paimon", locale: "en",
+    });
+    expect(headline).toBe("Paimon offline 19:11–20:07 (network down) · 1 item waited · recovered at 20:07, waiting work handled");
+    expect(isLeadOutageHeadline(headline)).toBe(true);
+    const open = leadOutageHeadline({ start: "19:11", end: null, cause: leadOutageCause("unavailable", "en"), pending: 2, resumed: false, name: "Paimon", locale: "en" });
+    expect(open).toBe("Paimon offline since 19:11 (model service not available) · 2 items waited");
+    expect(isLeadOutageHeadline(open)).toBe(true);
+    expect(userFacingBacklogText("跟进：看 #66", "Paimon", "en")).toBe("A follow-up that Paimon set is due");
+  });
+});

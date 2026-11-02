@@ -57,6 +57,7 @@ const ticket66ReviewState: TicketSummary['reviewState'] = {
   outcomeRecoveryFailed: true,
 };
 
+// 这个文件按中文界面断言（传 'zh'）：核查提示的中文原文是 #66 复盘的依据。英文缺省由 model.test.ts 覆盖。
 describe('review state projection', () => {
   it('regression #66: a deadlocked ticket is not rendered as a plain acceptance card', () => {
     const ticket = ticketSummaryToTicket(summary(ticket66ReviewState));
@@ -65,10 +66,10 @@ describe('review state projection', () => {
     expect(ticket.needsAttention).toBe(true);
     expect(groupForTicket(ticket)).toBe('needs_intervention');
     expect(ticket.statusLabel).not.toBe('待验收');
-    expect(formatTicketHeartbeatLabel(ticket)).toBe('需要你');
-    expect(ticketRailCaption(ticket)).toBe('#66 · 返工已用尽且成果未登记，需要你决定 · 需要处理');
+    expect(formatTicketHeartbeatLabel(ticket, 'zh')).toBe('需要你');
+    expect(ticketRailCaption(ticket, 'zh')).toBe('#66 · 返工已用尽且成果未登记，需要你决定 · 需要处理');
 
-    const notice = buildReviewNoticePresentation(ticket);
+    const notice = buildReviewNoticePresentation(ticket, 'zh');
     expect(notice).toMatchObject({
       id: 'rework_exhausted',
       tone: 'danger',
@@ -90,7 +91,7 @@ describe('review state projection', () => {
     expect(buildTicketActionPresentation(ticket).map((action) => action.id))
       .toEqual(['complete', 'rework', 'cancel']);
     // 但它不能再是一次无声的确认——必须带风险原文。
-    expect(buildReviewNoticePresentation(ticket)?.acceptanceRisk).not.toBeNull();
+    expect(buildReviewNoticePresentation(ticket, 'zh')?.acceptanceRisk).not.toBeNull();
   });
 
   it('renders an unverified execution cycle as review-in-progress, with no acceptance risk copy hiding', () => {
@@ -104,7 +105,7 @@ describe('review state projection', () => {
       maxReworkCycles: 1,
       reviewProgress: 'running',
     }));
-    const notice = buildReviewNoticePresentation(ticket);
+    const notice = buildReviewNoticePresentation(ticket, 'zh');
 
     expect(isReviewDeadlocked(ticket)).toBe(false);
     // 核查在跑就是在执行；没有单独的「待验收」组。
@@ -150,7 +151,7 @@ describe('review state projection', () => {
       canRequestReview: true,
     }));
 
-    expect(buildReviewNoticePresentation(ticket)!.facts).toEqual([
+    expect(buildReviewNoticePresentation(ticket, 'zh')!.facts).toEqual([
       { label: '当前验证状态', value: '未知' },
       { label: '上次核查', value: 'Run #43 · FAIL · 核查的是 Run #42 · 已被 Run #49 作废' },
       { label: '已用返工次数', value: '1/1' },
@@ -179,7 +180,7 @@ describe('review state projection', () => {
       reworkCyclesUsed: 0,
       maxReworkCycles: 1,
     }));
-    const notice = buildReviewNoticePresentation(ticket);
+    const notice = buildReviewNoticePresentation(ticket, 'zh');
 
     expect(ticket.needsAttention).toBe(false);
     expect(groupForTicket(ticket)).toBe('needs_intervention');
@@ -203,7 +204,7 @@ describe('review state projection', () => {
       reworkCyclesUsed: 0,
       maxReworkCycles: 2,
     }));
-    const notice = buildReviewNoticePresentation(ticket);
+    const notice = buildReviewNoticePresentation(ticket, 'zh');
 
     expect(isReviewDeadlocked(ticket)).toBe(false);
     expect(ticket.needsAttention).toBe(true);
@@ -224,7 +225,7 @@ describe('review state projection', () => {
       verdict: null,
       reason: null,
     }));
-    const notice = buildReviewNoticePresentation(ticket);
+    const notice = buildReviewNoticePresentation(ticket, 'zh');
 
     expect(notice).toMatchObject({ id: 'waiting_user', tone: 'info', title: '等待你验收' });
     expect(notice!.facts).toEqual([{ label: '当前验证状态', value: '未知' }]);

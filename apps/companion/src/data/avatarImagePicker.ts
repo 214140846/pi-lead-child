@@ -1,6 +1,9 @@
 import type { LeadAvatarUploadRequest } from '@pi-lead-child/protocol';
 
+import { DEFAULT_LOCALE, type Locale } from '@/i18n';
+
 import { AvatarImageError } from './avatarImagePicker.types';
+import { imagePickerMessages } from './imagePicker.messages';
 
 export { AvatarImageError } from './avatarImagePicker.types';
 
@@ -11,6 +14,6 @@ export async function pickAvatarFile(): Promise<Blob | null> {
   return null;
 }
 
-export async function prepareAvatarImage(_file: Blob): Promise<LeadAvatarUploadRequest> {
-  throw new AvatarImageError('这个平台还不能上传图片');
+export async function prepareAvatarImage(_file: Blob, locale: Locale = DEFAULT_LOCALE): Promise<LeadAvatarUploadRequest> {
+  throw new AvatarImageError(imagePickerMessages(locale).avatarUnsupported);
 }

@@ -123,15 +123,16 @@ function memoryRuntime(
 
 beforeEach(() => vi.clearAllMocks());
 
+// 规则的中文原文：这几组按 'zh' 断言，英文在下面「the memory rules in English」。
 describe('the memory rules', () => {
   it('says plainly when only full-text search is on, and shows how many notes Hindsight has written when semantic search runs', () => {
-    expect(memoryStatus(memory())).toMatchObject({ title: '语义检索没有开', tone: 'muted', detail: expect.stringContaining('全文检索') });
-    expect(memoryStatus(remoteInUse)).toEqual({
+    expect(memoryStatus(memory(), 'zh')).toMatchObject({ title: '语义检索没有开', tone: 'muted', detail: expect.stringContaining('全文检索') });
+    expect(memoryStatus(remoteInUse, 'zh')).toEqual({
       title: '语义检索已开 · text-embedding-3-small', detail: '已写入 1,180 / 1,204 条笔记', tone: 'success',
     });
     // 写入失败的原因由 daemon 写在 service.message 里，跟在条数后面。
     const failing = { ...remoteInUse, service: { ...remoteInUse.service, message: '24 条笔记没写进 Hindsight（invalid api key），按意思召回不到它们' } };
-    expect(memoryStatus(failing).detail).toBe('已写入 1,180 / 1,204 条笔记 · 24 条笔记没写进 Hindsight（invalid api key），按意思召回不到它们');
+    expect(memoryStatus(failing, 'zh').detail).toBe('已写入 1,180 / 1,204 条笔记 · 24 条笔记没写进 Hindsight（invalid api key），按意思召回不到它们');
   });
 
   it('counts a pending switch as needing the user only when it needs confirmation', () => {
@@ -141,61 +142,61 @@ describe('the memory rules', () => {
   });
 
   it('writes the download progress, the size of the default local model, and the host that receives every note', () => {
-    expect(downloadLabel({ model: E5, state: 'downloading', bytes: 1_010_000_000, total: 2_470_000_000, error: null }))
+    expect(downloadLabel({ model: E5, state: 'downloading', bytes: 1_010_000_000, total: 2_470_000_000, error: null }, 'zh'))
       .toBe('已下载 963 MB / 2.3 GB · 断网后会接着下');
-    expect(downloadLabel(idle('x/y'))).toBeNull();
-    expect(localEmbeddingHint(E5)).toBe('下载约 2.2 GB。笔记不离开这台 Mac。');
-    expect(remotePrivacyNote('https://api.openai.com/v1')).toContain('api.openai.com');
+    expect(downloadLabel(idle('x/y'), 'zh')).toBeNull();
+    expect(localEmbeddingHint(E5, 'zh')).toBe('下载约 2.2 GB。笔记不离开这台 Mac。');
+    expect(remotePrivacyNote('https://api.openai.com/v1', 'zh')).toContain('api.openai.com');
   });
 
   it('checks the remote form like the contract does, and keeps the stored key when none is pasted', () => {
     const form = { baseUrl: 'https://api.openai.com/v1', model: 'text-embedding-3-small', dimensions: '', apiKey: '' };
-    expect(remoteFormProblem(form, false)).toBe('请粘贴 API key。');
-    expect(remoteFormProblem(form, true)).toBeNull();
-    expect(remoteFormProblem({ ...form, dimensions: '9000' }, true)).toContain('8192');
+    expect(remoteFormProblem(form, false, 'zh')).toBe('请粘贴 API key。');
+    expect(remoteFormProblem(form, true, 'zh')).toBeNull();
+    expect(remoteFormProblem({ ...form, dimensions: '9000' }, true, 'zh')).toContain('8192');
     expect(remoteRequest(form)).toEqual({ mode: 'remote', baseUrl: 'https://api.openai.com/v1', model: 'text-embedding-3-small', dimensions: null });
   });
 
   it('checks addresses with the rules and words the daemon uses', () => {
     const said = (problem: keyof typeof SERVICE_URL_MESSAGES) => `${SERVICE_URL_MESSAGES[problem]}。`;
-    expect(endpointProblem('https://api.openai.com/v1')).toBeNull();
-    expect(endpointProblem('https://api.openai.com/v1?version=2')).toBeNull();
-    expect(endpointProblem('http://127.0.0.1:8080/v1')).toBeNull();
-    expect(endpointProblem('http://localhost:11434/v1')).toBeNull();
-    expect(endpointProblem('http://[::1]:8080')).toBeNull();
+    expect(endpointProblem('https://api.openai.com/v1', 'zh')).toBeNull();
+    expect(endpointProblem('https://api.openai.com/v1?version=2', 'zh')).toBeNull();
+    expect(endpointProblem('http://127.0.0.1:8080/v1', 'zh')).toBeNull();
+    expect(endpointProblem('http://localhost:11434/v1', 'zh')).toBeNull();
+    expect(endpointProblem('http://[::1]:8080', 'zh')).toBeNull();
     // 2026-10-26：任何主机都可以用 http（公司内网的 LLM gateway），明文传输另有提示（plaintextNote）。
-    expect(endpointProblem('http://llm-gateway.corp.example.com/v1')).toBeNull();
-    expect(endpointProblem('http://10.1.2.3:8000/v1')).toBeNull();
-    expect(endpointProblem('http://0.0.0.0:8080/v1')).toBe(said('invalid_url'));
-    expect(endpointProblem('http://localhost./v1')).toBe(said('invalid_url'));
-    expect(endpointProblem('https://me:pw@api.openai.com/v1')).toBe(said('userinfo'));
-    expect(endpointProblem('https://:pw@api.openai.com/v1')).toBe(said('userinfo'));
-    expect(endpointProblem('https://api.openai.com/v1?api_key=x')).toBe(said('secret_query'));
-    expect(endpointProblem('https://api.openai.com/v1?token=x')).toBe(said('secret_query'));
-    expect(endpointProblem('http://[')).toBe(said('invalid_url'));
-    expect(endpointProblem('not-a-url')).toBe(said('invalid_url'));
-    expect(endpointProblem('https://api.openai.com./v1')).toBe(said('invalid_url'));
-    expect(endpointProblem('https://0.0.0.0/v1')).toBe(said('invalid_url'));
-    expect(endpointProblem('https://[::]/v1')).toBe(said('invalid_url'));
-    expect(endpointProblem('https://api.example.com/v1?subscription-key=x')).toBe(said('secret_query'));
-    expect(endpointProblem('')).toBe('请填写地址。');
-    expect(endpointProblem('https://api.openai.com/ v1')).toBe('地址里不能有空格。');
-    expect(endpointProblem(`https://api.openai.com/${'a'.repeat(500)}`)).toBe('地址太长了，最多 500 个字符。');
+    expect(endpointProblem('http://llm-gateway.corp.example.com/v1', 'zh')).toBeNull();
+    expect(endpointProblem('http://10.1.2.3:8000/v1', 'zh')).toBeNull();
+    expect(endpointProblem('http://0.0.0.0:8080/v1', 'zh')).toBe(said('invalid_url'));
+    expect(endpointProblem('http://localhost./v1', 'zh')).toBe(said('invalid_url'));
+    expect(endpointProblem('https://me:pw@api.openai.com/v1', 'zh')).toBe(said('userinfo'));
+    expect(endpointProblem('https://:pw@api.openai.com/v1', 'zh')).toBe(said('userinfo'));
+    expect(endpointProblem('https://api.openai.com/v1?api_key=x', 'zh')).toBe(said('secret_query'));
+    expect(endpointProblem('https://api.openai.com/v1?token=x', 'zh')).toBe(said('secret_query'));
+    expect(endpointProblem('http://[', 'zh')).toBe(said('invalid_url'));
+    expect(endpointProblem('not-a-url', 'zh')).toBe(said('invalid_url'));
+    expect(endpointProblem('https://api.openai.com./v1', 'zh')).toBe(said('invalid_url'));
+    expect(endpointProblem('https://0.0.0.0/v1', 'zh')).toBe(said('invalid_url'));
+    expect(endpointProblem('https://[::]/v1', 'zh')).toBe(said('invalid_url'));
+    expect(endpointProblem('https://api.example.com/v1?subscription-key=x', 'zh')).toBe(said('secret_query'));
+    expect(endpointProblem('', 'zh')).toBe('请填写地址。');
+    expect(endpointProblem('https://api.openai.com/ v1', 'zh')).toBe('地址里不能有空格。');
+    expect(endpointProblem(`https://api.openai.com/${'a'.repeat(500)}`, 'zh')).toBe('地址太长了，最多 500 个字符。');
   });
 
   it('says what external rerank sends only from the daemon numbers, and only while it really runs', () => {
-    expect(decisionRerankDescription(memory(), withKey))
+    expect(decisionRerankDescription(memory(), withKey, 'zh'))
       .toBe('用决策模型给找到的记忆排序。每次召回会把查询和最多 50 条记忆片段发给 api.typesafe.ai。要停止，把重排改成「本地」或「不用」。');
     const running30 = memory({ reranker: { ...memory().reranker, external: { host: 'api.typesafe.ai', maxCandidates: 30 } } });
-    expect(decisionRerankDescription(running30, withKey)).toContain('最多 30 条');
-    expect(decisionRerankDescription(waitingForConsent(), withKey))
+    expect(decisionRerankDescription(running30, withKey, 'zh')).toContain('最多 30 条');
+    expect(decisionRerankDescription(waitingForConsent(), withKey, 'zh'))
       .toBe('用决策模型给找到的记忆排序。等你确认后才开始：每次召回会把查询和最多 30 条记忆片段发给 api.typesafe.ai。');
     const noKey = memory({ service: healthy, reranker: { ...memory().reranker, effective: 'none', external: null } });
-    expect(decisionRerankDescription(noKey, noKeyYet)).toContain('现在不往外发：决策模型没有能用的 key。');
+    expect(decisionRerankDescription(noKey, noKeyYet, 'zh')).toContain('现在不往外发：决策模型没有能用的 key。');
     const notChosen = memory({ reranker: { ...memory().reranker, mode: 'none', effective: 'none', external: null } });
-    expect(decisionRerankDescription(notChosen, withKey)).toBe('用决策模型给找到的记忆排序。选它以后，会把查询和记忆片段发给 api.typesafe.ai，开始之前会先问你。');
-    expect(decisionRerankDescription(notChosen, null)).toBe('用决策模型给找到的记忆排序。选它以后，开始之前会先问你。');
-    expect(dataFlowNote({ kind: 'embedding', host: 'proxy.example.com', maxCandidates: null })).toBe('每一条笔记会发给 proxy.example.com 生成向量，包括以后新写的笔记。');
+    expect(decisionRerankDescription(notChosen, withKey, 'zh')).toBe('用决策模型给找到的记忆排序。选它以后，会把查询和记忆片段发给 api.typesafe.ai，开始之前会先问你。');
+    expect(decisionRerankDescription(notChosen, null, 'zh')).toBe('用决策模型给找到的记忆排序。选它以后，开始之前会先问你。');
+    expect(dataFlowNote({ kind: 'embedding', host: 'proxy.example.com', maxCandidates: null }, 'zh')).toBe('每一条笔记会发给 proxy.example.com 生成向量，包括以后新写的笔记。');
   });
 
   it('says why memory is not running from the embedding settings, so no text on the page contradicts another', () => {
@@ -204,18 +205,18 @@ describe('the memory rules', () => {
       embedding: { ...memory().embedding, mode: 'local', local: { model: E5, download: { model: E5, state: 'downloading', bytes: 10, total: 100, error: null } } },
       reranker: notRunning,
     });
-    expect(memoryStatus(downloading).detail).toBe('现在记忆只用全文检索。本地模型下载好以后，开始按意思找。');
-    expect(decisionRerankDescription(downloading, withKey)).toBe('用决策模型给找到的记忆排序。记忆还没开始工作：等本地模型下载好。之后要往外发时，会先问你。');
-    expect(rerankerFallbackNote(downloading, withKey)).toEqual({ text: '本地模型下载好以后，记忆才开始工作。重排也从那时开始。', setUpKey: false });
+    expect(memoryStatus(downloading, 'zh').detail).toBe('现在记忆只用全文检索。本地模型下载好以后，开始按意思找。');
+    expect(decisionRerankDescription(downloading, withKey, 'zh')).toBe('用决策模型给找到的记忆排序。记忆还没开始工作：等本地模型下载好。之后要往外发时，会先问你。');
+    expect(rerankerFallbackNote(downloading, withKey, 'zh')).toEqual({ text: '本地模型下载好以后，记忆才开始工作。重排也从那时开始。', setUpKey: false });
     const failed = memory({
       embedding: { ...downloading.embedding, local: { model: E5, download: { model: E5, state: 'failed', bytes: 10, total: 100, error: '断网' } } },
       reranker: notRunning,
     });
-    expect(rerankerFallbackNote(failed, withKey)?.text).toBe('本地模型下载失败，记忆还没开始工作。重试下载，或者改用远程。');
+    expect(rerankerFallbackNote(failed, withKey, 'zh')?.text).toBe('本地模型下载失败，记忆还没开始工作。重试下载，或者改用远程。');
     const remoteWaiting = memory({ embedding: { ...remoteInUse.embedding, mode: 'remote' }, reranker: notRunning });
-    expect(memoryStatus(remoteWaiting).detail).toBe('现在记忆只用全文检索。embedding 就绪以后，开始按意思找。');
-    expect(decisionRerankDescription(remoteWaiting, withKey)).toContain('等 embedding 就绪');
-    for (const text of [memoryStatus(downloading).detail, decisionRerankDescription(downloading, withKey), rerankerFallbackNote(downloading, withKey)?.text ?? '']) {
+    expect(memoryStatus(remoteWaiting, 'zh').detail).toBe('现在记忆只用全文检索。embedding 就绪以后，开始按意思找。');
+    expect(decisionRerankDescription(remoteWaiting, withKey, 'zh')).toContain('等 embedding 就绪');
+    for (const text of [memoryStatus(downloading, 'zh').detail, decisionRerankDescription(downloading, withKey, 'zh'), rerankerFallbackNote(downloading, withKey, 'zh')?.text ?? '']) {
       expect(text).not.toContain('先选');
     }
   });
@@ -227,12 +228,12 @@ describe('the memory rules', () => {
       service: { ...memory().service, backend: 'sqlite' },
     });
     expect(memoryOffReason(turnedOff)).toBe('sqlite');
-    expect(memoryStatus(turnedOff).detail).toBe('这台 Mac 上关掉了语义检索（daemon 的环境里设了 PLC_MEMORY_BACKEND=sqlite），记忆只用全文检索。');
-    expect(decisionRerankDescription(turnedOff, withKey)).toBe('用决策模型给找到的记忆排序。这台 Mac 上关掉了记忆（PLC_MEMORY_BACKEND=sqlite），现在不重排，也不往外发。');
-    expect(rerankerFallbackNote(turnedOff, withKey)).toEqual({
+    expect(memoryStatus(turnedOff, 'zh').detail).toBe('这台 Mac 上关掉了语义检索（daemon 的环境里设了 PLC_MEMORY_BACKEND=sqlite），记忆只用全文检索。');
+    expect(decisionRerankDescription(turnedOff, withKey, 'zh')).toBe('用决策模型给找到的记忆排序。这台 Mac 上关掉了记忆（PLC_MEMORY_BACKEND=sqlite），现在不重排，也不往外发。');
+    expect(rerankerFallbackNote(turnedOff, withKey, 'zh')).toEqual({
       text: '这台 Mac 上关掉了记忆（PLC_MEMORY_BACKEND=sqlite），重排不用。要打开，去掉这个环境变量，再重启 daemon。', setUpKey: false,
     });
-    for (const text of [memoryStatus(turnedOff).detail, decisionRerankDescription(turnedOff, withKey)]) {
+    for (const text of [memoryStatus(turnedOff, 'zh').detail, decisionRerankDescription(turnedOff, withKey, 'zh')]) {
       expect(text).not.toContain('先选');
       expect(text).not.toContain('下载');
     }
@@ -241,25 +242,25 @@ describe('the memory rules', () => {
   it('says a fresh install needs an embedding first, not a key', () => {
     const fresh = memory({ reranker: { ...memory().reranker, effective: 'none', external: null } });
     for (const decisionState of [withKey, noKeyYet, null]) {
-      const text = decisionRerankDescription(fresh, decisionState);
+      const text = decisionRerankDescription(fresh, decisionState, 'zh');
       expect(text).toBe('用决策模型给找到的记忆排序。记忆还没开始工作：先选 embedding。之后要往外发时，会先问你。');
-      expect(rerankerFallbackNote(fresh, decisionState)).toEqual({ text: '先选 embedding，记忆才会开始工作。重排也从那时开始。', setUpKey: false });
+      expect(rerankerFallbackNote(fresh, decisionState, 'zh')).toEqual({ text: '先选 embedding，记忆才会开始工作。重排也从那时开始。', setUpKey: false });
     }
     const starting = memory({ service: { ...healthy, state: 'starting' }, reranker: fresh.reranker });
-    expect(decisionRerankDescription(starting, withKey)).toContain('记忆服务正在启动，现在不往外发。');
-    expect(rerankerFallbackNote(starting, withKey)).toBeNull();
+    expect(decisionRerankDescription(starting, withKey, 'zh')).toContain('记忆服务正在启动，现在不往外发。');
+    expect(rerankerFallbackNote(starting, withKey, 'zh')).toBeNull();
     const down = memory({ service: { ...healthy, state: 'down' }, reranker: fresh.reranker });
-    expect(decisionRerankDescription(down, withKey)).toContain('记忆服务停了，现在不往外发。');
+    expect(decisionRerankDescription(down, withKey, 'zh')).toContain('记忆服务停了，现在不往外发。');
   });
 
   it('says the gateway checks and the client errors in Chinese, and passes the daemon Chinese through', () => {
-    expect(memoryErrorText(new ControlPlaneClientError('device is not paired', 'not_paired'))).toBe('这台设备还没有配对。');
-    expect(memoryErrorText(new Error('this client cannot manage Lead memory'))).toBe('这个版本的客户端不能管理 Paimon 的记忆。');
-    expect(memoryErrorText(new ControlPlaneClientError('baseUrl, model or apiKey is invalid', 'invalid_request', 400))).toBe('地址、模型名或 API key 的格式不对。');
-    expect(memoryErrorText(new ControlPlaneClientError('the embedding or reranker settings are invalid', 'invalid_request', 400))).toBe('embedding 或重排的设置格式不对。');
-    expect(memoryErrorText(new ControlPlaneClientError('switch id is malformed', 'invalid_request', 400))).toBe('这个切换的编号不对。');
-    expect(memoryErrorText(new ControlPlaneClientError('approve must be a boolean', 'invalid_request', 400))).toBe('确认切换的请求格式不对。');
-    expect(memoryErrorText(new ControlPlaneClientError('还没有决策模型的 key', 'invalid_request', 400))).toBe('还没有决策模型的 key');
+    expect(memoryErrorText(new ControlPlaneClientError('device is not paired', 'not_paired'), 'zh')).toBe('这台设备还没有配对。');
+    expect(memoryErrorText(new Error('this client cannot manage Lead memory'), 'zh')).toBe('这个版本的客户端不能管理 Paimon 的记忆。');
+    expect(memoryErrorText(new ControlPlaneClientError('baseUrl, model or apiKey is invalid', 'invalid_request', 400), 'zh')).toBe('地址、模型名或 API key 的格式不对。');
+    expect(memoryErrorText(new ControlPlaneClientError('the embedding or reranker settings are invalid', 'invalid_request', 400), 'zh')).toBe('embedding 或重排的设置格式不对。');
+    expect(memoryErrorText(new ControlPlaneClientError('switch id is malformed', 'invalid_request', 400), 'zh')).toBe('这个切换的编号不对。');
+    expect(memoryErrorText(new ControlPlaneClientError('approve must be a boolean', 'invalid_request', 400), 'zh')).toBe('确认切换的请求格式不对。');
+    expect(memoryErrorText(new ControlPlaneClientError('还没有决策模型的 key', 'invalid_request', 400), 'zh')).toBe('还没有决策模型的 key');
   });
 
   it('follows the server for fields the user did not touch, and keeps the ones the user is editing', () => {
@@ -269,12 +270,12 @@ describe('the memory rules', () => {
   });
 
   it('warns about plaintext only for http to a host other than this Mac', () => {
-    expect(plaintextNote('http://llm-gateway.corp.example.com/v1')).toBe(
+    expect(plaintextNote('http://llm-gateway.corp.example.com/v1', 'zh')).toBe(
       '这个地址用 http://：key 和发给 llm-gateway.corp.example.com 的内容会明文经过网络。只在可信的内网里这样用。',
     );
-    expect(plaintextNote(' http://10.1.2.3:8000 ')).toContain('10.1.2.3:8000');
+    expect(plaintextNote(' http://10.1.2.3:8000 ', 'zh')).toContain('10.1.2.3:8000');
     for (const url of ['https://api.openai.com/v1', 'http://127.0.0.1:8080/v1', 'http://localhost:11434/v1', 'http://[', '']) {
-      expect(plaintextNote(url), url).toBeNull();
+      expect(plaintextNote(url, 'zh'), url).toBeNull();
     }
   });
 
@@ -285,12 +286,12 @@ describe('the memory rules', () => {
     expect(keyHostChange('localhost:11434', 'http://localhost:11435/v1', true)).toEqual({ from: 'localhost:11434', to: 'localhost:11435' });
     // daemon 换主机时删掉旧 key、照样保存：本机端点可能不要 key，所以界面不比 daemon 更严。
     const moved = { baseUrl: 'https://proxy.example.com/v1', model: 'text-embedding-3-small', dimensions: '', apiKey: '' };
-    expect(remoteFormProblem(moved, true)).toBeNull();
-    expect(decisionFormProblem({ baseUrl: 'https://jev.example.com', model: 'jev-latest', apiKey: '' })).toBeNull();
-    expect(keyHostMismatchNote('api.openai.com', 'https://proxy.example.com/v1', false))
+    expect(remoteFormProblem(moved, true, 'zh')).toBeNull();
+    expect(decisionFormProblem({ baseUrl: 'https://jev.example.com', model: 'jev-latest', apiKey: '' }, 'zh')).toBeNull();
+    expect(keyHostMismatchNote('api.openai.com', 'https://proxy.example.com/v1', false, 'zh'))
       .toBe('存的 key 属于 api.openai.com，不会发给 proxy.example.com。请粘贴 proxy.example.com 的 key。');
-    expect(keyHostMismatchNote('api.openai.com', 'https://proxy.example.com/v1', true)).toBeNull();
-    expect(keyHostMismatchNote('api.openai.com', 'https://api.openai.com/v1', false)).toBeNull();
+    expect(keyHostMismatchNote('api.openai.com', 'https://proxy.example.com/v1', true, 'zh')).toBeNull();
+    expect(keyHostMismatchNote('api.openai.com', 'https://api.openai.com/v1', false, 'zh')).toBeNull();
   });
 
   it('says which embedding actually runs: a chosen local model waits for its download and for the confirmation', () => {
@@ -308,17 +309,50 @@ describe('the memory rules', () => {
 
   it('explains a reranker fallback, but leaves a pending consent to the switch card', () => {
     const noKey = memory({ service: healthy, reranker: { ...memory().reranker, effective: 'none', external: null } });
-    expect(rerankerFallbackNote(noKey, noKeyYet)).toEqual({
+    expect(rerankerFallbackNote(noKey, noKeyYet, 'zh')).toEqual({
       text: '决策模型没有能用的 key，现在按「不用」处理。在「模型」里设置 key 以后，开始之前会先问你。', setUpKey: true,
     });
-    expect(rerankerFallbackNote(noKey, withKey)).toBeNull();
-    expect(rerankerFallbackNote({ ...waitingForConsent(), service: healthy }, withKey)).toBeNull();
-    expect(rerankerFallbackNote(memory(), withKey)).toBeNull();
+    expect(rerankerFallbackNote(noKey, withKey, 'zh')).toBeNull();
+    expect(rerankerFallbackNote({ ...waitingForConsent(), service: healthy }, withKey, 'zh')).toBeNull();
+    expect(rerankerFallbackNote(memory(), withKey, 'zh')).toBeNull();
     const localWaits = memory({
       service: healthy,
       reranker: { ...memory().reranker, mode: 'local', effective: 'none', external: null, local: { model: 'BAAI/bge-reranker-v2-m3', download: { ...idle('BAAI/bge-reranker-v2-m3'), state: 'downloading' } } },
     });
-    expect(rerankerFallbackNote(localWaits, withKey)?.text).toBe('本地模型还没下载好，现在用「不用」。下载好后自动切换。');
+    expect(rerankerFallbackNote(localWaits, withKey, 'zh')?.text).toBe('本地模型还没下载好，现在用「不用」。下载好后自动切换。');
+  });
+});
+
+describe('the memory rules in English', () => {
+  // 缺省语言是英文（2026-11-01）：不传 locale 的函数用记住的界面语言，测试里没有记住的，就是英文。
+  it('writes the status, the download, and the reranker notes in English', () => {
+    expect(memoryStatus(remoteInUse, 'en')).toEqual({
+      title: 'Semantic search is on · text-embedding-3-small', detail: '1,180 / 1,204 notes written', tone: 'success',
+    });
+    expect(downloadLabel({ model: E5, state: 'downloading', bytes: 1_010_000_000, total: 2_470_000_000, error: null }, 'en'))
+      .toBe('963 MB / 2.3 GB downloaded · The download continues after a network break');
+    expect(localEmbeddingHint(E5, 'en')).toBe('About 2.2 GB to download. Notes do not leave this Mac.');
+    expect(decisionRerankDescription(memory(), withKey, 'en')).toBe(
+      'Use the decision model to sort the memories that are found. Each recall sends the query and at most 50 memory snippets to api.typesafe.ai. '
+      + 'To stop, change reranking to "Local" or "None".',
+    );
+    expect(writesFailedNote({ notes: 3, completed: 2, pending: 0, failed: 1, lastError: null }, 'en')).toBe('1 note was not written to Hindsight.');
+  });
+
+  it('uses English for the calls from other settings pages that do not pass a language', () => {
+    expect(endpointProblem('')).toBe('Enter an address.');
+    expect(endpointProblem('https://me:pw@api.openai.com/v1')).toBe('The address cannot contain a user name or password.');
+    expect(memoryErrorText(new ControlPlaneClientError('device is not paired', 'not_paired'))).toBe('This device is not paired yet.');
+    expect(memoryErrorText(new ControlPlaneClientError('还没有决策模型的 key', 'invalid_request', 400))).toBe('还没有决策模型的 key');
+    expect(memoryErrorText('')).toBe('The request did not complete. Try again.');
+  });
+
+  it('names who changed a preference in English', () => {
+    const entry = preference(12, { lastChange: leadEdit(30) });
+    expect(preferenceChangeLine(entry, 'Fairy', 'en')).toMatch(new RegExp(`^Changed by Fairy · ${TIME.source}$`));
+    expect(preferenceChangeLine(preference(12, { lastChange: leadEdit(31, { action: 'create', undoOf: 30 }) }), 'Fairy', 'en'))
+      .toMatch(/^Last change undone by Fairy · /);
+    expect(preferenceFormProblem({ title: 'x', content: 'x'.repeat(4001) }, 'en')).toBe('The content can be at most 4,000 characters.');
   });
 });
 
@@ -328,7 +362,7 @@ describe('the memory section', () => {
     renderWithRuntime(<MemorySection />, runtime);
     expect(screen.getByTestId('memory-pending-switch').textContent).toContain(`embedding 换成本地 ${E5}`);
     expect(screen.queryByTestId('memory-switch-hosts')).toBeNull();
-    expect(screen.getByTestId('memory-switch-approve').textContent).toBe('切换');
+    expect(screen.getByTestId('memory-switch-approve').textContent).toBe('Switch');
     await act(async () => { fireEvent.click(screen.getByTestId('memory-switch-approve')); });
     expect(client.confirmMemorySwitch).toHaveBeenCalledWith('msw_abcdefgh12', true);
     await waitFor(() => expect(screen.queryByTestId('memory-pending-switch')).toBeNull());
@@ -337,9 +371,9 @@ describe('the memory section', () => {
   it('asks for consent to send data on the switch card, naming the host from the daemon', async () => {
     const { runtime, client } = memoryRuntime(waitingForConsent());
     renderWithRuntime(<MemorySection />, runtime);
-    expect(screen.getByTestId('memory-switch-hosts').textContent).toBe('数据会离开这台 Mac，发给 api.typesafe.ai');
+    expect(screen.getByTestId('memory-switch-hosts').textContent).toBe('Data leaves this Mac and goes to api.typesafe.ai');
     expect(screen.getByTestId('memory-switch-reason').textContent).toContain('最多 30 条记忆片段发给 api.typesafe.ai');
-    expect(screen.getByTestId('memory-switch-approve').textContent).toBe('同意并切换');
+    expect(screen.getByTestId('memory-switch-approve').textContent).toBe('Agree and switch');
     await act(async () => { fireEvent.click(screen.getByTestId('memory-switch-reject')); });
     expect(client.confirmMemorySwitch).toHaveBeenCalledWith('msw_rerank00001', false);
   });
@@ -386,7 +420,7 @@ describe('the memory section', () => {
     const { runtime } = memoryRuntime(localInUse);
     renderWithRuntime(<MemorySection />, runtime);
     expect(screen.getByTestId('memory-pending-switch')).toBeTruthy();
-    expect(screen.getByTestId('memory-in-use').textContent).toBe('正在用');
+    expect(screen.getByTestId('memory-in-use').textContent).toBe('In use');
     expect(screen.queryByTestId('memory-chosen')).toBeNull();
   });
 
@@ -398,10 +432,10 @@ describe('the memory section', () => {
     });
     const { runtime } = memoryRuntime(turnedOff);
     renderWithRuntime(<MemorySection />, runtime);
-    expect(screen.getByTestId('memory-chosen').textContent).toBe('已选 · 这台 Mac 上关掉了记忆');
-    expect(screen.getByTestId('memory-embedding-local').textContent).not.toContain('模型在后台下载');
+    expect(screen.getByTestId('memory-chosen').textContent).toBe('Chosen · Memory is off on this Mac');
+    expect(screen.getByTestId('memory-embedding-local').textContent).not.toContain('downloads in the background');
     expect(screen.getByTestId('memory-status').textContent).toContain('PLC_MEMORY_BACKEND=sqlite');
-    expect(screen.getByTestId('memory-reranker-fallback').textContent).toContain('去掉这个环境变量');
+    expect(screen.getByTestId('memory-reranker-fallback').textContent).toContain('remove this environment variable');
   });
 
   it('shows the chosen local model as waiting while both parts of a switch wait for the user', () => {
@@ -417,11 +451,11 @@ describe('the memory section', () => {
     });
     const { runtime } = memoryRuntime(bothWait);
     renderWithRuntime(<MemorySection />, runtime);
-    expect(screen.getByTestId('memory-chosen').textContent).toBe('已选 · 等你确认切换');
+    expect(screen.getByTestId('memory-chosen').textContent).toBe('Chosen · Waits for your confirmation');
     expect(screen.queryByTestId('memory-in-use')).toBeNull();
     fireEvent.click(screen.getByTestId('memory-embedding-tab-remote'));
-    expect(screen.getByTestId('memory-in-use').textContent).toBe('正在用');
-    expect(screen.getByTestId('memory-reranker-decision-description').textContent).toContain('等你确认后才开始');
+    expect(screen.getByTestId('memory-in-use').textContent).toBe('In use');
+    expect(screen.getByTestId('memory-reranker-decision-description').textContent).toContain('It starts after you confirm');
   });
 
   it('gives focus to the card that a button press caused', async () => {
@@ -440,9 +474,9 @@ describe('the memory section', () => {
     const fresh = memory({ reranker: { ...memory().reranker, effective: 'none', external: null } });
     const { runtime } = memoryRuntime(fresh);
     renderWithRuntime(<MemorySection />, runtime);
-    expect(screen.getByTestId('memory-reranker-fallback').textContent).toBe('先选 embedding，记忆才会开始工作。重排也从那时开始。');
-    expect(screen.queryByText('去设置决策模型')).toBeNull();
-    expect(screen.getByTestId('memory-reranker-decision-description').textContent).toContain('先选 embedding');
+    expect(screen.getByTestId('memory-reranker-fallback').textContent).toBe('Memory starts to work after you choose an embedding. Reranking also starts then.');
+    expect(screen.queryByText('Set up the decision model')).toBeNull();
+    expect(screen.getByTestId('memory-reranker-decision-description').textContent).toContain('choose an embedding first');
     expect(screen.getByTestId('memory-reranker-decision-description').textContent).not.toContain('key');
   });
 
@@ -458,11 +492,11 @@ describe('the memory section', () => {
     });
     const { runtime, client } = memoryRuntime(memory(), { updateMemorySettings: vi.fn(async () => downloading) });
     renderWithRuntime(<MemorySection />, runtime);
-    expect(screen.getByTestId('memory-status').textContent).toContain('语义检索没有开');
+    expect(screen.getByTestId('memory-status').textContent).toContain('Semantic search is off');
     await act(async () => { fireEvent.click(screen.getByTestId('memory-use-local')); });
     expect(client.updateMemorySettings).toHaveBeenCalledWith({ embedding: { mode: 'local' } });
-    expect(screen.getByTestId('memory-embedding-download').textContent).toContain('已下载 477 MB / 2.1 GB');
-    expect(screen.getByTestId('memory-embedding-local').textContent).toContain('模型在后台下载');
+    expect(screen.getByTestId('memory-embedding-download').textContent).toContain('477 MB / 2.1 GB downloaded');
+    expect(screen.getByTestId('memory-embedding-local').textContent).toContain('The model downloads in the background');
   });
 
   it('saves the remote settings with a pasted key, clears the key field, and tests the saved config', async () => {
@@ -471,7 +505,7 @@ describe('the memory section', () => {
     fireEvent.click(screen.getByTestId('memory-embedding-tab-remote'));
     expect(screen.getByTestId('memory-remote-privacy').textContent).toContain('api.openai.com');
     const key = screen.getByTestId('memory-remote-api-key') as HTMLInputElement;
-    expect(key.placeholder).toBe('已设置 · 要更换就粘贴新的');
+    expect(key.placeholder).toBe('Set · Paste a new key to replace it');
     fireEvent.change(key, { target: { value: 'sk-test-not-a-real-key' } });
     await act(async () => { fireEvent.click(screen.getByTestId('memory-remote-save')); });
     expect(client.updateMemorySettings).toHaveBeenCalledWith({
@@ -480,7 +514,7 @@ describe('the memory section', () => {
     expect((screen.getByTestId('memory-remote-api-key') as HTMLInputElement).value).toBe('');
     await act(async () => { fireEvent.click(screen.getByTestId('memory-remote-test')); });
     expect(client.testMemoryEmbedding).toHaveBeenCalled();
-    expect(screen.getByTestId('memory-embedding-remote').textContent).toContain('可用 · 230 ms');
+    expect(screen.getByTestId('memory-embedding-remote').textContent).toContain('Works · 230 ms');
   });
 
   it('says the saved key stays with its host when the address moves, and lets the daemon drop it on save', async () => {
@@ -489,9 +523,10 @@ describe('the memory section', () => {
     fireEvent.click(screen.getByTestId('memory-embedding-tab-remote'));
     fireEvent.change(screen.getByTestId('memory-remote-base-url'), { target: { value: 'https://proxy.example.com/v1' } });
     expect(screen.getByTestId('memory-remote-host-change').textContent).toBe(
-      '地址换到了 proxy.example.com。已保存的 key 属于 api.openai.com，不会发给新地址，保存后会被删掉。proxy.example.com 要 key 的话，请粘贴它的 key。',
+      'The address changed to proxy.example.com. The saved key belongs to api.openai.com. It does not go to the new address, and it is deleted when you save. '
+        + 'If proxy.example.com needs a key, paste its key.',
     );
-    expect((screen.getByTestId('memory-remote-api-key') as HTMLInputElement).placeholder).toBe('粘贴 proxy.example.com 的 API key');
+    expect((screen.getByTestId('memory-remote-api-key') as HTMLInputElement).placeholder).toBe('Paste the API key for proxy.example.com');
     await act(async () => { fireEvent.click(screen.getByTestId('memory-remote-save')); });
     expect(client.updateMemorySettings).toHaveBeenCalledWith({
       embedding: { mode: 'remote', baseUrl: 'https://proxy.example.com/v1', model: 'text-embedding-3-small', dimensions: null },
@@ -504,7 +539,7 @@ describe('the memory section', () => {
     fireEvent.click(screen.getByTestId('memory-embedding-tab-remote'));
     expect(screen.queryByTestId('memory-remote-plaintext')).toBeNull();
     fireEvent.change(screen.getByTestId('memory-remote-base-url'), { target: { value: 'http://llm-gateway.corp.example.com/v1' } });
-    expect(screen.getByTestId('memory-remote-plaintext').textContent).toContain('明文');
+    expect(screen.getByTestId('memory-remote-plaintext').textContent).toContain('plain text');
     await act(async () => { fireEvent.click(screen.getByTestId('memory-remote-save')); });
     expect(client.updateMemorySettings).toHaveBeenCalledWith({
       embedding: { mode: 'remote', baseUrl: 'http://llm-gateway.corp.example.com/v1', model: 'text-embedding-3-small', dimensions: null },
@@ -523,7 +558,7 @@ describe('the memory section', () => {
     fireEvent.change(screen.getByTestId('memory-remote-base-url'), { target: { value: 'https://proxy.example.com/v1' } });
     await act(async () => { fireEvent.click(screen.getByTestId('memory-remote-save')); });
     expect(screen.getByTestId('memory-embedding-remote').textContent).toContain(
-      '已保存，记忆服务重启了。旧的 key 属于 api.openai.com，已经删掉。proxy.example.com 要 key 的话，请粘贴它的 key。',
+      'Saved. The memory service restarted. The old key belonged to api.openai.com and is deleted. If proxy.example.com needs a key, paste its key.',
     );
   });
 
@@ -534,7 +569,7 @@ describe('the memory section', () => {
     const { runtime } = memoryRuntime(mismatched);
     renderWithRuntime(<MemorySection />, runtime);
     fireEvent.click(screen.getByTestId('memory-embedding-tab-remote'));
-    expect(screen.getByTestId('memory-remote-key-mismatch').textContent).toBe('存的 key 属于 api.openai.com，不会发给 proxy.example.com。请粘贴 proxy.example.com 的 key。');
+    expect(screen.getByTestId('memory-remote-key-mismatch').textContent).toBe('The saved key belongs to api.openai.com. It does not go to proxy.example.com. Paste the key for proxy.example.com.');
   });
 
   it('shows the daemon reason when a test refuses to send the key to another host', async () => {
@@ -558,7 +593,7 @@ describe('the memory section', () => {
     fireEvent.change(screen.getByTestId('memory-remote-api-key'), { target: { value: 'sk-test-kept' } });
     await act(async () => { fireEvent.click(screen.getByTestId('memory-remote-save')); });
     expect((screen.getByTestId('memory-remote-api-key') as HTMLInputElement).value).toBe('sk-test-kept');
-    expect(screen.getByTestId('memory-embedding-remote').textContent).toContain('embedding 或重排的设置格式不对。');
+    expect(screen.getByTestId('memory-embedding-remote').textContent).toContain('The embedding or reranking settings have an incorrect format.');
   });
 
   it('marks the key field as a secret that the browser must not fill with a saved password', () => {
@@ -583,8 +618,8 @@ describe('the memory section', () => {
     const { runtime, client } = memoryRuntime(fallback);
     runtime.control.setState({ decisionModel: { ...decision, apiKeySet: false, apiKeySource: null } });
     renderWithRuntime(<MemorySection />, runtime);
-    expect(screen.getByTestId('memory-reranker-fallback').textContent).toContain('没有能用的 key');
-    expect(screen.getByText('去设置决策模型')).toBeTruthy();
+    expect(screen.getByTestId('memory-reranker-fallback').textContent).toContain('has no usable key');
+    expect(screen.getByText('Set up the decision model')).toBeTruthy();
     await act(async () => { fireEvent.click(screen.getByTestId('memory-reranker-none')); });
     expect(client.updateMemorySettings).toHaveBeenCalledWith({ reranker: { mode: 'none' } });
   });
@@ -593,12 +628,12 @@ describe('the memory section', () => {
     const off = memory({ reranker: { ...memory().reranker, mode: 'none', effective: 'none', external: null } });
     const { runtime, client } = memoryRuntime(off, { updateMemorySettings: vi.fn(async () => waitingForConsent()) });
     renderWithRuntime(<MemorySection />, runtime);
-    expect(screen.getByTestId('memory-reranker-decision-description').textContent).toContain('开始之前会先问你');
+    expect(screen.getByTestId('memory-reranker-decision-description').textContent).toContain('asked before it starts.');
     await act(async () => { fireEvent.click(screen.getByTestId('memory-reranker-decision')); });
     expect(client.updateMemorySettings).toHaveBeenCalledWith({ reranker: { mode: 'decision' } });
-    expect(screen.getByTestId('memory-reranker-message').textContent).toBe('要你确认这个切换，见上面。');
-    expect(screen.getByTestId('memory-switch-hosts').textContent).toBe('数据会离开这台 Mac，发给 api.typesafe.ai');
-    expect(screen.getByTestId('memory-reranker-decision-description').textContent).toContain('等你确认后才开始');
+    expect(screen.getByTestId('memory-reranker-message').textContent).toBe('You need to confirm this switch. See above.');
+    expect(screen.getByTestId('memory-switch-hosts').textContent).toBe('Data leaves this Mac and goes to api.typesafe.ai');
+    expect(screen.getByTestId('memory-reranker-decision-description').textContent).toContain('It starts after you confirm');
     expect(client.confirmMemorySwitch).not.toHaveBeenCalled();
   });
 
@@ -613,7 +648,7 @@ describe('the memory section', () => {
     }));
     renderWithRuntime(<MemorySection />, runtime);
     await waitFor(() => expect(client.getDecisionModel).toHaveBeenCalled());
-    expect(screen.getByTestId('memory-reranker-decision-description').textContent).toBe('用决策模型给找到的记忆排序。选它以后，开始之前会先问你。');
+    expect(screen.getByTestId('memory-reranker-decision-description').textContent).toBe('Use the decision model to sort the memories that are found. If you choose it, you are asked before it starts.');
   });
 
   it('offers the rerankers as a radio group', () => {
@@ -623,23 +658,23 @@ describe('the memory section', () => {
     expect(decisionOption.getAttribute('role')).toBe('radio');
     expect(decisionOption.getAttribute('aria-checked')).toBe('true');
     expect(screen.getByTestId('memory-reranker-none').getAttribute('aria-checked')).toBe('false');
-    expect(screen.getByRole('radiogroup', { name: '重排' })).toBeTruthy();
+    expect(screen.getByRole('radiogroup', { name: 'Reranking' })).toBeTruthy();
   });
 
   it('tells the user how to stop external rerank while it runs', () => {
     const { runtime } = memoryRuntime(memory());
     renderWithRuntime(<MemorySection />, runtime);
-    expect(screen.getByTestId('memory-reranker-decision-description').textContent).toContain('要停止，把重排改成「本地」或「不用」。');
+    expect(screen.getByTestId('memory-reranker-decision-description').textContent).toContain('To stop, change reranking to "Local" or "None".');
   });
 
-  it('says in Chinese why the settings cannot be read', async () => {
+  it('says in words why the settings cannot be read', async () => {
     const { runtime } = memoryRuntime(memory(), { getMemory: vi.fn(async () => { throw new Error('this client cannot manage Lead memory'); }) });
     runtime.control.setState((state) => ({
       memory: null,
       resourceState: { ...state.resourceState, memory: { state: 'idle', generation: 0, observerCount: 0, lastSuccessAt: null, error: null } },
     }));
     renderWithRuntime(<MemorySection />, runtime);
-    await waitFor(() => expect(screen.getByTestId('memory-loading').textContent).toBe('读不到记忆设置：这个版本的客户端不能管理 Paimon 的记忆。'));
+    await waitFor(() => expect(screen.getByTestId('memory-loading').textContent).toBe('Could not load the memory settings: This version of the client cannot manage the memory of Paimon.'));
   });
 
   it('says what went wrong when the daemon has no memory controller (503)', async () => {
@@ -723,24 +758,24 @@ const text = (testID: string) => screen.getByTestId(testID).textContent;
 describe('the Hindsight rules', () => {
   it('says how each summary model was chosen, and why a choice does not apply', () => {
     const [auto, inherit] = hindsight().summaryModels;
-    expect(summarySourceLabel(auto!)).toBe('自动：最新的 haiku');
-    expect(summarySourceLabel(inherit!)).toBe('跟缺省一样');
-    expect(summarySourceLabel({ ...auto!, source: 'settings', setting: HAIKU })).toBe('你选的');
-    expect(summarySourceLabel({ ...auto!, model: null, source: 'none' })).toBe('Hindsight 只召回，不提取新事实');
-    expect(summarySlotNote(auto!)).toBeNull();
+    expect(summarySourceLabel(auto!, 'zh')).toBe('自动：最新的 haiku');
+    expect(summarySourceLabel(inherit!, 'zh')).toBe('跟缺省一样');
+    expect(summarySourceLabel({ ...auto!, source: 'settings', setting: HAIKU }, 'zh')).toBe('你选的');
+    expect(summarySourceLabel({ ...auto!, model: null, source: 'none' }, 'zh')).toBe('Hindsight 只召回，不提取新事实');
+    expect(summarySlotNote(auto!, 'zh')).toBeNull();
     // 环境变量盖住设置时说一次：daemon 的原因里已经说了，就只用它的。
-    expect(summarySlotNote({ ...auto!, source: 'env' })).toContain('环境变量 PLC_HINDSIGHT_LLM 盖住了这里的选择');
+    expect(summarySlotNote({ ...auto!, source: 'env' }, 'zh')).toContain('环境变量 PLC_HINDSIGHT_LLM 盖住了这里的选择');
     const covered = `环境变量 PLC_HINDSIGHT_LLM 盖住了这里的选择（${SONNET}）`;
-    expect(summarySlotNote({ ...auto!, source: 'env', setting: SONNET, problem: covered })).toBe(covered);
+    expect(summarySlotNote({ ...auto!, source: 'env', setting: SONNET, problem: covered }, 'zh')).toBe(covered);
   });
 
   it('counts the writes, names the last failure, and leaves out the bank numbers when the service does not run', () => {
     const writes = { notes: 1300, completed: 1204, pending: 3, failed: 2, lastError: 'invalid api key' };
-    expect(writesLabel(writes)).toBe('写入：完成 1,204、处理中 3、失败 2');
-    expect(writesFailedNote(writes)).toBe('2 条笔记没有写进 Hindsight。最近一次的原因：invalid api key');
-    expect(writesFailedNote({ ...writes, failed: 0 })).toBeNull();
-    expect(bankStatsLabel(hindsight().stats)).toBe('记忆库：事实 48 条 · 观察 9 条 · 3 条事实还没整理');
-    expect(bankStatsLabel(null)).toBeNull();
+    expect(writesLabel(writes, 'zh')).toBe('写入：完成 1,204、处理中 3、失败 2');
+    expect(writesFailedNote(writes, 'zh')).toBe('2 条笔记没有写进 Hindsight。最近一次的原因：invalid api key');
+    expect(writesFailedNote({ ...writes, failed: 0 }, 'zh')).toBeNull();
+    expect(bankStatsLabel(hindsight().stats, 'zh')).toBe('记忆库：事实 48 条 · 观察 9 条 · 3 条事实还没整理');
+    expect(bankStatsLabel(null, 'zh')).toBeNull();
   });
 });
 
@@ -751,11 +786,11 @@ describe('the Hindsight part of the memory section', () => {
     const { runtime } = hindsightRuntime(hindsight());
     renderWithRuntime(<MemorySection />, runtime);
     expect(text('memory-summary-slot-default')).toContain('Claude Haiku 5.5');
-    expect(text('memory-summary-slot-default')).toContain('vibeproxy · 自动：最新的 haiku');
+    expect(text('memory-summary-slot-default')).toContain('vibeproxy · Automatic: the latest haiku');
     expect(text('memory-summary-slot-consolidation')).toContain('Claude Haiku 5.5');
-    expect(text('memory-summary-slot-consolidation')).toContain('vibeproxy · 跟缺省一样');
-    expect(text('memory-writes-counts')).toBe('写入：完成 10、处理中 2、失败 0');
-    expect(text('memory-bank-stats')).toBe('记忆库：事实 48 条 · 观察 9 条 · 3 条事实还没整理');
+    expect(text('memory-summary-slot-consolidation')).toContain('vibeproxy · Same as the default');
+    expect(text('memory-writes-counts')).toBe('Writes: 10 done, 2 in progress, 0 failed');
+    expect(text('memory-bank-stats')).toBe('Memory bank: Facts: 48 · Observations: 9 · 3 facts are not consolidated yet');
     expect(screen.queryByTestId('memory-writes-retry')).toBeNull();
     expect(screen.queryByTestId('memory-hindsight-off')).toBeNull();
   });
@@ -768,8 +803,8 @@ describe('the Hindsight part of the memory section', () => {
       ],
     }));
     renderWithRuntime(<MemorySection />, runtime);
-    expect(text('memory-summary-slot-default')).toContain('没有可用的模型');
-    expect(text('memory-summary-slot-default')).toContain('Hindsight 只召回，不提取新事实');
+    expect(text('memory-summary-slot-default')).toContain('No model is available');
+    expect(text('memory-summary-slot-default')).toContain('Hindsight only recalls. It does not extract new facts.');
     expect(text('memory-summary-note-default')).toContain('服务商 gone 不在设置 → 模型的服务商里');
     expect(screen.queryByTestId('memory-summary-note-consolidation')).toBeNull();
 
@@ -780,8 +815,8 @@ describe('the Hindsight part of the memory section', () => {
       ],
     }));
     renderWithRuntime(<MemorySection />, env.runtime);
-    expect(screen.getAllByTestId('memory-summary-slot-default')[1]!.textContent).toContain('环境变量 PLC_HINDSIGHT_LLM');
-    expect(screen.getAllByTestId('memory-summary-note-default')[1]!.textContent).toContain('盖住了这里的选择');
+    expect(screen.getAllByTestId('memory-summary-slot-default')[1]!.textContent).toContain('Environment variable PLC_HINDSIGHT_LLM');
+    expect(screen.getAllByTestId('memory-summary-note-default')[1]!.textContent).toContain('overrides your choice here');
   });
 
   it('saves a model picked from the Lead catalog with set_summary_model, and says the memory service restarts', async () => {
@@ -789,12 +824,12 @@ describe('the Hindsight part of the memory section', () => {
     renderWithRuntime(<MemorySection />, runtime);
     fireEvent.click(screen.getByTestId('memory-summary-picker-consolidation-open'));
     expect((await screen.findByTestId('memory-summary-restart-consolidation')).textContent)
-      .toBe('改了以后记忆服务会重启，约几秒，期间召回只用全文检索。');
-    expect(text('memory-summary-picker-consolidation-option-system')).toContain('跟缺省一样');
+      .toBe('A change restarts the memory service for a few seconds. During that time, recall uses only full-text search.');
+    expect(text('memory-summary-picker-consolidation-option-system')).toContain('Same as the default');
     expect(screen.getByTestId('memory-summary-picker-consolidation-option-system').getAttribute('aria-selected')).toBe('true');
     await act(async () => { fireEvent.click(screen.getByTestId(`memory-summary-picker-consolidation-option-${SONNET}`)); });
     expect(client.performUiAction).toHaveBeenCalledWith('memory_settings', 'memory', 'set_summary_model', { input: { slot: 'consolidation', model: SONNET } });
-    await waitFor(() => expect(text('memory-summary-message-consolidation')).toBe('已保存。记忆服务正在重启，几秒里召回只用全文检索。'));
+    await waitFor(() => expect(text('memory-summary-message-consolidation')).toBe('Saved. 记忆服务正在重启，几秒里召回只用全文检索.'));
     // 改完重取这一份（记忆服务在重启）。
     expect(client.getMemoryHindsight).toHaveBeenCalled();
   });
@@ -808,10 +843,10 @@ describe('the Hindsight part of the memory section', () => {
     });
     const { runtime, client } = hindsightRuntime(chosen);
     renderWithRuntime(<MemorySection />, runtime);
-    expect(text('memory-summary-slot-default')).toContain('你选的');
+    expect(text('memory-summary-slot-default')).toContain('Your choice');
     fireEvent.click(screen.getByTestId('memory-summary-picker-default-open'));
     const automatic = await screen.findByTestId('memory-summary-picker-default-option-system');
-    expect(automatic.textContent).toContain('自动');
+    expect(automatic.textContent).toContain('Automatic');
     expect(screen.getByTestId(`memory-summary-picker-default-option-${SONNET}`).getAttribute('aria-selected')).toBe('true');
     await act(async () => { fireEvent.click(automatic); });
     expect(client.performUiAction).toHaveBeenCalledWith('memory_settings', 'memory', 'set_summary_model', { input: { slot: 'default', model: null } });
@@ -824,7 +859,7 @@ describe('the Hindsight part of the memory section', () => {
     const testButton = await screen.findByTestId('memory-summary-test-default');
     await act(async () => { fireEvent.click(testButton); });
     expect(client.performUiAction).toHaveBeenCalledWith('memory_settings', 'memory', 'test_summary_model', { input: { slot: 'default' } });
-    await waitFor(() => expect(text('memory-summary-message-default')).toBe('可用 · 230 ms'));
+    await waitFor(() => expect(text('memory-summary-message-default')).toBe('Works · 230 ms'));
     // 测试只读：不重取。
     expect(client.getMemoryHindsight).not.toHaveBeenCalled();
 
@@ -843,17 +878,17 @@ describe('the Hindsight part of the memory section', () => {
     const failing = hindsight({ writes: { notes: 12, completed: 10, pending: 0, failed: 2, lastError: 'invalid api key' } });
     const { runtime, client } = hindsightRuntime(failing);
     renderWithRuntime(<MemorySection />, runtime);
-    expect(text('memory-writes-counts')).toBe('写入：完成 10、处理中 0、失败 2');
-    expect(text('memory-writes-failed')).toBe('2 条笔记没有写进 Hindsight。最近一次的原因：invalid api key');
+    expect(text('memory-writes-counts')).toBe('Writes: 10 done, 0 in progress, 2 failed');
+    expect(text('memory-writes-failed')).toBe('2 notes were not written to Hindsight. The last reason: invalid api key');
     await act(async () => { fireEvent.click(screen.getByTestId('memory-writes-retry')); });
     expect(client.performUiAction).toHaveBeenCalledWith('memory_settings', 'memory', 'retry_failed_writes', { input: {} });
-    await waitFor(() => expect(text('memory-writes-message')).toBe('2 条写入失败的笔记重新排队。Hindsight 会重新处理它们；原因没修好时还会失败。'));
+    await waitFor(() => expect(text('memory-writes-message')).toBe('2 条写入失败的笔记重新排队. Hindsight 会重新处理它们；原因没修好时还会失败.'));
   });
 
   it('says the choice waits when the memory backend is not Hindsight, and hides the writes', () => {
     const { runtime } = hindsightRuntime(hindsight({ enabled: false, stats: null }));
     renderWithRuntime(<MemorySection />, runtime);
-    expect(text('memory-hindsight-off')).toBe('记忆后端现在不是 Hindsight。这里的选择会存下，启用 Hindsight 以后生效。');
+    expect(text('memory-hindsight-off')).toBe('The memory backend is not Hindsight now. Your choice here is saved and takes effect when Hindsight is on.');
     expect(screen.getByTestId('memory-summary-slot-default')).toBeTruthy();
     expect(screen.queryByTestId('memory-writes')).toBeNull();
   });
@@ -872,7 +907,7 @@ describe('the Hindsight part of the memory section', () => {
     const later = hindsight({ writes: { notes: 12, completed: 11, pending: 0, failed: 1, lastError: 'timeout' } });
     const { runtime, client } = hindsightRuntime(hindsight(), { getMemoryHindsight: vi.fn(async () => later) }, scheduler);
     renderWithRuntime(<MemorySection />, runtime);
-    expect(text('memory-writes-counts')).toBe('写入：完成 10、处理中 2、失败 0');
+    expect(text('memory-writes-counts')).toBe('Writes: 10 done, 2 in progress, 0 failed');
     (runtime as unknown as { activeSessionId: string }).activeSessionId = 'session-1';
     const event: GatewayEvent = {
       protocolVersion: PROTOCOL_VERSION, eventId: 'event-1', seq: 1, type: 'snapshot.required', occurredAt: '2026-10-29T09:00:00.000Z',
@@ -881,7 +916,7 @@ describe('the Hindsight part of the memory section', () => {
     runtime.handleEvent(event);
     await runtime.whenIdle();
     await act(async () => { timers.splice(0).forEach((run) => run()); });
-    await waitFor(() => expect(text('memory-writes-counts')).toBe('写入：完成 11、处理中 0、失败 1'));
+    await waitFor(() => expect(text('memory-writes-counts')).toBe('Writes: 11 done, 0 in progress, 1 failed'));
     expect(client.getMemoryHindsight).toHaveBeenCalledTimes(1);
     expect(client.getMemory).toHaveBeenCalledTimes(1);
   });
@@ -956,26 +991,26 @@ async function openMenu(id: number) {
 describe('the standing preference rules', () => {
   it('says who changed an entry, when, and why, with the Lead name', () => {
     const entry = preference(12, { lastChange: leadEdit(30) });
-    expect(preferenceChangeLine(entry, 'Fairy')).toMatch(new RegExp(`^Fairy 改的 · ${TIME.source}$`));
-    expect(preferenceReasonLine(entry)).toBe('依据：你 10-28 说过以后周报用英文');
+    expect(preferenceChangeLine(entry, 'Fairy', 'zh')).toMatch(new RegExp(`^Fairy 改的 · ${TIME.source}$`));
+    expect(preferenceReasonLine(entry, 'zh')).toBe('依据：你 10-28 说过以后周报用英文');
     const mine = preference(12, { lastChange: leadEdit(30, { actor: 'user', reason: '在设置页改了常驻偏好' }) });
-    expect(preferenceChangeLine(mine, 'Fairy')).toMatch(/^你改的 · /);
+    expect(preferenceChangeLine(mine, 'Fairy', 'zh')).toMatch(/^你改的 · /);
     // 你自己改的依据是系统的默认说法，不写。
-    expect(preferenceReasonLine(mine)).toBeNull();
-    expect(preferenceChangeLine(preference(12, { lastChange: leadEdit(31, { action: 'create', undoOf: 30 }) }), 'Fairy')).toMatch(/^Fairy 撤销了上一次改动 · /);
-    expect(preferenceChangeLine(preference(3), 'Fairy')).toMatch(/^最后修改 · /);
+    expect(preferenceReasonLine(mine, 'zh')).toBeNull();
+    expect(preferenceChangeLine(preference(12, { lastChange: leadEdit(31, { action: 'create', undoOf: 30 }) }), 'Fairy', 'zh')).toMatch(/^Fairy 撤销了上一次改动 · /);
+    expect(preferenceChangeLine(preference(3), 'Fairy', 'zh')).toMatch(/^最后修改 · /);
   });
 
   it('counts the characters, and says so in words when the space is full', () => {
-    expect(preferencesUsageLabel({ used: 312, cap: 4000 })).toBe('已用 312 / 4,000 字');
-    expect(preferencesUsageLabel({ used: 4000, cap: 4000 })).toBe('已用 4,000 / 4,000 字 · 写满了');
+    expect(preferencesUsageLabel({ used: 312, cap: 4000 }, 'zh')).toBe('已用 312 / 4,000 字');
+    expect(preferencesUsageLabel({ used: 4000, cap: 4000 }, 'zh')).toBe('已用 4,000 / 4,000 字 · 写满了');
   });
 
   it('checks the form like the operation does, and sends only the fields that changed', () => {
-    expect(preferenceFormProblem({ title: '  ', content: 'x' })).toBe('标题不能是空的。');
-    expect(preferenceFormProblem({ title: 'x', content: '\n' })).toBe('内容不能是空的。');
-    expect(preferenceFormProblem({ title: 'x'.repeat(201), content: 'x' })).toBe('标题最多 200 个字。');
-    expect(preferenceFormProblem({ title: 'x', content: 'x'.repeat(4001) })).toBe('内容最多 4,000 个字。');
+    expect(preferenceFormProblem({ title: '  ', content: 'x' }, 'zh')).toBe('标题不能是空的。');
+    expect(preferenceFormProblem({ title: 'x', content: '\n' }, 'zh')).toBe('内容不能是空的。');
+    expect(preferenceFormProblem({ title: 'x'.repeat(201), content: 'x' }, 'zh')).toBe('标题最多 200 个字。');
+    expect(preferenceFormProblem({ title: 'x', content: 'x'.repeat(4001) }, 'zh')).toBe('内容最多 4,000 个字。');
     const entry = preference(12, { title: '周报语言', content: '周报用英文写。' });
     expect(preferenceUpdateInput(entry, { title: '周报语言 ', content: '周报用中文写。' })).toEqual({ content: '周报用中文写。' });
     expect(preferenceUpdateInput(entry, { title: '周报', content: '周报用英文写。' })).toEqual({ title: '周报' });
@@ -985,10 +1020,10 @@ describe('the standing preference rules', () => {
   });
 
   it('names where an invalidated fact came from, without calling it a note', () => {
-    expect(invalidatedFactSource(fact('m1'))).toBe('来自：住址');
-    expect(invalidatedFactSource(fact('m1', { external: true }))).toBe('来自外部对话：住址');
-    expect(invalidatedFactSource(fact('m1', { note: null, external: true }))).toBe('来自外部对话');
-    expect(invalidatedFactSource(fact('m1', { note: null }))).toBeNull();
+    expect(invalidatedFactSource(fact('m1'), 'zh')).toBe('来自：住址');
+    expect(invalidatedFactSource(fact('m1', { external: true }), 'zh')).toBe('来自外部对话：住址');
+    expect(invalidatedFactSource(fact('m1', { note: null, external: true }), 'zh')).toBe('来自外部对话');
+    expect(invalidatedFactSource(fact('m1', { note: null }), 'zh')).toBeNull();
   });
 });
 
@@ -1001,14 +1036,14 @@ describe('the standing preferences card', () => {
     const card = screen.getByTestId('memory-preferences');
     expect(text('memory-preference-title-3')).toBe('住址');
     expect(text('memory-preference-content-3')).toBe('住在杭州，西湖区。');
-    expect(text('memory-preference-change-3')).toMatch(/^最后修改 · /);
+    expect(text('memory-preference-change-3')).toMatch(/^Last changed · /);
     expect(screen.queryByTestId('memory-preference-reason-3')).toBeNull();
     expect(text('memory-preference-title-12')).toBe('周报语言');
-    expect(text('memory-preference-change-12')).toMatch(new RegExp(`^Fairy 改的 · ${TIME.source}$`));
-    expect(text('memory-preference-reason-12')).toBe('依据：你 10-28 说过以后周报用英文');
-    expect(text('memory-preferences-usage')).toBe('已用 312 / 4,000 字');
-    expect(text('memory-preferences-effect')).toBe('改动从 Fairy 下一次开新会话或压缩上下文时起生效。');
-    expect(screen.getByText('Fairy 做每件事时都参考这些偏好。它发现和你最近说的话有出入时，会自己改，并在会话里告诉你。你可以撤销。')).toBeTruthy();
+    expect(text('memory-preference-change-12')).toMatch(new RegExp(`^Changed by Fairy · ${TIME.source}$`));
+    expect(text('memory-preference-reason-12')).toBe('Reason: 你 10-28 说过以后周报用英文');
+    expect(text('memory-preferences-usage')).toBe('312 / 4,000 characters used');
+    expect(text('memory-preferences-effect')).toBe('Changes take effect when Fairy starts a new session or compacts its context.');
+    expect(screen.getByText('Fairy uses these preferences in all its work. If one does not agree with what you said recently, Fairy changes it and tells you in the conversation. You can undo the change.')).toBeTruthy();
     // 用户：这里就是记忆偏好，不出现笔记的概念。
     expect(card.textContent).not.toMatch(/笔记|note|kind|fact/i);
     // 偏好在 Hindsight 前面。
@@ -1020,10 +1055,10 @@ describe('the standing preferences card', () => {
     renderWithRuntime(<MemorySection />, runtime);
     expect(screen.queryByTestId('memory-preference-edit-12')).toBeNull();
     const menu = await openMenu(12);
-    expect(within(menu).getByTestId('memory-preference-edit-12').textContent).toContain('改');
-    expect(within(menu).getByTestId('memory-preference-delete-12').textContent).toContain('删掉');
-    expect(within(menu).getByTestId('memory-preference-undo-12').textContent).toContain('撤销上一次改动');
-    expect(menu.textContent).not.toMatch(/笔记/);
+    expect(within(menu).getByTestId('memory-preference-edit-12').textContent).toContain('Edit');
+    expect(within(menu).getByTestId('memory-preference-delete-12').textContent).toContain('Delete');
+    expect(within(menu).getByTestId('memory-preference-undo-12').textContent).toContain('Undo the last change');
+    expect(menu.textContent).not.toMatch(/笔记|note/i);
   });
 
   it('edits a preference in place and saves only the changed field with core_memory update', async () => {
@@ -1041,8 +1076,8 @@ describe('the standing preferences card', () => {
     // 改完重取常驻偏好。
     await waitFor(() => expect(text('memory-preference-content-12')).toBe('周报用中文写。'));
     expect(getMemoryPreferences).toHaveBeenCalled();
-    expect(text('memory-preference-message-12')).toBe('已保存。');
-    expect(text('memory-preference-change-12')).toMatch(/^你改的 · /);
+    expect(text('memory-preference-message-12')).toBe('Saved.');
+    expect(text('memory-preference-change-12')).toMatch(/^Changed by you · /);
   });
 
   it('shows why a save failed, word for word, and keeps the form open', async () => {
@@ -1062,7 +1097,7 @@ describe('the standing preferences card', () => {
     fireEvent.click(within(await openMenu(3)).getByTestId('memory-preference-edit-3'));
     fireEvent.change(await screen.findByTestId('memory-preference-title-input-3'), { target: { value: '  ' } });
     fireEvent.click(screen.getByTestId('memory-preference-save-3'));
-    expect(text('memory-preference-message-3')).toBe('标题不能是空的。');
+    expect(text('memory-preference-message-3')).toBe('The title cannot be empty.');
     expect(client.performUiAction).not.toHaveBeenCalled();
   });
 
@@ -1076,7 +1111,7 @@ describe('the standing preferences card', () => {
     expect(client.performUiAction).toHaveBeenCalledWith('core_memory', '3', 'delete', { input: {} });
     const removed = await screen.findByTestId('memory-preference-removed-3');
     expect(removed.textContent).toContain('住址');
-    expect(removed.textContent).toContain('已删掉');
+    expect(removed.textContent).toContain('Deleted');
     // 删掉的那一行留在原来的位置（第一行）。
     expect(removed.compareDocumentPosition(screen.getByTestId('memory-preference-12')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     await act(async () => { fireEvent.click(screen.getByTestId('memory-preference-restore-3')); });
@@ -1092,7 +1127,7 @@ describe('the standing preferences card', () => {
     const menu = await openMenu(12);
     await act(async () => { fireEvent.click(within(menu).getByTestId('memory-preference-undo-12')); });
     expect(client.performUiAction).toHaveBeenCalledWith('core_memory_change', '30', 'undo', { input: {} });
-    await waitFor(() => expect(text('memory-preference-message-12')).toBe('已撤销上一次改动。'));
+    await waitFor(() => expect(text('memory-preference-message-12')).toBe('The last change is undone.'));
 
     performUiAction.mockRejectedValueOnce(new ControlPlaneClientError('这次改动之后这一条又改过，不能撤销这一次。', 'unavailable', 409));
     const again = await openMenu(12);
@@ -1116,11 +1151,11 @@ describe('the standing preferences card', () => {
   it('says what goes here when there is nothing yet, and when the space is full', () => {
     const { runtime } = preferencesRuntime(preferences({ entries: [], used: 0 }));
     renderWithRuntime(<MemorySection />, runtime);
-    expect(text('memory-preferences-empty')).toBe('还没有常驻偏好。Fairy 发现你长期的习惯和偏好时，会记在这里。');
+    expect(text('memory-preferences-empty')).toBe('There are no core preferences yet. When Fairy finds a long-term habit or preference of yours, it writes it here.');
 
     const full = preferencesRuntime(preferences({ used: 4000 }));
     renderWithRuntime(<MemorySection />, full.runtime);
-    expect(screen.getAllByTestId('memory-preferences-usage')[1]!.textContent).toBe('已用 4,000 / 4,000 字 · 写满了');
+    expect(screen.getAllByTestId('memory-preferences-usage')[1]!.textContent).toBe('4,000 / 4,000 characters used · Full');
   });
 
   it('hides the card while the daemon has no preferences route', async () => {
@@ -1173,14 +1208,14 @@ describe('the invalidated facts in the Hindsight part', () => {
   it('stays folded with a count, and lists the text, source, reason, who and when when opened', () => {
     const { runtime } = preferencesRuntime(preferences(), {}, hindsight({ invalidated }));
     renderWithRuntime(<MemorySection />, runtime);
-    expect(text('memory-invalidated-count')).toBe('2 条');
+    expect(text('memory-invalidated-count')).toBe('2 facts');
     expect(screen.queryByTestId('memory-fact-mem-1')).toBeNull();
     fireEvent.click(screen.getByTestId('memory-invalidated-toggle'));
-    expect(text('memory-fact-text-mem-1')).toBe('「用户住在上海」');
-    expect(text('memory-fact-meta-mem-1')).toMatch(new RegExp(`^Fairy 让它失效 · ${TIME.source} · 来自：住址$`));
-    expect(text('memory-fact-reason-mem-1')).toBe('依据：你 10-29 说搬到了杭州');
-    expect(text('memory-fact-meta-mem-2')).toMatch(/^你让它失效 · .* · 来自外部对话：Slack #proj 记下的事$/);
-    expect(screen.getByTestId('memory-invalidated').textContent).not.toMatch(/笔记/);
+    expect(text('memory-fact-text-mem-1')).toBe('"用户住在上海"');
+    expect(text('memory-fact-meta-mem-1')).toMatch(new RegExp(`^Invalidated by Fairy · ${TIME.source} · From: 住址$`));
+    expect(text('memory-fact-reason-mem-1')).toBe('Reason: 你 10-29 说搬到了杭州');
+    expect(text('memory-fact-meta-mem-2')).toMatch(/^Invalidated by you · .* · From an external conversation: Slack #proj 记下的事$/);
+    expect(screen.getByTestId('memory-invalidated').textContent).not.toMatch(/笔记|note/i);
   });
 
   it('restores a fact with memory_fact restore, and shows why it failed', async () => {
@@ -1192,7 +1227,7 @@ describe('the invalidated facts in the Hindsight part', () => {
     await act(async () => { fireEvent.click(screen.getByTestId('memory-fact-restore-mem-1')); });
     expect(client.performUiAction).toHaveBeenCalledWith('memory_fact', 'mem-1', 'restore', { input: {} });
     await waitFor(() => expect(screen.queryByTestId('memory-fact-mem-1')).toBeNull());
-    expect(text('memory-invalidated-count')).toBe('1 条');
+    expect(text('memory-invalidated-count')).toBe('1 fact');
 
     (client.performUiAction as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new ControlPlaneClientError('Hindsight 没有在运行，现在不能恢复。', 'unavailable', 409));
     await act(async () => { fireEvent.click(screen.getByTestId('memory-fact-restore-mem-2')); });

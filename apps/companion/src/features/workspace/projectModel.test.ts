@@ -36,28 +36,28 @@ describe('buildProjectCards', () => {
   it('puts projects with open work first, the ones that wait for you on top, and folds the rest', () => {
     const cards = buildProjectCards(overviews, now);
     expect(cards.active.map((card) => card.name)).toEqual(['pi-lead-child', 'Dialogue Returns Business Parity']);
-    expect(cards.quiet.map((card) => card.name)).toEqual(['companion-acceptance', '未归属']);
+    expect(cards.quiet.map((card) => card.name)).toEqual(['companion-acceptance', 'No project']);
     expect(cards.archived.map((card) => card.name)).toEqual(['pi-lead-child-e2e']);
   });
 
   it('shows the counts with the ticket tab words, Lead line with its time, the next milestone and the spend', () => {
     const card = buildProjectCards(overviews, now).active[0]!;
     expect(card.legend).toEqual([
-      { key: 'user', label: '等你', count: 4 },
-      { key: 'running', label: '在执行', count: 1 },
+      { key: 'user', label: 'Waiting for you', count: 4 },
+      { key: 'running', label: 'Running', count: 1 },
       { key: 'lead', label: 'Paimon', count: 5 },
-      { key: 'ended', label: '已结束', count: 8 },
+      { key: 'ended', label: 'Ended', count: 8 },
     ]);
-    expect(card.leadLine).toEqual({ text: '卡在 #72 的 review 投影；#66 正在重新核查。', when: '15:43 更新' });
+    expect(card.leadLine).toEqual({ text: '卡在 #72 的 review 投影；#66 正在重新核查。', when: 'Updated 15:43' });
     // 阶段 3：最近的节点（任何类型），日期用「明天 18:00」「周日」这样的说法。
-    expect(card.nextMilestone).toBe('#72 提测 明天 18:00');
+    expect(card.nextMilestone).toBe('#72 提测 Tomorrow 18:00');
     expect(card.spend).toBe('$36.18');
     expect(card.stale).toBeNull();
   });
 
   it('says how long a project with open work has been quiet once it is a week or more', () => {
     const card = buildProjectCards(overviews, now).active[1]!;
-    expect(card.stale).toBe('27 天没有动静');
+    expect(card.stale).toBe('No activity for 27 days');
     expect(card.spend).toBeNull();
   });
 

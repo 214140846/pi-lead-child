@@ -10,10 +10,10 @@ import {
 } from "@pi-lead-child/protocol";
 import {
   approvalConsumerLive, approvalOwnerAction, channelPolicy, decisionOwnerAction, getApproval, getBinding, getChannelCard, getDecisionRequest,
-  getEvent, getItem, getMilestone, getWorkspace, isStandingOrderProposal, itemUpdatedEvent, labelTimer, planStandingOrderChange, proposeStandingOrderChange,
+  getEvent, getItem, getLocale, getMilestone, getWorkspace, isStandingOrderProposal, itemUpdatedEvent, labelTimer, planStandingOrderChange, proposeStandingOrderChange,
   publishGatewayEvent, recordReminderTimeSetter, reminderTimeSetter, rescheduleReminder, ReminderRescheduleError, revokeBinding, StandingOrderChangeError,
   updateMilestone, updateStandingOrderByUser, workspaceOwnerAction,
-  type Binding, type ChannelCard, type ChannelPolicy, type ItemMilestone, type MilestoneUpdate,
+  type Binding, type ChannelCard, type ChannelPolicy, type Db, type ItemMilestone, type MilestoneUpdate,
 } from "@pi-lead-child/store";
 import {
   performWorkspaceAction, workspaceActionBlocker, workspaceActionDone, type WorkspaceActionId, type WorkspaceActionResult,
@@ -27,6 +27,7 @@ import type { ActionAttribution } from "../ticket-actions/attribution.js";
 import { AVAILABLE, unavailable } from "../ticket-actions/types.js";
 import { latestInstantOf, leadUserTurnOf } from "./authority.js";
 import { REPLY_STYLE_ACTIONS, REPLY_STYLE_TARGET } from "./reply-style.js";
+import { joinProblems } from "./problems.messages.js";
 import { CHANNEL_HANDBOOK_ACTIONS, CHANNEL_HANDBOOK_TARGET } from "./handbook.js";
 import { MODEL_SETTINGS_ACTIONS, MODEL_SETTINGS_TARGET } from "./model-settings.js";
 import { MEMORY_SETTINGS_ACTIONS, MEMORY_SETTINGS_TARGET } from "./memory-settings.js";
@@ -575,9 +576,11 @@ function sortedJson(value: unknown): string {
     : item));
 }
 
-function policyProblems(params: ChannelPolicyParams): void {
-  const problems = channelConfidenceProblems(params.confidence);
-  if (problems.length) throw new UiActionError("invalid_input", problems.join("；"));
+function policyProblems(db: Db, params: ChannelPolicyParams): void {
+  // 设置页直接显示这些问题，按用户现在的语言写。
+  const locale = getLocale(db);
+  const problems = channelConfidenceProblems(params.confidence, locale);
+  if (problems.length) throw new UiActionError("invalid_input", joinProblems(problems, locale));
 }
 
 function standingOrderError(error: unknown): never {
@@ -589,7 +592,7 @@ function standingOrderError(error: unknown): never {
 
 // 写一个新版本。你本人：作者 user，直接生效（放宽也一样）。Lead：只能收紧，作者 lead，写 standing_order.changed 告诉你。
 function writeChannelPolicy(run: UiActionRun<ChannelPolicyTarget, ChannelPolicyParams>, mode: "update" | "tighten"): unknown {
-  policyProblems(run.input);
+  policyProblems(run.db, run.input);
   const order = run.target.policy.order;
   if (order.action.type !== "rule") throw new UiActionError("unavailable", `常设指令 ${order.id} 不是规则`);
   const patch = { action: { ...order.action, params: policyStandingOrderParams(run.target, run.input) } };
@@ -1102,6 +1105,12 @@ const FOLLOW_UP_TARGET: UiActionTargetKind<FollowUpEntry> = {
   }),
 };
 
+// heldReason 由 daemon 按用户的语言写（server.messages.ts），不带句末标点。英文补「.」，中文补「。」。
+function endSentence(text: string): string {
+  if (/[.!?。！？]$/u.test(text)) return text;
+  return /[\u4e00-\u9fff]$/u.test(text) ? `${text}。` : `${text}.`;
+}
+
 const FOLLOW_UP_ACTIONS = {
   steer: {
     target: "follow_up", id: "steer", label: "插进这一轮", scope: "chat",
@@ -1113,7 +1122,7 @@ const FOLLOW_UP_ACTIONS = {
       + "读过外部内容的一轮里做不了。",
     defaultReason: "在状态栏点了 Steer",
     available: (entry) => (entry.heldForOwnTurn
-      ? unavailable(`${entry.heldReason ?? "这一轮读过外部内容，这条要单独开一轮"}。`)
+      ? unavailable(entry.heldReason ? endSentence(entry.heldReason) : "这一轮读过外部内容，这条要单独开一轮。")
       : AVAILABLE),
     run: (run) => followUps(run.env).steer(run.target.turnId),
     forLead: (_run, result) => result,

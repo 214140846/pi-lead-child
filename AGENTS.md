@@ -33,6 +33,10 @@ Before you design or change any UI (conversation cards, panels, settings, genui 
 
 Semantic tokens set spacing and text size in the UI: `gap="card-row"`, `size="card-title"`. Before you write or change a spacing or text-size value in `apps/companion` or `packages/components`, read "语义间距和语义字号" in `packages/components/README.md` and pick a token by its use. If no token fits, add one in `packages/components/src/theme/tokens.ts` first, with all three density values on the scale (multiples of 4, plus 2 and 6; text sizes 11/12/13/14/16/20/24). Never write a bare number for a gap, padding, margin, `size` or `leading`; the only exceptions are a component's own spec (kept in the component or its `*.shared.ts`, with a comment) and 1–3px optical nudges. Density is declared once per zone with `<Density zone="ticket">`; components never pick their own density. The user's appearance knobs (density per zone, radius, text scale, line height, colors; 设置 → 外观, `packages/protocol/src/design-preferences.ts`) are applied inside the component library; never read them in a feature component, and never hardcode a color that a knob should drive.
 
+## UI Text
+
+Interface text supports English and Chinese; English is the default (user, 2026-11-01). Before you write or change text that the user sees in `apps/companion`, `packages/components`, or daemon text that the UI shows, read `docs/i18n.md`. Put the text in a typed `*.messages.ts` catalog next to the code, with both `en` and `zh`. Do not add a UI string literal. Text that only the model reads (prompts, skills, tool descriptions) is out of scope for now.
+
 ## UI Actions
 
 Every UI control that calls the backend is one operation with two entry points: the HTTP route the UI calls and a Lead tool. This covers the whole UI (tickets, settings, connections, channels, devices), so the user can always delegate to Lead what they can click.

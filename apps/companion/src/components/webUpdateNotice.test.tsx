@@ -22,7 +22,7 @@ const hello: HelloV2 = {
   daemon: { model: 'stub', sessionId: 'lead-session', busy: false },
 };
 
-const NOTICE = '有新版本，刷新后生效';
+const NOTICE = 'New version. Reload to use it.';
 
 function setup(served: () => Promise<string | null>, options: { current?: string | null; compact?: boolean } = {}) {
   const reloadApp = vi.fn();
@@ -54,7 +54,7 @@ describe('the new-version notice', () => {
     expect(read).toHaveBeenCalledTimes(1);
     expect(screen.getByText(NOTICE)).toBeTruthy();
     expect(reloadApp).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: '刷新' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Reload' }));
     expect(reloadApp).toHaveBeenCalledTimes(1);
   });
 
@@ -62,9 +62,9 @@ describe('the new-version notice', () => {
   it('says it in fewer words in a narrow header, with the same refresh', async () => {
     const { reloadApp, connect } = setup(async () => 'build-b', { compact: true });
     await connect();
-    expect(screen.getByTestId('web-update-notice').textContent).toContain('有新版本');
+    expect(screen.getByTestId('web-update-notice').textContent).toContain('New version');
     expect(screen.queryByText(NOTICE)).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: '刷新' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Reload' }));
     expect(reloadApp).toHaveBeenCalledTimes(1);
   });
 
@@ -91,7 +91,7 @@ describe('the new-version notice', () => {
     let served = 'build-b';
     const { connect } = setup(async () => served);
     await connect();
-    fireEvent.click(screen.getByRole('button', { name: '不再提示这个版本' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Do not show this version again' }));
     expect(screen.queryByText(NOTICE)).toBeNull();
     await connect();
     expect(screen.queryByText(NOTICE)).toBeNull();

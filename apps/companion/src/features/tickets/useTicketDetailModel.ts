@@ -5,8 +5,10 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import type { TicketRestoreMode } from '@pi-lead-child/client';
 
+import { useLocale, type Locale } from '@/i18n';
+
 import {
-  checkpointToPresentation,
+  checkpointPresentationFor,
   interventionActionRequest,
   interventionToAuthority,
   resourceToCheckpointFeedResource,
@@ -51,6 +53,7 @@ import { buildTicketStory } from './ticketStory';
 import { latestUserAction, liveRunProgress } from './ticketChatStatus';
 import { useNow } from './useNow';
 import type { CheckpointFeedPagination } from './CheckpointFeed';
+import { ticketThreadMessages } from './ticketThread.messages';
 
 // 一张工单详情需要的全部数据和动作：读 hooks、算视图模型、包好动作的进行中和出错状态。
 // 工单面板（TicketThread）和「证据与记录」都读它，谁都不再自己推导（AGENTS.md：每个界面从同一个 TicketSummary 推导当前状态）。
@@ -61,6 +64,8 @@ export function useTicketDetailModel(
   { onOpenTicket }: { onOpenTicket?: (ticketId: number) => void } = {},
 ): TicketDetailModel {
   const runtime = useCompanionRuntime();
+  const locale = useLocale();
+  const m = ticketThreadMessages(locale);
   const phase = useConnectionPhase();
   const connectionState = useConnectionState();
   const connected = connectionState === 'connected';
@@ -135,7 +140,7 @@ export function useTicketDetailModel(
       await runtime.runTicketAction(ticketId, action, request);
       setActionRequest({ ticketId, pendingActionId: null, error: null });
     } catch (error) {
-      setActionRequest({ ticketId, pendingActionId: null, error: actionErrorText(error) });
+      setActionRequest({ ticketId, pendingActionId: null, error: actionErrorText(error, locale) });
     }
   };
 
@@ -145,14 +150,14 @@ export function useTicketDetailModel(
     setActionRequest({ ticketId, pendingActionId: action, error: null });
     try {
       if (action === 'release') {
-        if (!ticket.workspace) throw new Error('这张工单没有工作区。');
+        if (!ticket.workspace) throw new Error(m.noWorkspace);
         await runtime.performWorkspaceAction(ticket.workspace.id, 'release');
       } else {
         await runtime.performTicketAction(ticketId, action, options.restoreMode ? { restoreMode: options.restoreMode } : {});
       }
       setActionRequest({ ticketId, pendingActionId: null, error: null });
     } catch (error) {
-      setActionRequest({ ticketId, pendingActionId: null, error: actionErrorText(error) });
+      setActionRequest({ ticketId, pendingActionId: null, error: actionErrorText(error, locale) });
     }
   };
 
@@ -163,7 +168,7 @@ export function useTicketDetailModel(
       await runtime.loadOlderCheckpoints(ticketId);
       setPaginationRequest({ ticketId, loading: false, error: null });
     } catch (error) {
-      setPaginationRequest({ ticketId, loading: false, error: errorText(error) });
+      setPaginationRequest({ ticketId, loading: false, error: errorText(error, locale) });
     }
   };
 
@@ -176,7 +181,7 @@ export function useTicketDetailModel(
         : { reason: 'revoked from Companion' });
       setDelegationRequest({ ticketId, pending: false, error: null });
     } catch (error) {
-      setDelegationRequest({ ticketId, pending: false, error: actionErrorText(error) });
+      setDelegationRequest({ ticketId, pending: false, error: actionErrorText(error, locale) });
     }
   };
   const checkpointPagination: CheckpointFeedPagination = {
@@ -186,22 +191,22 @@ export function useTicketDetailModel(
     onLoadOlder: checkpointPage?.hasMore && connected ? () => void loadOlderCheckpoints() : undefined,
   };
   const checkpointFeedResource = {
-    ...resourceToCheckpointFeedResource(phase, checkpointResource, connectionState),
+    ...resourceToCheckpointFeedResource(phase, checkpointResource, connectionState, locale),
     pagination: checkpointPagination,
   };
 
   const checkpointItems = useMemo(
-    () => checkpoints.map(checkpointToPresentation),
-    [checkpoints],
+    () => checkpoints.map(checkpointPresentationFor(locale)),
+    [checkpoints, locale],
   );
   const interventionAuthorities = useMemo(() => Object.fromEntries(
     interventions.map((intervention) => {
       const full = isFullIntervention(intervention);
       return [intervention.id, full
-        ? interventionToAuthority(intervention, interventionResource?.state === 'ready' && connected)
+        ? interventionToAuthority(intervention, interventionResource?.state === 'ready' && connected, locale)
         : interventionRefAuthority(intervention as KernelInterventionRef)];
     }),
-  ) as Record<string, InterventionAuthority>, [connected, interventionResource?.state, interventions]);
+  ) as Record<string, InterventionAuthority>, [connected, interventionResource?.state, interventions, locale]);
   const ticketDetails = useControlPlaneStore((state) => state.ticketDetailsById);
   const childTickets = useMemo<ChildTicketPresentation[]>(() => {
     const byId = new Map(tickets.map((item) => [item.id, item]));
@@ -237,14 +242,15 @@ export function useTicketDetailModel(
     detail,
     activities,
     leadName,
-  }), [activities, detail, leadName, ticketId]);
+    locale,
+  }), [activities, detail, leadName, locale, ticketId]);
   const reviewState = tickets.find((item) => item.id === ticketId)?.reviewState ?? null;
   // 一次 Run 的用途和结论只算一次：执行尝试、运行日志和进展记录都读它（runFacts）。
   const runFacts = useMemo(
     () => buildRunFacts({ attempts, activities, review: reviewState }),
     [activities, attempts, reviewState],
   );
-  const attemptItems = useMemo(() => buildAttemptPresentation(attempts, runFacts), [attempts, runFacts]);
+  const attemptItems = useMemo(() => buildAttemptPresentation(attempts, runFacts, locale), [attempts, locale, runFacts]);
   // 概览上的「经过」：每件事一行，连续的失败合成一行（复核 P1-2）。
   const story = useMemo(() => buildTicketStory({
     created: detail ? { at: detail.createdAt, by: detail.createdBy ?? null } : null,
@@ -252,7 +258,8 @@ export function useTicketDetailModel(
     activities,
     facts: runFacts,
     leadName,
-  }), [activities, attempts, detail, leadName, runFacts]);
+    locale,
+  }), [activities, attempts, detail, leadName, locale, runFacts]);
   // 对话坞（方案 D）：展开状态和看过的最后一条消息放在工作区 store，会话里的回执能直接打开对话。
   const chatExpanded = useWorkspaceStore((state) => state.ticketChatExpandedId === ticketId);
   const chatSeenMessageId = useWorkspaceStore((state) => state.ticketChatSeenByTicket[ticketId] ?? null);
@@ -266,11 +273,11 @@ export function useTicketDetailModel(
   const recordsOpen = useWorkspaceStore((state) => state.ticketRecordsOpenId === ticketId);
   const setTicketRecordsOpen = useWorkspaceStore((state) => state.setTicketRecordsOpen);
   const onRecordsOpenChange = useCallback((open: boolean) => setTicketRecordsOpen(ticketId, open), [setTicketRecordsOpen, ticketId]);
-  const chatReceipt = useMemo(() => latestUserAction(activities, leadName), [activities, leadName]);
+  const chatReceipt = useMemo(() => latestUserAction(activities, leadName, locale), [activities, leadName, locale]);
   // 有 Run 在跑时每 15 秒走一次表：进度上的「已 N 分钟」和「可能卡住了」靠它更新。
   const runInFlight = attempts.some((attempt) => attempt.state === 'starting' || attempt.state === 'running' || attempt.state === 'paused');
   const now = useNow(runInFlight ? 15_000 : null);
-  const liveRun = useMemo(() => liveRunProgress(attempts, runFacts, now), [attempts, now, runFacts]);
+  const liveRun = useMemo(() => liveRunProgress(attempts, runFacts, now, locale), [attempts, locale, now, runFacts]);
   const logRuns = useMemo<TicketLogRunPresentation[]>(() => attemptItems.map((attempt) => ({
     id: attempt.id,
     purposeLabel: attempt.purposeLabel,
@@ -278,18 +285,18 @@ export function useTicketDetailModel(
     startedAt: attempt.startedAt,
     endedAt: attempt.endedAt,
     result: attempt.result,
-    logs: buildTicketLogPresentation(logsByAttemptId[attempt.id] ?? []),
-  })), [attemptItems, logsByAttemptId]);
+    logs: buildTicketLogPresentation(logsByAttemptId[attempt.id] ?? [], locale),
+  })), [attemptItems, locale, logsByAttemptId]);
   const logAttemptId = activeAttemptId;
   const logItems = useMemo<TicketLogPresentation[]>(() => (
     logAttemptId === null ? [] : logRuns.find((run) => run.id === logAttemptId)?.logs ?? []
   ), [logAttemptId, logRuns]);
-  const relationItems = useMemo(() => buildRelationPresentation(detail, tickets, leadName), [detail, leadName, tickets]);
+  const relationItems = useMemo(() => buildRelationPresentation(detail, tickets, leadName, locale), [detail, leadName, locale, tickets]);
   const enrichedTicket = useMemo(() => {
     const summary = tickets.find((item) => item.id === ticketId);
     if (!summary) return { ...ticket, elapsedMs: timing?.elapsedMs ?? ticket.elapsedMs };
     if (!timing && !activeAttempt) return {
-      ...ticketSummaryToTicket(summary),
+      ...ticketSummaryToTicket(summary, undefined, locale),
       ...(ticket.displayId ? { displayId: ticket.displayId } : {}),
     };
     return {
@@ -315,14 +322,15 @@ export function useTicketDetailModel(
       pendingInterventionCount: Object.values(interventionAuthorities).filter((item) => item.state === 'pending').length,
       latestCheckpointId: checkpoints[0]?.id ?? null,
       progress: workbench?.progress ?? null,
-      }),
+      }, locale),
       ...(ticket.displayId ? { displayId: ticket.displayId } : {}),
     };
-  }, [activeAttempt, checkpoints, interventionAuthorities, ticket, ticketId, tickets, timing, workbench?.progress]);
+  }, [activeAttempt, checkpoints, interventionAuthorities, locale, ticket, ticketId, tickets, timing, workbench?.progress]);
 
   const legacyActions = useMemo(() => legacyTicketActions(enrichedTicket, {
     cancelledChildCount: childTickets.filter((child) => child.state === 'cancelled').length,
-  }), [childTickets, enrichedTicket]);
+    locale,
+  }), [childTickets, enrichedTicket, locale]);
   // 工单信息和用量：建单、更新、截止、预算、累计的 token 和成本。
   const summary = tickets.find((item) => item.id === ticketId);
   const facts = useMemo(() => detail ? {
@@ -364,8 +372,8 @@ export function useTicketDetailModel(
     // 核查做完或没做成时，写做了那次核查的核查员；还没开始或在路上时，写接口给的（排着的、下一次会用的）。
     const settled = status === 'done' || status === 'failed';
     const profile = settled ? fromRun ?? fromInfo : fromInfo ?? fromRun;
-    return { ...(profile ?? { runtime: '系统选', model: null, effort: null }), status };
-  }, [attempts, enrichedTicket, reviewerInfo, ticketId]);
+    return { ...(profile ?? { runtime: m.systemChooses, model: null, effort: null }), status };
+  }, [attempts, enrichedTicket, m, reviewerInfo, ticketId]);
   // 「拆成子工单」等入口：往工单对话的输入框里预填一句话（D9）。输入框按 composerRevision 重新读草稿。
   const setComposerDraft = useWorkspaceStore((state) => state.setComposerDraft);
   const [composerRevision, setComposerRevision] = useState(0);
@@ -420,7 +428,7 @@ export function useTicketDetailModel(
         interventionId,
         interventionActionRequest(interventionId, actionId, customResponse),
       ).then(() => setResolutionRequest({ ticketId, error: null }))
-        .catch((error) => setResolutionRequest({ ticketId, error: actionErrorText(error) }));
+        .catch((error) => setResolutionRequest({ ticketId, error: actionErrorText(error, locale) }));
     } : undefined,
     resolutionError: resolutionRequest?.ticketId === ticketId ? resolutionRequest.error : null,
     onRetryCheckpoints: connected ? () => void runtime.refreshCheckpoints(ticketId).catch(() => {}) : undefined,
@@ -459,15 +467,16 @@ export function useTicketDetailModel(
   };
 }
 
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : '暂时无法读取更早的 Checkpoint。';
+function errorText(error: unknown, locale: Locale): string {
+  return error instanceof Error ? error.message : ticketThreadMessages(locale).olderCheckpointsError;
 }
 
-function actionErrorText(error: unknown): string {
+function actionErrorText(error: unknown, locale: Locale): string {
+  const m = ticketThreadMessages(locale);
   const message = error instanceof Error ? error.message : '';
-  if (/user control plane unavailable/i.test(message)) return '当前连接是只读环境，不能执行这个动作。工单状态未改变；请切换到真实 daemon 后重试。';
-  if (/not connected|disconnected|reconnecting|timeout/i.test(message)) return '连接中断或响应超时，操作结果尚未确认。连接恢复后请先刷新工单状态，再决定是否重试。';
-  return message ? `操作未完成：${message}` : '未能确认操作结果。请刷新工单状态后再决定是否重试。';
+  if (/user control plane unavailable/i.test(message)) return m.readOnly;
+  if (/not connected|disconnected|reconnecting|timeout/i.test(message)) return m.disconnected;
+  return message ? m.actionFailed(message) : m.actionUnknown;
 }
 
 // 工单的链接：web 上用这一页的地址；手机应用里没有网页的地址，用连着的 daemon 的地址（daemon 也提供网页）。

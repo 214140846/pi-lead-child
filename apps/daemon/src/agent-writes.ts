@@ -5,7 +5,8 @@
 // 主人操作没有配对凭证：凭证编号写 0，名字写那张工单；来源是 agent。「撤销」只撤这次操作，不作废任何凭证
 // （protocol 的 isOnBehalfOwnerActionSource）。已经发到外部服务的写操作撤不回，撤销时给出链接（网关的 owner-actions.ts）。
 import type { AgentConnectionWrite } from "@pi-lead-child/connections";
-import { addActivity, getItem, itemLabel, leadDisplayName, recordOwnerAction, type Db } from "@pi-lead-child/store";
+import { addActivity, getItem, getLocale, itemLabel, leadDisplayName, recordOwnerAction, type Db } from "@pi-lead-child/store";
+import { agentWriteMessages } from "./agent-writes.messages.js";
 
 export const AGENT_WRITE_DECISION = "agent_write";
 
@@ -21,12 +22,15 @@ export function recordAgentWrite(db: Db, write: AgentConnectionWrite, now: Date 
     },
   });
   if (!description.visible) return { ownerActionEventId: null };
-  const ticket = item ? itemLabel(item) : `工单 #${write.itemId}`;
+  // 主人操作推给你、记进收件箱：按写入时你选的语言写。description.summary 由连接中心按同一个语言写。
+  const locale = getLocale(db);
+  const m = agentWriteMessages(locale);
+  const ticket = item ? itemLabel(item, locale) : m.ticket(write.itemId);
   const recorded = recordOwnerAction(db, {
     action: "connection.agent_write",
-    target: { key: `run:${write.runId}`, label: `Run #${write.runId}（${ticket}）`, ticketId: write.itemId },
+    target: { key: `run:${write.runId}`, label: m.target(write.runId, ticket), ticketId: write.itemId },
     // 称呼 Lead 用你起的名字（设置 → 身份与风格）。
-    summary: `${leadDisplayName(db)} 派的子 agent 代你${description.summary}`,
+    summary: m.summary(leadDisplayName(db), description.summary),
     detail: {
       connection: write.connection, tool: write.tool, target: description.target, url: description.url, ruleId: write.ruleId,
       callId: write.callId,
@@ -35,7 +39,7 @@ export function recordAgentWrite(db: Db, write: AgentConnectionWrite, now: Date 
       kind: "connection_write", runId: write.runId, callId: write.callId, connection: write.connection, tool: write.tool,
       url: description.url,
     },
-    alertNote: description.url ? `链接：${description.url}` : null,
+    alertNote: description.url ? m.link(description.url) : null,
     credential: { id: 0, kind: "agent", display_name: ticket, origin: "unknown" },
     source: { client: "agent", deviceName: ticket, loopback: false, fromThisMachine: true },
     now,

@@ -102,7 +102,7 @@ describe('chat prototype density', () => {
     const composer = source('MessageComposer.tsx');
 
     expect(composer).toMatch(/<Column\s+testID="composer"[^>]*rounded="4xl"[^>]*borderWidth=\{1\}[^>]*boxShadow=/s);
-    expect(composer).toMatch(/<IconButton\s+testID="composer-attach"\s+icon="plus"\s+label="添加图片"/s);
+    expect(composer).toMatch(/<IconButton\s+testID="composer-attach"\s+icon="plus"\s+label=\{m\.addImage\}/s);
     expect(composer).not.toContain('icon="mic"');
     expect(composer).toMatch(/testID="send-message"[^]*?rounded="full"/);
     // 模型名和推理强度由 LeadModelPicker 画（点开换模型），输入框只给它留位置。
@@ -128,7 +128,7 @@ describe('chat prototype density', () => {
     const intervention = source('InterventionCard.tsx');
     const conversation = source('LeadConversation.tsx');
 
-    const checkpointRoot = openingTagAfter(checkpoint, 'const model = buildCheckpointCardViewModel(checkpoint, currentTicket);');
+    const checkpointRoot = openingTagAfter(checkpoint, 'const model = buildCheckpointCardViewModel(checkpoint, currentTicket, locale);');
     expect(checkpointRoot).toContain('bg="surface-subtle"');
     expect(checkpointRoot).not.toMatch(/\b(?:boxShadow|borderWidth)=/);
     expect(intervention).toContain('if (model && !model.pending)');

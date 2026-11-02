@@ -44,6 +44,6 @@ describe('the Paimon identity', () => {
     fireEvent.click(screen.getByTestId('lead-identity'));
     expect(router.push).toHaveBeenCalledWith('/pair');
     // 设备和 daemon 之间叫「配对」（D2）。
-    expect(screen.getByText('未配对 · 点击配对')).toBeTruthy();
+    expect(screen.getByText('Not paired · Click to pair')).toBeTruthy();
   });
 });

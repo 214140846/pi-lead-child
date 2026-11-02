@@ -39,19 +39,19 @@ describe('the conversation top bar', () => {
   it('leaves Fairy to the rail while the rail is open, and shows the running count', () => {
     render({ railOpen: true });
     expect(screen.queryByTestId('lead-identity')).toBeNull();
-    expect(screen.getByTestId('lead-running-count').getAttribute('aria-label')).toBe('执行中 0');
+    expect(screen.getByTestId('lead-running-count').getAttribute('aria-label')).toBe('Running 0');
   });
 
   it('brings Fairy back to the top bar when the rail is closed', () => {
     render({ railOpen: false });
     const identity = screen.getByTestId('lead-identity');
     expect(within(identity).getByRole('img', { name: 'Paimon' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '打开工作列表' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Open the work list' })).toBeTruthy();
   });
 
   it('shows Fairy in the phone top bar, thinking while Lead is in a turn', () => {
     render({ compact: true }, { busy: true, entries: [] });
-    expect(within(screen.getByTestId('lead-identity')).getByRole('img', { name: 'Paimon 在想' })).toBeTruthy();
+    expect(within(screen.getByTestId('lead-identity')).getByRole('img', { name: 'Paimon is thinking' })).toBeTruthy();
   });
 
   it('drops the summary row above the composer', () => {

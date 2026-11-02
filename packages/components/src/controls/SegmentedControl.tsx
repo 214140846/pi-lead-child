@@ -21,9 +21,11 @@ export function SegmentedControl<T extends string>({
             testID={optionTestID?.(option.value)}
             role="tab"
             aria-selected={selected}
-            flex={1}
-            // spacing-exempt: 每一段自带左右留白，控件不靠父容器撑宽也有形状（2026-10-23）
-            px={size === 'md' ? 14 : 12}
+            // 每一段从自己文字的宽度起长，平分剩下的宽度（2026-11-01）：英文的标签长短不一，等宽会把长的截断。
+            grow={1}
+            shrink={1}
+            // 每一段自带左右留白，控件不靠父容器撑宽也有形状（2026-10-23）。2026-11-01 收窄到 8：工作台侧栏 272 宽，要放得下四段英文。
+            px={8} // spacing-exempt: 控件自己的规格
             minH={height}
             h={height}
             rounded={9}

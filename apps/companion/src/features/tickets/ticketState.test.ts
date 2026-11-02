@@ -93,41 +93,41 @@ describe('ticket state presentation', () => {
     const state = ticketStatePresentation({ ticket, actions: buildTicketActionPresentation(ticket), outcome, liveRun: chatRun });
 
     expect(state).toMatchObject({
-      chip: '等 Run 结束',
-      headline: '工单对话 Run #72 还在回答，答完才能派发独立核查。',
-      automation: 'Run 结束后状态会自动更新。',
+      chip: 'Waiting for the Run to end',
+      headline: 'Ticket conversation Run #72 is still answering. You can request an independent review after it answers.',
+      automation: 'The state updates automatically after the Run ends.',
     });
-    expect(state.facts).toContainEqual({ label: '独立核查', value: 'Run #49 未核查' });
-    expect(JSON.stringify(state)).not.toContain('即将开始');
+    expect(state.facts).toContainEqual({ label: 'Independent review', value: 'Run #49 is not reviewed' });
+    expect(JSON.stringify(state)).not.toContain('Starts soon');
   });
 
   it('says a run is still going when the run details have not arrived yet', () => {
     // 第一屏只有 TicketSummary，Run 的列表还没读到：只说有一个 Run 在进行，不猜它是什么。
     const state = present(ticket66DuringChat, { runtime: { state: 'running', lastActivityAt: null, activeAttemptId: null } });
-    expect(state.headline).toBe('这张工单还有一个 Run 在进行，结束后才能派发独立核查。');
+    expect(state.headline).toBe('A Run of this ticket is still in progress. You can request an independent review after it ends.');
   });
 
   it('regression #66: says the delivery was never reviewed and recommends sending it to a reviewer', () => {
     const state = present(ticket66);
 
     expect(state).toMatchObject({
-      chip: '核查未派发',
-      headline: 'Run #49 已交付，但还没有被独立核查。',
-      why: '系统不会自动派发核查，需要你决定下一步。返工额度已用完。',
-      automation: '当前没有自动动作在进行。',
+      chip: 'Review not requested',
+      headline: 'Run #49 is delivered, but it has no independent review yet.',
+      why: 'The system does not request a review automatically. You decide the next step. The rework budget is used up.',
+      automation: 'No automatic action is in progress.',
     });
     expect(state.facts).toEqual([
-      { label: '最新交付', value: 'Run #49 · 成果快照 #2' },
-      { label: '独立核查', value: 'Run #49 未核查' },
-      { label: '上次核查', value: 'Run #43 · FAIL · 核查的是 Run #42 · 已被 Run #49 作废' },
-      { label: '返工额度', value: '1/1 已用' },
-      { label: '停留', value: '52d 15h 未变化' },
+      { label: 'Latest delivery', value: 'Run #49 · outcome snapshot #2' },
+      { label: 'Independent review', value: 'Run #49 is not reviewed' },
+      { label: 'Previous review', value: 'Run #43 · FAIL · Reviewed Run #42 · Superseded by Run #49' },
+      { label: 'Rework budget', value: '1/1 used' },
+      { label: 'Unchanged for', value: '52d 15h' },
     ]);
     expect(state.options).toEqual([
-      { id: 'request_review', label: '派发独立核查', consequence: '派一个独立 reviewer 核查 Run #49 的成果。', tone: 'primary', recommended: true },
-      { id: 'complete', label: '仍要验收通过', consequence: '没有核查结论就结单。', tone: 'danger', recommended: false },
-      { id: 'rework', label: '手动返工', consequence: '从 Run #49 的交付继续返工；这是你发起的返工，不占用 Paimon 的返工额度。', tone: 'neutral', recommended: false },
-      { id: 'cancel', label: '取消工单', consequence: '放弃这次交付，工单结束。', tone: 'danger', recommended: false },
+      { id: 'request_review', label: 'Request independent review', consequence: 'An independent reviewer checks the result of Run #49.', tone: 'primary', recommended: true },
+      { id: 'complete', label: 'Accept anyway', consequence: 'Close the ticket without a review verdict.', tone: 'danger', recommended: false },
+      { id: 'rework', label: 'Rework manually', consequence: 'Continue the rework from the delivery of Run #49. You started this rework, so it does not use the rework budget of Paimon.', tone: 'neutral', recommended: false },
+      { id: 'cancel', label: 'Cancel ticket', consequence: 'Discard this delivery and close the ticket.', tone: 'danger', recommended: false },
     ]);
   });
 
@@ -145,10 +145,10 @@ describe('ticket state presentation', () => {
       canRequestReview: false,
     });
 
-    expect(state).toMatchObject({ chip: '卡住', tone: 'danger', automation: '当前没有自动动作在进行。' });
-    expect(state.headline).toBe('最后一次交付（Run #50）没有登记成果，自动化已停止。');
+    expect(state).toMatchObject({ chip: 'Stuck', tone: 'danger', automation: 'No automatic action is in progress.' });
+    expect(state.headline).toBe('The last delivery (Run #50) registered no outcome. Automation stopped.');
     expect(state.options.map((option) => option.id)).toEqual(['complete', 'rework', 'cancel']);
-    expect(state.options.find((option) => option.id === 'complete')).toMatchObject({ label: '仍要验收通过', tone: 'danger' });
+    expect(state.options.find((option) => option.id === 'complete')).toMatchObject({ label: 'Accept anyway', tone: 'danger' });
     // 没有自动动作在等着：给出推荐，底部栏才有东西可放。
     expect(state.options.find((option) => option.recommended)?.id).toBe('rework');
   });
@@ -157,12 +157,12 @@ describe('ticket state presentation', () => {
   // PASS 时要么直接结单，要么停手。工单还停在 review，说明它已经停手了——#66 的 FAIL 就发生在授权之前。
   it('never promises a rework after a failed review that is still waiting in review', () => {
     const failed: ReviewState = {
-      state: 'review_failed', label: '核查不通过，等你决定', reviewerAttemptId: 52, verdict: 'fail',
+      state: 'review_failed', label: 'The review failed. It waits for your decision', reviewerAttemptId: 52, verdict: 'fail',
       reason: 'unit suite red', reworkCyclesUsed: 0, maxReworkCycles: 1, deliveryRunId: 51, canRequestReview: false,
     };
 
     for (const state of [present(failed), present(failed, { acceptancePolicy: 'user_only', reworkPolicy: 'ask_user' })]) {
-      expect(state.automation).toBe('当前没有自动动作在进行。');
+      expect(state.automation).toBe('No automatic action is in progress.');
       expect(state.options.find((option) => option.recommended)?.id).toBe('rework');
       expect(state.options.map((option) => option.id)).not.toContain('complete');
     }
@@ -175,7 +175,7 @@ describe('ticket state presentation', () => {
     };
 
     for (const state of [present(passed), present(passed, { acceptancePolicy: 'user_only' })]) {
-      expect(state).toMatchObject({ headline: '核查通过，等你验收。', automation: '当前没有自动动作在进行。' });
+      expect(state).toMatchObject({ headline: 'The review passed. It waits for your acceptance.', automation: 'No automatic action is in progress.' });
       expect(state.options.find((option) => option.recommended)?.id).toBe('complete');
     }
   });
@@ -183,12 +183,12 @@ describe('ticket state presentation', () => {
   it('keeps every review state free of claims that another block would contradict', () => {
     const states: ReviewState[] = [
       ticket66,
-      { ...ticket66, label: '独立核查中', canRequestReview: false, reviewProgress: 'running', reason: '独立核查正在进行。' },
+      { ...ticket66, label: '独立核查中', canRequestReview: false, reviewProgress: 'running', reason: 'The independent review is in progress.' },
       { ...ticket66, label: '独立核查排队中', canRequestReview: false, reviewProgress: 'queued', reason: '核查请求已排队，等待派发。' },
       { state: 'waiting_user', label: '等待用户验收', reviewerAttemptId: null, verdict: null, reason: null },
-      { state: 'review_failed', label: '核查不通过', reviewerAttemptId: 52, verdict: 'fail', reason: 'red', reworkCyclesUsed: 1, maxReworkCycles: 1 },
-      { state: 'review_passed', label: '核查通过', reviewerAttemptId: 52, verdict: 'pass', reason: 'green' },
-      { state: 'evidence_conflict', label: '证据冲突', reviewerAttemptId: 52, verdict: 'fail', reason: 'evidence_conflict' },
+      { state: 'review_failed', label: 'Review failed', reviewerAttemptId: 52, verdict: 'fail', reason: 'red', reworkCyclesUsed: 1, maxReworkCycles: 1 },
+      { state: 'review_passed', label: 'Review passed', reviewerAttemptId: 52, verdict: 'pass', reason: 'green' },
+      { state: 'evidence_conflict', label: 'Evidence conflict', reviewerAttemptId: 52, verdict: 'fail', reason: 'evidence_conflict' },
       { state: 'rework_exhausted', label: '返工已用尽', reviewerAttemptId: 52, verdict: 'fail', reason: 'red', reworkCyclesUsed: 1, maxReworkCycles: 1 },
     ];
     for (const reviewState of states) {
@@ -205,7 +205,7 @@ describe('ticket state presentation', () => {
       // 只有真的有核查在排队、挂起或运行时，才能说自动化会做什么；否则必须给用户一个推荐。
       const pending = reviewState.reviewProgress != null;
       if (!pending && reviewState.state !== 'independent_review') {
-        expect(state.automation, reviewState.state).toBe('当前没有自动动作在进行。');
+        expect(state.automation, reviewState.state).toBe('No automatic action is in progress.');
         expect(state.options.some((option) => option.recommended), reviewState.state).toBe(true);
       }
     }
@@ -215,16 +215,16 @@ describe('ticket state presentation', () => {
     const base = { ...ticket66, canRequestReview: false };
     const queued = present({ ...base, label: '独立核查排队中', reviewProgress: 'queued', reason: '核查请求已排队，等待派发。' });
     const paused = present({ ...base, label: '独立核查已暂停', reviewProgress: 'suspended', reason: 'Codex 账号余额不足。' });
-    const running = present({ ...base, label: '独立核查中', reviewProgress: 'running', reason: '独立核查正在进行。' });
+    const running = present({ ...base, label: '独立核查中', reviewProgress: 'running', reason: 'The independent review is in progress.' });
 
     expect([queued.headline, paused.headline, running.headline]).toEqual([
-      '独立核查已排队，等待开始。',
-      '独立核查已排队，但暂时不能开始。',
-      '独立核查正在进行。',
+      'The independent review is queued. It waits to start.',
+      'The independent review is queued, but it cannot start now.',
+      'The independent review is in progress.',
     ]);
-    expect(paused).toMatchObject({ chip: '核查已暂停', tone: 'attention', why: 'Codex 账号余额不足。' });
-    expect([queued, paused, running].map((state) => state.facts.find((fact) => fact.label === '独立核查')?.value))
-      .toEqual(['排队中', '已暂停', '进行中']);
+    expect(paused).toMatchObject({ chip: 'Review paused', tone: 'attention', why: 'Codex 账号余额不足。' });
+    expect([queued, paused, running].map((state) => state.facts.find((fact) => fact.label === 'Independent review')?.value))
+      .toEqual(['Queued', 'Paused', 'In progress']);
   });
 
   it('regression 2026-10-21: a paused review that can be re-picked is not shown as never dispatched', () => {
@@ -232,10 +232,10 @@ describe('ticket state presentation', () => {
     const paused = present({
       ...ticket66, canRequestReview: true, label: '独立核查已暂停', reviewProgress: 'suspended', reason: 'Codex 账号已停用。',
     });
-    expect(paused).toMatchObject({ chip: '核查已暂停', tone: 'attention', why: 'Codex 账号已停用。' });
+    expect(paused).toMatchObject({ chip: 'Review paused', tone: 'attention', why: 'Codex 账号已停用。' });
     expect(paused.headline).not.toMatch(/还没有被独立核查/);
     expect(paused.options.find((option) => option.id === 'request_review')).toMatchObject({
-      label: '重新排核查', consequence: '原来的核查员能用就用它，不能用就换一个能用的。',
+      label: 'Requeue review', consequence: 'Use the original reviewer if it is available. If it is not, use another available reviewer.',
     });
   });
 
@@ -252,7 +252,7 @@ describe('ticket state presentation', () => {
       deliveryRunId: 49, canRequestReview: true, reviewProgress: 'suspended',
     }, { verificationPolicy: 'user', acceptancePolicy: 'user_only' });
     expect(userAccepted.options.find((option) => option.id === 'request_review')).toMatchObject({
-      label: '重新排核查', consequence: '原来的核查员能用就用它，不能用就换一个能用的。',
+      label: 'Requeue review', consequence: 'Use the original reviewer if it is available. If it is not, use another available reviewer.',
     });
   });
 
@@ -266,15 +266,15 @@ describe('ticket state presentation', () => {
     const state = ticketStatePresentation({ ticket, actions: buildTicketActionPresentation(ticket), outcome, liveRun });
 
     expect(state).toMatchObject({
-      chip: '核查没有开始',
+      chip: 'Review did not start',
       tone: 'attention',
-      headline: '核查 Run #73 准备了 13 分钟，还没有开始。',
-      why: '通常 10 秒内开始，这次可能卡住了。',
+      headline: 'Review Run #73 is still preparing after 13 min. It did not start.',
+      why: 'A review usually starts in 10 seconds. It can be stuck.',
     });
     const fresh = ticketStatePresentation({
       ticket, actions: buildTicketActionPresentation(ticket), outcome, liveRun: { ...liveRun, elapsedMs: 5_000, stalled: false },
     });
-    expect(fresh.headline).toBe('独立核查正在进行。');
+    expect(fresh.headline).toBe('The independent review is in progress.');
   });
 
   it('offers an optional review on a user-accepted ticket without calling it stuck', () => {
@@ -283,7 +283,7 @@ describe('ticket state presentation', () => {
       deliveryRunId: 49, canRequestReview: true, reviewProgress: null,
     }, { verificationPolicy: 'user', acceptancePolicy: 'user_only' });
 
-    expect(state).toMatchObject({ chip: '待验收', headline: '执行已结束，等你验收。' });
+    expect(state).toMatchObject({ chip: 'Waiting for acceptance', headline: 'The run is complete. It waits for your acceptance.' });
     expect(state.options.map((option) => [option.id, option.recommended])).toEqual([
       ['request_review', false],
       ['complete', true],
@@ -303,7 +303,7 @@ describe('ticket state presentation', () => {
       return ticketStatePresentation({ ticket, actions: buildTicketActionPresentation(ticket) });
     };
 
-    expect(presentFor(execution('execution', '执行中'))).toMatchObject({ headline: '系统正在执行' });
+    expect(presentFor(execution('execution', 'Running'))).toMatchObject({ headline: 'The system is working' });
     expect(presentFor(execution('recovery', '正在自动恢复'))).toMatchObject({
       chip: '正在自动恢复', headline: '正在自动恢复', tone: 'info', automation: '模型限流，30 秒后自动重试。',
     });
@@ -330,7 +330,19 @@ describe('ticket state presentation', () => {
     const ticket = ticketSummaryToTicket(summary({ stage: 'active', status: 'active', reviewState: undefined }));
     const state = ticketStatePresentation({ ticket, actions: buildTicketActionPresentation(ticket) });
 
-    expect(state).toMatchObject({ chip: ticket.statusLabel, headline: '系统正在执行', tone: 'info' });
-    expect(state.options.map((option) => option.label)).toEqual(['停下', '取消工单']);
+    expect(state).toMatchObject({ chip: ticket.statusLabel, headline: 'The system is working', tone: 'info' });
+    expect(state.options.map((option) => option.label)).toEqual(['Stop', 'Cancel ticket']);
+  });
+
+  it('writes the state in Chinese when the interface language is Chinese', () => {
+    const ticket = ticketSummaryToTicket(summary({ reviewState: ticket66 }), undefined, 'zh');
+    const state = ticketStatePresentation({ ticket, actions: buildTicketActionPresentation(ticket, 'zh'), outcome, locale: 'zh' });
+    expect(state).toMatchObject({
+      chip: '核查未派发',
+      headline: 'Run #49 已交付，但还没有被独立核查。',
+      why: '系统不会自动派发核查，需要你决定下一步。返工额度已用完。',
+      automation: '当前没有自动动作在进行。',
+    });
+    expect(state.options.map((option) => option.label)).toEqual(['派发独立核查', '仍要验收通过', '手动返工', '取消工单']);
   });
 });

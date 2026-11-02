@@ -1,5 +1,7 @@
 // Lead 调用模型失败时，原始错误是 provider 返回的一整段文字（例如 `503: {"message":"auth_unavailable: …"}`）。
 // 给人看的是一句白话；原文只放在「技术详情」里。顶栏的健康状态和会话里的失败卡片用同一套分类。
+import type { Locale } from "./i18n.ts";
+import { leadFailureMessages } from "./lead-failure.messages.ts";
 import { DEFAULT_LEAD_NAME } from "./lead-profile.ts";
 
 export type LeadModelFailureKind =
@@ -61,39 +63,20 @@ export function classifyLeadModelError(raw: string): LeadModelFailureKind {
   return "unknown";
 }
 
-// 原因里称呼 Lead 用它的名字（设置 → 身份与风格，lead-profile.ts）。调用方不给时用缺省的名字。
-const REASONS: Record<LeadModelFailureKind, (name: string) => string> = {
-  network: () => "网络不可用",
-  unavailable: (name) => `${name} 的模型服务暂时连不上`,
-  busy: (name) => `${name} 的模型服务正忙`,
-  auth: (name) => `${name} 的模型账号认证失败`,
-  config: (name) => `${name} 的模型配置有误`,
-  context: (name) => `${name} 的上下文满了，压缩没有成功`,
-  unknown: (name) => `${name} 调用模型失败`,
-};
-
 // 系统自己再试也好不了的失败：要有人检查登录或配置。顶栏不承诺自动重试。
 export function leadModelFailureNeedsUser(kind: LeadModelFailureKind): boolean {
   return kind === "auth" || kind === "config";
 }
 
-export function leadModelFailureReason(kind: LeadModelFailureKind, name: string = DEFAULT_LEAD_NAME): string {
-  return REASONS[kind](name);
+// 原因里称呼 Lead 用它的名字（设置 → 身份与风格，lead-profile.ts）。调用方不给时用缺省的名字。
+// 文案按界面语言（lead-failure.messages.ts）。locale 暂时缺省 zh：daemon、plc chat 和还没迁的界面照旧输出中文，都迁完以后去掉缺省值。
+export function leadModelFailureReason(kind: LeadModelFailureKind, name: string = DEFAULT_LEAD_NAME, locale: Locale = "zh"): string {
+  return leadFailureMessages(locale).reason[kind](name);
 }
 
-const SHORT_LABELS: Record<LeadModelFailureKind, string> = {
-  network: "网络不可用",
-  unavailable: "模型暂时连不上",
-  busy: "模型正忙",
-  auth: "模型认证失败",
-  config: "模型配置有误",
-  context: "上下文满了",
-  unknown: "模型调用失败",
-};
-
 // 顶栏一行里放得下的说法。
-export function leadModelFailureShortLabel(kind: LeadModelFailureKind): string {
-  return SHORT_LABELS[kind];
+export function leadModelFailureShortLabel(kind: LeadModelFailureKind, locale: Locale = "zh"): string {
+  return leadFailureMessages(locale).short[kind];
 }
 
 // Lead 的一轮被 daemon 停机打断（部署、plc daemon stop、重启、SIGTERM，2026-10-16 07:57 的提醒 #83）。
@@ -112,40 +95,28 @@ export function isLeadRestartInterruption(raw: string | null | undefined): boole
 // system：Lead 自己发起的一轮，没有人在等回答；系统会在下一次需要时再叫醒 Lead。
 // 用户的一轮失败了，系统不会替用户重发。认证和配置的失败再试也一样，不叫人重试，也不说系统会再试。
 // 认不出的错误返回 null：调用方照原文显示。name 是 Lead 的名字，不给时用缺省的。
-export function leadTurnFailureSentence(raw: string, options: { system: boolean; name?: string }): string | null {
+export function leadTurnFailureSentence(raw: string, options: { system: boolean; name?: string; locale?: Locale }): string | null {
   const name = options.name ?? DEFAULT_LEAD_NAME;
+  const m = leadFailureMessages(options.locale ?? "zh");
   // 被重启打断的用户的一轮是 failed 时，说明它已经调过工具：做过的事不重做，Lead 重启后接着回复。
-  if (isLeadRestartInterruption(raw)) {
-    return options.system
-      ? `${name} 的这一轮被重启打断；重启后系统会继续，你不需要操作。`
-      : `${name} 的回复被重启打断；已经做完的事不会重做，重启后 ${name} 会接着回复你。`;
-  }
+  if (isLeadRestartInterruption(raw)) return options.system ? m.failure.restartSystem(name) : m.failure.restartUser(name);
   const kind = classifyLeadModelError(raw);
   if (kind === "unknown") return null;
-  const reason = REASONS[kind](name);
+  const reason = m.reason[kind](name);
   // 断网：系统等网络恢复再接着做，不按"模型出错"说。
-  if (kind === "network") {
-    return options.system
-      ? `${reason}，${name} 这次没能调用模型；网络恢复后系统会继续，你不需要操作。`
-      : `${reason}，这条消息没有得到回答；你可以再发一次。`;
-  }
+  if (kind === "network") return options.system ? m.failure.networkSystem(reason, name) : m.failure.networkUser(reason);
   if (leadModelFailureNeedsUser(kind)) {
-    const what = kind === "auth" ? "账号" : "配置";
-    return options.system
-      ? `${reason}；系统没法自己恢复，请检查 ${name} 的模型${what}。`
-      : `${reason}，这条消息没有得到回答；请先检查 ${name} 的模型${what}，再发一次。`;
+    const what = kind === "auth" ? m.account : m.configuration;
+    return options.system ? m.failure.needsUserSystem(reason, name, what) : m.failure.needsUserUser(reason, name, what);
   }
-  return options.system
-    ? `${reason}；系统会自动再试，你不需要操作。`
-    : `${reason}，这条消息没有得到回答；系统不会自动重发，你可以再发一次。`;
+  return options.system ? m.failure.retrySystem(reason) : m.failure.retryUser(reason);
 }
 
 // 用户的一轮没答上，daemon 会在网络或模型恢复后自动再试一次（notice.created 带 retry=waiting）。
 // 这时不是失败：不叫人重发（再发一次会多出一轮）。companion 和 plc chat 都用这一句。
 // 被重启打断、还没调过工具的一轮（以及停机期间发来的消息）也在等：重启后的 daemon 再答一次。
-export function leadTurnWaitingSentence(raw: string, waitingFor: "network" | "model", name: string = DEFAULT_LEAD_NAME): string {
-  if (isLeadRestartInterruption(raw)) return `${name} 正在重启，这条消息还没有得到回答。重启后会自动再答一次。`;
-  return waitingFor === "network"
-    ? "网络不可用，这条消息还没有得到回答。网络恢复后会自动再试一次。"
-    : `${REASONS[classifyLeadModelError(raw)](name)}，这条消息还没有得到回答。稍后会自动再试一次。`;
+export function leadTurnWaitingSentence(raw: string, waitingFor: "network" | "model", name: string = DEFAULT_LEAD_NAME, locale: Locale = "zh"): string {
+  const m = leadFailureMessages(locale);
+  if (isLeadRestartInterruption(raw)) return m.waiting.restart(name);
+  return waitingFor === "network" ? m.waiting.network : m.waiting.model(m.reason[classifyLeadModelError(raw)](name));
 }

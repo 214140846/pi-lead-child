@@ -16,9 +16,9 @@ describe('CodeBlock', () => {
     vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } });
     renderUI(<CodeBlock testID="code" language="ts" code={'const a = 1;\nconst b = 2;'} />);
     expect(screen.getByText('ts')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: '复制代码' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Copy code' }));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith('const a = 1;\nconst b = 2;'));
-    expect(await screen.findByRole('button', { name: '已复制' })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: 'Copied' })).toBeTruthy();
   });
 
   it('colors added lines green and removed lines red in a diff, like GitHub', () => {
@@ -119,7 +119,7 @@ describe('DataTable wider than its box', () => {
     const scrollToCalls: unknown[] = [];
     const scroll = screen.getByTestId('table-scroll');
     scroll.scrollTo = ((options: unknown) => { scrollToCalls.push(options); }) as typeof scroll.scrollTo;
-    fireEvent.click(screen.getByRole('button', { name: '向右看更多列' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Scroll right to see more columns' }));
     expect(scrollToCalls.length).toBe(1);
   });
 

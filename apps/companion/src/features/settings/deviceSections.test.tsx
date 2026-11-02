@@ -68,12 +68,12 @@ describe('paired devices without the admin scope', () => {
     const hint = await screen.findByTestId('devices-cli-hint');
     // 这两个命令是 apps/cli 里真实的 plc pair 子命令。
     expect(hint.textContent).toContain('plc pair list');
-    expect(hint.textContent).toContain('plc pair revoke <编号>');
+    expect(hint.textContent).toContain('plc pair revoke <id>');
     const list = screen.getByTestId('devices-list');
     expect(within(list).getAllByTestId(/^device-row-/).map((row) => row.getAttribute('data-testid'))).toEqual(['device-row-7']);
     expect(within(screen.getByTestId('device-row-7')).getByText('localhost-web')).toBeTruthy();
-    expect(within(screen.getByTestId('device-row-7')).getByText('本设备')).toBeTruthy();
-    expect(within(screen.getByTestId('device-row-7')).getByText('Companion · 在线')).toBeTruthy();
+    expect(within(screen.getByTestId('device-row-7')).getByText('This device')).toBeTruthy();
+    expect(within(screen.getByTestId('device-row-7')).getByText('Companion · Online')).toBeTruthy();
     expect(screen.queryByTestId(/^device-revoke-/)).toBeNull();
     expect(fake.listBindings).toHaveBeenCalledTimes(1);
   });
@@ -81,8 +81,8 @@ describe('paired devices without the admin scope', () => {
   it('shows the error with a retry for other failures', async () => {
     const { runtime, fake } = setup({ listBindings: vi.fn(async () => { throw new Error('network down'); }) });
     render(<DevicesSection />, runtime);
-    expect((await screen.findByTestId('devices-error')).textContent).toContain('读不到已配对设备：network down');
-    fireEvent.click(screen.getByText('重试'));
+    expect((await screen.findByTestId('devices-error')).textContent).toContain('Could not load the paired devices: network down');
+    fireEvent.click(screen.getByText('Try again'));
     expect(fake.listBindings).toHaveBeenCalledTimes(2);
   });
 });
@@ -101,11 +101,11 @@ describe('paired devices with the admin scope', () => {
     await screen.findByTestId('device-row-3');
     const rows = within(screen.getByTestId('devices-list')).getAllByTestId(/^device-row-\d+$/);
     expect(rows.map((row) => row.getAttribute('data-testid'))).toEqual(['device-row-7', 'device-row-3', 'device-row-9']);
-    expect(within(rows[0]!).getByText('本设备')).toBeTruthy();
+    expect(within(rows[0]!).getByText('This device')).toBeTruthy();
     expect(screen.queryByTestId('device-revoke-7')).toBeNull();
-    expect(within(rows[1]!).getByText(/^plc 命令行 · 上次在线 /)).toBeTruthy();
+    expect(within(rows[1]!).getByText(/^plc command line · Last online /)).toBeTruthy();
     expect(screen.getByTestId('device-revoke-3')).toBeTruthy();
-    expect(within(rows[2]!).getByText('已撤销')).toBeTruthy();
+    expect(within(rows[2]!).getByText('Revoked')).toBeTruthy();
     expect(screen.queryByTestId('device-revoke-9')).toBeNull();
   });
 
@@ -115,7 +115,7 @@ describe('paired devices with the admin scope', () => {
 
     fireEvent.click(await screen.findByTestId('device-revoke-3'));
     const confirm = screen.getByTestId('device-revoke-confirm-3');
-    expect(confirm.textContent).toContain('撤销以后，「plc」要重新配对才能再用。');
+    expect(confirm.textContent).toContain('After you revoke it, "plc" must pair again before it can be used.');
     expect(fake.revokeBinding).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByTestId('device-revoke-confirm-button-3'));
@@ -128,7 +128,7 @@ describe('paired devices with the admin scope', () => {
     render(<DevicesSection />, runtime);
 
     fireEvent.click(await screen.findByTestId('device-revoke-3'));
-    fireEvent.click(within(screen.getByTestId('device-revoke-confirm-3')).getByText('取消'));
+    fireEvent.click(within(screen.getByTestId('device-revoke-confirm-3')).getByText('Cancel'));
     expect(screen.queryByTestId('device-revoke-confirm-3')).toBeNull();
     expect(fake.revokeBinding).not.toHaveBeenCalled();
   });
@@ -147,10 +147,10 @@ describe('This device', () => {
     });
     render(<DeviceSection />, runtime);
 
-    expect(screen.getByText('已配对')).toBeTruthy();
+    expect(screen.getByText('Paired')).toBeTruthy();
     await vi.waitFor(() => expect(screen.getByTestId('device-name').textContent).toBe('Mac 上的网页'));
-    expect(screen.getByTestId('device-kind').textContent).toBe('桌面');
-    expect(screen.getByTestId('device-daemon').textContent).toBe('在线');
+    expect(screen.getByTestId('device-kind').textContent).toBe('Desktop');
+    expect(screen.getByTestId('device-daemon').textContent).toBe('Online');
     expect(screen.getByTestId('pair-forget')).toBeTruthy();
     expect(fake.getOwnBinding).toHaveBeenCalledTimes(1);
   });
@@ -161,7 +161,7 @@ describe('This device', () => {
       endpointMismatch: { configuredEndpoint: 'http://127.0.0.1:47131', activeEndpoint: 'http://127.0.0.1:47130', error: 'refused' },
     });
     render(<DeviceSection />, runtime);
-    expect(screen.getByText(/配置的本机 daemon http:\/\/127.0.0.1:47131 无法配对（refused）/)).toBeTruthy();
+    expect(screen.getByText(/Could not pair with the configured local daemon http:\/\/127.0.0.1:47131 \(refused\)/)).toBeTruthy();
   });
 
   it('removes the credential and then offers to pair again on the pairing page', async () => {
@@ -178,7 +178,7 @@ describe('This device', () => {
   it('does not ask the daemon who it is before the device is paired', () => {
     const { runtime, fake } = setup({}, 'unpaired');
     render(<DeviceSection />, runtime);
-    expect(screen.getByText('配对 Paimon')).toBeTruthy();
+    expect(screen.getByText('Pair with Paimon')).toBeTruthy();
     expect(fake.getOwnBinding).not.toHaveBeenCalled();
   });
 });

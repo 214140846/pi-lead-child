@@ -62,8 +62,8 @@ describe('the confirm card for a refused rule change', () => {
     await act(async () => { renderWithRuntime(<SurfaceView surface={surface()} />, runtime); });
     expect((client as any).ruleChangeConfirmation).toHaveBeenCalledWith(ID, expect.any(AbortSignal));
     const card = screen.getByTestId(`surface-rule-change-${ID}`);
-    expect(screen.getByTestId(`surface-rule-change-${ID}-state`).textContent).toBe('等你确认');
-    expect(card.textContent).toContain('要改常设指令');
+    expect(screen.getByTestId(`surface-rule-change-${ID}-state`).textContent).toBe('Waiting for you');
+    expect(card.textContent).toContain('wants to: 改常设指令');
     expect(screen.getByTestId(`surface-rule-change-${ID}-params`).textContent).toContain('limits');
     expect(screen.getByTestId(`surface-rule-change-${ID}-params`).textContent).toContain('{"count":0}');
     expect(card.textContent).toContain('定时器的安排：每天 9 点先关掉瞬时失败的自动重试');
@@ -71,7 +71,7 @@ describe('the confirm card for a refused rule change', () => {
 
     await act(async () => { fireEvent.click(screen.getByTestId(`surface-rule-change-${ID}-confirm`)); });
     expect((client as any).resolveRuleChangeConfirmation).toHaveBeenCalledWith(ID, 'confirm');
-    expect(screen.getByTestId(`surface-rule-change-${ID}-state`).textContent).toBe('已执行');
+    expect(screen.getByTestId(`surface-rule-change-${ID}-state`).textContent).toBe('Done');
     expect(screen.getByTestId(`surface-rule-change-${ID}-result`).textContent).toContain('第 2 版');
     expect(screen.queryByTestId(`surface-rule-change-${ID}-confirm`)).toBeNull();
     expect(screen.queryByTestId(`surface-rule-change-${ID}-decline`)).toBeNull();
@@ -85,14 +85,14 @@ describe('the confirm card for a refused rule change', () => {
     await act(async () => { renderWithRuntime(<SurfaceView surface={surface()} />, runtime); });
     await act(async () => { fireEvent.click(screen.getByTestId(`surface-rule-change-${ID}-decline`)); });
     expect((client as any).resolveRuleChangeConfirmation).toHaveBeenCalledWith(ID, 'decline');
-    expect(screen.getByTestId(`surface-rule-change-${ID}-state`).textContent).toBe('没有改');
+    expect(screen.getByTestId(`surface-rule-change-${ID}-state`).textContent).toBe('Not changed');
     expect(screen.queryByTestId(`surface-rule-change-${ID}-confirm`)).toBeNull();
   });
 
   it('shows the current state of a card that was already handled, without buttons', async () => {
     const { runtime } = runtimeWith({ ruleChangeConfirmation: vi.fn(async () => confirmation({ state: 'expired' })) });
     await act(async () => { renderWithRuntime(<SurfaceView surface={surface()} />, runtime); });
-    expect(screen.getByTestId(`surface-rule-change-${ID}-state`).textContent).toBe('已过期');
+    expect(screen.getByTestId(`surface-rule-change-${ID}-state`).textContent).toBe('Expired');
     expect(screen.queryByTestId(`surface-rule-change-${ID}-confirm`)).toBeNull();
   });
 
@@ -107,6 +107,6 @@ describe('the confirm card for a refused rule change', () => {
     await act(async () => { fireEvent.click(screen.getByTestId(`surface-rule-change-${ID}-confirm`)); });
     expect(read).toHaveBeenCalledTimes(2);
     expect(screen.getByTestId(`surface-rule-change-${ID}-error`).textContent).toContain('已经处理过了');
-    expect(screen.getByTestId(`surface-rule-change-${ID}-state`).textContent).toBe('没有改');
+    expect(screen.getByTestId(`surface-rule-change-${ID}-state`).textContent).toBe('Not changed');
   });
 });

@@ -39,7 +39,7 @@ describe('AnchoredPanel', () => {
     expect(screen.getByText('浮层的正文')).toBeTruthy();
     // 卡片本身还在原位：浮层不把它挪走。
     expect(screen.getByText('收着的卡片')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: '收起' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse' }));
     expect(screen.queryByTestId('card-panel')).toBeNull();
   });
 

@@ -59,21 +59,21 @@ describe('the views panel', () => {
     await screen.findByTestId('widget-5');
     expect(screen.getByTestId('widget-title-5').textContent).toBe('纳斯达克');
     expect(screen.getByTestId('surface-widget_5').textContent).toContain('18,532');
-    expect(screen.getByTestId('widget-meta-5').textContent).toBe(`Paimon 建的 · 更新于 ${widgetTimeText(AT)}`);
-    expect(screen.getByTestId('widget-meta-3').textContent).toMatch(/^你建的/);
+    expect(screen.getByTestId('widget-meta-5').textContent).toBe(`Made by Paimon · updated ${widgetTimeText(AT)}`);
+    expect(screen.getByTestId('widget-meta-3').textContent).toMatch(/^Made by you/);
     expect(screen.queryByTestId('views-tabs')).toBeNull();
   });
 
   it('tells the user how to get a widget when there is none', async () => {
     renderPanel([]);
-    expect((await screen.findByTestId('views-empty')).textContent).toContain('跟 Paimon 说你想一直看着的东西');
+    expect((await screen.findByTestId('views-empty')).textContent).toContain('Tell Paimon what you want to watch all the time');
     expect(screen.queryByTestId('views-tabs')).toBeNull();
   });
 
   it('shows tabs once there are two views, default first, and shows only the chosen view', async () => {
     renderPanel([widget(7, '比特币', '68k', '投资'), widget(5, '纳斯达克', '18,532', '投资'), widget(3, '天气', '21°')]);
     await screen.findByTestId('views-tabs');
-    expect(screen.getByTestId('views-tab-default').textContent).toBe('常用');
+    expect(screen.getByTestId('views-tab-default').textContent).toBe('Main');
     expect(screen.getByTestId('views-tab-投资').textContent).toBe('投资');
     expect(screen.getByTestId('widget-3')).toBeTruthy();
     expect(screen.queryByTestId('widget-5')).toBeNull();
@@ -96,7 +96,7 @@ describe('the views panel', () => {
     expect(screen.queryByTestId('widget-move-to-5-投资')).toBeNull();
     fireEvent.click(await screen.findByTestId('widget-delete-5'));
     expect(client.performUiAction).not.toHaveBeenCalled();
-    expect(screen.getByTestId('widget-delete-confirm-5').textContent).toContain('删了不能恢复');
+    expect(screen.getByTestId('widget-delete-confirm-5').textContent).toContain('You cannot restore it');
     client.getWidgets.mockResolvedValueOnce([]);
     fireEvent.click(screen.getByTestId('widget-delete-confirm-yes-5'));
     await waitFor(() => expect(client.performUiAction).toHaveBeenCalledWith('widget', '5', 'delete', { input: { confirm: true } }));
@@ -106,7 +106,7 @@ describe('the views panel', () => {
   it('moves a widget down within its view with the full order, and cannot move the first one up', async () => {
     const { client } = renderPanel([widget(5, 'A', '1'), widget(9, 'X', '0', '投资'), widget(3, 'B', '2')]);
     fireEvent.click(await screen.findByTestId('widget-more-5'));
-    expect((await screen.findByTestId('widget-move-up-5')).textContent).toContain('已经在最上面');
+    expect((await screen.findByTestId('widget-move-up-5')).textContent).toContain('It is at the top');
     fireEvent.click(screen.getByTestId('widget-move-down-5'));
     await waitFor(() => expect(client.performUiAction).toHaveBeenCalledWith('widget_board', 'widgets', 'reorder', { input: { ids: [3, 9, 5] } }));
   });
@@ -117,18 +117,18 @@ describe('widgets with a data source', () => {
 
   it('says how often it updates and when it last did, with no problem line while it works', async () => {
     renderPanel([sourced({ everySeconds: 900, lastRunAt: AT, lastOkAt: AT, lastError: null, paused: false })]);
-    expect((await screen.findByTestId('widget-meta-5')).textContent).toBe(`每 15 分钟自动更新 · 上次 ${widgetTimeText(AT)}`);
+    expect((await screen.findByTestId('widget-meta-5')).textContent).toBe(`Updates every 15 minutes · last ${widgetTimeText(AT)}`);
     expect(screen.queryByTestId('widget-source-problem-5')).toBeNull();
   });
 
   it('shows why it stopped, keeps the last good card, and restarts it through the same refresh operation as Lead', async () => {
     const { client } = renderPanel([sourced({ everySeconds: 900, lastRunAt: AT, lastOkAt: AT, lastError: '命令退出码 7', paused: true })]);
     expect((await screen.findByTestId('widget-source-problem-5')).textContent)
-      .toBe(`连续出错，已经停止更新，显示的是 ${widgetTimeText(AT)} 的数据。原因：命令退出码 7`);
+      .toBe(`The updates stopped after repeated errors. The widget shows the data from ${widgetTimeText(AT)}. Reason: 命令退出码 7`);
     expect(screen.getByTestId('surface-widget_5').textContent).toContain('18,532');
     fireEvent.click(screen.getByTestId('widget-more-5'));
     const restart = await screen.findByTestId('widget-refresh-5');
-    expect(restart.textContent).toContain('重新开始更新');
+    expect(restart.textContent).toContain('Start updates again');
     fireEvent.click(restart);
     await waitFor(() => expect(client.performUiAction).toHaveBeenCalledWith('widget', '5', 'refresh', { input: {} }));
   });
@@ -141,10 +141,14 @@ describe('widgets with a data source', () => {
   });
 
   it('words the interval and the problems', () => {
-    expect([everyText(60), everyText(900), everyText(3600), everyText(86_400), everyText(90)]).toEqual(['每 1 分钟', '每 15 分钟', '每 1 小时', '每 1 天', '每 90 秒']);
-    expect(widgetSourceProblem({ source: { everySeconds: 60, lastRunAt: AT, lastOkAt: null, lastError: '超时', paused: false } }))
+    expect([60, 900, 3600, 86_400, 90].map((seconds) => everyText(seconds, 'en')))
+      .toEqual(['every minute', 'every 15 minutes', 'every hour', 'every day', 'every 90 seconds']);
+    expect([60, 900, 3600, 86_400, 90].map((seconds) => everyText(seconds, 'zh'))).toEqual(['每 1 分钟', '每 15 分钟', '每 1 小时', '每 1 天', '每 90 秒']);
+    expect(widgetSourceProblem({ source: { everySeconds: 60, lastRunAt: AT, lastOkAt: null, lastError: 'timeout', paused: false } }, 'en'))
+      .toBe('The last update failed. Reason: timeout');
+    expect(widgetSourceProblem({ source: { everySeconds: 60, lastRunAt: AT, lastOkAt: null, lastError: '超时', paused: false } }, 'zh'))
       .toBe('上一次更新出错。原因：超时');
-    expect(widgetSourceProblem({ source: null })).toBeNull();
+    expect(widgetSourceProblem({ source: null }, 'en')).toBeNull();
   });
 });
 
@@ -157,11 +161,12 @@ describe('the views button in the top bar', () => {
       return <LeadConversation railOpen viewsOpen={open} onToggleViews={() => { toggle(); setOpen(!open); }} />;
     }
     const { unmount } = renderUI(<CompanionRuntimeProvider runtime={runtime}><Harness /></CompanionRuntimeProvider>);
-    fireEvent.click(screen.getByRole('button', { name: '打开自定义视图' }));
+    // 按 testID 找按钮：按钮的文字在会话区域的文案目录里。
+    fireEvent.click(screen.getByTestId('views-toggle'));
     expect(toggle).toHaveBeenCalledTimes(1);
-    fireEvent.click(screen.getByRole('button', { name: '收起自定义视图' }));
+    fireEvent.click(screen.getByTestId('views-toggle'));
     expect(toggle).toHaveBeenCalledTimes(2);
-    expect(screen.getByRole('button', { name: '打开自定义视图' })).toBeTruthy();
+    expect(screen.getByTestId('views-toggle')).toBeTruthy();
     unmount();
     renderUI(<CompanionRuntimeProvider runtime={runtime}><LeadConversation railOpen /></CompanionRuntimeProvider>);
     expect(screen.queryByTestId('views-toggle')).toBeNull();
@@ -184,7 +189,8 @@ describe('the right-hand slot (P16.2)', () => {
 
 describe('the views text and order', () => {
   it('writes the short time, picks the shown view, and keeps other views in place when moving', () => {
-    expect(widgetMetaLine({ createdBy: 'user', updatedAt: AT }, 'Paimon')).toBe(`你建的 · 更新于 ${widgetTimeText(AT)}`);
+    expect(widgetMetaLine({ createdBy: 'user', updatedAt: AT }, 'Paimon', 'en')).toBe(`Made by you · updated ${widgetTimeText(AT)}`);
+    expect(widgetMetaLine({ createdBy: 'lead', updatedAt: AT }, 'Paimon', 'zh')).toBe(`Paimon 建的 · 更新于 ${widgetTimeText(AT)}`);
     expect(widgetTimeText('nope')).toBe('');
     expect(currentView(['default', '投资'], '投资')).toBe('投资');
     expect(currentView(['default', '投资'], '没了')).toBe('default');

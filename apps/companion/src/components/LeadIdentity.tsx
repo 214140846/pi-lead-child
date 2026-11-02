@@ -3,6 +3,7 @@ import { useRouter, type Href } from 'expo-router';
 import { useEffect, useState } from 'react';
 
 import { isDevicePaired } from '@/features/settings/settingsNav';
+import { useLocale } from '@/i18n';
 import { useConnectionPhase, useConnectionState, useLeadBusy, useLeadName, useOverview } from '@/state/hooks';
 
 import { useLeadAvatarSource } from './useLeadAvatarSource';
@@ -52,6 +53,7 @@ export function useLeadPresence(): LeadPresence {
   const phase = useConnectionPhase();
   const lead = useOverview()?.lead;
   const name = useLeadName();
+  const locale = useLocale();
   // 下一次自动重试的时间一到就重画一次，顶栏不会一直挂着一个已经过去的时间。
   const [now, setNow] = useState(() => Date.now());
   const retryAt = lead?.state === 'degraded' && lead.nextAttemptAt ? Date.parse(lead.nextAttemptAt) : null;
@@ -62,7 +64,7 @@ export function useLeadPresence(): LeadPresence {
     const timer = setTimeout(() => setNow(Date.now()), wait + 50);
     return () => clearTimeout(timer);
   }, [retryAt]);
-  return leadPresence({ connectionState, phase, lead, now, name });
+  return leadPresence({ connectionState, phase, lead, now, name, locale });
 }
 
 // 小字和状态点同色系：认证、配置失败是红点红字，会自己恢复的降级是橙点橙字，其余是次要文字色。

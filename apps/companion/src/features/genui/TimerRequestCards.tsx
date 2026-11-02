@@ -4,8 +4,13 @@ import { useCallback, useEffect, useState } from 'react';
 
 import { shortTime, standingOrderErrorText } from '@/features/settings/standingOrderModel';
 import { waitedText } from '@/features/workspace/inboxModel';
+import { useLocale, useMessages } from '@/i18n';
 import { useCompanionRuntime } from '@/state/CompanionStateProvider';
 import { useConnectionPhase, useLeadName } from '@/state/hooks';
+
+import { genuiMessages } from './genui.messages';
+
+type TimerText = ReturnType<typeof genuiMessages>['timer'];
 
 // 外部的人要求设的定时器的确认卡（统一的消息事件 spec D16，工单 12）。代价不够低时，Lead 把系统给的 user_action
 // （confirm_timer）原样放进 UserAction，卡片只带确认号：什么定时器、谁要求的、为什么问你、代价的拆解都从
@@ -15,16 +20,16 @@ import { useConnectionPhase, useLeadName } from '@/state/hooks';
 // 定时器本身放在白底、1px 边框的框里（要替你做的事）；原因、代价、来源是左边一列宽 56 的标签加右边的值；
 // 操作组右对齐，只有「设定时器」是主按钮。处理过以后操作组原地换成结果（P5.5）。
 
-type StateLook = { label: string; dot: 'warning' | 'accent' | 'success' | 'danger' | 'text-faint'; tone: 'warning-dark' | 'accent' | 'success-dark' | 'danger-dark' | 'secondary' };
+type StateLook = { dot: 'warning' | 'accent' | 'success' | 'danger' | 'text-faint'; tone: 'warning-dark' | 'accent' | 'success-dark' | 'danger-dark' | 'secondary' };
 
 // 状态按主题的五类状态画（P7.1，主题 C-11 到 C-15）。
 const STATE: Record<TimerRequestDto['state'], StateLook> = {
-  pending: { label: '等你决定', dot: 'warning', tone: 'warning-dark' },
-  running: { label: '正在设', dot: 'accent', tone: 'accent' },
-  done: { label: '已设', dot: 'success', tone: 'success-dark' },
-  failed: { label: '没设成', dot: 'danger', tone: 'danger-dark' },
-  declined: { label: '没有设', dot: 'text-faint', tone: 'secondary' },
-  expired: { label: '已过期', dot: 'text-faint', tone: 'secondary' },
+  pending: { dot: 'warning', tone: 'warning-dark' },
+  running: { dot: 'accent', tone: 'accent' },
+  done: { dot: 'success', tone: 'success-dark' },
+  failed: { dot: 'danger', tone: 'danger-dark' },
+  declined: { dot: 'text-faint', tone: 'secondary' },
+  expired: { dot: 'text-faint', tone: 'secondary' },
 };
 
 // 主题 11.4：后果一列标签宽 56。
@@ -36,33 +41,34 @@ function errorStatus(reason: unknown): number | undefined {
   return typeof reason === 'object' && reason !== null ? (reason as { status?: number }).status : undefined;
 }
 
-function settledText(request: TimerRequestDto): string | null {
+function settledText(request: TimerRequestDto, m: TimerText): string | null {
   switch (request.state) {
     case 'done':
-      return `设好了，来源仍然是 ${request.requester}。可以在「等待中的提醒」里取消。`;
+      return m.done(request.requester);
     case 'failed':
       return request.resultPreview;
     case 'declined':
-      return '你点了「不设」，没有设这个定时器。';
+      return m.declined;
     case 'expired':
-      return '没有决定，过期作废了，没有设。';
+      return m.expired;
     case 'running':
-      return '你点了「设定时器」，正在设。';
+      return m.running;
     default:
       return null;
   }
 }
 
 // 代价的拆解：「第 5 档（最高）：受众 +3、延后执行 +1、到点后要对外做事 +1」。
-function costText(request: TimerRequestDto): string {
+function costText(request: TimerRequestDto, m: TimerText): string {
   const steps = request.cost.steps.filter((step) => step.levels > 0).map((step) => `${step.label} +${step.levels}`);
-  return `第 ${request.cost.level} 档（${request.cost.name}）${steps.length ? `：${steps.join('、')}` : ''}`;
+  return m.cost(request.cost.level, request.cost.name, steps);
 }
 
 export function TimerRequestConfirmCard({ request: id }: { request: string }) {
   const runtime = useCompanionRuntime();
   // 连上 daemon 以后才读（刷新页面时设备可能还在重连）。
   const ready = useConnectionPhase() === 'ready';
+  const m = useMessages(genuiMessages).timer;
   const [value, setValue] = useState<TimerRequestDto | null>(null);
   const [gone, setGone] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -83,9 +89,9 @@ export function TimerRequestConfirmCard({ request: id }: { request: string }) {
     return () => controller.abort();
   }, [load, ready]);
 
-  if (gone) return <Text testID={`surface-timer-request-${id}-gone`} size="secondary" tone="secondary">找不到这张确认卡。</Text>;
+  if (gone) return <Text testID={`surface-timer-request-${id}-gone`} size="secondary" tone="secondary">{m.gone}</Text>;
   if (!value) {
-    return error ? <Text size="secondary" tone="danger-dark">{error}</Text> : <Text size="secondary" tone="secondary">正在读取确认卡…</Text>;
+    return error ? <Text size="secondary" tone="danger-dark">{error}</Text> : <Text size="secondary" tone="secondary">{m.loading}</Text>;
   }
   return <TimerRequestConfirmView request={value} onChange={setValue} reload={load} />;
 }
@@ -97,10 +103,12 @@ function TimerRequestConfirmView({ request, onChange, reload }: {
 }) {
   const runtime = useCompanionRuntime();
   const leadName = useLeadName();
+  const locale = useLocale();
+  const m = useMessages(genuiMessages).timer;
   const [submitting, setSubmitting] = useState<TimerRequestDecision | null>(null);
   const [error, setError] = useState<string | null>(null);
   const id = `surface-timer-request-${request.id}`;
-  const look = STATE[request.state];
+  const look = { ...STATE[request.state], label: m.states[request.state] };
   const pending = request.state === 'pending';
 
   const decide = (decision: TimerRequestDecision) => {
@@ -120,11 +128,11 @@ function TimerRequestConfirmView({ request, onChange, reload }: {
   // 不写成谁要求的（2026-10-28：卡上写过「Aurum Huang（Slack）要求设一个定时器」，Aurum 根本没提定时器）。
   const named = request.origin.kind === 'external' && request.origin.sender !== null;
   const facts = [
-    { label: '原因', value: request.reasons.join('；') },
-    { label: '代价', value: costText(request) },
-    ...(conversation ? [{ label: '来源', value: named ? conversation : `这一轮读过「${conversation}」里的消息，没有指明是谁要的` }] : []),
+    { label: m.reason, value: request.reasons.join(m.reasonSeparator) },
+    { label: m.costLabel, value: costText(request, m) },
+    ...(conversation ? [{ label: m.source, value: named ? conversation : m.sourceUnnamed(conversation) }] : []),
   ];
-  const settled = settledText(request);
+  const settled = settledText(request, m);
   return (
     <Column testID={id} gap="card-row">
       <Row items="center" gap="inline-item">
@@ -134,11 +142,11 @@ function TimerRequestConfirmView({ request, onChange, reload }: {
         </Row>
         <Text flex={1} minW={0} size="card-title" numberOfLines={1}>
           <Text size="card-title" weight="semibold">{named ? request.requester : leadName}</Text>
-          {named ? ' 要求设一个定时器' : ' 要设一个定时器'}
+          {named ? m.requested : m.wants}
         </Text>
         {/* 时刻用等宽字，「等了多久」不用（P14.2）。 */}
         <Text size="meta" tone="secondary" mono={!pending} shrink={0}>
-          {pending ? `等了 ${waitedText(request.createdAt)}` : shortTime(request.resolvedAt ?? request.expiresAt)}
+          {pending ? m.waited(waitedText(request.createdAt, undefined, locale)) : shortTime(request.resolvedAt ?? request.expiresAt)}
         </Text>
       </Row>
       <Box testID={`${id}-what`} px="inset-x" py="inset-y" rounded="md" bg="surface" borderWidth={1} borderColor="border">
@@ -157,11 +165,11 @@ function TimerRequestConfirmView({ request, onChange, reload }: {
         {pending ? (
           <>
             <Button
-              testID={`${id}-decline`} label={submitting === 'decline' ? '正在提交…' : '不设'} variant="ghost" tone="neutral" size="sm"
+              testID={`${id}-decline`} label={submitting === 'decline' ? m.submitting : m.decline} variant="ghost" tone="neutral" size="sm"
               disabled={submitting !== null} onPress={() => decide('decline')}
             />
             <Button
-              testID={`${id}-confirm`} label={submitting === 'confirm' ? '正在设…' : '设定时器'} size="sm"
+              testID={`${id}-confirm`} label={submitting === 'confirm' ? m.confirming : m.confirm} size="sm"
               disabled={submitting !== null} onPress={() => decide('confirm')}
             />
           </>

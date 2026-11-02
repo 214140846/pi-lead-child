@@ -83,7 +83,7 @@ describe("the reply-style routes", () => {
     await call("POST", "/v1/channels/reply-style", { mode: "replace", text: "甲".repeat(REPLY_STYLE_TEXT_MAX_LENGTH) });
     const refused = await call("POST", "/v1/channels/reply-style", { mode: "append", text: "乙" });
     expect(refused.status).toBe(400);
-    expect(refused.body.error.message).toContain("超了");
+    expect(refused.body.error.message).toContain("too many");
     expect([...getReplyStyle(db).text]).toHaveLength(REPLY_STYLE_TEXT_MAX_LENGTH);
   });
 

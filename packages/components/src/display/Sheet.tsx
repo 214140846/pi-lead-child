@@ -8,6 +8,8 @@ import { Pressable } from '../primitives/Pressable';
 import { Box, Column, Row } from '../primitives/layout';
 import { Text } from '../primitives/Text';
 import { zIndex } from '../theme/tokens';
+import { useMessages } from '../i18n';
+import { displayMessages } from './display.messages';
 
 export type SheetProps = {
   /** 是否打开。组件不存这个状态。 */
@@ -34,7 +36,9 @@ const panelOut = SlideOutDown.duration(200).easing(easing).reduceMotion(ReduceMo
 // 从底部升起的面板（第四轮画板的换模型和强度）。盖住最近的父容器：桌面上是工单详情的侧滑栏，手机上是整屏。
 // 父容器要能给它定位（React Native 的 View 默认就是）。关着时只留一个不挡点按的空层，
 // 面板和遮罩卸载时还能播退出动画。
-export function Sheet({ open, onClose, title, subtitle, closeLabel = '关闭', children, footer, testID }: SheetProps) {
+export function Sheet({ open, onClose, title, subtitle, closeLabel: closeLabelProp, children, footer, testID }: SheetProps) {
+  const m = useMessages(displayMessages);
+  const closeLabel = closeLabelProp ?? m.close;
   const insets = useSafeAreaInsets();
   useEffect(() => {
     if (!open || typeof document === 'undefined') return undefined;

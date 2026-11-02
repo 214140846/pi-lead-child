@@ -5,6 +5,23 @@ import {
   designPreferencesProblem, normalizeDesignPreferencesRequest, sameDesignPreferences, shiftLike,
 } from "../src/design-preferences.ts";
 
+describe("interface language", () => {
+  it("defaults to English and merges like the other knobs", () => {
+    expect(DEFAULT_DESIGN_PREFERENCES.locale).toBe("en");
+    const current = designPreferencesFields(DEFAULT_DESIGN_PREFERENCES);
+    const next = applyDesignPreferencesRequest(current, normalizeDesignPreferencesRequest({ locale: "zh" }));
+    expect(next.locale).toBe("zh");
+    expect(sameDesignPreferences(current, next)).toBe(false);
+    expect(designPreferencesProblem({ locale: "zh" })).toBeNull();
+  });
+
+  it("explains a problem in the language it is asked for", () => {
+    expect(designPreferencesProblem({})).toBe("Nothing to change.");
+    expect(designPreferencesProblem({}, "zh")).toBe("没有要改的内容");
+    expect(designPreferencesProblem({ colors: { warning: "#FFE8B0" } }, "en")).toContain("The warning color is too light");
+  });
+});
+
 describe("contrast", () => {
   it("matches WCAG for black, white and the default accent", () => {
     expect(contrastRatio("#000000", "#FFFFFF")).toBeCloseTo(21, 5);
@@ -50,10 +67,10 @@ describe("requests", () => {
   });
 
   it("explains what is wrong in one sentence", () => {
-    expect(designPreferencesProblem({})).toBe("没有要改的内容");
-    expect(designPreferencesProblem({ colors: { accent: "#9DB8FF" } })).toContain("主色太浅");
-    expect(designPreferencesProblem({ colors: { success: "#C8F5DC" } })).toContain("成功色太浅");
-    expect(designPreferencesProblem({ colors: { info: "#06AED4" } })).toBeNull();
-    expect(designPreferencesProblem({ notes: "x".repeat(1_201) })).toContain("最多");
+    expect(designPreferencesProblem({}, "zh")).toBe("没有要改的内容");
+    expect(designPreferencesProblem({ colors: { accent: "#9DB8FF" } }, "zh")).toContain("主色太浅");
+    expect(designPreferencesProblem({ colors: { success: "#C8F5DC" } }, "zh")).toContain("成功色太浅");
+    expect(designPreferencesProblem({ colors: { info: "#06AED4" } }, "zh")).toBeNull();
+    expect(designPreferencesProblem({ notes: "x".repeat(1_201) }, "zh")).toContain("最多");
   });
 });

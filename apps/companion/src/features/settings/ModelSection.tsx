@@ -1,18 +1,19 @@
 import { Button, Card, Column, Divider, Dot, Row, Text } from '@pi-lead-child/components';
-import { parseLeadModelSpec, type ModelSettingsDto } from '@pi-lead-child/protocol';
+import { MODEL_MAX_BACKUPS, parseLeadModelSpec, type ModelSettingsDto } from '@pi-lead-child/protocol';
 import { useState, type ReactNode } from 'react';
 
-import { useMemorySettings, useModelSettings } from '@/state/hooks';
+import { useLocale } from '@/i18n';
+import { useLeadName, useMemorySettings, useModelSettings } from '@/state/hooks';
 import { DAEMON_OLDER_THAN_WEB } from '@/state/types';
 
 import { PendingSwitchBanner } from './MemorySection';
 import { memoryErrorText } from './memoryModel';
+import { modelMessages } from './model.messages';
 import { AddSlot, brainPickerGroups, Slot, SlotFace, SlotGrid, type PickerGroup } from './ModelPicker';
 import { ModelLibrary } from './ModelLibrary';
 import { useModelAction } from './useModelAction';
 import {
-  backupsLeft, BRAIN_APPLIES, BRAIN_HINT, BRAIN_NAME, brainIndex, brainModelName, brainModelSub, choiceFor, FAST_APPLIES, FAST_HINT,
-  FAST_NAME, fastModelSub, slotLabel, untilLabel, withoutSlot, withSlot,
+  backupsLeft, brainIndex, brainModelName, brainModelSub, choiceFor, fastModelSub, slotLabel, untilLabel, withoutSlot, withSlot,
 } from './modelSettingsModel';
 
 // 设置 → Lead → 模型（方案 B，2026-10-29，.scratch/model-settings/spec.md）。
@@ -20,6 +21,8 @@ import {
 //   下面「模型库」（ModelLibrary.tsx）：按服务商分组的大脑模型，和直觉的每一条；接入服务商、添加直觉都在那里。
 // 每个改动都是操作层的 model_settings 操作（runtime.modelSettingsAction），和 Lead 的 perform_action 同一个函数。
 export function ModelSection() {
+  const locale = useLocale();
+  const m = modelMessages(locale);
   const { modelSettings, resource } = useModelSettings();
   if (!modelSettings && resource?.state === 'unsupported' && resource.error === DAEMON_OLDER_THAN_WEB) {
     // 部署时网页先生效，daemon 后重启：这一段时间旧 daemon 没有模型设置。重启以后页面重新连上，自动再取。
@@ -27,16 +30,16 @@ export function ModelSection() {
       <Column testID="model-old-daemon" gap="text-stack">
         <Row items="center" gap="icon-label">
           <Dot color="warning" size={7} />
-          <Text size="body" weight="semibold" tone="warning-dark">daemon 还没更新，读不到模型设置。</Text>
+          <Text size="body" weight="semibold" tone="warning-dark">{m.oldDaemon}</Text>
         </Row>
-        <Text size="secondary" tone="secondary">网页已经是新版本，daemon 还是旧版本。重启 daemon（plc daemon restart）以后，这一页会自动刷新。</Text>
+        <Text size="secondary" tone="secondary">{m.oldDaemonHelp}</Text>
       </Column>
     );
   }
   if (!modelSettings) {
     return (
       <Text testID="model-loading" size="body" tone={resource?.state === 'error' ? 'danger-dark' : 'muted'}>
-        {resource?.state === 'error' ? `读不到模型设置：${resource.error ? memoryErrorText(resource.error) : '模型设置还没有启动'}` : '正在读取模型设置…'}
+        {resource?.state === 'error' ? m.loadFailed(resource.error ? memoryErrorText(resource.error, locale) : m.notStarted) : m.loading}
       </Text>
     );
   }
@@ -59,6 +62,9 @@ type Picker = { block: 'brain' | 'fast' | 'fallback'; slot: number };
 type Message = { block: 'brain' | 'fast'; text: string; error: boolean };
 
 function Assignment({ dto }: { dto: ModelSettingsDto }) {
+  const locale = useLocale();
+  const m = modelMessages(locale);
+  const leadName = useLeadName();
   const { busy, run } = useModelAction();
   const [picker, setPicker] = useState<Picker | null>(null);
   const [search, setSearch] = useState('');
@@ -82,7 +88,7 @@ function Assignment({ dto }: { dto: ModelSettingsDto }) {
       return;
     }
     const result = outcome.result as { note?: string | null; applied?: string } | null;
-    setMessage({ block, text: result?.note ?? (result?.applied === 'after_turn' ? '已保存。Lead 正在回答，这一轮结束后换主用。' : '已保存。'), error: false });
+    setMessage({ block, text: result?.note ?? (result?.applied === 'after_turn' ? m.savedAfterTurn(leadName) : m.saved), error: false });
   };
 
   const brainChain = dto.brain.chain;
@@ -91,7 +97,7 @@ function Assignment({ dto }: { dto: ModelSettingsDto }) {
     models: withSlot(brainChain, slot, choiceFor(brainChain, slot, model)),
   });
   const brainGroups = (slot: number, selected: string | null): PickerGroup[] => brainPickerGroups(dto, {
-    search, showAll, slot, selected, onPick: pickBrain(slot),
+    search, showAll, slot, selected, onPick: pickBrain(slot), locale,
   });
   const onShowAll = (group: string) => setShowAll((previous) => new Set([...previous, group]));
 
@@ -103,7 +109,7 @@ function Assignment({ dto }: { dto: ModelSettingsDto }) {
       <SlotFace
         testID={`model-brain-slot-${slot}`}
         title={brainModelName(choice.model, entry)}
-        sub={blocked ? `额度用尽 · ${untilLabel(blocked, now)} 恢复` : brainModelSub(choice.model, entry, choice.effort)}
+        sub={blocked ? m.quotaBlocked(untilLabel(blocked, now, locale)) : brainModelSub(choice.model, entry, choice.effort, locale)}
         subTone={blocked ? 'danger-dark' : 'secondary'}
         live={choice.model === current}
         focused={isOpen}
@@ -113,7 +119,7 @@ function Assignment({ dto }: { dto: ModelSettingsDto }) {
       <Slot
         key={`brain-${slot}`}
         testID={`model-brain-picker-${slot}`}
-        label={slotLabel(slot)}
+        label={slotLabel(slot, locale)}
         face={face}
         open={isOpen}
         onOpen={() => open({ block: 'brain', slot })}
@@ -123,7 +129,7 @@ function Assignment({ dto }: { dto: ModelSettingsDto }) {
         onSearch={setSearch}
         onShowAll={onShowAll}
         footer={slot > 0 ? (
-          <Button testID={`model-brain-remove-${slot}`} label="移出备用" variant="ghost" tone="neutral" size="xs" disabled={busy}
+          <Button testID={`model-brain-remove-${slot}`} label={m.removeBackup} variant="ghost" tone="neutral" size="xs" disabled={busy}
             onPress={() => void apply('brain', 'set_brain_chain', { models: withoutSlot(brainChain, slot) })} />
         ) : null}
       />
@@ -136,8 +142,8 @@ function Assignment({ dto }: { dto: ModelSettingsDto }) {
       <Slot
         key="brain-add"
         testID="model-brain-picker-add"
-        label={slotLabel(brainChain.length)}
-        face={<SlotFace title="选一个模型" sub="从模型库里选" focused />}
+        label={slotLabel(brainChain.length, locale)}
+        face={<SlotFace title={m.pickModel} sub={m.pickFromLibrary} focused />}
         open
         onOpen={() => {}}
         onClose={close}
@@ -147,7 +153,7 @@ function Assignment({ dto }: { dto: ModelSettingsDto }) {
         onShowAll={onShowAll}
       />
     ) : (
-      <AddSlot key="brain-add" testID="model-brain-add" label={slotLabel(brainChain.length)} left={`还能加 ${brainLeft} 个`}
+      <AddSlot key="brain-add" testID="model-brain-add" label={slotLabel(brainChain.length, locale)} left={m.canAdd(brainLeft)}
         onPress={() => open({ block: 'brain', slot: brainChain.length })} />
     ));
   }
@@ -157,7 +163,7 @@ function Assignment({ dto }: { dto: ModelSettingsDto }) {
   const liveFast = fastChain.find((id) => fastById.get(id)?.apiKeySet) ?? null;
   const fastGroups = (slot: number): PickerGroup[] => [{
     key: 'fast',
-    title: FAST_NAME,
+    title: m.fastName,
     count: dto.fast.models.length,
     hidden: 0,
     options: dto.fast.models
@@ -167,10 +173,10 @@ function Assignment({ dto }: { dto: ModelSettingsDto }) {
         return {
           key: model.id,
           title: model.name,
-          sub: fastModelSub(model),
+          sub: fastModelSub(model, locale),
           date: null,
           selected: fastChain[slot] === model.id,
-          disabledReason: elsewhere >= 0 ? `已是${slotLabel(elsewhere)}` : null,
+          disabledReason: elsewhere >= 0 ? m.alreadySlot(slotLabel(elsewhere, locale)) : null,
           onPick: () => void apply('fast', 'set_fast_chain', { chain: withSlot(fastChain, slot, model.id) }),
         };
       }),
@@ -182,12 +188,12 @@ function Assignment({ dto }: { dto: ModelSettingsDto }) {
       <Slot
         key={`fast-${slot}`}
         testID={`model-fast-picker-${slot}`}
-        label={slotLabel(slot)}
+        label={slotLabel(slot, locale)}
         face={(
           <SlotFace
             testID={`model-fast-slot-${slot}`}
             title={model?.name ?? id}
-            sub={model ? (model.apiKeySet ? fastModelSub(model) : `${fastModelSub(model)} · 没有 key，跳过它`) : '找不到这一条'}
+            sub={model ? (model.apiKeySet ? fastModelSub(model, locale) : m.fastNoKey(fastModelSub(model, locale))) : m.fastMissing}
             subTone={model?.apiKeySet ? 'secondary' : 'danger-dark'}
             live={id === liveFast}
             focused={isOpen}
@@ -200,7 +206,7 @@ function Assignment({ dto }: { dto: ModelSettingsDto }) {
         search={search}
         onSearch={setSearch}
         footer={(
-          <Button testID={`model-fast-remove-${slot}`} label={slot === 0 ? '不用直觉' : '移出备用'} variant="ghost" tone="neutral" size="xs" disabled={busy}
+          <Button testID={`model-fast-remove-${slot}`} label={slot === 0 ? m.stopFast : m.removeBackup} variant="ghost" tone="neutral" size="xs" disabled={busy}
             onPress={() => void apply('fast', 'set_fast_chain', { chain: slot === 0 ? [] : withoutSlot(fastChain, slot) })} />
         )}
       />
@@ -213,8 +219,8 @@ function Assignment({ dto }: { dto: ModelSettingsDto }) {
       <Slot
         key="fast-add"
         testID="model-fast-picker-add"
-        label={slotLabel(fastChain.length)}
-        face={<SlotFace title="选一条直觉" sub="从模型库里选" focused />}
+        label={slotLabel(fastChain.length, locale)}
+        face={<SlotFace title={m.pickFast} sub={m.pickFromLibrary} focused />}
         open
         onOpen={() => {}}
         onClose={close}
@@ -223,8 +229,8 @@ function Assignment({ dto }: { dto: ModelSettingsDto }) {
         onSearch={setSearch}
       />
     ) : (
-      <AddSlot key="fast-add" testID="model-fast-add" label={slotLabel(fastChain.length)}
-        left={fastChain.length === 0 ? '现在判断都问大脑' : `还能加 ${fastLeft} 个`}
+      <AddSlot key="fast-add" testID="model-fast-add" label={slotLabel(fastChain.length, locale)}
+        left={fastChain.length === 0 ? m.allToBrain : m.canAdd(fastLeft)}
         onPress={() => open({ block: 'fast', slot: fastChain.length })} />
     ));
   }
@@ -235,46 +241,46 @@ function Assignment({ dto }: { dto: ModelSettingsDto }) {
   const fallbackOpen = picker?.block === 'fallback';
   const fallbackGroups: PickerGroup[] = fallbackOpen ? [
     {
-      key: 'system', title: '系统', count: 1, hidden: 0,
+      key: 'system', title: m.system, count: 1, hidden: 0,
       options: [{
-        key: 'system', title: '系统自己选', sub: effective && !fallbackModel ? `现在是 ${brainModelName(effective, index.get(effective))}` : '配置里最新的 haiku，没有时用主用',
+        key: 'system', title: m.systemChoice, sub: effective && !fallbackModel ? m.systemNow(brainModelName(effective, index.get(effective))) : m.systemDefault,
         date: null, selected: fallbackModel === null, disabledReason: null,
         onPick: () => void apply('fast', 'set_fast_chain', { chain: fastChain, llmFallback: null }),
       }],
     },
     ...brainPickerGroups(dto, {
-      search, showAll, slot: -1, selected: fallbackModel,
+      search, showAll, slot: -1, selected: fallbackModel, locale,
       onPick: (model) => void apply('fast', 'set_fast_chain', { chain: fastChain, llmFallback: { model, effort: null } }),
     }),
   ] : [];
-  const fallbackName = effective ? brainModelName(effective, index.get(effective)) : '没有可用的大脑模型';
+  const fallbackName = effective ? brainModelName(effective, index.get(effective)) : m.noBrainModel;
 
   return (
     <Column gap="group-label">
-      <Text size="eyebrow" weight="bold" tone="secondary" px="section-label-x">现在的分工</Text>
+      <Text size="eyebrow" weight="bold" tone="secondary" px="section-label-x">{m.assignment}</Text>
       <Card testID="model-assignment" rounded="2xl">
-        <Block title={BRAIN_NAME} hint={BRAIN_HINT} applies={BRAIN_APPLIES} testID="model-brain">
+        <Block title={m.brainName} hint={m.brainHint} applies={m.brainApplies} testID="model-brain">
           <SlotGrid>{brainSlots}</SlotGrid>
           {brainLeft === 0 ? (
-            <Text testID="model-brain-full" size="meta" tone="muted">备用最多 3 个。要换一个，先在它的下拉里「移出备用」。</Text>
+            <Text testID="model-brain-full" size="meta" tone="muted">{m.brainFull(MODEL_MAX_BACKUPS)}</Text>
           ) : null}
           {message?.block === 'brain' ? <Text testID="model-brain-message" size="note" tone={message.error ? 'danger-dark' : 'secondary'}>{message.text}</Text> : null}
         </Block>
         <Divider />
-        <Block title={FAST_NAME} hint={FAST_HINT} applies={FAST_APPLIES} testID="model-fast">
+        <Block title={m.fastName} hint={m.fastHint} applies={m.fastApplies} testID="model-fast">
           {fastSlots.length ? <SlotGrid>{fastSlots}</SlotGrid> : (
-            <Text size="note" tone="secondary">还没有直觉：判断都问大脑。在下面的模型库里添加一条。</Text>
+            <Text size="note" tone="secondary">{m.noFastYet}</Text>
           )}
           <SlotGrid>{[(
             <Slot
               key="fallback"
               testID="model-fallback-picker"
-              label={`都用不了时，问${BRAIN_NAME}`}
+              label={m.fallbackLabel}
               face={(
                 <SlotFace
                   testID="model-fallback"
                   title={fallbackName}
-                  sub={`${fallbackModel ? '你选的' : '系统选的'} · 慢一些，用的是${BRAIN_NAME}的额度`}
+                  sub={fallbackModel ? m.fallbackByYou : m.fallbackBySystem}
                   focused={fallbackOpen}
                 />
               )}

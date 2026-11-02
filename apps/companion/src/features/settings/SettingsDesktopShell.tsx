@@ -1,8 +1,10 @@
 import { Badge, Box, Column, Pressable, Row, Screen, ScrollArea, SlidePanel, Text } from '@pi-lead-child/components';
 import type { ReactNode } from 'react';
 
+import { useMessages } from '@/i18n';
 import { useLeadName } from '@/state/hooks';
 
+import { settingsMessages } from './settings.messages';
 import { SETTINGS_GROUPS, settingsGroupLabel, type SettingsBadges, type SettingsItem, type SettingsSectionId } from './settingsNav';
 
 type SettingsDesktopShellProps = {
@@ -26,6 +28,7 @@ export function SettingsDesktopShell({
   selected, onSelect, onExit, badges = {}, drawer, drawerKey, children,
 }: SettingsDesktopShellProps) {
   const leadName = useLeadName();
+  const m = useMessages(settingsMessages);
   return (
     <Screen edges={['top', 'bottom', 'left', 'right']} bg="canvas">
       <Row
@@ -52,7 +55,7 @@ export function SettingsDesktopShell({
         >
           <Pressable
             testID="settings-exit"
-            aria-label="回到工作台"
+            aria-label={m.backToWorkspace}
             onPress={onExit}
             self="flex-start"
             px={10} // spacing-exempt: 返回链接点击区
@@ -61,12 +64,12 @@ export function SettingsDesktopShell({
             rounded="sm"
           >
             {/* spacing-exempt: 链接字号 */}
-            <Text size="12" weight="bold" tone="secondary">‹ 回到工作台</Text>
+            <Text size="12" weight="bold" tone="secondary">{`‹ ${m.backToWorkspace}`}</Text>
           </Pressable>
-          <Text size="page-title" weight="extrabold" px="section-label-x" pt="section-label-top" pb="section-label-bottom">设置</Text>
+          <Text size="page-title" weight="extrabold" px="section-label-x" pt="section-label-top" pb="section-label-bottom">{m.title}</Text>
           {SETTINGS_GROUPS.map((group) => (
             <Column key={group.id} gap="nav-item">
-              <Text size="eyebrow" weight="extrabold" tone="muted" letterSpacing={0.9} px="section-label-x" pt="section-label-top" pb="section-label-bottom">{settingsGroupLabel(group, leadName)}</Text>
+              <Text size="eyebrow" weight="extrabold" tone="muted" letterSpacing={0.9} px="section-label-x" pt="section-label-top" pb="section-label-bottom">{settingsGroupLabel(group, leadName, m)}</Text>
               {group.items.map((item) => (
                 <SidebarItem
                   key={item.id}
@@ -104,6 +107,7 @@ function SidebarItem({ item, selected, badge, onPress }: {
   badge: number | undefined;
   onPress: () => void;
 }) {
+  const m = useMessages(settingsMessages);
   const count = badge !== undefined && badge > 0 ? badge : null;
   return (
     <Pressable
@@ -121,7 +125,7 @@ function SidebarItem({ item, selected, badge, onPress }: {
       bg={selected ? 'accent-soft' : { default: 'transparent', hover: 'surface-subtle', press: 'surface-muted' }}
     >
       <Text size="label" weight={selected ? 'bold' : 'semibold'} color={selected ? 'accent-strong' : 'text-strong'} numberOfLines={1}>
-        {item.label}
+        {m.items[item.id]}
       </Text>
       {count !== null ? (
         <Box testID={`settings-nav-${item.id}-badge`}>

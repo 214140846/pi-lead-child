@@ -30,8 +30,8 @@ const waitingForReview = () => ticket66({
 const reviewActions = () => [
   ticketAction('request_review', { label: '派发核查', area: 'execution' }),
   ticketAction('complete', { label: '验收', area: 'delivery' }),
-  ticketAction('rework', { label: '打回返工', area: 'delivery' }),
-  ticketAction('cancel', { label: '取消工单' }),
+  ticketAction('rework', { label: 'Send back for rework', area: 'delivery' }),
+  ticketAction('cancel', { label: 'Cancel ticket' }),
 ];
 
 afterEach(() => setViewportWidth(0));
@@ -77,7 +77,7 @@ describe('the bottom action bar', () => {
 
     fireEvent.click(within(bar()).getByTestId('ticket-bar-open_pr'));
     expect(run).not.toHaveBeenCalled();
-    expect(within(bar()).getByTestId('ticket-confirm').textContent).toContain('推到 GitHub，开一个草稿 PR？');
+    expect(within(bar()).getByTestId('ticket-confirm').textContent).toContain('Push to GitHub and open a draft PR?');
 
     fireEvent.click(within(within(bar()).getByTestId('ticket-confirm')).getByText('开草稿 PR'));
     expect(run).toHaveBeenCalledWith(TICKET, 'open_pr', { input: { expectedHead: 'a'.repeat(40), expectedTarget: 'main' } });
@@ -132,7 +132,7 @@ describe('a decision waiting for you', () => {
     const resolve = vi.spyOn(runtime, 'resolveIntervention').mockResolvedValue();
     const thread = screen.getByTestId('ticket-thread');
 
-    expect(bar().textContent).toContain('先回答这张工单上的决定');
+    expect(bar().textContent).toContain('First, answer the decision on this ticket');
     const pending = within(thread).getByTestId('ticket-pending-decision');
     fireEvent.click(within(pending).getByTestId('intervention-action-option:merge'));
     expect(resolve).toHaveBeenCalledWith('decision:12', { authority: 'decision_request', decision: 'select', optionId: 'merge' });

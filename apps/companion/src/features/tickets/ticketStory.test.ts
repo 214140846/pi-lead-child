@@ -21,14 +21,14 @@ function story66(overrides: Partial<TicketStoryInput> = {}) {
 describe('the story of ticket #66', () => {
   it('tells what happened in a few lines, one line for each thing', () => {
     expect(story66().map((entry) => [entry.title, entry.detail])).toEqual([
-      ['你创建了工单', null],
-      ['Run #42 交付', null],
-      ['Run #43 核查不通过', expect.stringMatching(/^1\) npm test 全量根测试 exit 1，154 files passed、1 failed；/)],
-      ['你授权 Paimon 托管，发起返工', null],
-      ['5 次执行没有交付', '模型满载、你换成 Claude Code、认证失败 ×2、交接失败'],
-      ['Run #49 交付', null],
-      ['你派发了独立核查', null],
-      ['核查 Run #73 没有完成', 'Codex 不支持模型 gpt-5.5'],
+      ['You created the ticket', null],
+      ['Run #42 delivered', null],
+      ['Run #43 review failed', expect.stringMatching(/^1\) npm test 全量根测试 exit 1，154 files passed、1 failed；/)],
+      ['You delegated the ticket to Paimon and requested rework', null],
+      ['5 runs did not deliver', 'Model at capacity, You switched to Claude Code, Authentication failed ×2, Handoff failed'],
+      ['Run #49 delivered', null],
+      ['You requested an independent review', null],
+      ['Review Run #73 did not complete', 'Codex does not support model gpt-5.5'],
     ]);
   });
 
@@ -39,13 +39,13 @@ describe('the story of ticket #66', () => {
   });
 
   it('lists each run of a group with its own reason', () => {
-    const group = story66().find((entry) => entry.title === '5 次执行没有交付')!;
+    const group = story66().find((entry) => entry.title === '5 runs did not deliver')!;
     expect(group.runs.map((run) => [run.title, run.reason])).toEqual([
-      ['Run #44', '模型满载'],
-      ['Run #45', '你换成 Claude Code'],
-      ['Run #46', '认证失败'],
-      ['Run #47', '认证失败'],
-      ['Run #48', '交接失败'],
+      ['Run #44', 'Model at capacity'],
+      ['Run #45', 'You switched to Claude Code'],
+      ['Run #46', 'Authentication failed'],
+      ['Run #47', 'Authentication failed'],
+      ['Run #48', 'Handoff failed'],
     ]);
     expect(group.at).toBe('2026-08-19T09:42:01.000Z');
     expect(group.until).toBe('2026-08-21T09:17:54.000Z');
@@ -54,10 +54,10 @@ describe('the story of ticket #66', () => {
 
   it('marks deliveries and passed reviews as success and your decisions as yours', () => {
     const tones = Object.fromEntries(story66().map((entry) => [entry.title, entry.tone]));
-    expect(tones['Run #42 交付']).toBe('success');
-    expect(tones['Run #43 核查不通过']).toBe('danger');
-    expect(tones['你派发了独立核查']).toBe('accent');
-    expect(tones['你创建了工单']).toBe('neutral');
+    expect(tones['Run #42 delivered']).toBe('success');
+    expect(tones['Run #43 review failed']).toBe('danger');
+    expect(tones['You requested an independent review']).toBe('accent');
+    expect(tones['You created the ticket']).toBe('neutral');
   });
 });
 
@@ -72,9 +72,9 @@ describe('the story of a ticket', () => {
     ];
     const facts = buildRunFacts({ attempts, activities });
     expect(buildTicketStory({ ...base, attempts, activities, facts }).map((entry) => entry.title)).toEqual([
-      'Run #44 没有交付',
-      '你发起返工',
-      'Run #46 没有交付',
+      'Run #44 did not deliver',
+      'You requested rework',
+      'Run #46 did not deliver',
     ]);
   });
 
@@ -84,7 +84,7 @@ describe('the story of a ticket', () => {
       payload: { decision: 'ticket_runtime_switched', fromRuntime: 'codex', toRuntime: 'claude', previousRunId: null },
     }];
     expect(buildTicketStory({ ...base, attempts: [], activities }).map((entry) => entry.title)).toEqual([
-      '你把执行 agent 换成 Claude Code',
+      'You changed the executor agent to Claude Code',
     ]);
   });
 
@@ -95,10 +95,10 @@ describe('the story of a ticket', () => {
     }];
     const created = { at: '2026-10-15T00:21:00.000Z', by: 'lead' as const };
     expect(buildTicketStory({ ...base, created, attempts: [], activities }).map((entry) => entry.title)).toEqual([
-      'Paimon 创建了工单',
-      '你派发了独立核查',
+      'Paimon created the ticket',
+      'You requested an independent review',
     ]);
-    expect(buildTicketStory({ ...base, leadName: 'Jarvis', created, attempts: [], activities })[0]?.title).toBe('Jarvis 创建了工单');
+    expect(buildTicketStory({ ...base, leadName: 'Jarvis', created, attempts: [], activities })[0]?.title).toBe('Jarvis created the ticket');
   });
 
   it('ends with the acceptance when you accept the ticket', () => {
@@ -106,6 +106,16 @@ describe('the story of a ticket', () => {
       id: 902, actor: 'user' as const, kind: 'transition' as const, attemptId: null, createdAt: '2026-08-22T00:00:00.000Z',
       payload: { from: 'review', to: 'done' },
     }];
-    expect(buildTicketStory({ ...base, attempts: [], activities })).toMatchObject([{ title: '你验收通过', tone: 'success' }]);
+    expect(buildTicketStory({ ...base, attempts: [], activities })).toMatchObject([{ title: 'You accepted the ticket', tone: 'success' }]);
+  });
+
+  it('writes the story in Chinese when the interface language is Chinese', () => {
+    const activities = [{
+      id: 902, actor: 'user' as const, kind: 'transition' as const, attemptId: null, createdAt: '2026-08-22T00:00:00.000Z',
+      payload: { from: 'review', to: 'done' },
+    }];
+    const created = { at: '2026-08-21T00:00:00.000Z', by: 'lead' as const };
+    expect(buildTicketStory({ ...base, locale: 'zh', created, attempts: [], activities }).map((entry) => entry.title))
+      .toEqual(['Paimon 创建了工单', '你验收通过']);
   });
 });

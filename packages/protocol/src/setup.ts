@@ -4,6 +4,7 @@
 // - 会话里的准备清单卡（首次上线一次）和建议卡（之后每轮结束时）也用这里的项和文字。
 // 文字里的 {lead} 由 App 换成用户给 Lead 起的名字（设置 → 身份与风格）。
 import { Type, type Static, type TProperties, type TSchema } from "typebox";
+import { defineMessages, type Locale } from "./i18n.ts";
 
 const StrictObject = <T extends TProperties>(properties: T) =>
   Type.Object(properties, { additionalProperties: false });
@@ -29,15 +30,63 @@ export interface SetupItemMeta {
   href: string;
 }
 
-export const SETUP_ITEMS: Readonly<Record<SetupItemKey, SetupItemMeta>> = Object.freeze({
-  brain: { title: "大脑模型", why: "{lead} 靠大模型思考和对话。", cta: "去设置", href: "/settings/model" },
-  memory: { title: "记忆 embedding", why: "没配时 {lead} 只能按关键词回想；配上以后能按意思找到以前的事。", cta: "去设置", href: "/settings/memory" },
-  slack: { title: "Slack", why: "填两个 token，打开「自动代你处理」，{lead} 就能替你看和回 Slack。", cta: "去设置", href: "/settings/channels" },
-  profile: { title: "身份与风格", why: "改 {lead} 的名字和性格，告诉它你喜欢怎么沟通。", cta: "去看看", href: "/settings/profile" },
-  github: { title: "GitHub", why: "连上以后，{lead} 能看 PR、留 review、跟进 CI。", cta: "去连接", href: "/settings/connections/github" },
-  jira: { title: "Jira", why: "连上以后，{lead} 能查工单、更新状态，把讨论记到工单里。", cta: "去连接", href: "/settings/connections/atlassian" },
-  notion: { title: "Notion", why: "连上以后，{lead} 能读写你的文档和数据库。", cta: "去连接", href: "/settings/connections/notion" },
+// 各项的名字、理由和按钮字。界面按用户的语言取（setupItemMeta）；daemon 写进记录的名字用 zh（SETUP_ITEMS）。
+export const setupItemMessages = defineMessages({
+  en: {
+    brain: { title: "Brain model", why: "{lead} uses a large model to think and talk.", cta: "Set up" },
+    memory: {
+      title: "Memory embedding",
+      why: "Without it, {lead} can only recall by keyword. With it, {lead} can find past events by meaning.",
+      cta: "Set up",
+    },
+    slack: {
+      title: "Slack",
+      why: "Enter two tokens and turn on \"Handle automatically for you\". Then {lead} can read and reply to Slack for you.",
+      cta: "Set up",
+    },
+    profile: {
+      title: "Identity & style",
+      why: "Change the name and personality of {lead}, and tell it how you like to communicate.",
+      cta: "Look",
+    },
+    github: { title: "GitHub", why: "After you connect it, {lead} can read PRs, leave reviews and follow CI.", cta: "Connect" },
+    jira: {
+      title: "Jira",
+      why: "After you connect it, {lead} can look up issues, update their status and record discussions in them.",
+      cta: "Connect",
+    },
+    notion: { title: "Notion", why: "After you connect it, {lead} can read and write your documents and databases.", cta: "Connect" },
+  } satisfies Record<SetupItemKey, Omit<SetupItemMeta, "href">>,
+  zh: {
+    brain: { title: "大脑模型", why: "{lead} 靠大模型思考和对话。", cta: "去设置" },
+    memory: { title: "记忆 embedding", why: "没配时 {lead} 只能按关键词回想；配上以后能按意思找到以前的事。", cta: "去设置" },
+    slack: { title: "Slack", why: "填两个 token，打开「自动代你处理」，{lead} 就能替你看和回 Slack。", cta: "去设置" },
+    profile: { title: "身份与风格", why: "改 {lead} 的名字和性格，告诉它你喜欢怎么沟通。", cta: "去看看" },
+    github: { title: "GitHub", why: "连上以后，{lead} 能看 PR、留 review、跟进 CI。", cta: "去连接" },
+    jira: { title: "Jira", why: "连上以后，{lead} 能查工单、更新状态，把讨论记到工单里。", cta: "去连接" },
+    notion: { title: "Notion", why: "连上以后，{lead} 能读写你的文档和数据库。", cta: "去连接" },
+  },
 });
+
+const SETUP_ITEM_HREFS: Readonly<Record<SetupItemKey, string>> = Object.freeze({
+  brain: "/settings/model",
+  memory: "/settings/memory",
+  slack: "/settings/channels",
+  profile: "/settings/profile",
+  github: "/settings/connections/github",
+  jira: "/settings/connections/atlassian",
+  notion: "/settings/connections/notion",
+});
+
+/** 一项的名字、理由、按钮字（按 locale 的语言）和路由。 */
+export function setupItemMeta(key: SetupItemKey, locale: Locale): SetupItemMeta {
+  return { ...setupItemMessages(locale)[key], href: SETUP_ITEM_HREFS[key] };
+}
+
+// 中文的一份：daemon 写进记录的名字用它（engine 的 setup-hints.ts）。界面用 setupItemMeta。
+export const SETUP_ITEMS: Readonly<Record<SetupItemKey, SetupItemMeta>> = Object.freeze(
+  Object.fromEntries(SETUP_ITEM_KEYS.map((key) => [key, setupItemMeta(key, "zh")])) as Record<SetupItemKey, SetupItemMeta>,
+);
 
 // 卡片能跳去的路由只有这些（卡上的 open.href）。
 export const SETUP_HREFS: readonly string[] = Object.freeze(SETUP_ITEM_KEYS.map((key) => SETUP_ITEMS[key].href));

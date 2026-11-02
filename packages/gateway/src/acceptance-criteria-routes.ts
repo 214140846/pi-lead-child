@@ -5,7 +5,8 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Scope, TicketAcceptanceCriteriaResponse } from "@pi-lead-child/protocol";
 import type { Db } from "@pi-lead-child/store";
-import { getItem } from "@pi-lead-child/store";
+import { getItem, getLocale } from "@pi-lead-child/store";
+import { routeMessages } from "./routes.messages.js";
 import { recordedDeliverySnapshot, ticketAcceptanceCriteria } from "@pi-lead-child/engine";
 
 export interface AcceptanceCriteriaRouteContext {
@@ -26,21 +27,22 @@ export async function handleAcceptanceCriteriaRoute(ctx: AcceptanceCriteriaRoute
   if (!match || ctx.req.method !== "GET") return false;
   ctx.requireAuth("tickets:view");
   const ticketId = Number(match[1]);
+  const m = routeMessages(getLocale(ctx.db));
   const item = getItem(ctx.db, ticketId);
   if (!item) {
-    ctx.json(404, { error: { code: "not_found", message: `工单 #${ticketId} 不存在` } });
+    ctx.json(404, { error: { code: "not_found", message: m.ticketNotFound(ticketId) } });
     return true;
   }
   const delivery = ctx.url.searchParams.get("delivery");
   if (delivery !== null && !SEQUENCE.test(delivery)) {
-    ctx.json(400, { error: { code: "invalid_request", message: "delivery 是第几次交付，一个正整数" } });
+    ctx.json(400, { error: { code: "invalid_request", message: m.deliveryNumber } });
     return true;
   }
   // 和交付视图一样，先补存还没存的交付快照（04）：确认对着的交付要和页面上看到的一致。
   await recordedDeliverySnapshot(ctx.db, item);
   const view = ticketAcceptanceCriteria(ctx.db, ticketId, delivery === null ? {} : { delivery: Number(delivery) });
   if (!view) {
-    ctx.json(404, { error: { code: "not_found", message: `工单 #${ticketId} 没有第 ${delivery} 次交付` } });
+    ctx.json(404, { error: { code: "not_found", message: m.deliveryNotFound(ticketId, delivery) } });
     return true;
   }
   const body: TicketAcceptanceCriteriaResponse = { acceptanceCriteria: view };

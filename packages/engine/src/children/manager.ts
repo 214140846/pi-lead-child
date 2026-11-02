@@ -2,7 +2,7 @@ import { isAbsolute, dirname, join } from "node:path";
 import { mkdirSync } from "node:fs";
 import { clearTimeout as clearNodeTimeout, setTimeout as setNodeTimeout } from "node:timers";
 import type { Db } from "@pi-lead-child/store";
-import { getItem, transition } from "@pi-lead-child/store";
+import { getItem, getLocale, transition } from "@pi-lead-child/store";
 import {
   createRun, getRun, markRunStopped, pauseRun, recordRunProfileHash, transitionRunState, updateRun, updateRunEffort,
 } from "@pi-lead-child/store";
@@ -1092,8 +1092,9 @@ async function runItemLifecycle(
     const ledgerWrite = command ? detectLedgerWrite(command, { dbPath: opts.dbPath, dataDir }) : null;
     if (ledgerWrite) {
       try {
+        // 告警推给用户、写进收件箱：按写入时用户选的语言写。
         const shown = redactAndCap(command!, 500).text;
-        const text = ledgerWriteAttemptAlertText({ itemId, runId, target: ledgerWrite.target, command: shown });
+        const text = ledgerWriteAttemptAlertText({ itemId, runId, target: ledgerWrite.target, command: shown }, getLocale(db));
         recordSecurityAlert(db, {
           kind: LEDGER_WRITE_ATTEMPTED_KIND, entityKey: `run:${runId}`, sourceRef: `ledger-write:${runId}:${event.seq}`,
           title: text.title, body: text.body,

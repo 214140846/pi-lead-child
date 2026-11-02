@@ -464,7 +464,7 @@ describe("what the lead reads about a suspended request", () => {
     for (const itemId of [first, second]) {
       expect(tickets.find((ticket) => ticket.id === itemId)?.executionState).toMatchObject({
         state: "blocked",
-        label: "派发已挂起",
+        label: "Dispatch is suspended",
         reason: expect.stringContaining(`Codex 账号余额不足（故障 #${incidentId}）`),
       });
     }

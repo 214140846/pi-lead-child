@@ -2,7 +2,10 @@ import { Box, Button, Column, Row, Text, type ColorToken, type TextTone } from '
 import type { KernelOutcomeSnapshotResource, KernelTicketPow } from '@pi-lead-child/protocol';
 import { useState } from 'react';
 
+import { useLocale, useMessages } from '@/i18n';
+
 import { buildEvidencePresentation, type EvidenceRow, type EvidenceState } from './ticketEvidence';
+import { ticketRecordsMessages } from './ticketRecords.messages';
 
 const SUMMARY_COLORS: Record<'muted' | 'attention' | 'passed', { bg: ColorToken; border: ColorToken; text: TextTone }> = {
   muted: { bg: 'surface-muted', border: 'border', text: 'secondary' },
@@ -18,6 +21,7 @@ const ROW_MARK: Record<EvidenceState, { mark: string; bg: ColorToken; tone: Text
 };
 
 function EvidenceRows({ rows }: { rows: EvidenceRow[] }) {
+  const m = useMessages(ticketRecordsMessages);
   return (
     <Column>
       {rows.map((row) => {
@@ -31,7 +35,7 @@ function EvidenceRows({ rows }: { rows: EvidenceRow[] }) {
             <Column minW={0} flex={1}>
               <Text size="card-title" weight="bold">{row.label}</Text>
               <Text mt="text-stack" size="secondary" tone="secondary">
-                {row.state === 'not_run' ? `未运行 · ${row.detail}` : row.detail}
+                {row.state === 'not_run' ? m.pow.notRun(row.detail) : row.detail}
               </Text>
             </Column>
           </Row>
@@ -44,16 +48,18 @@ function EvidenceRows({ rows }: { rows: EvidenceRow[] }) {
 // 验收证据：最新交付的证据在上面，更早 Run 的条目按 Run 折叠在下面（F6）。
 // 条目状态只用数据里的状态；不再用正则把 agent 的借口改判成"环境限制"（F7）。
 export function PowPanel({ pow, outcome }: { pow: KernelTicketPow | null; outcome?: KernelOutcomeSnapshotResource | null }) {
+  const locale = useLocale();
+  const m = useMessages(ticketRecordsMessages);
   const [historyOpen, setHistoryOpen] = useState(false);
   if (!pow && !outcome?.latest) {
     return (
       <Column testID="pow-panel" py="banner-y" borderBottomWidth={1} borderBottomColor="border-soft">
-        <Text size="card-title" weight="bold">当前 daemon 未提供 PoW 投影</Text>
-        <Text mt="text-stack" size="secondary" tone="muted">Checkpoint 仍会保留在下方，不会推测验证结果。</Text>
+        <Text size="card-title" weight="bold">{m.pow.unavailable}</Text>
+        <Text mt="text-stack" size="secondary" tone="muted">{m.pow.unavailableBody}</Text>
       </Column>
     );
   }
-  const evidence = buildEvidencePresentation(pow, outcome);
+  const evidence = buildEvidencePresentation(pow, outcome, locale);
   const colors = SUMMARY_COLORS[evidence.summary.tone];
   return (
     <Column testID="pow-panel">
@@ -84,9 +90,9 @@ export function PowPanel({ pow, outcome }: { pow: KernelTicketPow | null; outcom
       {evidence.history.length > 0 ? (
         <Column testID="pow-history" gap="group-label">
           <Row items="center" justify="space-between" gap="side-item">
-            <Text size="eyebrow" weight="extrabold" tone="secondary">{`历史证据 · ${evidence.history.length} 次 Run`}</Text>
+            <Text size="eyebrow" weight="extrabold" tone="secondary">{m.pow.history(evidence.history.length)}</Text>
             <Button
-              label={historyOpen ? '收起' : '展开'}
+              label={historyOpen ? m.collapse : m.expand}
               onPress={() => setHistoryOpen((open) => !open)}
               testID="pow-history-toggle"
               variant="link"

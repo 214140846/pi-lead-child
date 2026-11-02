@@ -113,7 +113,7 @@ describe('the outbox in the Lead conversation', () => {
 
     expect(screen.getByTestId('composer-input').hasAttribute('disabled')).toBe(false);
     await type('合盖前最后一条');
-    expect(bubbleStatus('合盖前最后一条')).toBe('待发送 · 连接恢复后发送');
+    expect(bubbleStatus('合盖前最后一条')).toBe('Waiting to send · sends when the connection is back');
     expect(client.sendChatCommand).not.toHaveBeenCalled();
     // 它已经写进本地存储了。
     expect(storage.values.get('pi-lead-child.chat-outbox.v1')).toContain('合盖前最后一条');
@@ -121,7 +121,7 @@ describe('the outbox in the Lead conversation', () => {
     setState('connected');
     await vi.waitFor(() => expect(client.sendChatCommand).toHaveBeenCalledTimes(1));
     expect(client.sendChatCommand.mock.calls[0]![0]).toMatchObject({ message: '合盖前最后一条', clientMessageId: expect.any(String) });
-    await vi.waitFor(() => expect(bubbleStatus('合盖前最后一条')).toBe('已送达'));
+    await vi.waitFor(() => expect(bubbleStatus('合盖前最后一条')).toBe('Delivered'));
     expect(storage.values.has('pi-lead-child.chat-outbox.v1')).toBe(false);
   });
 
@@ -139,7 +139,7 @@ describe('the outbox in the Lead conversation', () => {
     setState('connected');
     await vi.waitFor(() => expect(client.sendChatCommand).toHaveBeenCalledTimes(1));
     expect(client.sendChatCommand.mock.calls[0]![0]).toMatchObject({ message: '看这张图', images: [image] });
-    await vi.waitFor(() => expect(bubbleStatus('看这张图')).toBe('已送达'));
+    await vi.waitFor(() => expect(bubbleStatus('看这张图')).toBe('Delivered'));
     expect(src()).toBe('data:image/png;base64,iVBORw0KGgo=');
   });
 
@@ -150,13 +150,13 @@ describe('the outbox in the Lead conversation', () => {
 
     await type('发不出去的');
     expect(userMessage('发不出去的')).not.toBeNull();
-    await vi.waitFor(() => expect(screen.getByText(/没有发出去/)).toBeTruthy());
+    await vi.waitFor(() => expect(screen.getByText(/Not sent/)).toBeTruthy());
     const card = screen.getByTestId('failure-card');
-    expect(within(card).getByRole('button', { name: '重试' })).toBeTruthy();
-    await act(async () => { fireEvent.click(within(card).getByRole('button', { name: '重试' })); });
+    expect(within(card).getByRole('button', { name: 'Retry' })).toBeTruthy();
+    await act(async () => { fireEvent.click(within(card).getByRole('button', { name: 'Retry' })); });
     await vi.waitFor(() => expect(client.sendChatCommand).toHaveBeenCalledTimes(2));
-    await vi.waitFor(() => expect(within(screen.getByTestId('failure-card')).getByRole('button', { name: '删除' })).toBeTruthy());
-    await act(async () => { fireEvent.click(within(screen.getByTestId('failure-card')).getByRole('button', { name: '删除' })); });
+    await vi.waitFor(() => expect(within(screen.getByTestId('failure-card')).getByRole('button', { name: 'Delete' })).toBeTruthy());
+    await act(async () => { fireEvent.click(within(screen.getByTestId('failure-card')).getByRole('button', { name: 'Delete' })); });
     await act(async () => { await runtime.whenIdle(); });
     expect(userMessage('发不出去的')).toBeNull();
     expect(storage.values.has('pi-lead-child.chat-outbox.v1')).toBe(false);
@@ -177,7 +177,7 @@ describe('the outbox in the Lead conversation', () => {
     expect(second.client.sendChatCommand.mock.calls[0]![0]).toMatchObject({
       message: '睡眠时写的', clientMessageId: stored[0]!.clientMessageId,
     });
-    await vi.waitFor(() => expect(bubbleStatus('睡眠时写的')).toBe('已送达'));
+    await vi.waitFor(() => expect(bubbleStatus('睡眠时写的')).toBe('Delivered'));
   });
 });
 
@@ -200,7 +200,7 @@ describe('the follow key of the conversation list', () => {
     expect(sent).not.toBeNull();
 
     setState('connected');
-    await vi.waitFor(() => expect(bubbleStatus('断线时发的')).toBe('已送达'));
+    await vi.waitFor(() => expect(bubbleStatus('断线时发的')).toBe('Delivered'));
     expect(key()).toBe(sent);
   });
 });

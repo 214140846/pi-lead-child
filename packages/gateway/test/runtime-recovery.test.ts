@@ -123,7 +123,7 @@ describe("ticket runtime recovery", () => {
     expect(db.prepare("SELECT requested_runtime, requested_model FROM items WHERE id=?").get(itemId))
       .toEqual({ requested_runtime: "codex", requested_model: "gpt-5.4" });
     expect(createControlPlaneService(db, { runtime: runtimeStatus }).getItem(itemId)?.ticket.executionState)
-      .toMatchObject({ kind: "recovery", state: "waiting_dispatch", label: "正在恢复 · 等待 agent", reason: expect.stringContaining("capacity") });
+      .toMatchObject({ kind: "recovery", state: "waiting_dispatch", label: "Recovering · waiting for an agent", reason: expect.stringContaining("capacity") });
     expect(db.prepare(
       `SELECT COUNT(*) AS n FROM activities
        WHERE item_id=? AND json_extract(payload, '$.decision')='runtime_recovery_queued'`,

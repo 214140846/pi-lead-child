@@ -173,8 +173,8 @@ export function decideByHandbook(input: HandbookDecisionInput): HandbookDecision
   if (final === "hand") return result("hand", { kind: "ask", reason: `${said}${how}：先别动，拟个回复交给你` }, by, capped);
   // 这一句没有派活的能力（例如兜底的「自己判断，拿不准再问我」）：交给 Lead 自己判断（ask），回复照样按 final 能直接发。
   if (!situation.abilities.length) {
-    return result(final, { kind: "ask", reason: `${said}${how}：${final === "auto" ? handbookModePhrase(situation, "auto") : "做好，回复先给你看"}` }, by, capped);
+    return result(final, { kind: "ask", reason: `${said}${how}：${final === "auto" ? handbookModePhrase(situation, "auto", "zh") : "做好，回复先给你看"}` }, by, capped);
   }
-  const verb = final === "auto" ? handbookModePhrase(situation, "auto") : "做好，回复先给你看";
+  const verb = final === "auto" ? handbookModePhrase(situation, "auto", "zh") : "做好，回复先给你看";
   return result(final, { kind: "work", intent: situationIntent(situation), reason: `${said}${how}：${verb}` }, by, capped);
 }

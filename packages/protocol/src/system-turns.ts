@@ -1,6 +1,9 @@
 // lead 自己发起的回合，以及 daemon 自己发出的系统通知。它们在会话流里各是一轮：
 // 没有用户消息（userText 为空），没有发起的 binding，所有带 chat scope 的客户端都收得到。
 // originKind 以 system: 开头，客户端用 systemTurnLabel 给它们贴标签。
+import type { Locale } from "./i18n.ts";
+import { systemTurnMessages } from "./system-turns.messages.ts";
+
 export const SYSTEM_TURN_ORIGIN_PREFIX = "system:";
 
 export const SYSTEM_TURN_ORIGINS = {
@@ -32,17 +35,12 @@ export type SystemTurnOrigin = typeof SYSTEM_TURN_ORIGINS[keyof typeof SYSTEM_TU
 
 // Lead 自己发起的回合只写「Lead」，和用户发起的回合一样：发生了什么由消息内容说明（2026-10-15 用户决定，
 // 方案 A）。daemon 自己写的通知不是 Lead 在说话，标成系统通知。
-const LABELS: Record<string, string> = {
-  [SYSTEM_TURN_ORIGINS.blocker]: "Lead",
-  [SYSTEM_TURN_ORIGINS.notification]: "Lead",
-  [SYSTEM_TURN_ORIGINS.heartbeat]: "Lead",
-  [SYSTEM_TURN_ORIGINS.digest]: "Lead",
-  [SYSTEM_TURN_ORIGINS.precipitate]: "Lead",
-  [SYSTEM_TURN_ORIGINS.reminder]: "Lead",
-  [SYSTEM_TURN_ORIGINS.blockerNotice]: "系统通知 · blocker",
-  [SYSTEM_TURN_ORIGINS.fallbackNotice]: "系统通知",
-  [SYSTEM_TURN_ORIGINS.ownerAction]: "系统通知 · 主人操作",
-  [SYSTEM_TURN_ORIGINS.securityAlert]: "系统通知 · 安全",
+// 系统通知的标签按界面语言（system-turns.messages.ts）。
+const NOTICE_LABELS: Record<string, "blockerNotice" | "fallbackNotice" | "ownerAction" | "securityAlert"> = {
+  [SYSTEM_TURN_ORIGINS.blockerNotice]: "blockerNotice",
+  [SYSTEM_TURN_ORIGINS.fallbackNotice]: "fallbackNotice",
+  [SYSTEM_TURN_ORIGINS.ownerAction]: "ownerAction",
+  [SYSTEM_TURN_ORIGINS.securityAlert]: "securityAlert",
 };
 
 // daemon 自己写的通知：不是 Lead 的回合，也不是任何人的回答。
@@ -60,9 +58,11 @@ export function isSystemTurnOrigin(originKind: string | null | undefined): boole
 }
 
 // 用户发起的回合返回 null。不认识的 system: 来源（更新的 daemon）也算 Lead 发起的回合。
-export function systemTurnLabel(originKind: string | null | undefined): string | null {
+// locale 暂时缺省 zh：plc chat 照旧输出中文，都迁完以后去掉缺省值。
+export function systemTurnLabel(originKind: string | null | undefined, locale: Locale = "zh"): string | null {
   if (!isSystemTurnOrigin(originKind)) return null;
-  return LABELS[originKind!] ?? "Lead";
+  const key = NOTICE_LABELS[originKind!];
+  return key ? systemTurnMessages(locale)[key] : "Lead";
 }
 
 // Lead 自己发起的内部回合（摘要、整理笔记）没有要告诉用户的事时，只回复这个词。
@@ -80,18 +80,20 @@ export function isQuietReply(text: string): boolean {
 
 // 没有通知、也没有卡片的 blocker（例如派发重试用完）在会话里只留这一行，daemon 直接写，不经过 Lead：
 // Lead 忙着、在整理笔记、或者模型连不上时，它照样在。开头总是「工单 #N」，客户端据此给出「打开工单」。
-export function blockerNoticeText(itemId: number | null, summary: string): string {
+// locale 暂时缺省 zh，和 daemon 写进数据库的其他文字一样。
+export function blockerNoticeText(itemId: number | null, summary: string, locale: Locale = "zh"): string {
   // 摘要开头的「工单 #N」就是这张工单时去掉，不说两遍。是另一张工单时保留：
   // orchestrator 把子工单的 reviewer 重试耗尽记在父工单上，两张工单都要点名。
   const reason = summary.trim()
     .replace(/^工单\s*#(\d+)\s*/u, (whole, id: string) => (Number(id) === itemId ? "" : whole))
     .replace(/^阻塞[：:]\s*/u, "")
     .replace(/^的\s*/u, "");
-  return itemId === null ? `有一处阻塞：${reason}` : `工单 #${itemId} 卡住了：${reason}`;
+  const m = systemTurnMessages(locale);
+  return itemId === null ? m.blockerSomewhere(reason) : m.blockerOnTicket(itemId, reason);
 }
 
-// 一行 blocker 记录说的是哪张工单（旧版 daemon 写的是「🔴 工单 #N 阻塞：…」，也认）。
+// 一行 blocker 记录说的是哪张工单（旧版 daemon 写的是「🔴 工单 #N 阻塞：…」，也认；英文写的是「Ticket #N …」）。
 export function blockerNoticeTicketId(text: string): number | null {
-  const match = /^(?:🔴\s*)?工单\s*#(\d+)/u.exec(text.trim());
+  const match = /^(?:🔴\s*)?(?:工单|Ticket)\s*#(\d+)/u.exec(text.trim());
   return match ? Number(match[1]) : null;
 }

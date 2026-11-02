@@ -56,17 +56,17 @@ describe('settings on desktop', () => {
   it('shows only the groups that have screens, with the content next to it', () => {
     renderLayout();
     const sidebar = screen.getByTestId('settings-sidebar');
-    expect(within(sidebar).getByText('‹ 回到工作台')).toBeTruthy();
-    expect(within(sidebar).getByText('设置')).toBeTruthy();
-    expect(within(sidebar).getByText('账号')).toBeTruthy();
-    expect(within(sidebar).getByText('设备')).toBeTruthy();
+    expect(within(sidebar).getByText('‹ Back to workspace')).toBeTruthy();
+    expect(within(sidebar).getByText('Settings')).toBeTruthy();
+    expect(within(sidebar).getByText('Account')).toBeTruthy();
+    expect(within(sidebar).getByText('Devices')).toBeTruthy();
     // Lead 分组的标题是它的名字（缺省 Paimon），排在最上面（2026-10-22）。
     expect(within(sidebar).getByText('Paimon')).toBeTruthy();
     expect(within(sidebar).queryByText('Lead')).toBeNull();
-    expect(within(sidebar).getByText('执行')).toBeTruthy();
+    expect(within(sidebar).getByText('Execution')).toBeTruthy();
     const text = sidebar.textContent ?? '';
-    expect(text.indexOf('Paimon')).toBeLessThan(text.indexOf('账号'));
-    const labels = ['身份与风格', '外观', '模型', '记忆', '常设指令', '连接', '消息通道', '本设备', '已配对设备', '执行器'];
+    expect(text.indexOf('Paimon')).toBeLessThan(text.indexOf('Account'));
+    const labels = ['Identity & style', 'Appearance', 'Models', 'Memory', 'Standing orders', 'Connections', 'Message channels', 'This device', 'Paired devices', 'Runtimes'];
     expect(labels.map((label) => within(sidebar).getByText(label).textContent)).toEqual(labels);
     // 还没有界面的功能不出现，也就没有点了没反应的条目。
     for (const missing of ['授权与委托', 'Daemon']) {

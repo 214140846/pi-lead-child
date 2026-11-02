@@ -9,8 +9,11 @@ import {
   RuntimeSettingsRequestSchema,
   type RuntimeSettingsDto,
   type RuntimeSettingsRequest,
+  type Locale,
   type Scope,
+  DEFAULT_LOCALE,
 } from "@pi-lead-child/protocol";
+import { routeMessages } from "./routes.messages.js";
 
 // daemon 的执行器开关。操作层也用它（UiActionServices.runtimeSettings），是同一个对象。
 export type RuntimeSettingsService = RuntimeSwitchService;
@@ -25,6 +28,8 @@ export interface RuntimeSettingsRouteContext {
   requireAuth(scope: Scope): void;
   // 以你的名义拨一个开关：转调操作层，返回拨完以后的设置。
   perform(request: RuntimeSettingsRequest): Promise<RuntimeSettingsDto>;
+  // 用户现在选的界面语言（store 的 getLocale）：回给界面的错误和主人操作的摘要按它写。不给时按缺省语言。
+  locale?: Locale;
 }
 
 const PATH = "/v1/runtimes/settings";
@@ -39,7 +44,7 @@ export async function handleRuntimeSettingsRoute(ctx: RuntimeSettingsRouteContex
   if (req.method === "GET") {
     ctx.requireAuth("tickets:view");
     if (!ctx.service) {
-      fail(503, "internal_error", "unavailable", "执行器设置还没有启动");
+      fail(503, "internal_error", "unavailable", routeMessages(ctx.locale ?? DEFAULT_LOCALE).runtimeUnavailable);
       return true;
     }
     ctx.json(200, { runtimeSettings: ctx.service.get() });
@@ -53,7 +58,7 @@ export async function handleRuntimeSettingsRoute(ctx: RuntimeSettingsRouteContex
     return true;
   }
   if (!ctx.service) {
-    fail(503, "internal_error", "unavailable", "执行器设置还没有启动");
+    fail(503, "internal_error", "unavailable", routeMessages(ctx.locale ?? DEFAULT_LOCALE).runtimeUnavailable);
     return true;
   }
   ctx.json(200, { runtimeSettings: await ctx.perform(request as RuntimeSettingsRequest) });

@@ -4,12 +4,14 @@
 //   - 圆角、行高、字号基准：各三档。
 //   - 颜色：主色（强调色）、成功、警告、危险、信息，各一个十六进制值；同色系的深浅由代码推导。
 //   - 设计说明：用户自己的话（喜欢什么、不喜欢什么）。渲染不读它；Lead 用它来提出修改。
+//   - 界面语言（2026-11-01）：en 或 zh，缺省 en（i18n.ts）。
 // 可读性底线（用户 2026-10-22 定）：字号最小 11，白底上的文字对比度至少 4.5:1。字号在推导里保底；
 // 颜色在校验里检查：强调色会当链接文字用，必须够深；另外几种只当图标和底色，base 至少 3:1，当文字的深色变体由代码压到 4.5:1。
 // 存在 plc.db 的 kv（ui.design-preferences）。读用 tickets:view，改用 tickets:create。Lead 的 update_design_preferences 工具
 // 和设置页调同一个函数（engine 的 design-preferences.ts）；Lead 只能在用户这一轮明确要求时代他改。每次修改记一次主人操作。
 // 变化时网关发 snapshot.required，payload 是 {resource: "design-preferences"}，客户端重新 GET。
 import { Type, type Static, type TProperties } from "typebox";
+import { DEFAULT_LOCALE, LOCALES, defineMessages, type Locale } from "./i18n.ts";
 
 const StrictObject = <T extends TProperties>(properties: T) =>
   Type.Object(properties, { additionalProperties: false });
@@ -63,6 +65,7 @@ export const DesignPreferencesFieldsSchema = StrictObject({
   colors: DesignColorsSchema,
   // 用户自己的话。空字符串表示没写。
   notes: Type.String({ maxLength: DESIGN_NOTES_MAX_LENGTH }),
+  locale: Literals(LOCALES),
 });
 export type DesignPreferencesFields = Static<typeof DesignPreferencesFieldsSchema>;
 
@@ -96,6 +99,7 @@ export const DesignPreferencesRequestSchema = StrictObject({
   textScale: Type.Optional(Literals(TEXT_SCALE_LEVELS)),
   colors: Type.Optional(PartialColorsSchema),
   notes: Type.Optional(Type.String({ maxLength: DESIGN_NOTES_MAX_LENGTH * 2 })),
+  locale: Type.Optional(Literals(LOCALES)),
 });
 export type DesignPreferencesRequest = Static<typeof DesignPreferencesRequestSchema>;
 
@@ -110,16 +114,46 @@ export const DEFAULT_DESIGN_PREFERENCES: DesignPreferencesDto = Object.freeze({
   textScale: "medium",
   colors: DEFAULT_DESIGN_COLORS,
   notes: "",
+  locale: DEFAULT_LOCALE,
   updatedAt: null,
   updatedBy: null,
 });
 
-export const DENSITY_LEVEL_LABELS: Record<DensityLevel, string> = { compact: "紧凑", standard: "标准", comfortable: "宽松" };
-export const DENSITY_ZONE_LABELS: Record<DensityZone, string> = { workspace: "工作台", ticket: "工单详情", conversation: "会话", settings: "设置" };
-export const RADIUS_LEVEL_LABELS: Record<RadiusLevel, string> = { sharp: "小圆角", soft: "标准", round: "大圆角" };
-export const LINE_HEIGHT_LEVEL_LABELS: Record<LineHeightLevel, string> = { tight: "紧", normal: "标准", loose: "松" };
-export const TEXT_SCALE_LEVEL_LABELS: Record<TextScaleLevel, string> = { small: "小一号", medium: "标准", large: "大一号" };
-export const PALETTE_ROLE_LABELS: Record<PaletteRole, string> = { accent: "主色", success: "成功", warning: "警告", danger: "危险", info: "信息" };
+// 档位和区域的名字。界面按用户的语言取；Lead 的系统提示词是中文，取 zh。
+export const designPreferenceLabels = defineMessages({
+  en: {
+    density: { compact: "Compact", standard: "Standard", comfortable: "Roomy" } satisfies Record<DensityLevel, string>,
+    zone: { workspace: "Workspace", ticket: "Ticket details", conversation: "Conversation", settings: "Settings" } satisfies Record<DensityZone, string>,
+    radius: { sharp: "Small", soft: "Standard", round: "Large" } satisfies Record<RadiusLevel, string>,
+    lineHeight: { tight: "Tight", normal: "Standard", loose: "Loose" } satisfies Record<LineHeightLevel, string>,
+    textScale: { small: "Smaller", medium: "Standard", large: "Larger" } satisfies Record<TextScaleLevel, string>,
+    palette: { accent: "Accent", success: "Success", warning: "Warning", danger: "Danger", info: "Info" } satisfies Record<PaletteRole, string>,
+    problem: {
+      nothingToChange: "Nothing to change.",
+      notesTooLong: (max: number) => `The design notes can be at most ${max} characters.`,
+      notHex: (role: string) => `Write the ${role.toLowerCase()} color as #RRGGBB.`,
+      accentTooLight: (min: number, ratio: string) =>
+        `The accent color is too light. It is used for link text, so its contrast on white must be at least ${min}:1. It is ${ratio}:1 now.`,
+      toneTooLight: (role: string, min: number, ratio: string) =>
+        `The ${role.toLowerCase()} color is too light. Its contrast on white must be at least ${min}:1. It is ${ratio}:1 now.`,
+    },
+  },
+  zh: {
+    density: { compact: "紧凑", standard: "标准", comfortable: "宽松" },
+    zone: { workspace: "工作台", ticket: "工单详情", conversation: "会话", settings: "设置" },
+    radius: { sharp: "小圆角", soft: "标准", round: "大圆角" },
+    lineHeight: { tight: "紧", normal: "标准", loose: "松" },
+    textScale: { small: "小一号", medium: "标准", large: "大一号" },
+    palette: { accent: "主色", success: "成功", warning: "警告", danger: "危险", info: "信息" },
+    problem: {
+      nothingToChange: "没有要改的内容",
+      notesTooLong: (max) => `设计说明最多 ${max} 个字`,
+      notHex: (role) => `${role}要写成 #RRGGBB`,
+      accentTooLight: (min, ratio) => `主色太浅：它会当链接文字用，白底上的对比度要至少 ${min}:1，现在是 ${ratio}:1`,
+      toneTooLight: (role, min, ratio) => `${role}色太浅：白底上的对比度要至少 ${min}:1，现在是 ${ratio}:1`,
+    },
+  },
+});
 
 const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f​-‏‪-‮⁠-⁤﻿]/gu;
 
@@ -148,6 +182,7 @@ export function normalizeDesignPreferencesRequest(request: DesignPreferencesRequ
     out.colors = colors;
   }
   if (request.notes !== undefined) out.notes = normalizeDesignNotes(request.notes);
+  if (request.locale !== undefined) out.locale = request.locale;
   return out;
 }
 
@@ -160,18 +195,19 @@ export function applyDesignPreferencesRequest(current: DesignPreferencesFields, 
     textScale: request.textScale ?? current.textScale,
     colors: { ...current.colors, ...(request.colors ?? {}) },
     notes: request.notes ?? current.notes,
+    locale: request.locale ?? current.locale,
   };
 }
 
 export function designPreferencesFields(dto: DesignPreferencesDto): DesignPreferencesFields {
-  return { density: { ...dto.density }, radius: dto.radius, lineHeight: dto.lineHeight, textScale: dto.textScale, colors: { ...dto.colors }, notes: dto.notes };
+  return { density: { ...dto.density }, radius: dto.radius, lineHeight: dto.lineHeight, textScale: dto.textScale, colors: { ...dto.colors }, notes: dto.notes, locale: dto.locale };
 }
 
 export function sameDesignPreferences(a: DesignPreferencesFields, b: DesignPreferencesFields): boolean {
   return DENSITY_ZONES.every((zone) => a.density[zone] === b.density[zone])
     && a.radius === b.radius && a.lineHeight === b.lineHeight && a.textScale === b.textScale
     && PALETTE_ROLES.every((role) => a.colors[role] === b.colors[role])
-    && a.notes === b.notes;
+    && a.notes === b.notes && a.locale === b.locale;
 }
 
 // —— 颜色的计算：对比度和同色系推导。纯函数，组件库和校验都用 ——
@@ -268,24 +304,21 @@ export const ACCENT_TEXT_CONTRAST = 4.5;
 // 所以这里只挡接近白色的值；WCAG 对图形的 3:1 由深色变体和描边承担。
 export const TONE_BASE_CONTRAST = 2;
 
-/** 整理以后的修改有什么问题，用户能看懂的一句话。没有问题时返回 null。 */
-export function designPreferencesProblem(request: DesignPreferencesRequest): string | null {
+/** 整理以后的修改有什么问题，用户能看懂的一句话（按 locale 的语言）。没有问题时返回 null。 */
+export function designPreferencesProblem(request: DesignPreferencesRequest, locale: Locale = DEFAULT_LOCALE): string | null {
+  const m = designPreferenceLabels(locale);
   const touched = request.density !== undefined || request.radius !== undefined || request.lineHeight !== undefined
-    || request.textScale !== undefined || request.colors !== undefined || request.notes !== undefined;
-  if (!touched) return "没有要改的内容";
-  if (request.notes !== undefined && [...request.notes].length > DESIGN_NOTES_MAX_LENGTH) return `设计说明最多 ${DESIGN_NOTES_MAX_LENGTH} 个字`;
+    || request.textScale !== undefined || request.colors !== undefined || request.notes !== undefined || request.locale !== undefined;
+  if (!touched) return m.problem.nothingToChange;
+  if (request.notes !== undefined && [...request.notes].length > DESIGN_NOTES_MAX_LENGTH) return m.problem.notesTooLong(DESIGN_NOTES_MAX_LENGTH);
   if (request.colors) {
     for (const role of PALETTE_ROLES) {
       const value = request.colors[role];
       if (value === undefined) continue;
-      if (!/^#[0-9A-F]{6}$/.test(value)) return `${PALETTE_ROLE_LABELS[role]}要写成 #RRGGBB`;
+      if (!/^#[0-9A-F]{6}$/.test(value)) return m.problem.notHex(m.palette[role]);
       const ratio = contrastRatio(value, "#FFFFFF");
-      if (role === "accent" && ratio < ACCENT_TEXT_CONTRAST) {
-        return `主色太浅：它会当链接文字用，白底上的对比度要至少 ${ACCENT_TEXT_CONTRAST}:1，现在是 ${ratio.toFixed(2)}:1`;
-      }
-      if (role !== "accent" && ratio < TONE_BASE_CONTRAST) {
-        return `${PALETTE_ROLE_LABELS[role]}色太浅：白底上的对比度要至少 ${TONE_BASE_CONTRAST}:1，现在是 ${ratio.toFixed(2)}:1`;
-      }
+      if (role === "accent" && ratio < ACCENT_TEXT_CONTRAST) return m.problem.accentTooLight(ACCENT_TEXT_CONTRAST, ratio.toFixed(2));
+      if (role !== "accent" && ratio < TONE_BASE_CONTRAST) return m.problem.toneTooLight(m.palette[role], TONE_BASE_CONTRAST, ratio.toFixed(2));
     }
   }
   return null;

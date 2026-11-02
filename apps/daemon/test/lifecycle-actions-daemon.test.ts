@@ -9,7 +9,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tempDir } from "@pi-lead-child/core/testing";
-import { liveChildren, provisionWorkspace, releaseWorkspace } from "@pi-lead-child/engine";
+import { liveChildren, provisionWorkspace, releaseWorkspace, updateDesignPreferences } from "@pi-lead-child/engine";
 import { createLeadTools, runningChildren } from "@pi-lead-child/lead";
 import { expectNoTestProcesses, testProcesses } from "@pi-lead-child/runtime/testing";
 import { OWNER_ACTION_PERFORMED_KIND, UI_ACTION_PERFORMED_KIND } from "@pi-lead-child/protocol";
@@ -30,6 +30,8 @@ beforeEach(() => {
   dir = tempDir("plc-lifecycle-actions-daemon-");
   dbPath = join(dir, "plc.db");
   db = openDb(dbPath);
+  // 这个文件的断言是中文：先把界面语言设成中文（缺省是英文）。
+  updateDesignPreferences(db, { request: { locale: "zh" }, caller: { kind: "user" } });
 });
 
 // daemon 停机时不停止正在执行的 child（留给下一个 daemon 接管）。开始执行的用例拉起过垫片：删掉数据目录，垫片停止 CLI

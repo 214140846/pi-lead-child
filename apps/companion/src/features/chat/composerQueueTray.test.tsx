@@ -77,10 +77,10 @@ describe('the queue tray above the composer', () => {
   it('stays collapsed by default and shows only the newest follow-up with Steer and ×', () => {
     setup([running, first, second], { leadQueue: queue });
     const tray = screen.getByTestId('queue-tray');
-    expect(within(tray).getByTestId('queue-tray-count').textContent).toBe('排队 3');
+    expect(within(tray).getByTestId('queue-tray-count').textContent).toBe('Queue 3');
     expect(within(tray).getByText('改成 2 分钟以后，在 Slack 上告诉小周一声')).toBeTruthy();
     expect(within(tray).getByTestId('queue-follow-up-turn-q2-steer')).toBeTruthy();
-    expect(within(tray).getByTestId('queue-follow-up-turn-q2-cancel').getAttribute('aria-label')).toBe('取消这条追问');
+    expect(within(tray).getByTestId('queue-follow-up-turn-q2-cancel').getAttribute('aria-label')).toBe('Cancel this follow-up');
     expect(screen.getByTestId('queue-tray-toggle').getAttribute('aria-expanded')).toBe('false');
     expect(screen.getByTestId('queue-tray-drawer').getAttribute('aria-hidden')).toBe('true');
     // 收着的列表里没有点得到的按钮（2026-10-28 预览里点到了藏着的「收起」）。
@@ -104,7 +104,7 @@ describe('the queue tray above the composer', () => {
     // 最新的一条还在卡片里，展开后也写「你的追问」。
     const tray = screen.getByTestId('queue-tray');
     expect(within(tray).getByText('改成 2 分钟以后，在 Slack 上告诉小周一声')).toBeTruthy();
-    expect(within(tray).getByText('你的追问')).toBeTruthy();
+    expect(within(tray).getByText('Your follow-up')).toBeTruthy();
     // 收起按钮在列表头上。
     const collapse = within(drawer).getByTestId('queue-tray-collapse');
     expect(collapse.getAttribute('aria-expanded')).toBe('true');
@@ -123,7 +123,7 @@ describe('the queue tray above the composer', () => {
     const runtime = setup([running, first, second]);
     vi.spyOn(runtime, 'followUpAction').mockRejectedValue(new Error('Lead 已经答完这一轮了'));
     fireEvent.click(screen.getByTestId('queue-follow-up-turn-q2-cancel'));
-    expect(await screen.findByText('没有做成：Lead 已经答完这一轮了')).toBeTruthy();
+    expect(await screen.findByText('Did not complete: Lead 已经答完这一轮了')).toBeTruthy();
   });
 
   it('queues every message sent while Lead is busy', () => {
@@ -145,7 +145,7 @@ describe('the queue tray above the composer', () => {
   // daemon 把取消了的一轮停在 steered（和「一起回答」同一个终态，不算失败）。助手一侧不能写成「已插话」。
   it('marks a cancelled follow-up under your message and gives it no answer', () => {
     setup([turn('turn-cancelled', { state: 'steered', placement: 'cancelled', userText: '不用了' })]);
-    expect(screen.getByTestId('placement-status').textContent).toBe('已取消 · 没有发给 Paimon');
+    expect(screen.getByTestId('placement-status').textContent).toBe('Cancelled · not sent to Paimon');
     expect(screen.queryByText(/已插话/)).toBeNull();
     expect(screen.queryByTestId('message-fairy')).toBeNull();
   });
@@ -168,7 +168,7 @@ describe('regressions found in the preview', () => {
     expect(screen.queryByText(/Paimon · 发送中/)).toBeNull();
     const marks = screen.getAllByTestId('message-fairy');
     expect(marks).toHaveLength(1);
-    expect(marks[0]!.getAttribute('aria-label')).toBe('Paimon 在想');
+    expect(marks[0]!.getAttribute('aria-label')).toBe('Paimon is thinking');
   });
 });
 

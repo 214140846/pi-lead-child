@@ -73,7 +73,7 @@ describe("conversation cards through the daemon", () => {
     }).event)();
     await vi.waitFor(() => expect(leadActivityPushes(fresh).some((event) => event.payload.interrupt?.seq === alarm.seq)).toBe(true));
     const shown = leadActivityPushes(fresh).find((event) => event.payload.interrupt?.seq === alarm.seq)!;
-    expect(shown.payload.interrupt).toMatchObject({ summary: "提醒「部署窗口快关了」到点", acknowledgedAt: null });
+    expect(shown.payload.interrupt).toMatchObject({ summary: "Reminder \"部署窗口快关了\" is due", acknowledgedAt: null });
 
     const response = await fetch(`http://127.0.0.1:${daemon.pairedPort}/v1/lead/interrupts/${alarm.seq}/ack`, {
       method: "POST", headers: { authorization: `Bearer ${issued.accessToken}` },

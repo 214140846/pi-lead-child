@@ -77,17 +77,17 @@ function setWidth(width: number) {
 afterEach(() => setWidth(0));
 
 describe('the project tab', () => {
-  it('names the tickets without a project in Chinese and counts with the ticket tab words', () => {
+  it('names the tickets without a project and counts with the ticket tab words', () => {
     setWidth(1280);
     const runtime = runtimeWithData();
     renderUI(<CompanionRuntimeProvider runtime={runtime}><Workbench /></CompanionRuntimeProvider>);
     act(() => runtime.workspace.getState().setRailView('projects'));
 
     expect(screen.queryByText('unknown')).toBeNull();
-    expect(within(screen.getByTestId('project-row-1')).getByText('等你 2')).toBeTruthy();
+    expect(within(screen.getByTestId('project-row-1')).getByText('Waiting for you 2')).toBeTruthy();
     // 只有已结束工单的「未归属」收在安静的项目里。
     fireEvent.click(screen.getByTestId('projects-quiet'));
-    expect(within(screen.getByTestId('project-row-unknown')).getByText('未归属')).toBeTruthy();
+    expect(within(screen.getByTestId('project-row-unknown')).getByText('No project')).toBeTruthy();
     expect(screen.queryByText('unknown')).toBeNull();
   });
 

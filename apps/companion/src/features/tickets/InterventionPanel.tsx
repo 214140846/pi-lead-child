@@ -2,7 +2,10 @@ import { Box, Button, Card, Column, Icon, Row, Text, TextField, type ColorToken,
 import { useState } from 'react';
 
 import type { InterventionActionId, InterventionPresentation } from '@/features/workspace/model';
+import { useMessages } from '@/i18n';
 import type { InterventionCommandState } from '@/state/types';
+
+import { ticketRecordsMessages } from './ticketRecords.messages';
 
 type InterventionPanelProps = {
   intervention: InterventionPresentation;
@@ -22,6 +25,8 @@ const PANEL: Record<PanelTone, { bg: ColorToken; border: ColorToken; iconBg: Col
 
 // 工单详情里的介入面板：状态、提示、结论和可执行的操作。"自定义"操作展开一个输入框。
 export function InterventionPanel({ intervention, commandState, onResolve }: InterventionPanelProps) {
+  const messages = useMessages(ticketRecordsMessages);
+  const m = messages.intervention;
   const [customOpen, setCustomOpen] = useState(false);
   const [customResponse, setCustomResponse] = useState('');
   const pending = intervention.state === 'pending';
@@ -54,10 +59,10 @@ export function InterventionPanel({ intervention, commandState, onResolve }: Int
         <Text role="alert" mt="card-row" size="secondary" weight="medium" tone="danger-dark">{commandState.error}</Text>
       ) : null}
       {commandState?.state === 'succeeded' && pending ? (
-        <Text mt="card-row" size="secondary" weight="medium" tone="success-dark">操作已提交，正在同步权威状态。</Text>
+        <Text mt="card-row" size="secondary" weight="medium" tone="success-dark">{m.submitted}</Text>
       ) : null}
       {pending && intervention.actions.length === 0 ? (
-        <Text mt="card-row" size="secondary" tone="muted">当前绑定没有响应权限，请在具备 approvals:respond 的 channel 处理。</Text>
+        <Text mt="card-row" size="secondary" tone="muted">{m.noPermission}</Text>
       ) : null}
       {intervention.actions.length > 0 ? (
         <Row flexWrap="wrap" gap="actions" mt="card-section">
@@ -88,13 +93,13 @@ export function InterventionPanel({ intervention, commandState, onResolve }: Int
             fontSize="12"
             value={customResponse}
             onChangeText={setCustomResponse}
-            placeholder="补充明确决定与下一步"
+            placeholder={m.customPlaceholder}
           />
           <Row justify="flex-end" gap="actions">
-            <Button testID="intervention-custom-cancel" label="取消" variant="outline" tone="neutral" onPress={closeCustom} />
+            <Button testID="intervention-custom-cancel" label={messages.cancel} variant="outline" tone="neutral" onPress={closeCustom} />
             <Button
               testID="intervention-custom-submit"
-              label="提交决定"
+              label={m.submit}
               disabled={!customResponse.trim() || !onResolve || commandLocked}
               onPress={() => {
                 onResolve?.(intervention.id, 'custom', customResponse);

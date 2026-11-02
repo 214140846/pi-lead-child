@@ -6,8 +6,11 @@ import {
 } from '@pi-lead-child/protocol';
 import { useState, type ReactNode } from 'react';
 
+import { useLocale, type Locale } from '@/i18n';
 import { canPickImages, ChatImageError, pickImageFiles, prepareChatImage, type ComposerImage } from '@/data/chatImagePicker';
 import { useCompanionRuntime } from '@/state/CompanionStateProvider';
+
+import { composerMessages } from './composer.messages';
 
 type MessageComposerProps = {
   contextKey: string;
@@ -33,12 +36,16 @@ type MessageComposerProps = {
 
 export type ComposerTray = { row: ReactNode; drawer: ReactNode; open: boolean };
 
-const PLACEMENT_OPTIONS = [
-  { value: 'steer', label: '插话' },
-  { value: 'followUp', label: '排队' },
-] as const;
+function placementOptions(locale: Locale) {
+  const placement = composerMessages(locale).placement;
+  return [
+    { value: 'steer', label: placement.steer },
+    { value: 'followUp', label: placement.followUp },
+  ] as const;
+}
 
 export function MessageComposer(props: MessageComposerProps) {
+  const locale = useLocale();
   const field = <MessageComposerField key={`${props.contextKey}:${props.disabled ? 'disabled' : 'enabled'}`} {...props} />;
   if (!props.placement) return field;
   // 插话：在 Lead 当前这批工具调用之后加进这一轮。排队：Lead 答完这一轮再答，连着排队的几条一起答。
@@ -49,7 +56,7 @@ export function MessageComposer(props: MessageComposerProps) {
           testID="composer-placement"
           optionTestID={(value) => `composer-placement-${value}`}
           size="sm"
-          options={PLACEMENT_OPTIONS}
+          options={placementOptions(locale)}
           value={props.placement.value}
           onChange={props.placement.onChange}
         />
@@ -66,6 +73,8 @@ export function MessageComposer(props: MessageComposerProps) {
 function MessageComposerField({
   contextKey, placeholder, onSend, compact = false, minimal = false, disabled = false, attachImages = false, modelControl, tray,
 }: MessageComposerProps) {
+  const locale = useLocale();
+  const m = composerMessages(locale);
   const workspace = useCompanionRuntime().workspace;
   const [text, setText] = useState(() => workspace.getState().composerDraftByContext[contextKey] ?? '');
   // 待发的图片，和图片加不进来的原因（不是图片、太多、太大；下一次加图片、删图片或发送时清掉）。放在一起，用一次更新改。
@@ -87,12 +96,12 @@ function MessageComposerField({
   const addFiles = async (files: Blob[]) => {
     if (!canAttach || !files.length) return;
     setPreparing((count) => count + files.length);
-    const results = await Promise.allSettled(files.map((file) => prepareChatImage(file)));
+    const results = await Promise.allSettled(files.map((file) => prepareChatImage(file, locale)));
     setPreparing((count) => count - files.length);
     const prepared = results.flatMap((result) => result.status === 'fulfilled' ? [result.value] : []);
     const failure = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
-    const failed = failure ? (failure.reason instanceof ChatImageError ? failure.reason.message : '有图片没能加上') : null;
-    setAttachments((current) => appendImages(current.images, prepared, failed));
+    const failed = failure ? (failure.reason instanceof ChatImageError ? failure.reason.message : m.imageFailed) : null;
+    setAttachments((current) => appendImages(current.images, prepared, failed, m.tooManyImages(CHAT_IMAGE_MAX_COUNT)));
   };
 
   const removeImage = (key: string) => {
@@ -115,7 +124,7 @@ function MessageComposerField({
     <IconButton
       testID="send-message"
       icon="arrow-up"
-      label="发送"
+      label={m.send}
       variant="solid"
       // 没有可发的内容时是灰色（Kimi 的样式），有了变成主色。
       tone={ready ? 'accent' : 'neutral'}
@@ -157,8 +166,8 @@ function MessageComposerField({
               key={image.key}
               testID={`composer-image-${index}`}
               uri={image.uri}
-              label={`图片 ${index + 1}`}
-              removeLabel={`移除图片 ${index + 1}`}
+              label={m.image(index + 1)}
+              removeLabel={m.removeImage(index + 1)}
               onRemove={() => removeImage(image.key)}
             />
           ))}
@@ -171,7 +180,7 @@ function MessageComposerField({
           <IconButton
             testID="composer-attach"
             icon="plus"
-            label="添加图片"
+            label={m.addImage}
             variant="ghost"
             size="md"
             iconColor="text-secondary"
@@ -179,7 +188,7 @@ function MessageComposerField({
             onPress={() => void pickImageFiles().then(addFiles)}
           />
         ) : null}
-        {preparing > 0 ? <Text testID="composer-preparing" size="note" tone="muted">正在处理图片…</Text> : null}
+        {preparing > 0 ? <Text testID="composer-preparing" size="note" tone="muted">{m.preparingImages}</Text> : null}
         <Spacer />
         {modelControl}
         {sendButton}
@@ -217,7 +226,7 @@ const EMPTY_ATTACHMENTS: { images: ComposerImage[]; notice: string | null } = { 
 
 // 加上新处理好的图片：最多 CHAT_IMAGE_MAX_COUNT 张，base64 加起来不超过上限，多出来的不加，提示一句。
 function appendImages(
-  current: readonly ComposerImage[], added: readonly ComposerImage[], failed: string | null,
+  current: readonly ComposerImage[], added: readonly ComposerImage[], failed: string | null, tooMany: string,
 ): { images: ComposerImage[]; notice: string | null } {
   const images = [...current];
   let total = images.reduce((sum, image) => sum + image.data.length, 0);
@@ -230,5 +239,5 @@ function appendImages(
     images.push(image);
     total += image.data.length;
   }
-  return { images, notice: dropped ? `一条消息最多带 ${CHAT_IMAGE_MAX_COUNT} 张图片，多出来的没有加上` : failed };
+  return { images, notice: dropped ? tooMany : failed };
 }

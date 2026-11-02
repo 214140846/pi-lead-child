@@ -157,12 +157,12 @@ describe('failures in the Lead conversation', () => {
   it('collapses repeated heartbeat failures into one card with the count and the latest time', () => {
     setup();
     const cards = screen.getAllByTestId('failure-card');
-    const heartbeat = cards.find((card) => card.textContent?.includes('心跳巡检'))!;
-    expect(cards.filter((card) => card.textContent?.includes('心跳巡检'))).toHaveLength(1);
+    const heartbeat = cards.find((card) => card.textContent?.includes('Heartbeat check'))!;
+    expect(cards.filter((card) => card.textContent?.includes('Heartbeat check'))).toHaveLength(1);
     // 2026-10-27 画布「没有回答」状态 4：后台巡检失败合成居中的一行系统信息，写次数、最近一次和系统什么时候再试，不给按钮。
     expect(heartbeat.textContent).toBe(
-      `心跳巡检没有完成 · 连续 3 次 · 最近 ${formatConversationTime('2026-10-13T13:38:00.000Z')}`
-        + ` · 系统会在 ${formatConversationTime(degraded.nextAttemptAt!)} 自动再试`,
+      `Heartbeat check did not finish · 3 times in a row · last at ${formatConversationTime('2026-10-13T13:38:00.000Z', undefined, 'en')}`
+        + ` · The system tries again at ${formatConversationTime(degraded.nextAttemptAt!, undefined, 'en')}`,
     );
     expect(within(heartbeat).queryAllByRole('button')).toHaveLength(0);
     expect(heartbeat.textContent).not.toContain('upstream connect error');
@@ -190,7 +190,7 @@ describe('failures in the Lead conversation', () => {
     });
     const cards = screen.getAllByTestId('failure-card');
     expect(cards).toHaveLength(1);
-    expect(cards[0]!.textContent).toContain('连续 4 次');
+    expect(cards[0]!.textContent).toContain('4 times in a row');
   });
 
   it('shows a blocker line from the daemon as a notice that opens its ticket', () => {
@@ -207,20 +207,20 @@ describe('failures in the Lead conversation', () => {
     renderUI(<CompanionRuntimeProvider runtime={runtime}><LeadConversation /></CompanionRuntimeProvider>);
     const notice = screen.getByTestId('blocker-notice');
     expect(notice.textContent).toContain('工单 #12 卡住了：执行重试已耗尽（执行失败 2/2），已停止派发。');
-    expect(within(notice).getByRole('button', { name: '打开工单 #12' })).toBeTruthy();
+    expect(within(notice).getByRole('button', { name: 'Open ticket #12' })).toBeTruthy();
   });
 
   it('tells the user their message got no answer and offers to resend it', async () => {
     const { sendChat } = setup();
     // 2026-10-27 画布「没有回答」状态 1、2：一行虚线框引用你那句话；原因和接下来在点开的浮层里。
-    const card = screen.getAllByTestId('failure-card').find((candidate) => candidate.textContent?.includes('没有回答'))!;
-    expect(card.textContent).toContain('没有回答 · 你问的「现在有什么要我处理」');
-    fireEvent.click(within(card).getByRole('button', { name: '没有回答，展开' }));
+    const card = screen.getAllByTestId('failure-card').find((candidate) => candidate.textContent?.includes('No answer'))!;
+    expect(card.textContent).toContain('No answer · You asked "现在有什么要我处理"');
+    fireEvent.click(within(card).getByRole('button', { name: 'No answer, expand' }));
     const details = await screen.findByTestId('failure-card-details');
-    expect(details.textContent).toContain('Paimon 的模型服务暂时连不上');
-    expect(details.textContent).toContain('系统不会自动重发，你可以点「重发」。');
-    fireEvent.click(screen.getByRole('button', { name: '没有回答，收起' }));
-    act(() => fireEvent.click(within(card).getByRole('button', { name: '重发' })));
+    expect(details.textContent).toContain('The model service of Paimon is not available now');
+    expect(details.textContent).toContain('The system does not send it again automatically. You can select "Resend".');
+    fireEvent.click(screen.getByRole('button', { name: 'No answer, collapse' }));
+    act(() => fireEvent.click(within(card).getByRole('button', { name: 'Resend' })));
     expect(sendChat).toHaveBeenCalledWith('现在有什么要我处理');
   });
 
@@ -238,11 +238,11 @@ describe('failures in the Lead conversation', () => {
         { model: 'vibeproxy/claude-opus-5-5', provider: 'vibeproxy', id: 'claude-opus-5-5', prefix: null, source: 'anthropic', name: null, image: true, efforts: [], defaultEffort: null, blockedUntil: null },
       ],
     } as never);
-    const card = screen.getAllByTestId('failure-card').find((candidate) => candidate.textContent?.includes('没有回答'))!;
-    fireEvent.click(within(card).getByRole('button', { name: '没有回答，展开' }));
+    const card = screen.getAllByTestId('failure-card').find((candidate) => candidate.textContent?.includes('No answer'))!;
+    fireEvent.click(within(card).getByRole('button', { name: 'No answer, expand' }));
     const reason = await screen.findByTestId('failure-card-model');
-    expect(reason.textContent).toContain('Paimon 的模型服务暂时连不上 · claude-sonnet-5-5');
-    fireEvent.click(within(reason).getByRole('button', { name: '换个模型重发' }));
+    expect(reason.textContent).toContain('The model service of Paimon is not available now · claude-sonnet-5-5');
+    fireEvent.click(within(reason).getByRole('button', { name: 'Resend with another model' }));
     fireEvent.click(await screen.findByTestId('lead-model-option-vibeproxy/claude-opus-5-5'));
     await waitFor(() => expect(sendChat).toHaveBeenCalledWith('现在有什么要我处理'));
     expect(switchLeadModel).toHaveBeenCalledWith({ model: 'vibeproxy/claude-opus-5-5', effort: null });
@@ -270,12 +270,12 @@ describe('failures in the Lead conversation', () => {
     ]);
     renderUI(<CompanionRuntimeProvider runtime={runtime}><LeadConversation /></CompanionRuntimeProvider>);
     const cards = screen.getAllByTestId('failure-card');
-    const heartbeat = cards.find((card) => card.textContent?.includes('心跳巡检'))!;
-    const user = cards.find((card) => card.textContent?.includes('没有回答'))!;
-    expect(heartbeat.textContent).toContain('心跳巡检没有完成 · 系统没法自己恢复，请检查 Paimon 的模型账号');
+    const heartbeat = cards.find((card) => card.textContent?.includes('Heartbeat check'))!;
+    const user = cards.find((card) => card.textContent?.includes('No answer'))!;
+    expect(heartbeat.textContent).toContain('Heartbeat check did not finish · The system cannot recover by itself. Check the model account of Paimon');
     // 认证失败时直接重发也一样失败：一行里先说要检查什么，不引用你那句话。
-    expect(user.textContent).toContain('没有回答 · 请先检查 Paimon 的模型账号，再重发');
-    for (const card of [heartbeat, user]) expect(card.textContent).not.toMatch(/自动再试|自动重试|请重试/);
+    expect(user.textContent).toContain('No answer · Check the model account of Paimon first, then resend');
+    for (const card of [heartbeat, user]) expect(card.textContent).not.toMatch(/tries again|retries|try again/i);
   });
 
   // 2026-10-15 用户决定（方案 A）：主会话里发往工单的消息只留一行灰色的「消息尾巴」，不画红框、不给「重发」。
@@ -283,10 +283,10 @@ describe('failures in the Lead conversation', () => {
   it('shows a failed ticket message as a quiet tail that says Lead took it over', () => {
     const { sendChat } = setup();
     const receipt = screen.getByTestId('ticket-direct-notice-66');
-    expect(within(receipt).getByRole('button', { name: '发给 #66 的工单消息' })).toBeTruthy();
-    expect(receipt.textContent).toContain('你在 #66 问了「现在还需要我做什么」');
-    expect(receipt.textContent).toContain('没送到 · 已交给 Paimon');
-    expect(within(receipt).queryByRole('button', { name: '重发' })).toBeNull();
+    expect(within(receipt).getByRole('button', { name: 'Ticket message to #66' })).toBeTruthy();
+    expect(receipt.textContent).toContain('You asked in #66: "现在还需要我做什么"');
+    expect(receipt.textContent).toContain('Not delivered · Sent to Paimon');
+    expect(within(receipt).queryByRole('button', { name: 'Resend' })).toBeNull();
     expect(within(receipt).queryByTestId('failure-card')).toBeNull();
     expect(sendChat).not.toHaveBeenCalled();
   });
@@ -296,10 +296,10 @@ describe('failures in the Lead conversation', () => {
     setup();
     const line = screen.getByTestId('checkpoint-line-95');
     // 这时 Lead 的模型连不上（顶栏降级）：不说"Lead 会判断"，给出你现在能做的事。
-    expect(line.textContent).toContain('工单 #51 的 Codex 运行出错，Paimon 现在连不上模型，恢复后会判断能不能安全重试；着急的话可以打开工单自己处理');
-    expect(within(line).getByRole('button', { name: '打开工单 #51' })).toBeTruthy();
+    expect(line.textContent).toContain('The Codex of ticket #51 had a run error. Paimon cannot connect to the model now. After it recovers, it decides if a retry is safe. If it is urgent, open the ticket and handle it yourself');
+    expect(within(line).getByRole('button', { name: 'Open ticket #51' })).toBeTruthy();
     expect(line.textContent).not.toContain('Failure category');
-    fireEvent.click(within(line).getByRole('button', { name: '看原文' }));
+    fireEvent.click(within(line).getByRole('button', { name: 'Show original text' }));
     const details = await screen.findByTestId('checkpoint-line-95-details');
     expect(details.textContent).toContain('Failure category');
     expect(details.textContent).toContain('Codex exited with code 1');

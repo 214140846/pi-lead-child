@@ -178,7 +178,7 @@ describe("scenario 2: B steers into the round that answers A", () => {
     expect(turn(b.turnId)).toMatchObject({ state: "completed", assistant_text: "A 和 B 一起答。" });
     // 工单第 7 项：A 没有自己的文字，是和后面的插话一起回答的，不是「Lead 未生成回复」。
     expect(turn(a.turnId)).toMatchObject({ state: "steered", error: null });
-    expect(userMessageOutcome(a.turnId)).toMatchObject({ outcome: "done", answeredWith: b.turnId, note: "和后面的插话一起回答" });
+    expect(userMessageOutcome(a.turnId)).toMatchObject({ outcome: "done", answeredWith: b.turnId, note: "Answered together with the message that came in after it" });
     expect(events.some((event) => event.type === "notice.created" && event.turnId === a.turnId)).toBe(false);
     const placement = events.filter((event) => event.type === "lead.turn.started" && event.turnId === a.turnId).at(-1);
     expect(placement.payload).toMatchObject({ mode: "steered", placement: "answered_together", answeredWith: b.turnId });

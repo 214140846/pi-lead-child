@@ -4,8 +4,11 @@ import {
 import type { LeadActivityBasis, LeadActivityCard, LeadActivityCardAction } from '@pi-lead-child/protocol';
 import { useMemo, useState } from 'react';
 
+import { intlLocale, useLocale, type Locale } from '@/i18n';
+
 import { useCompanionRuntime, useControlPlaneStore, useWorkspaceStore } from '../../state/CompanionStateProvider';
 import { useLeadName } from '../../state/hooks';
+import { leadActivityMessages } from './leadActivity.messages';
 import { useOpenTicket } from './useOpenTicket';
 
 // 「Lead 动态」（2026-10-15 方案 A，工单 06 扩展）：Lead 处理了、但没有对用户说的事，和只显示、不进 Lead 模型的事
@@ -20,33 +23,25 @@ import { useOpenTicket } from './useOpenTicket';
 // 和注脚的「撤销」一样（主题 11.6）。按钮的字和行的摘要一样高，状态变了这一行也不变高（P1.3）：
 // 进行中写「正在撤销…」；做完以后、网关推来新卡之前写「已撤销」；失败时原因写在摘要旁边的同一行里（截断），
 // 全文在展开的浮层里。撤销以后同一张卡原地更新，这个字段没了，按钮跟着消失。
-const DISPOSITION_LABELS: Record<NonNullable<LeadActivityCard['lead']>['disposition'], string> = {
-  deferred: '延后',
-  no_action: '不处理',
-  handled: '处理好了',
-};
-
-const KIND_LABELS: Record<Exclude<LeadActivityCard['kind'], 'lead'>, string> = {
-  digest: '摘要',
-  auto: '自动处理',
-  standing_order: '指令修改',
-};
+// 处置和种类的名字在 leadActivity.messages.ts（disposition、kind）。
 
 // 硬性规则（写在代码里，不进常设指令表）的白话名字。leadName 是 Lead 的名字（useLeadName）。
-function ruleLabels(leadName: string): Record<string, string> {
+function ruleLabels(leadName: string, locale: Locale): Record<string, string> {
+  const rule = leadActivityMessages(locale).rule;
   return {
-    standing_order_change_reported: '指令修改要告诉你',
-    approval_reaches_user: '审批要送到你',
-    external_never_interrupts: `外部来源不打断 ${leadName}`,
+    standing_order_change_reported: rule.standing_order_change_reported,
+    approval_reaches_user: rule.approval_reaches_user,
+    external_never_interrupts: rule.external_never_interrupts(leadName),
   };
 }
 
-export function leadActivityLabel(card: LeadActivityCard): string {
-  if (card.state === 'resolved_elsewhere') return '已在别处处理';
+export function leadActivityLabel(card: LeadActivityCard, locale: Locale): string {
+  const m = leadActivityMessages(locale);
+  if (card.state === 'resolved_elsewhere') return m.resolvedElsewhere;
   // 你允许以后才做的事（2026-10-28 改版稿第 2 组）：标签写是谁让做的，没做成时写没做成。
-  if (card.ownerAction) return card.ownerAction.failed ? '你允许了，没做成' : '你允许了';
-  if (card.kind === 'lead') return card.lead ? DISPOSITION_LABELS[card.lead.disposition] : '处理好了';
-  return KIND_LABELS[card.kind];
+  if (card.ownerAction) return card.ownerAction.failed ? m.ownerAllowedFailed : m.ownerAllowed;
+  if (card.kind === 'lead') return card.lead ? m.disposition[card.lead.disposition] : m.disposition.handled;
+  return m.kind[card.kind];
 }
 
 function basisLabel(basis: LeadActivityBasis, rules: Record<string, string>): string {
@@ -54,22 +49,23 @@ function basisLabel(basis: LeadActivityBasis, rules: Record<string, string>): st
 }
 
 /** 「依据 inbox.no_wake v1 · inbox.merge_attention v1」。没有依据时是 null。leadName 是 Lead 的名字。 */
-export function leadActivityBasisLine(card: Pick<LeadActivityCard, 'basis'>, leadName: string): string | null {
+export function leadActivityBasisLine(card: Pick<LeadActivityCard, 'basis'>, leadName: string, locale: Locale = 'en'): string | null {
   if (!card.basis.length) return null;
-  const rules = ruleLabels(leadName);
-  return `依据 ${[...new Set(card.basis.map((basis) => basisLabel(basis, rules)))].join(' · ')}`;
+  const rules = ruleLabels(leadName, locale);
+  return leadActivityMessages(locale).basis([...new Set(card.basis.map((basis) => basisLabel(basis, rules)))].join(' · '));
 }
 
-function clock(value: string): string {
+// 两种语言都写 24 小时制的「18:10」（设计规范 P14.2）。
+function clock(value: string, locale: Locale): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '';
-  return new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }).format(date);
+  return new Intl.DateTimeFormat(intlLocale(locale), { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(date);
 }
 
 // 「18:10–18:14」；只有一件或者同一分钟时只写一个时间。
-export function leadActivityRange(items: readonly Pick<LeadActivityCard, 'at'>[]): string {
-  const first = clock(items[0]?.at ?? '');
-  const last = clock(items.at(-1)?.at ?? '');
+export function leadActivityRange(items: readonly Pick<LeadActivityCard, 'at'>[], locale: Locale): string {
+  const first = clock(items[0]?.at ?? '', locale);
+  const last = clock(items.at(-1)?.at ?? '', locale);
   return first === last ? first : `${first}–${last}`;
 }
 
@@ -100,26 +96,30 @@ export function leadActivityRows(cards: readonly LeadActivityCard[]): LeadActivi
 }
 
 // 一行的来源：卡属于哪个对象（entityKey 的第一段，例如 slack:dm:U1、ticket:77）。认不出的不写。
-const SOURCES: Record<string, { label: string; icon?: IconName }> = {
-  slack: { label: 'Slack', icon: 'hash' },
-  github: { label: 'GitHub', icon: 'branch' },
-  reminder: { label: '日程', icon: 'calendar' },
-  calendar: { label: '日程', icon: 'calendar' },
-  standing_order: { label: '指令' },
-  connection: { label: '连接' },
-  core_memory: { label: '常驻偏好' },
-  memory_fact: { label: '记忆' },
-};
+// 产品名（Slack、GitHub）不翻译；其他来源的名字在 leadActivity.messages.ts（source）。
+function sources(locale: Locale): Record<string, { label: string; icon?: IconName }> {
+  const source = leadActivityMessages(locale).source;
+  return {
+    slack: { label: 'Slack', icon: 'hash' },
+    github: { label: 'GitHub', icon: 'branch' },
+    reminder: { label: source.reminder, icon: 'calendar' },
+    calendar: { label: source.calendar, icon: 'calendar' },
+    standing_order: { label: source.standing_order },
+    connection: { label: source.connection },
+    core_memory: { label: source.core_memory },
+    memory_fact: { label: source.memory_fact },
+  };
+}
 
-export function leadActivitySource(card: Pick<LeadActivityCard, 'entityKey'>): { label: string; icon?: IconName } | null {
-  return SOURCES[card.entityKey.split(':')[0] ?? ''] ?? null;
+export function leadActivitySource(card: Pick<LeadActivityCard, 'entityKey'>, locale: Locale): { label: string; icon?: IconName } | null {
+  return sources(locale)[card.entityKey.split(':')[0] ?? ''] ?? null;
 }
 
 // 标题后面按来源计数：「Slack 5 · GitHub 2 · 日程 1」。认不出来源的不计。
-export function leadActivitySourceCounts(items: readonly Pick<LeadActivityCard, 'entityKey'>[]): string | null {
+export function leadActivitySourceCounts(items: readonly Pick<LeadActivityCard, 'entityKey'>[], locale: Locale): string | null {
   const counts = new Map<string, number>();
   for (const item of items) {
-    const source = leadActivitySource(item);
+    const source = leadActivitySource(item, locale);
     if (source) counts.set(source.label, (counts.get(source.label) ?? 0) + 1);
   }
   return counts.size ? [...counts].map(([label, count]) => `${label} ${count}`).join(' · ') : null;
@@ -164,19 +164,21 @@ function useCardActions(perform: ((action: LeadActivityCardAction) => Promise<vo
 }
 
 // 失败时的那句话：按钮的字加 daemon 写的原因，原因原样显示。
-function actionFailure(row: RowAction): string | null {
-  return row.state?.status === 'failed' ? `${row.action.label}没有完成：${row.state.message || '请再试一次'}` : null;
+function actionFailure(row: RowAction, locale: Locale): string | null {
+  const m = leadActivityMessages(locale);
+  return row.state?.status === 'failed' ? m.actionFailed(row.action.label, row.state.message || m.tryAgain) : null;
 }
 
 // 行尾的深色文字按钮，和摘要的字一样高（不用 Button：它比这一行高，按钮消失时这一行会变矮）。
 function CardActionButton({ row, cardKey, covered }: { row: RowAction; cardKey: string; covered: boolean }) {
   const { action, state } = row;
+  const m = leadActivityMessages(useLocale());
   const testID = covered ? undefined : `lead-activity-action-${cardKey}`;
   if (state?.status === 'busy') {
-    return <Text testID={testID} size="meta" weight="semibold" tone="secondary" shrink={0}>{`正在${action.label}…`}</Text>;
+    return <Text testID={testID} size="meta" weight="semibold" tone="secondary" shrink={0}>{m.actionBusy(action.label)}</Text>;
   }
   if (state?.status === 'done') {
-    return <Text testID={testID} size="meta" weight="semibold" tone="success-dark" shrink={0}>{`已${action.label}`}</Text>;
+    return <Text testID={testID} size="meta" weight="semibold" tone="success-dark" shrink={0}>{m.actionDone(action.label)}</Text>;
   }
   return (
     <Pressable
@@ -209,6 +211,8 @@ function LeadActivityRow({ row, leadName, detailed, onOpenTicket, covered = fals
   detailed: boolean;
   onOpenTicket: (ticketId: number) => void;
 }) {
+  const locale = useLocale();
+  const m = leadActivityMessages(locale);
   const card = row.cards[0]!;
   const ended = card.state === 'resolved_elsewhere';
   const owner = card.ownerAction;
@@ -217,33 +221,33 @@ function LeadActivityRow({ row, leadName, detailed, onOpenTicket, covered = fals
   // 你允许的事写主人操作那句话（对你说的），不写交给 Lead 的说明；合了几件时写对象，件数在行尾，每件在展开后的明细里。
   const text = owner ? (row.cards.length > 1 ? owner.target || owner.summary : owner.summary) : card.summary;
   const note = card.lead?.reason
-    ? `${leadName}：${card.kind === 'lead' ? '' : `${DISPOSITION_LABELS[card.lead.disposition]} · `}${card.lead.reason}`
+    ? m.note(leadName, `${card.kind === 'lead' ? '' : `${m.disposition[card.lead.disposition]} · `}${card.lead.reason}`)
     : null;
   // 合进这一行的其他事的摘要。你允许的事按件列出（GroupList）。
   const things = owner ? [] : [...new Set(row.cards.map((item) => item.summary))].filter((summary) => summary !== text);
   const ownerEntries = owner && row.cards.length > 1
-    ? row.cards.map((item) => ({ key: item.key, time: clock(item.at), content: item.ownerAction?.summary ?? item.summary }))
+    ? row.cards.map((item) => ({ key: item.key, time: clock(item.at, locale), content: item.ownerAction?.summary ?? item.summary }))
     : [];
-  const rules = ruleLabels(leadName);
+  const rules = ruleLabels(leadName, locale);
   const basis = [...new Set(row.cards.flatMap((item) => item.basis).map((item) => basisLabel(item, rules)))];
   const tickets = new Set(row.cards.map((item) => item.ticketId));
   const ticketId = tickets.size === 1 ? card.ticketId : null;
-  const count = row.cards.length > 1 ? `${row.cards.length} 件` : card.count > 1 ? `${card.count} 条` : null;
-  const source = leadActivitySource(card);
+  const count = row.cards.length > 1 ? m.countItems(row.cards.length) : card.count > 1 ? m.countEntries(card.count) : null;
+  const source = leadActivitySource(card, locale);
   const act = row.cards.length === 1 && !ended ? action : null;
-  const failure = act ? actionFailure(act) : null;
+  const failure = act ? actionFailure(act, locale) : null;
   // 收起时失败的原因和摘要分这一行的宽度，各自截断；展开后原因整句写在下面。
   const inlineFailure = failure && !detailed ? failure : null;
   const hasDetail = detailed && (things.length > 0 || ownerEntries.length > 0 || note !== null || basis.length > 0 || failure !== null);
   return (
     <RecordLine
       {...(covered ? {} : { testID: `lead-activity-${card.key}` })}
-      time={owner && row.cards.length > 1 ? leadActivityRange(row.cards) : clock(card.at)}
+      time={owner && row.cards.length > 1 ? leadActivityRange(row.cards, locale) : clock(card.at, locale)}
       tag={(
         <RecordTag
           source={ended ? null : source?.label}
           {...(source?.icon && !ended ? { icon: source.icon } : {})}
-          label={leadActivityLabel(card)}
+          label={leadActivityLabel(card, locale)}
           labelTestID="lead-activity-label"
           tone={ended ? 'done' : owner?.failed || card.lead?.disposition === 'deferred' ? 'warning' : 'neutral'}
         />
@@ -319,6 +323,8 @@ export function LeadActivityBlockView({
   // 卡上的按钮（LeadActivityCard.action）。不给时不画按钮。失败时抛出，原因写在那一行上。
   onCardAction?: (action: LeadActivityCardAction) => Promise<void>;
 }) {
+  const locale = useLocale();
+  const m = leadActivityMessages(locale);
   const [own, setOwn] = useState(defaultExpanded);
   const actionFor = useCardActions(onCardAction);
   const expanded = controlled ?? own;
@@ -330,8 +336,8 @@ export function LeadActivityBlockView({
   if (!items.length) return null;
   const shown = rows.slice(-COLLAPSED_ROWS);
   const hidden = rows.length - shown.length;
-  const title = `${leadName} 在后台处理了 ${items.length} 件事 · ${leadActivityRange(items)}`;
-  const meta = leadActivitySourceCounts(items);
+  const title = m.title(leadName, items.length, leadActivityRange(items, locale));
+  const meta = leadActivitySourceCounts(items, locale);
   // 展开不在会话里原地撑开（会话列表不跳）：从这一块原来的位置撑开成浮层，列出每一行的理由和依据。
   return (
     <AnchoredPanel
@@ -351,7 +357,7 @@ export function LeadActivityBlockView({
       <RecordBlock {...(expanded ? {} : { testID: 'lead-activity-block' })} title={title} meta={meta} toggle={{ expanded: false, onPress: () => setExpanded(true) }}>
         {hidden > 0 ? (
           <Pressable onPress={() => setExpanded(true)} feedback="none" self="flex-start">
-            <Text size="meta" tone="muted">{`更早的 ${hidden} 行`}</Text>
+            <Text size="meta" tone="muted">{m.earlierRows(hidden)}</Text>
           </Pressable>
         ) : null}
         {shown.map((row) => (
@@ -372,11 +378,12 @@ export function TurnActivityView({ items, leadName, expanded, onToggle, onOpenTi
   onOpenTicket: (ticketId: number) => void;
   onCardAction?: (action: LeadActivityCardAction) => Promise<void>;
 }) {
+  const m = leadActivityMessages(useLocale());
   const rows = useMemo(() => leadActivityRows(items), [items]);
   const actionFor = useCardActions(onCardAction);
   if (!items.length) return null;
   const line = (open: boolean) => (
-    <Pressable onPress={onToggle} feedback="none" self="flex-start" aria-label={open ? '收起处理的事' : '展开处理的事'}>
+    <Pressable onPress={onToggle} feedback="none" self="flex-start" aria-label={open ? m.collapseHandled : m.expandHandled}>
       <Row items="center" gap="icon-label">
         <Row aria-hidden>
           {/* 两个叠在一起的小圆点（组件规格）。 */}
@@ -386,7 +393,7 @@ export function TurnActivityView({ items, leadName, expanded, onToggle, onOpenTi
             ml={-2} // spacing-exempt: 两个圆点叠在一起
           />
         </Row>
-        <Text size="meta" weight="semibold" tone="secondary">{`顺手处理了 ${items.length} 件事`}</Text>
+        <Text size="meta" weight="semibold" tone="secondary">{m.alsoHandled(items.length)}</Text>
         <Icon name={open ? 'chevron-up' : 'chevron-down'} size={11} color="text-secondary" weight="semibold" />
       </Row>
     </Pressable>
@@ -396,7 +403,7 @@ export function TurnActivityView({ items, leadName, expanded, onToggle, onOpenTi
       <AnchoredPanel
         open={expanded}
         onClose={onToggle}
-        label={`${leadName} 顺手处理了 ${items.length} 件事`}
+        label={m.leadAlsoHandled(leadName, items.length)}
         header={<Box px="card" py="card-row">{line(true)}</Box>}
         body={(
           <Column px="card" py="card-row" gap="list-row">

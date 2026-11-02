@@ -8,16 +8,17 @@ import type {
 
 import { leadAvatarSource } from '@/components/leadAvatarSource';
 import type { TicketOptionPresentation } from '@/features/tickets/ticketState';
+import { useLocale, useMessages } from '@/i18n';
 import { leadNameNow } from '@/state/leadName';
 import { useDeferredValue, useState, type ReactNode } from 'react';
 
 import { AgendaTimeline, type MilestonePatch } from './AgendaTimeline';
 import { InboxQueue, type UpcomingReminder } from './InboxQueue';
 import {
-  TICKET_RAIL_FILTERS,
   buildTicketRailPresentation,
   projectDisplayName,
   resolveRailViewDirection,
+  ticketRailFilters,
   type RailView,
   type RailViewDirection,
   type Ticket,
@@ -25,14 +26,10 @@ import {
   type TicketProjectScope,
 } from './model';
 import { ProjectList } from './ProjectList';
+import { railMessages } from './rail.messages';
 import { TicketList } from './TicketList';
 
-const RAIL_VIEWS: { value: RailView; label: string }[] = [
-  { value: 'inbox', label: '收件箱' },
-  { value: 'tickets', label: '工单' },
-  { value: 'projects', label: '项目' },
-  { value: 'agenda', label: '日程' },
-];
+const RAIL_VIEWS: readonly RailView[] = ['inbox', 'tickets', 'projects', 'agenda'];
 
 type WorkRailProps = {
   selectedTicketId: string | null;
@@ -123,6 +120,9 @@ export function WorkRail({
   leadName = leadNameNow(),
   fairy,
 }: WorkRailProps) {
+  const m = useMessages(railMessages);
+  const locale = useLocale();
+  const railViews = RAIL_VIEWS.map((value) => ({ value, label: m.views[value] }));
   const [localView, setLocalView] = useState<RailView>('tickets');
   const [localFilter, setLocalFilter] = useState<TicketFilter>('all');
   const [localQuery, setLocalQuery] = useState('');
@@ -138,7 +138,7 @@ export function WorkRail({
   const projectScope: TicketProjectScope | null = ticketProject
     ? { name: ticketProject, knownNames: knownProjectNames }
     : null;
-  const ticketProjection = buildTicketRailPresentation(items, { filter, query: deferredQuery, loading, project: projectScope });
+  const ticketProjection = buildTicketRailPresentation(items, { filter, query: deferredQuery, loading, project: projectScope, locale });
 
   const selectView = (nextView: RailView) => {
     const direction = resolveRailViewDirection(view, nextView);
@@ -197,14 +197,14 @@ export function WorkRail({
             <Column gap="text-stack" flex={1} minW={0}>
               <Text size="card-title" weight="extrabold">{leadName}</Text>
               <Text size="secondary" tone="muted" numberOfLines={1}>
-                {fairy?.note ?? (runningCount > 0 ? `${runningCount} 个 Run 在跑` : '没有 Run 在跑')}
+                {fairy?.note ?? (runningCount > 0 ? m.runsRunning(runningCount) : m.noRunsRunning)}
               </Text>
             </Column>
             {onOpenSettings ? (
               <IconButton
                 testID="open-settings"
                 icon="settings"
-                label="设置"
+                label={m.settings}
                 variant="ghost"
                 size="sm"
                 rounded="md"
@@ -218,7 +218,7 @@ export function WorkRail({
         {showViewTabs ? (
           <Box mb="card-row">
             <SegmentedControl
-              options={RAIL_VIEWS}
+              options={railViews}
               value={view}
               onChange={selectView}
               optionTestID={(item) => `rail-view-${item}`}
@@ -231,11 +231,11 @@ export function WorkRail({
               testID="ticket-search"
               value={query}
               onChangeText={changeQuery}
-              placeholder="搜索标题、编号、项目"
+              placeholder={m.searchPlaceholder}
               variant="filled"
               size="sm"
               returnKeyType="search"
-              accessibilityLabel="搜索工单"
+              accessibilityLabel={m.searchLabel}
             />
           </Box>
         ) : null}
@@ -243,7 +243,7 @@ export function WorkRail({
           <Row mb="card-row">
             <Chip
               testID="ticket-project-clear"
-              label={`${projectDisplayName(ticketProject)} ×`}
+              label={`${projectDisplayName(ticketProject, locale)} ×`}
               selected
               onPress={() => changeTicketProject(null)}
             />
@@ -251,7 +251,7 @@ export function WorkRail({
         ) : null}
         {view === 'tickets' ? (
           <Row items="center" gap="chips">
-            {TICKET_RAIL_FILTERS.map((item) => (
+            {ticketRailFilters(locale).map((item) => (
               <Chip
                 key={item.id}
                 testID={`ticket-filter-${item.id}`}

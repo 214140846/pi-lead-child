@@ -9,6 +9,7 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { openDb, ledgerGuardTriggers, type Db } from "@pi-lead-child/store";
 import { tempDir } from "@pi-lead-child/core/testing";
+import { updateDesignPreferences } from "@pi-lead-child/engine";
 import { startDaemon } from "../src/server.js";
 
 let dir: string;
@@ -80,12 +81,17 @@ describe("security alerts through the daemon", () => {
     expect(alerts[0]).toMatchObject({ level: "interrupt" });
     expect(JSON.parse(alerts[0]!.payload)).toMatchObject({ missing: ["plc_ledger_guard_connections_update"], count: 1 });
     const notificationId = Number(alerts[0]!.correlation_id!.replace("notification:", ""));
+    // 推给用户的文字按用户选的语言写（缺省英文）。
+    expect(db.prepare("SELECT title FROM notifications WHERE id = ?").get(notificationId)).toEqual({
+      title: "Someone removed or replaced the write guard of plc.db. The daemon installed it again.",
+    });
     await vi.waitFor(() => {
       expect((db.prepare("SELECT state FROM notifications WHERE id = ?").get(notificationId) as { state: string }).state).toBe("delivered");
     }, { timeout: 15_000, interval: 50 });
   }, 30_000);
 
-  it("replaces a same-name empty trigger with the real guard and alerts", async () => {
+  it("replaces a same-name empty trigger with the real guard and alerts, in the language the user chose", async () => {
+    updateDesignPreferences(db, { request: { locale: "zh" }, caller: { kind: "user" } });
     await boot();
     const foreign = new Database(dbPath);
     foreign.exec(`DROP TRIGGER "plc_ledger_guard_kv_insert";
@@ -93,6 +99,8 @@ describe("security alerts through the daemon", () => {
     foreign.close();
     await vi.waitFor(() => expect(eventsOf("ledger.guard_removed")).toHaveLength(1), { timeout: 15_000, interval: 50 });
     expect(JSON.parse(eventsOf("ledger.guard_removed")[0]!.payload)).toMatchObject({ missing: ["plc_ledger_guard_kv_insert"] });
+    const notificationId = Number(eventsOf("ledger.guard_removed")[0]!.correlation_id!.replace("notification:", ""));
+    expect(db.prepare("SELECT title FROM notifications WHERE id = ?").get(notificationId)).toEqual({ title: "plc.db 的写入守卫被删掉或换掉了，已补装" });
     const again = new Database(dbPath);
     expect(() => again.prepare("INSERT INTO kv (key, value) VALUES ('x', 'y')").run()).toThrow(/plc_db_is_read_only/);
     again.close();

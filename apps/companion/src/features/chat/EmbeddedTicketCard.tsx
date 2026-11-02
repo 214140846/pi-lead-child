@@ -1,8 +1,11 @@
 import { Box, Card, Column, Dot, Icon, Pressable, Row, Text } from '@pi-lead-child/components';
 import type { ReactNode } from 'react';
 
+import { useMessages } from '@/i18n';
+
 import { StatusBadge } from '../../components/StatusBadge';
 import { ticketDisplayTitle, ticketNowLine, type Ticket } from '../workspace/model';
+import { ticketCardMessages } from './ticketCard.messages';
 
 type EmbeddedTicketCardProps = {
   ticket: Ticket;
@@ -16,11 +19,12 @@ type EmbeddedTicketCardProps = {
 export function EmbeddedTicketCard({ ticket, onPress, compact = false, children }: EmbeddedTicketCardProps) {
   const title = ticketDisplayTitle(ticket);
   const now = ticketNowLine(ticket);
+  const m = useMessages(ticketCardMessages);
   return (
     <Card w="100%" rounded="xl" overflow="hidden">
       <Pressable
         testID={`open-ticket-${ticket.id}`}
-        aria-label={`打开工单 #${ticket.id} ${title}`}
+        aria-label={m.openTicket(ticket.id, title)}
         onPress={onPress}
         feedback="highlight"
         px={compact ? 12 : 14}
@@ -33,7 +37,7 @@ export function EmbeddedTicketCard({ ticket, onPress, compact = false, children 
               <Text flex={1} minW={0} size="card-title" weight="bold" numberOfLines={1}>{title}</Text>
               <StatusBadge label={ticket.statusLabel} tone={ticket.status} />
               {ticket.heartbeat ? (
-                <Dot color="success" size={7} pulse testID="ticket-heartbeat-pulse" accessibilityLabel="任务心跳正常" />
+                <Dot color="success" size={7} pulse testID="ticket-heartbeat-pulse" accessibilityLabel={m.heartbeatOk} />
               ) : null}
             </Row>
             {now ? <Text size="secondary" tone="secondary" numberOfLines={1}>{now}</Text> : null}
@@ -52,11 +56,12 @@ export function EmbeddedTicketCard({ ticket, onPress, compact = false, children 
 // 同一段对话里再次提到同一张工单时的小标签：编号、标题、状态和一个小箭头，点开工单线程（方案 A）。
 export function TicketChip({ ticket, onPress }: { ticket: Ticket; onPress: () => void }) {
   const title = ticketDisplayTitle(ticket);
+  const m = useMessages(ticketCardMessages);
   return (
     <Box self="flex-start" maxW="100%">
       <Pressable
         testID={`ticket-chip-${ticket.id}`}
-        aria-label={`打开工单 #${ticket.id} ${title}`}
+        aria-label={m.openTicket(ticket.id, title)}
         onPress={onPress}
         feedback="highlight"
         rounded="full"

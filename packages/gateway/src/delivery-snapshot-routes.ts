@@ -2,7 +2,8 @@
 // 路由只读、用 tickets:view，逻辑在 engine 的 delivery.ts（ticketDeliveries、ticketDeliverySnapshot），这里只做认证、校验和错误映射。
 import type { IncomingMessage } from "node:http";
 import type { Scope } from "@pi-lead-child/protocol";
-import type { Db } from "@pi-lead-child/store";
+import { getLocale, type Db } from "@pi-lead-child/store";
+import { routeMessages } from "./routes.messages.js";
 import { DeliveryError, ticketDeliveries, ticketDeliverySnapshot } from "@pi-lead-child/engine";
 
 export interface DeliverySnapshotRouteContext {
@@ -25,8 +26,8 @@ const STATUS: Record<DeliveryError["code"], [number, string]> = {
   stale: [409, "conflict"],
 };
 
-function positive(raw: string, name: string): number {
-  if (!POSITIVE_INTEGER.test(raw)) throw new DeliveryError("invalid_request", `${name} 要是一个正整数。`);
+function positive(raw: string, name: string, positiveMessage: (name: string) => string): number {
+  if (!POSITIVE_INTEGER.test(raw)) throw new DeliveryError("invalid_request", positiveMessage(name));
   return Number(raw);
 }
 
@@ -37,16 +38,18 @@ export async function handleDeliverySnapshotRoute(ctx: DeliverySnapshotRouteCont
   const one = ctx.url.pathname.match(ONE_PATH);
   if (!list && !one) return false;
   ctx.requireAuth("tickets:view");
+  const m = routeMessages(getLocale(ctx.db));
+  const positiveOf = (raw: string, name: string) => positive(raw, name, m.positiveInteger);
   try {
     if (list) {
-      ctx.json(200, { deliveries: await ticketDeliveries(ctx.db, positive(list[1]!, "工单号")) });
+      ctx.json(200, { deliveries: await ticketDeliveries(ctx.db, positiveOf(list[1]!, m.ticketNumber)) });
       return true;
     }
     const revision = ctx.url.searchParams.get("revision");
     ctx.json(200, {
       delivery: await ticketDeliverySnapshot(
-        ctx.db, positive(one![1]!, "工单号"), positive(one![2]!, "交付序号"),
-        revision === null ? undefined : positive(revision, "revision"),
+        ctx.db, positiveOf(one![1]!, m.ticketNumber), positiveOf(one![2]!, m.deliverySequence),
+        revision === null ? undefined : positiveOf(revision, "revision"),
       ),
     });
     return true;

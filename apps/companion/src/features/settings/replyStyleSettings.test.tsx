@@ -55,18 +55,18 @@ describe('the reply style section', () => {
     const { client } = await renderSection(EMPTY);
     expect(screen.getByTestId('reply-style-save').getAttribute('aria-disabled')).toBe('true');
     fireEvent.change(screen.getByTestId('reply-style-text'), { target: { value: '- 极其精简' } });
-    expect(screen.getByTestId('reply-style-count').textContent).toBe(`6 / ${REPLY_STYLE_TEXT_MAX_LENGTH} 字。保存以后，下一轮起生效。`);
+    expect(screen.getByTestId('reply-style-count').textContent).toBe(`6 / ${REPLY_STYLE_TEXT_MAX_LENGTH} characters. After you save, it takes effect from the next turn.`);
     await act(async () => { fireEvent.click(screen.getByTestId('reply-style-save')); });
     expect(client.updateReplyStyle).toHaveBeenCalledWith({ mode: 'replace', text: '- 极其精简' });
-    expect(screen.getByTestId('reply-style-message').textContent).toContain('从下一轮起按新的风格代你写');
+    expect(screen.getByTestId('reply-style-message').textContent).toContain('writes for you in the new style from the next turn');
   });
 
   it('previews what it extracted, lets you edit it, and appends it under the label without touching what was there', async () => {
     const { client } = await renderSection({ ...EMPTY, text: '- 极其精简' });
     await act(async () => { fireEvent.click(screen.getByTestId('reply-style-extract-run')); });
     expect(client.extractReplyStyle).toHaveBeenCalledWith({ days: 15 });
-    expect(screen.getByTestId('reply-style-conflicts').textContent).toContain('框里写的是「多用 emoji」，最近的消息里是：很少用 emoji');
-    expect(screen.getByTestId('reply-style-basis').textContent).toContain('最近 15 天你本人的 87 条消息，30 个对话');
+    expect(screen.getByTestId('reply-style-conflicts').textContent).toContain('The text above says "多用 emoji". Your recent messages show: 很少用 emoji');
+    expect(screen.getByTestId('reply-style-basis').textContent).toContain('Based on 87 messages that you sent in the last 15 days, in 30 conversations');
     // 预览只是预览：没点追加以前什么都没写。
     expect(client.updateReplyStyle).not.toHaveBeenCalled();
 
@@ -81,7 +81,7 @@ describe('the reply style section', () => {
     const full = { ...EMPTY, text: '甲'.repeat(REPLY_STYLE_TEXT_MAX_LENGTH - 5) };
     await renderSection(full);
     await act(async () => { fireEvent.click(screen.getByTestId('reply-style-extract-run')); });
-    expect(screen.getByTestId('reply-style-append-problem').textContent).toContain('超了');
+    expect(screen.getByTestId('reply-style-append-problem').textContent).toContain('too many');
     expect(screen.getByTestId('reply-style-append').getAttribute('aria-disabled')).toBe('true');
 
     fireEvent.change(screen.getByTestId('reply-style-proposal'), { target: { value: '乙' } });
@@ -103,8 +103,12 @@ describe('the reply style section', () => {
 
 describe('reply style text', () => {
   it('writes the basis and the errors in plain words', () => {
-    expect(replyStyleBasisLine(RESULT)).toMatch(/^依据：最近 15 天你本人的 87 条消息，30 个对话，\d\d-\d\d 到 \d\d-\d\d。去掉了 2 行（抄了原文或者带着人名）。$/u);
-    expect(replyStyleErrorText(Object.assign(new Error('x'), { status: 403 }))).toBe('这台设备不能改：要在主人的设备上改。');
-    expect(replyStyleErrorText(new Error('this client cannot manage channel settings'))).toBe('这个版本的客户端不能改代回复风格。');
+    expect(replyStyleBasisLine(RESULT, 'zh')).toMatch(/^依据：最近 15 天你本人的 87 条消息，30 个对话，\d\d-\d\d 到 \d\d-\d\d。去掉了 2 行（抄了原文或者带着人名）。$/u);
+    expect(replyStyleErrorText(Object.assign(new Error('x'), { status: 403 }), 'zh')).toBe('这台设备不能改：要在主人的设备上改。');
+    expect(replyStyleErrorText(new Error('this client cannot manage channel settings'), 'zh')).toBe('这个版本的客户端不能改代回复风格。');
+    expect(replyStyleBasisLine(RESULT, 'en')).toMatch(
+      /^Based on 87 messages that you sent in the last 15 days, in 30 conversations, from \d\d-\d\d to \d\d-\d\d\. 2 lines were removed \(it copied the original text or had a name\)\.$/u,
+    );
+    expect(replyStyleErrorText(Object.assign(new Error('x'), { status: 403 }), 'en')).toBe('This device cannot change it. Change it on the owner\'s device.');
   });
 });

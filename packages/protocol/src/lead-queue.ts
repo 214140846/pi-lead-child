@@ -7,6 +7,8 @@
 // 排队的信息从 daemon 经网关推给 Companion：网关发 snapshot.required（resource 是 lead-queue，只发给声明了
 // include=lead_queue 的连接），客户端再 GET /v1/lead/queue。Web 和 iOS 用同一个接口。
 import { Type, type Static, type TProperties } from "typebox";
+import { DEFAULT_LOCALE, type Locale } from "./i18n.ts";
+import { leadQueueMessages } from "./lead-queue.messages.ts";
 
 const StrictObject = <T extends TProperties>(properties: T) =>
   Type.Object(properties, { additionalProperties: false });
@@ -64,9 +66,10 @@ export function leadQueueVisible(queue: LeadQueue | null | undefined): boolean {
   return Boolean(queue?.busy && queue.entries.length > 0);
 }
 
-/** 状态栏上的那一句：排着几条，是谁发的（按排队的顺序去重）。例如「排队 2 条：李雷、Kent」。 */
-export function leadQueueSummary(queue: Pick<LeadQueue, "entries">): string {
+
+/** 状态栏上的那一句（按界面语言）：排着几条，是谁发的（按排队的顺序去重）。例如「排队 2 条：李雷、Kent」。 */
+export function leadQueueSummary(queue: Pick<LeadQueue, "entries">, locale: Locale = DEFAULT_LOCALE): string {
   const count = queue.entries.reduce((sum, entry) => sum + entry.count, 0);
   const senders = [...new Set(queue.entries.flatMap((entry) => entry.senders))];
-  return `排队 ${count} 条：${senders.join("、")}`;
+  return leadQueueMessages(locale).summary(count, senders);
 }

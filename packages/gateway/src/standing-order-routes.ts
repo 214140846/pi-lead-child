@@ -20,8 +20,9 @@ import {
   getStandingOrder, getStandingOrderProposal, listStandingOrderProposals, listStandingOrders, listStandingOrderVersions,
   recentStandingOrderExecutions, resolveStandingOrderProposal, rollbackStandingOrderByUser, StandingOrderChangeError,
   type Db, type StandingOrderExecution, type StandingOrderProposal,
-  leadDisplayName,
+  getLocale, leadDisplayName,
 } from "@pi-lead-child/store";
+import { routeMessages } from "./routes.messages.js";
 
 export interface StandingOrderRouteContext {
   req: IncomingMessage;
@@ -155,6 +156,7 @@ export async function handleStandingOrderRoute(ctx: StandingOrderRouteContext): 
   const isProposals = path.startsWith("/v1/standing-order-proposals/");
   if (!isOrders && !isProposals) return false;
   const now = () => ctx.now?.() ?? new Date();
+  const m = routeMessages(getLocale(db));
   const fail = (status: number, code: string, message: string) =>
     ctx.json(status, { error: { code, message, details: { reason: code } } });
   const run = (action: () => unknown): true => {
@@ -185,7 +187,7 @@ export async function handleStandingOrderRoute(ctx: StandingOrderRouteContext): 
       const id = orderIdOf(match[1]!);
       if (!id) return run(() => { throw new StandingOrderChangeError("invalid_request", "standing order id is malformed"); });
       const found = detail(db, id, now());
-      if (!found) return run(() => { throw new StandingOrderChangeError("not_found", `没有常设指令 ${id}`); });
+      if (!found) return run(() => { throw new StandingOrderChangeError("not_found", m.orderNotFound(id)); });
       ctx.json(200, found);
       return true;
     }
@@ -204,8 +206,8 @@ export async function handleStandingOrderRoute(ctx: StandingOrderRouteContext): 
         if (fromVersion !== null) {
           ctx.ownerAction?.({
             action: "standing_order.rollback",
-            target: { key: `standing_order:${id}`, label: `常设指令「${written.order.title}」`, ticketId: null },
-            summary: `把常设指令「${written.order.title}」回滚到 v${toVersion}（新版本 v${written.order.version}）`,
+            target: { key: `standing_order:${id}`, label: m.orderTarget(written.order.title), ticketId: null },
+            summary: m.orderRolledBack(written.order.title, toVersion, written.order.version),
             detail: { fromVersion, toVersion, writtenVersion: written.order.version },
             undo: { kind: "standing_order_rollback", orderId: id, fromVersion, writtenVersion: written.order.version },
           });
@@ -223,7 +225,7 @@ export async function handleStandingOrderRoute(ctx: StandingOrderRouteContext): 
     ctx.requireAuth("tickets:view");
     return run(() => {
       const proposal = getStandingOrderProposal(db, approvalId, now());
-      if (!proposal) throw new StandingOrderChangeError("not_found", `没有常设指令的提议 #${approvalId}`);
+      if (!proposal) throw new StandingOrderChangeError("not_found", m.proposalNotFound(approvalId));
       return proposalResponse(db, proposal);
     });
   }
@@ -241,8 +243,8 @@ export async function handleStandingOrderRoute(ctx: StandingOrderRouteContext): 
       ctx.publishApprovalResolved?.(approvalId, proposal.state);
       ctx.ownerAction?.({
         action: "standing_order.proposal_decide",
-        target: { key: `standing_order:${proposal.orderId}`, label: `常设指令「${proposal.definition.title}」`, ticketId: null },
-        summary: `${approve ? "批准" : "拒绝"}了 ${leadDisplayName(db)} 对常设指令「${proposal.definition.title}」的修改提议 #${approvalId}：${proposal.summary}`,
+        target: { key: `standing_order:${proposal.orderId}`, label: m.orderTarget(proposal.definition.title), ticketId: null },
+        summary: m.proposalDecided(approve, leadDisplayName(db), proposal.definition.title, approvalId, proposal.summary),
         detail: { approvalId, approve, state: proposal.state },
         undo: {
           kind: "standing_order_proposal", approvalId, approve, orderId: proposal.orderId,

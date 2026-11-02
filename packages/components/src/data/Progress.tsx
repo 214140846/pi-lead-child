@@ -2,6 +2,8 @@ import { ProgressBar } from '../display/ProgressBar';
 import { Column, Row } from '../primitives/layout';
 import { Text } from '../primitives/Text';
 import { dataToneFill, type DataTone } from './tones';
+import { useMessages } from '../i18n';
+import { dataMessages } from './data.messages';
 
 export type ProgressProps = {
   label: string;
@@ -15,11 +17,12 @@ export type ProgressProps = {
 
 // 一项任务的进度：上面是名字和百分比，中间是进度条，下面是说明。
 export function Progress({ label, value, caption, tone, testID }: ProgressProps) {
+  const m = useMessages(dataMessages);
   return (
     <Column testID={testID} gap="card-row">
       <Row items="baseline" gap="inline-item">
         <Text flex={1} minW={0} size="card-title" weight="semibold">{label}</Text>
-        <Text size="meta" mono tone="secondary" shrink={0}>{value === undefined ? '进度未知' : `${Math.round(value * 100)}%`}</Text>
+        <Text size="meta" mono tone="secondary" shrink={0}>{value === undefined ? m.progressUnknown : `${Math.round(value * 100)}%`}</Text>
       </Row>
       <Row>
         <ProgressBar value={(value ?? 0) * 100} color={dataToneFill(tone)} track="surface-muted" height={6} />

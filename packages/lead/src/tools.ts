@@ -3398,8 +3398,8 @@ export function createLeadTools(deps: LeadDeps): ToolDefinition<any>[] {
           ...rows.map(({ ticket, reason }) => {
             const detail = ticket.reviewState?.label ?? ticket.executionState?.label ?? null;
             const parent = ticket.parentTicketId ? `，父工单 #${ticket.parentTicketId}` : "";
-            return `#${ticket.id} [${ticket.stage}${parent}] ${ticket.title} — ${ticketNeedsUserLabel(reason)}`
-              + (detail && detail !== ticketNeedsUserLabel(reason) ? `（${detail}）` : "");
+            return `#${ticket.id} [${ticket.stage}${parent}] ${ticket.title} — ${ticketNeedsUserLabel(reason, "zh")}`
+              + (detail && detail !== ticketNeedsUserLabel(reason, "zh") ? `（${detail}）` : "");
           }),
         ].join("\n"));
       },

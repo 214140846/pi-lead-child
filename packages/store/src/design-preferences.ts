@@ -3,8 +3,8 @@
 // 读到的值坏了（手改、截断）时不抛错：坏掉的字段按缺省值算，界面照常能画。
 import {
   DEFAULT_DESIGN_PREFERENCES, DENSITY_LEVELS, DENSITY_ZONES, DESIGN_NOTES_MAX_LENGTH, LINE_HEIGHT_LEVELS, PALETTE_ROLES,
-  RADIUS_LEVELS, TEXT_SCALE_LEVELS, normalizeDesignNotes, normalizeHexColor,
-  type DensityLevel, type DesignColors, type DesignDensity, type DesignPreferencesAuthor, type DesignPreferencesDto,
+  RADIUS_LEVELS, TEXT_SCALE_LEVELS, isLocale, normalizeDesignNotes, normalizeHexColor,
+  type DensityLevel, type Locale, type DesignColors, type DesignDensity, type DesignPreferencesAuthor, type DesignPreferencesDto,
   type DesignPreferencesFields,
 } from "@pi-lead-child/protocol";
 import type { Db } from "./db.js";
@@ -42,9 +42,15 @@ export function getDesignPreferences(db: Db): DesignPreferencesDto {
     textScale: oneOf(TEXT_SCALE_LEVELS, stored.textScale) ?? DEFAULT_DESIGN_PREFERENCES.textScale,
     colors,
     notes: [...notes].length <= DESIGN_NOTES_MAX_LENGTH ? notes : "",
+    locale: isLocale(stored.locale) ? stored.locale : DEFAULT_DESIGN_PREFERENCES.locale,
     updatedAt: typeof stored.updatedAt === "string" ? stored.updatedAt : null,
     updatedBy: stored.updatedBy === "user" || stored.updatedBy === "lead" ? stored.updatedBy : null,
   };
+}
+
+/** 用户选的界面语言。daemon 生成给用户看的文字（主人操作的摘要、给界面的错误）时按它写。 */
+export function getLocale(db: Db): Locale {
+  return getDesignPreferences(db).locale;
 }
 
 /** 写入整理好、校验过的值（engine 的 updateDesignPreferences 调它）。返回写入以后的值。 */

@@ -16,6 +16,8 @@ import {
   type ChatFollow,
   type ChatScrollMove,
 } from './stickToBottom';
+import { useMessages } from '../i18n';
+import { displayMessages } from './display.messages';
 
 export type ChatScrollProps = {
   children?: ReactNode;
@@ -54,7 +56,9 @@ function middleBlock(node: HTMLElement, view: DOMRect): Element | null {
 // · 你往上翻（滚轮向上、拖动）时立刻松开跟随；下面来了新内容时显示「新消息 ↓」。
 // · 会话栏变宽、变窄（工单面板打开、关闭）时重新排版：不算新内容；web 上你刚点的那一块留在原来的高度
 //   （规则见 ./stickToBottom 的 chatReflowAnchor）。在 ResizeObserver 里改滚动位置，画出来之前就改好，看不到跳。
-export function ChatScroll({ children, testID, followKey, bottomAligned = true, newContentLabel = '新消息' }: ChatScrollProps) {
+export function ChatScroll({ children, testID, followKey, bottomAligned = true, newContentLabel: newContentLabelProp }: ChatScrollProps) {
+  const m = useMessages(displayMessages);
+  const newContentLabel = newContentLabelProp ?? m.newMessages;
   const scrollRef = useRef<ScrollAreaHandle | null>(null);
   const follow = useRef<ChatFollow>(INITIAL_CHAT_FOLLOW);
   const viewportHeight = useRef(0);
@@ -283,7 +287,7 @@ export function ChatScroll({ children, testID, followKey, bottomAligned = true, 
           <Pressable
             testID={testID ? `${testID}-new` : undefined}
             role="button"
-            aria-label={`${newContentLabel}，回到底部`}
+            aria-label={m.newMessagesJump(newContentLabel)}
             onPress={backToBottom}
             feedback="highlight"
             rounded="full"

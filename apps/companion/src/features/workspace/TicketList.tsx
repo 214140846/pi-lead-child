@@ -3,6 +3,8 @@ import {
 } from '@pi-lead-child/components';
 import { Fragment, useEffect, useState } from 'react';
 
+import { useLocale, useMessages } from '@/i18n';
+
 import {
   ticketRailEmptyCopy,
   buildTicketRailPresentation,
@@ -17,6 +19,7 @@ import {
   type TicketRailState,
 } from './model';
 import { waitedText } from './inboxModel';
+import { railMessages } from './rail.messages';
 import { milestoneChip } from './timelineModel';
 
 type TicketListProps = {
@@ -35,11 +38,7 @@ type TicketListProps = {
   project?: TicketProjectScope | null;
 };
 
-const starterCommands = [
-  '帮我规划今天最重要的三件事',
-  '审计当前项目里最需要处理的风险',
-  '创建一个新任务并拆成可执行步骤',
-];
+const STARTER_COMMAND_COUNT = 3;
 
 const groupColor: Record<TicketGroupId, ColorToken> = {
   needs_intervention: 'danger-dark',
@@ -99,11 +98,12 @@ function TicketRow({ ticket, selected, onSelect }: { ticket: Ticket; selected: b
 
 // 侧栏里的工单卡片：头像、标题、一行说明；执行中的工单多一条进度。
 function TicketRailCard({ ticket, selected, onSelect }: { ticket: Ticket; selected: boolean; onSelect: () => void }) {
+  const locale = useLocale();
   const progressPercent = clampPercent(ticket.progressPercent);
   const hasProgress = ticket.status === 'active' && progressPercent !== undefined;
   // 右边的停留时间：在当前 stage 待了多久。已结束的工单不写。
-  const stayed = ticket.turn !== 'ended' && ticket.stageChangedAt ? waitedText(ticket.stageChangedAt) : null;
-  const due = ticket.turn !== 'ended' && ticket.nextMilestone ? milestoneChip(ticket.nextMilestone) : null;
+  const stayed = ticket.turn !== 'ended' && ticket.stageChangedAt ? waitedText(ticket.stageChangedAt, undefined, locale) : null;
+  const due = ticket.turn !== 'ended' && ticket.nextMilestone ? milestoneChip(ticket.nextMilestone, undefined, locale) : null;
   const assigned = ticket.status === 'review'
     || (Boolean(ticket.agentLabel || ticket.runtimeName) && !ticket.needsAttention);
   const signalColor: ColorToken = ticket.needsAttention
@@ -148,7 +148,7 @@ function TicketRailCard({ ticket, selected, onSelect }: { ticket: Ticket; select
             {stayed ? <Text size="meta" mono weight="bold" tone="muted">{stayed}</Text> : null}
           </Row>
           <Row mt="text-stack" items="center" gap="inline-item">
-            <Text flex={1} minW={0} size="secondary" tone="muted" numberOfLines={1}>{ticketRailCaption(ticket)}</Text>
+            <Text flex={1} minW={0} size="secondary" tone="muted" numberOfLines={1}>{ticketRailCaption(ticket, locale)}</Text>
             {due ? (
               <Box px="pill-x" rounded={5} bg={due.overdue ? 'danger-soft' : 'warning-soft'}>
                 {/* spacing-exempt: 徽标字号行高 */}
@@ -179,7 +179,9 @@ function EmptyStateForRail({
   onClearFilters?: () => void;
   onSeedTask?: (draft: string) => void;
 }) {
-  const copy = ticketRailEmptyCopy(state);
+  const m = useMessages(railMessages);
+  const copy = ticketRailEmptyCopy(state, useLocale());
+  const starterCommands = Array.from({ length: STARTER_COMMAND_COUNT }, (_, index) => m.starterCommands(index));
   const icon = state === 'all_completed'
     ? { name: 'check' as const, color: 'success' as const }
     : state === 'no_results'
@@ -229,6 +231,7 @@ export function TicketList({
   onSeedTask,
   project = null,
 }: TicketListProps) {
+  const locale = useLocale();
   const [collapsedGroups, setCollapsedGroups] = useState<Set<TicketGroupId>>(() => new Set(['background', 'completed', 'cancelled']));
 
   useEffect(() => {
@@ -262,7 +265,7 @@ export function TicketList({
     );
   }
 
-  const projection = buildTicketRailPresentation(items, { filter, query, loading, project });
+  const projection = buildTicketRailPresentation(items, { filter, query, loading, project, locale });
   if (projection.state !== 'populated') {
     return <EmptyStateForRail state={projection.state} onCreateTask={onCreateTask} onClearFilters={onClearFilters} onSeedTask={onSeedTask} />;
   }

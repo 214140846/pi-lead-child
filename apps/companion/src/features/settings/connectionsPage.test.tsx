@@ -8,6 +8,7 @@ import { connection, connectionsRuntime, renderWithRuntime, setViewportWidth } f
 import SettingsLayout from '../../app/settings/_layout';
 import { ConnectionDetail } from './ConnectionDetail';
 import { ConnectionsSection } from './ConnectionsSection';
+import { connectionSecondLine, connectionStatus, groupConnections, serverUrlProblem, toolCountLabel } from './connectionModel';
 import { SettingsHome } from './SettingsHome';
 
 const nav = vi.hoisted(() => ({
@@ -64,26 +65,26 @@ describe('the connections list', () => {
     // 「即将支持」排在需要设置的后面。
     expect(rows('setup')).toEqual(['connection-row-slack', 'connection-row-google']);
     expect(['connected', 'available', 'setup'].map((group) => screen.getByTestId(`connections-group-title-${group}`).textContent))
-      .toEqual(['已连接', '可以连接', '需要额外设置']);
+      .toEqual(['Connected', 'Available', 'Needs more setup']);
   });
 
   it('writes each row status and second line from the connection state', () => {
     const { runtime } = connectionsRuntime(everything);
     renderWithRuntime(<ConnectionsSection connectionId={null} />, runtime);
 
-    expect(screen.getByTestId('connection-status-atlassian').textContent).toBe('已连接');
-    expect(screen.getByTestId('connection-second-atlassian').textContent).toBe('you@acme.com · 12 分钟前用过');
-    expect(screen.getByTestId('connection-status-custom-a1b2').textContent).toBe('暂时连不上');
+    expect(screen.getByTestId('connection-status-atlassian').textContent).toBe('Connected');
+    expect(screen.getByTestId('connection-second-atlassian').textContent).toBe('you@acme.com · Used 12 minutes ago');
+    expect(screen.getByTestId('connection-status-custom-a1b2').textContent).toBe('Cannot connect now');
     expect(screen.getByTestId('connection-second-custom-a1b2').textContent).toBe('暂时连不上 linear.app，daemon 会自动重试');
-    expect(screen.getByTestId('connection-status-notion').textContent).toBe('需要重新授权');
-    expect(screen.getByTestId('connection-action-notion').textContent).toBe('重新授权');
+    expect(screen.getByTestId('connection-status-notion').textContent).toBe('Needs a new authorization');
+    expect(screen.getByTestId('connection-action-notion').textContent).toBe('Authorize again');
     expect(screen.getByTestId('connection-second-github').textContent).toBe('读 PR 和 issue，写评论');
-    expect(screen.getByTestId('connection-action-github').textContent).toBe('连接');
-    expect(screen.getByTestId('connection-status-google').textContent).toBe('即将支持');
+    expect(screen.getByTestId('connection-action-github').textContent).toBe('Connect');
+    expect(screen.getByTestId('connection-status-google').textContent).toBe('Coming soon');
     expect(screen.getByTestId('connection-second-google').textContent).toBe('Gmail、日历、云端硬盘的 MCP 还在预览期');
     expect(screen.queryByTestId('connection-action-google')).toBeNull();
-    expect(screen.getByTestId('connections-add-custom').textContent).toContain('+ 添加 MCP 服务器');
-    expect(screen.getByTestId('connections-add-custom').textContent).toContain('任何支持 OAuth 的远程 MCP 服务器');
+    expect(screen.getByTestId('connections-add-custom').textContent).toContain('+ Add an MCP server');
+    expect(screen.getByTestId('connections-add-custom').textContent).toContain('Any remote MCP server that supports OAuth');
   });
 
   it('opens a connected row in the desktop drawer without stacking history, and pushes a page on phones', () => {
@@ -127,9 +128,9 @@ describe('the health bar', () => {
 
     fireEvent.click(screen.getByTestId('connection-health-reauth-notion'));
     const consent = screen.getByTestId('connect-consent');
-    expect(consent.textContent).toContain('重新授权 Notion');
-    expect(consent.textContent).toContain('会打开 Notion 的授权页');
-    expect(within(consent).getByTestId('connect-continue').textContent).toBe('继续到 Notion');
+    expect(consent.textContent).toContain('Authorize Notion again');
+    expect(consent.textContent).toContain('Opens the Notion authorization page');
+    expect(within(consent).getByTestId('connect-continue').textContent).toBe('Continue to Notion');
   });
 
   it('is also on the phone settings home', () => {
@@ -174,17 +175,17 @@ describe('a connection’s detail', () => {
     renderWithRuntime(<ConnectionDetail connectionKey="atlassian" />, runtime);
     const detail = screen.getByTestId('connection-detail-atlassian');
     expect(detail.textContent).toContain('you@acme.com');
-    expect(detail.textContent).toMatch(/续期自动 · 上次 /);
-    expect(detail.textContent).toContain('52 分钟后到期，会提前续期');
-    expect(detail.textContent).toContain('授权到期');
-    expect(detail.textContent).toContain('29 个工具 · 只读 23 · 会写入 6');
+    expect(detail.textContent).toMatch(/RenewalAutomatic · last renewed /);
+    expect(detail.textContent).toContain('Expires in 52 minutes. It renews before that.');
+    expect(detail.textContent).toContain('Authorization expires');
+    expect(detail.textContent).toContain('29 tools · 23 read-only · 6 can write');
 
     fireEvent.click(screen.getByTestId('connection-tools-toggle'));
     const tools = await screen.findByText('createJiraIssue');
     expect(client.connectionTools).toHaveBeenCalledWith('atlassian', undefined);
     expect(within(screen.getByTestId('connection-tools')).getByText('按 JQL 搜索 issue')).toBeTruthy();
-    expect(within(screen.getByTestId('connection-tools')).getByText('只读')).toBeTruthy();
-    expect(within(tools.parentElement!.parentElement!).getByText('会写入')).toBeTruthy();
+    expect(within(screen.getByTestId('connection-tools')).getByText('Read-only')).toBeTruthy();
+    expect(within(tools.parentElement!.parentElement!).getByText('Can write')).toBeTruthy();
   });
 
   it('saves who can use it and the write policy', async () => {
@@ -198,7 +199,7 @@ describe('a connection’s detail', () => {
     await vi.waitFor(() => expect(screen.getByTestId('connection-role-reviewer').getAttribute('aria-disabled')).toBeNull());
     fireEvent.click(screen.getByTestId('connection-write-direct'));
     expect(client.updateConnectionSettings).toHaveBeenLastCalledWith('atlassian', { writePolicy: 'direct' });
-    expect(screen.getByText('建 issue、改状态、发评论这类工具会先发一张确认卡。')).toBeTruthy();
+    expect(screen.getByText('Tools that create issues, change status or post comments send a confirm card first.')).toBeTruthy();
   });
 
   it('tests the connection and shows the result inline', async () => {
@@ -216,8 +217,8 @@ describe('a connection’s detail', () => {
     renderWithRuntime(<ConnectionDetail connectionKey="atlassian" />, runtime);
 
     fireEvent.click(screen.getByTestId('connection-disconnect'));
-    expect(screen.getByTestId('connection-disconnect-confirm').textContent).toContain('断开后 Paimon 不能再用这个账号。');
-    fireEvent.click(within(screen.getByTestId('connection-disconnect-confirm')).getByText('取消'));
+    expect(screen.getByTestId('connection-disconnect-confirm').textContent).toContain('After you disconnect, Paimon cannot use this account.');
+    fireEvent.click(within(screen.getByTestId('connection-disconnect-confirm')).getByText('Cancel'));
     expect(screen.queryByTestId('connection-disconnect-confirm')).toBeNull();
     expect(client.disconnectConnection).not.toHaveBeenCalled();
 
@@ -242,12 +243,23 @@ describe('a connection’s detail', () => {
   it('explains a degraded connection and offers re-authorization when it is needed', () => {
     const { runtime } = connectionsRuntime([linear, notion]);
     const { unmount } = renderWithRuntime(<ConnectionDetail connectionKey="custom-a1b2" />, runtime);
-    expect(screen.getByTestId('connection-detail-problem').textContent).toMatch(/^暂时连不上，daemon 会在 \d\d:\d\d 自动重试$/);
+    expect(screen.getByTestId('connection-detail-problem').textContent).toMatch(/^Cannot connect now. The daemon tries again at \d\d:\d\d\.$/);
     unmount();
 
     renderWithRuntime(<ConnectionDetail connectionKey="notion" />, runtime);
     expect(screen.getByTestId('connection-detail-problem').textContent).toContain('Notion 的授权失效了');
     fireEvent.click(screen.getByTestId('connection-detail-reauth'));
-    expect(screen.getByTestId('connect-consent').textContent).toContain('重新授权 Notion');
+    expect(screen.getByTestId('connect-consent').textContent).toContain('Authorize Notion again');
+  });
+});
+
+describe('the connection words in each language', () => {
+  it('writes English by default and the original Chinese for zh', () => {
+    expect(groupConnections(everything, null, 'zh').map((group) => group.label)).toEqual(['已连接', '可以连接', '需要额外设置']);
+    expect(connectionStatus(jira, 'zh')?.label).toBe('已连接');
+    expect(connectionSecondLine(jira, 'zh', new Date(now)).text).toBe('you@acme.com · 12 分钟前用过');
+    expect(toolCountLabel(jira.tools!, 'zh')).toBe('29 个工具 · 只读 23 · 会写入 6');
+    expect(toolCountLabel({ total: 1, readOnly: 1, write: 0 }, 'en')).toBe('1 tool · 1 read-only · 0 can write');
+    expect(serverUrlProblem('http://mcp.example.com', 'zh')).toBe('地址要以 https:// 开头。');
   });
 });

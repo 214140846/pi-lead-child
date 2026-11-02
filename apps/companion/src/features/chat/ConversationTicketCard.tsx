@@ -1,6 +1,8 @@
 import { Column, Text } from '@pi-lead-child/components';
 import type { ReactElement } from 'react';
 
+import { useLocale, type Locale } from '@/i18n';
+
 import type { ConversationCardEntity } from '../../state/types';
 import { useConversationItemDetail, useLeadName, useTicketSummary } from '../../state/hooks';
 import { ticketDisplayTitle, ticketSummaryToTicket } from '../workspace/model';
@@ -14,10 +16,10 @@ import { useOpenTicket } from './useOpenTicket';
 type TicketExecutionConversationCardEntity = ConversationCardEntity & { kind: 'ticket_execution' };
 
 // 卡片上最后一个做完的操作自己说了什么（「提醒 #83 已创建」）。事项还没取到、或者取不到时，卡片说这一句，不一直等。
-function operationWords(card: TicketExecutionConversationCardEntity): string | null {
+function operationWords(card: TicketExecutionConversationCardEntity, locale: Locale): string | null {
   for (const operation of [...card.operations].reverse()) {
     if (operation.state !== 'completed') continue;
-    const words = itemOperationDoneWords(operation.name, card.ticketId);
+    const words = itemOperationDoneWords(operation.name, card.ticketId, locale);
     if (words) return words;
   }
   return null;
@@ -43,8 +45,9 @@ export function TicketExecutionConversationCard({
   const openTicket = useOpenTicket();
   const openAgenda = useOpenAgenda();
   const leadName = useLeadName();
+  const locale = useLocale();
   const item = summary ?? detail?.ticket;
-  const fallback = operationWords(card);
+  const fallback = operationWords(card, locale);
   const reminderOperation = card.operations.some((operation) => REMINDER_OPERATIONS.has(operation.name));
   if (item?.kind === 'reminder' || (!item && reminderOperation)) {
     // 事件只认最后一个做完了的操作：失败的、还在跑的取消不能写成「<Lead 的名字> 取消了它」（AGENTS.md Core Invariants 第 4 条）。
@@ -56,7 +59,7 @@ export function TicketExecutionConversationCard({
           title: item ? ticketDisplayTitle(item) : null,
           remindAt: detail?.remindAt ?? null,
           stage: item?.stage ?? null,
-          event: latest ? reminderEventWords(latest.name, leadName) : null,
+          event: latest ? reminderEventWords(latest.name, leadName, locale) : null,
           fallback,
           level: detail?.reminder?.level ?? null,
         }}

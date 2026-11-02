@@ -8,8 +8,11 @@ import { ConnectFlowSteps, initialFlowState, useConnectFlow } from '@/features/s
 import {
   connectionErrorText, connectionNeedsUser, opensBrowser, providerForKey,
 } from '@/features/settings/connectionModel';
+import { useLocale, useMessages } from '@/i18n';
 import { useCompanionRuntime } from '@/state/CompanionStateProvider';
 import { useConnections, useLeadName } from '@/state/hooks';
+
+import { genuiMessages } from './genui.messages';
 
 // 会话里的两张连接卡（方案 C）。卡片只带 key 或确认号：状态都从 daemon 实时读取，旧卡片不会显示过期的状态。
 
@@ -17,15 +20,17 @@ const CONFIRM_POLL_MS = 2_000;
 
 // Lead 请你连接一个账号（或者重新授权）。按钮走和设置页一样的连接流程。「以后再说」只在这台设备上收起这张卡。
 export function ConnectionConnectCard({ connection: key, reason }: { connection: string; reason?: string }) {
+  const m = useMessages(genuiMessages).connection;
   const { connections } = useConnections();
   const connection = connections?.items.find((item) => item.key === key) ?? null;
-  if (!connections) return <Text size="secondary" tone="secondary">正在读取连接…</Text>;
-  if (!connection) return <Text size="secondary" tone="secondary">{`没有找到连接 ${key}。`}</Text>;
+  if (!connections) return <Text size="secondary" tone="secondary">{m.loading}</Text>;
+  if (!connection) return <Text size="secondary" tone="secondary">{m.notFound(key)}</Text>;
   return <ConnectionConnectBody key={connection.key} connection={connection} reason={reason} />;
 }
 
 function ConnectionConnectBody({ connection, reason }: { connection: ConnectionDto; reason?: string }) {
   const runtime = useCompanionRuntime();
+  const m = useMessages(genuiMessages).connection;
   const [initial] = useState(() => initialFlowState(connection));
   const flow = useConnectFlow(initial);
   const [later, setLater] = useState(false);
@@ -38,7 +43,7 @@ function ConnectionConnectBody({ connection, reason }: { connection: ConnectionD
     return (
       <Row testID={`surface-connection-${connection.key}`} items="center" gap="side-item">
         <ServiceMark service={connection.provider} label={connection.label} size={24} />
-        <Text flex={1} minW={0} size="card-title" weight="semibold">{`${connection.label} 已连接`}</Text>
+        <Text flex={1} minW={0} size="card-title" weight="semibold">{m.connected(connection.label)}</Text>
         <Dot color="success" size={7} />
       </Row>
     );
@@ -48,8 +53,8 @@ function ConnectionConnectBody({ connection, reason }: { connection: ConnectionD
     return (
       <Row testID={`surface-connection-${connection.key}`} items="center" gap="side-item">
         <ServiceMark service={connection.provider} label={connection.label} size={24} />
-        <Text flex={1} minW={0} size="secondary" tone="secondary">{`${reauth ? '还没有重新授权' : '还没有连接'} ${connection.label}`}</Text>
-        <Button label={reauth ? '重新授权' : '连接'} variant="ghost" tone="accent" size="xs" onPress={() => setLater(false)} />
+        <Text flex={1} minW={0} size="secondary" tone="secondary">{reauth ? m.notReauthorized(connection.label) : m.notConnected(connection.label)}</Text>
+        <Button label={reauth ? m.reauthorize : m.connect} variant="ghost" tone="accent" size="xs" onPress={() => setLater(false)} />
       </Row>
     );
   }
@@ -61,16 +66,16 @@ function ConnectionConnectBody({ connection, reason }: { connection: ConnectionD
       <Row items="center" gap="side-item">
         <ServiceMark service={connection.provider} label={connection.label} size={32} />
         <Column flex={1} minW={0} gap="text-stack">
-          <Text size="card-title" weight="extrabold">{`${reauth ? '重新授权' : '连接'} ${connection.label}`}</Text>
+          <Text size="card-title" weight="extrabold">{m.title(reauth, connection.label)}</Text>
           {reason ? <Text size="secondary" tone="secondary">{reason}</Text> : null}
         </Column>
       </Row>
       {flow.state.step === 'consent' ? (
         <>
-          <Text size="body">{`连接以后，${leadName} 可以${connection.capability}`}</Text>
+          <Text size="body">{m.capability(leadName, connection.capability)}</Text>
           <Row gap="actions">
-            <Button testID={`surface-connect-${connection.key}`} label={reauth ? '重新授权' : '连接'} onPress={start} />
-            <Button testID={`surface-connect-later-${connection.key}`} label="以后再说" variant="ghost" tone="neutral" onPress={() => setLater(true)} />
+            <Button testID={`surface-connect-${connection.key}`} label={reauth ? m.reauthorize : m.connect} onPress={start} />
+            <Button testID={`surface-connect-later-${connection.key}`} label={m.later} variant="ghost" tone="neutral" onPress={() => setLater(true)} />
           </Row>
         </>
       ) : (
@@ -80,16 +85,18 @@ function ConnectionConnectBody({ connection, reason }: { connection: ConnectionD
   );
 }
 
-const CONFIRM_STATE: Record<Exclude<ConnectionConfirmationDto['state'], 'pending' | 'running'>, { label: string; tone: 'success-dark' | 'danger-dark' | 'secondary' }> = {
-  done: { label: '已执行', tone: 'success-dark' },
-  failed: { label: '执行失败', tone: 'danger-dark' },
-  rejected: { label: '已拒绝', tone: 'secondary' },
-  expired: { label: '已过期', tone: 'secondary' },
+const CONFIRM_TONE: Record<Exclude<ConnectionConfirmationDto['state'], 'pending' | 'running'>, 'success-dark' | 'danger-dark' | 'secondary'> = {
+  done: 'success-dark',
+  failed: 'danger-dark',
+  rejected: 'secondary',
+  expired: 'secondary',
 };
 
 // 一次写入的确认。允许以后 daemon 执行存下的那一次调用；执行时每 2 秒读一次结果。
 export function ConnectionConfirmCard({ confirmation: id }: { confirmation: string }) {
+  const locale = useLocale();
   const runtime = useCompanionRuntime();
+  const m = useMessages(genuiMessages).connection;
   const { connections } = useConnections();
   const [confirmation, setConfirmation] = useState<ConnectionConfirmationDto | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -101,7 +108,7 @@ export function ConnectionConfirmCard({ confirmation: id }: { confirmation: stri
     const controller = new AbortController();
     runtime.connectionConfirmation(id, controller.signal).then(
       (value) => { if (!controller.signal.aborted) setConfirmation(value); },
-      (reason: unknown) => { if (!controller.signal.aborted) setError(connectionErrorText(reason)); },
+      (reason: unknown) => { if (!controller.signal.aborted) setError(connectionErrorText(reason, locale)); },
     );
     return () => controller.abort();
   }, [id, runtime]);
@@ -128,25 +135,27 @@ export function ConnectionConfirmCard({ confirmation: id }: { confirmation: stri
     setSubmitting(true);
     setError(null);
     runtime.resolveConnectionConfirmation(id, approve)
-      .then(setConfirmation, (reason: unknown) => setError(connectionErrorText(reason)))
+      .then(setConfirmation, (reason: unknown) => setError(connectionErrorText(reason, locale)))
       .finally(() => setSubmitting(false));
   };
 
   if (!confirmation) {
-    return error ? <Text size="secondary" tone="danger-dark">{error}</Text> : <Text size="13" tone="secondary">正在读取写入确认…</Text>; // spacing-exempt: 提示文字字号
+    return error ? <Text size="secondary" tone="danger-dark">{error}</Text> : <Text size="13" tone="secondary">{m.loadingConfirmation}</Text>; // spacing-exempt: 提示文字字号
   }
-  const settled = confirmation.state === 'pending' || confirmation.state === 'running' ? null : CONFIRM_STATE[confirmation.state];
+  const settled = confirmation.state === 'pending' || confirmation.state === 'running'
+    ? null
+    : { label: m.states[confirmation.state], tone: CONFIRM_TONE[confirmation.state] };
   return (
     <Column testID={`surface-confirmation-${confirmation.id}`} gap="card-row">
       <Row items="center" gap="side-item">
         <ServiceMark service={providerForKey(confirmation.key, connections?.items)} label={confirmation.label} size={24} />
-        <Text flex={1} minW={0} size="card-title" weight="bold">{`${confirmation.label} · 写入确认`}</Text>
+        <Text flex={1} minW={0} size="card-title" weight="bold">{m.confirmTitle(confirmation.label)}</Text>
       </Row>
       <Text size="body">{confirmation.summary}</Text>
-      <Pressable testID="surface-confirmation-args-toggle" aria-label={showArgs ? '收起参数' : '展开参数'} onPress={() => setShowArgs((value) => !value)} self="flex-start">
+      <Pressable testID="surface-confirmation-args-toggle" aria-label={showArgs ? m.hideArgs : m.showArgs} onPress={() => setShowArgs((value) => !value)} self="flex-start">
         <Row items="center" gap="icon-label">
           {/* spacing-exempt: 操作旁说明字号 */}
-          <Text size="12.5" weight="bold" tone="secondary">参数</Text>
+          <Text size="12.5" weight="bold" tone="secondary">{m.args}</Text>
           <Icon name={showArgs ? 'chevron-up' : 'chevron-down'} size={13} color="text-secondary" />
         </Row>
       </Pressable>
@@ -157,14 +166,14 @@ export function ConnectionConfirmCard({ confirmation: id }: { confirmation: stri
       ) : null}
       {confirmation.state === 'pending' ? (
         <Row gap="actions">
-          <Button testID="surface-confirmation-approve" label="允许" disabled={submitting} onPress={() => resolve(true)} />
-          <Button testID="surface-confirmation-reject" label="不要" variant="outline" tone="neutral" disabled={submitting} onPress={() => resolve(false)} />
+          <Button testID="surface-confirmation-approve" label={m.allow} disabled={submitting} onPress={() => resolve(true)} />
+          <Button testID="surface-confirmation-reject" label={m.deny} variant="outline" tone="neutral" disabled={submitting} onPress={() => resolve(false)} />
         </Row>
       ) : null}
       {confirmation.state === 'running' ? (
         <Row testID="surface-confirmation-running" items="center" gap="icon-label">
           <Spinner size={14} />
-          <Text size="secondary" tone="secondary">正在执行</Text>
+          <Text size="secondary" tone="secondary">{m.running}</Text>
         </Row>
       ) : null}
       {settled ? (

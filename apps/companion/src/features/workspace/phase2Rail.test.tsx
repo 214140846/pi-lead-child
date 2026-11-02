@@ -103,10 +103,10 @@ describe('the project cards', () => {
 
     const main = screen.getByTestId('project-row-1');
     expect(within(main).getByText('卡在 #72 的 review 投影；#66 正在重新核查。')).toBeTruthy();
-    expect(within(main).getByText('15:43 更新')).toBeTruthy();
-    expect(within(main).getByText('等你 2')).toBeTruthy();
+    expect(within(main).getByText('Updated 15:43')).toBeTruthy();
+    expect(within(main).getByText('Waiting for you 2')).toBeTruthy();
     expect(within(main).getByText('$36.18')).toBeTruthy();
-    expect(within(screen.getByTestId('project-row-2')).getByText('27 天没有动静')).toBeTruthy();
+    expect(within(screen.getByTestId('project-row-2')).getByText('No activity for 27 days')).toBeTruthy();
   });
 
   it('fold quiet and archived projects, and archive or restore one', () => {
@@ -132,7 +132,7 @@ describe('the ticket tab', () => {
     const row = screen.getByTestId('ticket-row-66');
     expect(within(row).getByText('成果快照与登记机制')).toBeTruthy();
     expect(within(row).queryByText(E2E_TITLE)).toBeNull();
-    expect(within(screen.getByTestId('ticket-row-72')).getByText('50 天')).toBeTruthy();
+    expect(within(screen.getByTestId('ticket-row-72')).getByText('50 days')).toBeTruthy();
   });
 
   // 阶段 3：标签是最近的节点（任何类型），不只是截止。
@@ -140,8 +140,8 @@ describe('the ticket tab', () => {
     const { runtime } = render();
     act(() => runtime.workspace.getState().setRailView('tickets'));
 
-    expect(within(screen.getByTestId('ticket-row-72')).getByText('提测 明天 18:00')).toBeTruthy();
-    expect(within(screen.getByTestId('ticket-row-66')).getByText('截止已过 2 天')).toBeTruthy();
+    expect(within(screen.getByTestId('ticket-row-72')).getByText('提测 Tomorrow 18:00')).toBeTruthy();
+    expect(within(screen.getByTestId('ticket-row-66')).getByText('截止 overdue by 2 days')).toBeTruthy();
   });
 
   it('has a search box that finds a ticket by its short title, original title or number', () => {

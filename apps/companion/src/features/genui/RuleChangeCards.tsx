@@ -4,8 +4,13 @@ import { useCallback, useEffect, useState } from 'react';
 
 import { shortTime, standingOrderErrorText } from '@/features/settings/standingOrderModel';
 import { waitedText } from '@/features/workspace/inboxModel';
+import { useLocale, useMessages } from '@/i18n';
 import { useCompanionRuntime } from '@/state/CompanionStateProvider';
 import { useConnectionPhase, useLeadName } from '@/state/hooks';
+
+import { genuiMessages } from './genui.messages';
+
+type RuleChangeText = ReturnType<typeof genuiMessages>['ruleChange'];
 
 // 改规则被拦下以后的一次性确认卡（统一的消息事件 spec D10 的放行，工单 09）。Lead 把系统给的 user_action
 // （confirm_rule_change）原样放进 UserAction，卡片只带确认号：要改什么、参数、为什么改、为什么被拦都从
@@ -14,16 +19,16 @@ import { useConnectionPhase, useLeadName } from '@/state/hooks';
 // 样子是审批模式（P9.2，主题 11.4）：头部是状态点和状态词、谁要做什么、等了多久；参数放在等宽字的框里；
 // 原因和被拦的原因是左边一列宽 56 的标签加右边的值；操作组右对齐，只有「确认这一次」是主按钮。处理过以后操作组原地换成结果（P5.5）。
 
-type StateLook = { label: string; dot: 'warning' | 'accent' | 'success' | 'danger' | 'text-faint'; tone: 'warning-dark' | 'accent' | 'success-dark' | 'danger-dark' | 'secondary' };
+type StateLook = { dot: 'warning' | 'accent' | 'success' | 'danger' | 'text-faint'; tone: 'warning-dark' | 'accent' | 'success-dark' | 'danger-dark' | 'secondary' };
 
 // 状态按主题的五类状态画（P7.1，主题 C-11 到 C-15）。
 const STATE: Record<RuleChangeConfirmationDto['state'], StateLook> = {
-  pending: { label: '等你确认', dot: 'warning', tone: 'warning-dark' },
-  running: { label: '正在执行', dot: 'accent', tone: 'accent' },
-  done: { label: '已执行', dot: 'success', tone: 'success-dark' },
-  failed: { label: '执行失败', dot: 'danger', tone: 'danger-dark' },
-  declined: { label: '没有改', dot: 'text-faint', tone: 'secondary' },
-  expired: { label: '已过期', dot: 'text-faint', tone: 'secondary' },
+  pending: { dot: 'warning', tone: 'warning-dark' },
+  running: { dot: 'accent', tone: 'accent' },
+  done: { dot: 'success', tone: 'success-dark' },
+  failed: { dot: 'danger', tone: 'danger-dark' },
+  declined: { dot: 'text-faint', tone: 'secondary' },
+  expired: { dot: 'text-faint', tone: 'secondary' },
 };
 
 // 主题 11.4：后果一列标签宽 56。
@@ -35,17 +40,17 @@ function errorStatus(reason: unknown): number | undefined {
   return typeof reason === 'object' && reason !== null ? (reason as { status?: number }).status : undefined;
 }
 
-function settledText(confirmation: RuleChangeConfirmationDto, leadName: string): string | null {
+function settledText(confirmation: RuleChangeConfirmationDto, leadName: string, m: RuleChangeText): string | null {
   switch (confirmation.state) {
     case 'done':
     case 'failed':
       return confirmation.resultPreview;
     case 'declined':
-      return '你点了「不改」，规则照旧。';
+      return m.declined;
     case 'expired':
-      return `没有决定，过期作废了，规则照旧。要改的话请 ${leadName} 再提一次。`;
+      return m.expired(leadName);
     case 'running':
-      return '你确认了，正在执行。';
+      return m.running;
     default:
       return null;
   }
@@ -55,6 +60,7 @@ export function RuleChangeConfirmCard({ confirmation: id }: { confirmation: stri
   const runtime = useCompanionRuntime();
   // 连上 daemon 以后才读（刷新页面时设备可能还在重连）。
   const ready = useConnectionPhase() === 'ready';
+  const m = useMessages(genuiMessages).ruleChange;
   const [value, setValue] = useState<RuleChangeConfirmationDto | null>(null);
   const [gone, setGone] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -75,9 +81,9 @@ export function RuleChangeConfirmCard({ confirmation: id }: { confirmation: stri
     return () => controller.abort();
   }, [load, ready]);
 
-  if (gone) return <Text testID={`surface-rule-change-${id}-gone`} size="secondary" tone="secondary">找不到这张确认卡。</Text>;
+  if (gone) return <Text testID={`surface-rule-change-${id}-gone`} size="secondary" tone="secondary">{m.gone}</Text>;
   if (!value) {
-    return error ? <Text size="secondary" tone="danger-dark">{error}</Text> : <Text size="secondary" tone="secondary">正在读取确认卡…</Text>;
+    return error ? <Text size="secondary" tone="danger-dark">{error}</Text> : <Text size="secondary" tone="secondary">{m.loading}</Text>;
   }
   return <RuleChangeConfirmView confirmation={value} onChange={setValue} reload={load} />;
 }
@@ -89,10 +95,12 @@ function RuleChangeConfirmView({ confirmation, onChange, reload }: {
 }) {
   const runtime = useCompanionRuntime();
   const leadName = useLeadName();
+  const locale = useLocale();
+  const m = useMessages(genuiMessages).ruleChange;
   const [submitting, setSubmitting] = useState<RuleChangeDecision | null>(null);
   const [error, setError] = useState<string | null>(null);
   const id = `surface-rule-change-${confirmation.id}`;
-  const look = STATE[confirmation.state];
+  const look = { ...STATE[confirmation.state], label: m.states[confirmation.state] };
   const pending = confirmation.state === 'pending';
 
   const decide = (decision: RuleChangeDecision) => {
@@ -108,11 +116,11 @@ function RuleChangeConfirmView({ confirmation, onChange, reload }: {
   };
 
   const facts = [
-    ...(confirmation.name ? [{ label: '对象', value: confirmation.name }] : []),
-    { label: '原因', value: confirmation.reason },
-    { label: '被拦', value: confirmation.why },
+    ...(confirmation.name ? [{ label: m.target, value: confirmation.name }] : []),
+    { label: m.reason, value: confirmation.reason },
+    { label: m.blocked, value: confirmation.why },
   ];
-  const settled = settledText(confirmation, leadName);
+  const settled = settledText(confirmation, leadName, m);
   return (
     <Column testID={id} gap="card-row">
       <Row items="center" gap="inline-item">
@@ -122,11 +130,11 @@ function RuleChangeConfirmView({ confirmation, onChange, reload }: {
         </Row>
         <Text flex={1} minW={0} size="card-title" numberOfLines={1}>
           <Text size="card-title" weight="semibold">{leadName}</Text>
-          {` 要${confirmation.label}`}
+          {m.wants(confirmation.label)}
         </Text>
         {/* 时刻用等宽字，「等了多久」不用（P14.2）。 */}
         <Text size="meta" tone="secondary" mono={!pending} shrink={0}>
-          {pending ? `等了 ${waitedText(confirmation.createdAt)}` : shortTime(confirmation.resolvedAt ?? confirmation.expiresAt)}
+          {pending ? m.waited(waitedText(confirmation.createdAt, undefined, locale)) : shortTime(confirmation.resolvedAt ?? confirmation.expiresAt)}
         </Text>
       </Row>
       <Box testID={`${id}-params`} px="inset-x" py="inset-y" rounded="md" bg="surface-muted">
@@ -152,11 +160,11 @@ function RuleChangeConfirmView({ confirmation, onChange, reload }: {
         {pending ? (
           <>
             <Button
-              testID={`${id}-decline`} label={submitting === 'decline' ? '正在提交…' : '不改'} variant="ghost" tone="neutral" size="sm"
+              testID={`${id}-decline`} label={submitting === 'decline' ? m.submitting : m.decline} variant="ghost" tone="neutral" size="sm"
               disabled={submitting !== null} onPress={() => decide('decline')}
             />
             <Button
-              testID={`${id}-confirm`} label={submitting === 'confirm' ? '正在执行…' : '确认这一次'} size="sm"
+              testID={`${id}-confirm`} label={submitting === 'confirm' ? m.confirming : m.confirm} size="sm"
               disabled={submitting !== null} onPress={() => decide('confirm')}
             />
           </>

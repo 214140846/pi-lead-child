@@ -162,6 +162,26 @@ describe("widgets with a data source", () => {
     expect(db.prepare("SELECT COUNT(*) AS n FROM widget_sources").get()).toEqual({ n: 0 });
   });
 
+  it("binds a whole array into a Sparkline, so the trend line updates with the data", async () => {
+    const trend = {
+      root: "line",
+      nodes: [{ id: "line", type: "Sparkline", props: { label: "纳斯达克", points: { $data: "series" }, tone: { $data: "tone" }, end: "{{time}}" } }],
+      fallback_text: "纳斯达克最近 {{days}} 天的走势",
+    };
+    outputs = [json({ series: [18110, 18240, 18532], tone: "success", time: "15:00", days: 3 })];
+    const created = (await runUiAction(db, {
+      target: board, action: "create", input: { title: "走势", surface: trend, source: { command: "trend.sh", every_seconds: 900 } },
+      caller: user, now: clock, services: services(),
+    })).result as WidgetDto;
+    expect(created.surface.nodes[0]!.props).toMatchObject({ points: [18110, 18240, 18532], tone: "success", end: "15:00" });
+    outputs = [json({ series: [1], tone: "success", time: "15:15", days: 1 })];
+    clock = new Date("2026-10-30T08:15:00.000Z");
+    await createWidgetSourceRunner(db, { runCommand: fakeRun, now: () => clock }).tick();
+    // 一个点画不成折线：这一次算出错，控件留着上一次的走势。
+    expect(getWidget(db, created.id)!.surface.nodes[0]!.props).toMatchObject({ points: [18110, 18240, 18532] });
+    expect(getWidget(db, created.id)!.source!.lastError).toContain("卡不合格");
+  });
+
   it("restarts a run that a daemon restart interrupted", async () => {
     const widget = await createNasdaq();
     db.prepare("UPDATE widget_sources SET running_since = ?, next_run_at = ? WHERE widget_id = ?").run(clock.toISOString(), "2099-01-01T00:00:00.000Z", widget.id);

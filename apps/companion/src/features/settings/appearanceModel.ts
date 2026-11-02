@@ -1,26 +1,31 @@
 // 设置 → 外观（2026-10-22）的文字和表单规则。页面在 AppearanceSection.tsx。
 import {
-  DEFAULT_DESIGN_PREFERENCES, DENSITY_LEVEL_LABELS, DENSITY_LEVELS, DENSITY_ZONES, LINE_HEIGHT_LEVEL_LABELS, LINE_HEIGHT_LEVELS,
-  PALETTE_ROLES, RADIUS_LEVEL_LABELS, RADIUS_LEVELS, TEXT_SCALE_LEVEL_LABELS, TEXT_SCALE_LEVELS,
-  designPreferencesProblem, normalizeDesignPreferencesRequest,
+  DEFAULT_DESIGN_PREFERENCES, DENSITY_LEVELS, DENSITY_ZONES, LINE_HEIGHT_LEVELS, LOCALE_NAMES, LOCALES,
+  PALETTE_ROLES, RADIUS_LEVELS, TEXT_SCALE_LEVELS,
+  designPreferenceLabels, designPreferencesProblem, normalizeDesignPreferencesRequest,
   type DensityLevel, type DesignPreferencesDto, type DesignPreferencesFields, type DesignPreferencesRequest,
-  type LineHeightLevel, type RadiusLevel, type TextScaleLevel,
+  type LineHeightLevel, type Locale, type RadiusLevel, type TextScaleLevel,
 } from '@pi-lead-child/protocol';
 
 import { formatConversationDate, formatConversationTime } from '@/features/chat/conversationTime';
 
-export const APPEARANCE_DESCRIPTION = '界面的疏密、圆角、字号、行高和颜色。保存以后网页立即生效；也可以在对话里直接说「卡片太挤了」「圆角大一点」，助手会改这里。';
-export const DENSITY_HELP = '每个区域一档。列表和工单详情是扫读的界面，缺省紧凑；会话和设置是阅读和填写的界面，缺省标准。';
-export const COLORS_HELP = '写 #RRGGBB。主色会当链接文字用，白底上要够深；同色系的浅底、深字由系统推导。';
-export const NOTES_HELP = '用你自己的话写你对界面的偏好：喜欢什么、不喜欢什么。界面不读它；助手在你要求改外观时会参考它。';
-export const NOTES_PLACEHOLDER = '例如：喜欢大圆角和宽松的留白；不要太多颜色；数字要大。';
+import { appearanceMessages } from './appearance.messages';
 
-export const DENSITY_OPTIONS = DENSITY_LEVELS.map((value) => ({ value, label: DENSITY_LEVEL_LABELS[value] }));
-export const RADIUS_OPTIONS = RADIUS_LEVELS.map((value) => ({ value, label: RADIUS_LEVEL_LABELS[value] }));
-export const LINE_HEIGHT_OPTIONS = LINE_HEIGHT_LEVELS.map((value) => ({ value, label: LINE_HEIGHT_LEVEL_LABELS[value] }));
-export const TEXT_SCALE_OPTIONS = TEXT_SCALE_LEVELS.map((value) => ({ value, label: TEXT_SCALE_LEVEL_LABELS[value] }));
+/** 各个分段选择的选项，名字按界面语言。 */
+export function appearanceOptions(locale: Locale) {
+  const labels = designPreferenceLabels(locale);
+  return {
+    density: DENSITY_LEVELS.map((value) => ({ value, label: labels.density[value] })),
+    radius: RADIUS_LEVELS.map((value) => ({ value, label: labels.radius[value] })),
+    lineHeight: LINE_HEIGHT_LEVELS.map((value) => ({ value, label: labels.lineHeight[value] })),
+    textScale: TEXT_SCALE_LEVELS.map((value) => ({ value, label: labels.textScale[value] })),
+    // 语言的名字不翻译：每种语言用它自己的文字写（protocol 的 LOCALE_NAMES）。
+    locale: LOCALES.map((value) => ({ value, label: LOCALE_NAMES[value] })),
+  };
+}
 
 // 表单里的字段都是字符串（useServerForm 的要求）：密度和颜色按键展开。
+// 语言不在表单里：它在自己的一行，选了立即保存（AppearanceSection 的 LanguageCard）。
 export type AppearanceForm = Record<string, string>;
 
 export function appearanceForm(fields: DesignPreferencesFields): AppearanceForm {
@@ -50,19 +55,20 @@ export function appearanceChanges(form: AppearanceForm, saved: DesignPreferences
 }
 
 /** 保存之前的检查：有问题时返回用户能看懂的一句话。 */
-export function appearanceFormProblem(request: DesignPreferencesRequest): string | null {
-  return designPreferencesProblem(normalizeDesignPreferencesRequest(request));
+export function appearanceFormProblem(request: DesignPreferencesRequest, locale: Locale): string | null {
+  return designPreferencesProblem(normalizeDesignPreferencesRequest(request), locale);
 }
 
 /** 「恢复缺省」要发的修改：和缺省不一样的字段。已经是缺省时返回 null。 */
 export function appearanceResetRequest(saved: DesignPreferencesFields): DesignPreferencesRequest | null {
-  return appearanceChanges(appearanceForm({ ...DEFAULT_DESIGN_PREFERENCES, notes: saved.notes }), saved);
+  return appearanceChanges(appearanceForm({ ...DEFAULT_DESIGN_PREFERENCES, notes: saved.notes, locale: saved.locale }), saved);
 }
 
 /** 「最近一次修改」那一行。从没改过时返回 null。 */
-export function appearanceUpdatedLine(preferences: DesignPreferencesDto, leadName: string, now: Date): string | null {
+export function appearanceUpdatedLine(preferences: DesignPreferencesDto, leadName: string, now: Date, locale: Locale): string | null {
   if (!preferences.updatedAt) return null;
-  const when = `${formatConversationDate(preferences.updatedAt, now)} ${formatConversationTime(preferences.updatedAt)}`.trim();
-  const who = preferences.updatedBy === 'lead' ? `${leadName} 在对话里按你的要求改的` : '你改的';
-  return `最近一次修改：${when}，${who}。`;
+  const m = appearanceMessages(locale);
+  const when = `${formatConversationDate(preferences.updatedAt, now, locale)} ${formatConversationTime(preferences.updatedAt, undefined, locale)}`.trim();
+  const who = preferences.updatedBy === 'lead' ? m.byLead(leadName) : m.byYou;
+  return m.updated(when, who);
 }

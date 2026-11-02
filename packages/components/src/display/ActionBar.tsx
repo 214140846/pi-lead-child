@@ -4,6 +4,8 @@ import { Button, IconButton, type ButtonTone } from '../controls/Button';
 import { useBreakpoint } from '../platform';
 import { Box, Column, Row } from '../primitives/layout';
 import { Text } from '../primitives/Text';
+import { useMessages } from '../i18n';
+import { displayMessages } from './display.messages';
 
 export type ActionBarButton = {
   label: string;
@@ -39,8 +41,10 @@ export type ActionBarProps = {
 // 底部操作栏（第四轮画板，和对话坞放在同一个外框里：ChatDock 的 bar）：左边是下一步和一行小字，右边是更多、次要和主按钮。
 // 按钮能不能点由调用方给：组件不判断。
 export function ActionBar({
-  next, nextLabel = '下一步：', caption, more, secondary, primary, confirm, layout = 'auto', testID,
+  next, nextLabel: nextLabelProp, caption, more, secondary, primary, confirm, layout = 'auto', testID,
 }: ActionBarProps) {
+  const m = useMessages(displayMessages);
+  const nextLabel = nextLabelProp ?? m.nextLabel;
   const { tablet } = useBreakpoint();
   if (confirm) return <Column testID={testID}>{confirm}</Column>;
   const text = (

@@ -2,6 +2,8 @@ import { useRouter } from 'expo-router';
 
 import { CollectionScreen } from '@/components/CollectionScreen';
 import { AgendaTimeline } from '@/features/workspace/AgendaTimeline';
+import { useMessages } from '@/i18n';
+import { navigationMessages } from '@/navigation/navigation.messages';
 import { useCompanionRuntime } from '@/state/CompanionStateProvider';
 import { useConnectionPhase, useTimeline } from '@/state/hooks';
 
@@ -10,8 +12,9 @@ export default function AgendaScreen() {
   const runtime = useCompanionRuntime();
   const phase = useConnectionPhase();
   const timeline = useTimeline();
+  const m = useMessages(navigationMessages);
   return (
-    <CollectionScreen title="日程" subtitle="过期的在上面，今天和接下来的在下面">
+    <CollectionScreen title={m.agenda} subtitle={m.agendaSubtitle}>
       <AgendaTimeline
         timeline={phase === 'ready' ? timeline : null}
         onOpenTicket={(ticketId) => router.push(`/ticket/${ticketId}`)}

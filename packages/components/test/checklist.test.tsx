@@ -62,7 +62,7 @@ describe('Checklist', () => {
 
   it('shows the ticks without letting anyone change them when there is no handler', () => {
     renderUI(<Checklist items={items} checkColumn="你" />);
-    const box = screen.getByRole('checkbox', { name: `确认：${items[0]!.label}` });
+    const box = screen.getByRole('checkbox', { name: `Confirm: ${items[0]!.label}` });
     expect(box.getAttribute('aria-disabled')).toBe('true');
   });
 

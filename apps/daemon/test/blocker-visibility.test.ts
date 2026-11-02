@@ -199,7 +199,7 @@ describe("a blocker with neither a notification nor a card", () => {
     const itemId = bareBlocker();
 
     await vi.waitFor(() => expect(lead.prompts.some((prompt) => prompt.includes("执行重试已耗尽"))).toBe(true));
-    await vi.waitFor(() => expect(fallbackSummaries().some((text) => text.includes(`工单 #${itemId}「迁移脚本」：执行重试已耗尽`))).toBe(true));
+    await vi.waitFor(() => expect(fallbackSummaries().some((text) => text.includes(`#${itemId}`) && text.includes("迁移脚本") && text.includes("执行重试已耗尽"))).toBe(true));
     // Lead 没能处理它：这一行没有被消费，工单仍然算"需要你"。
     expect(inboxStates(itemId)).not.toContain("consumed");
     const ticket = (await readGatewayTickets(db)).find((candidate) => candidate.id === itemId)!;

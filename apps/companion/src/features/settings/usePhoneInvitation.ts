@@ -1,6 +1,7 @@
 import type { LoopbackInvitation } from '@pi-lead-child/protocol';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+import { useLocale } from '@/i18n';
 import { useCompanionRuntime } from '@/state/CompanionStateProvider';
 
 import { invitationErrorText, isNotFound } from './phonePairingModel';
@@ -33,6 +34,10 @@ export function usePhoneInvitation(onPaired?: () => void): {
   const shown = useRef<number | null>(null);
   const pairedCallback = useRef(onPaired);
   pairedCallback.current = onPaired;
+  // 错误的文字按出错时的界面语言写。
+  const currentLocale = useLocale();
+  const locale = useRef(currentLocale);
+  locale.current = currentLocale;
 
   const cancelQuietly = useCallback((pairingId: number) => {
     void runtime.cancelLoopbackInvitation(pairingId).catch(() => {});
@@ -59,7 +64,7 @@ export function usePhoneInvitation(onPaired?: () => void): {
         setState({ phase: 'showing', name, invitation, remainingMs: Date.parse(invitation.expiresAt) - Date.now() });
       },
       (reason: unknown) => {
-        if (ticket === generation.current) setState({ phase: 'failed', name, error: invitationErrorText(reason) });
+        if (ticket === generation.current) setState({ phase: 'failed', name, error: invitationErrorText(reason, locale.current) });
       },
     );
   }, [cancelQuietly, cancelShown, runtime]);

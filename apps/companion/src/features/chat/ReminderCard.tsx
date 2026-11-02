@@ -2,20 +2,32 @@ import { Box, Card, Column, MediaRow, Row, Text, Tile, type DataTone } from '@pi
 import type { ReminderLevel, TicketStatus } from '@pi-lead-child/protocol';
 import { useEffect, useState } from 'react';
 
+import { intlLocale, useLocale, type Locale } from '@/i18n';
+
 import { useConversationItemDetail, useTicketSummary } from '../../state/hooks';
 import {
   ActionButton, ActionGroup, DisclosureView, FieldView, remainingWords, shortTimeWords, usePendingValue, type ActionProps,
 } from '../genui/SurfaceControls';
 import { ticketDisplayTitle, ticketSummaryToTicket } from '../workspace/model';
+import { reminderMessages } from './reminder.messages';
 
-const WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六'];
 const pad = (value: number) => String(value).padStart(2, '0');
 
-// 提醒的时刻，用本地时间说：「周一 10-19 09:00」。
-export function reminderTimeWords(at: string): string | null {
+// 星期的简写：中文「周一」，英文「Mon」。
+function weekdayWord(date: Date, locale: Locale): string {
+  return new Intl.DateTimeFormat(intlLocale(locale), { weekday: 'short' }).format(date);
+}
+
+// 日历页上的月份：中文「10月」，英文「Oct」。
+function monthWord(date: Date, locale: Locale): string {
+  return new Intl.DateTimeFormat(intlLocale(locale), { month: 'short' }).format(date);
+}
+
+// 提醒的时刻，用本地时间说：「周一 10-19 09:00」，英文「Mon 10-19 09:00」。
+export function reminderTimeWords(at: string, locale: Locale): string | null {
   const date = new Date(at);
   if (Number.isNaN(date.getTime())) return null;
-  return `周${WEEKDAYS[date.getDay()]} ${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  return `${weekdayWord(date, locale)} ${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
 export type ReminderCardView = {
@@ -47,11 +59,13 @@ export type ReminderCardView = {
 // 改时间和取消走操作层（提醒的 reschedule、工单的 cancel），和 Lead 的 perform_action、ticket_action 是同一个函数。
 // 到点以后会话里另有一张到点卡（ReminderFireCard），画布里没有它，这次没改。
 export function ReminderCard({ view }: { view: ReminderCardView }) {
+  const locale = useLocale();
+  const m = reminderMessages(locale);
   const listed = useTicketSummary(view.reminderId);
   const { detail } = useConversationItemDetail(view.reminderId, true);
   const summary = listed ?? detail?.ticket ?? null;
   const stage = summary?.stage ?? view.stage;
-  const title = summary ? ticketDisplayTitle(ticketSummaryToTicket(summary)) : view.title ?? view.fallback ?? `提醒 #${view.reminderId}`;
+  const title = summary ? ticketDisplayTitle(ticketSummaryToTicket(summary)) : view.title ?? view.fallback ?? m.reminderNumber(view.reminderId);
   const remindAt = detail?.remindAt ?? view.remindAt;
   const at = remindAt ? new Date(remindAt) : null;
   const level = detail?.reminder?.level ?? view.level ?? null;
@@ -61,12 +75,12 @@ export function ReminderCard({ view }: { view: ReminderCardView }) {
   const id = view.reminderId;
   const actions: ActionProps[] = [
     {
-      id: `reminder-${id}-cancel`, target: { type: 'ticket', id }, action: 'cancel', role: 'default', label: '取消提醒',
-      confirmText: at ? `取消后，${shortTimeWords(at)} 不再提醒你。` : '取消后不再提醒你。',
+      id: `reminder-${id}-cancel`, target: { type: 'ticket', id }, action: 'cancel', role: 'default', label: m.cancelReminder,
+      confirmText: at ? m.cancelConfirmAt(shortTimeWords(at, Date.now(), locale)) : m.cancelConfirm,
     },
     {
       id: `reminder-${id}-save`, target: { type: 'reminder' as const, id: String(id) }, action: 'reschedule', role: 'primary',
-      label: '改到…', labelWithValue: '改到{value}',
+      label: m.moveTo, labelWithValue: m.moveToValue,
     },
   ];
   // 到点了还没确认（覆盖表「到点」：对象 Reminder 的到点态）：模式「事项」右边一个按钮「知道了」；
@@ -80,7 +94,7 @@ export function ReminderCard({ view }: { view: ReminderCardView }) {
         </Box>
         {fired ? (
           // 「知道了」是操作层里提醒的 ack（和 Lead 的 perform_action 同一个函数），不在工单操作的清单里。
-          <ActionButton id={`reminder-${id}-ack`} target={{ type: 'reminder' as const, id: String(id) }} action="ack" role="primary" label="知道了" />
+          <ActionButton id={`reminder-${id}-ack`} target={{ type: 'reminder' as const, id: String(id) }} action="ack" role="primary" label={m.gotIt} />
         ) : null}
       </Row>
     </MediaRow>
@@ -89,7 +103,7 @@ export function ReminderCard({ view }: { view: ReminderCardView }) {
     <Card testID={`reminder-card-${id}`} w="100%" rounded="xl" overflow="visible" borderWidth={1} borderColor="border">
       <DisclosureView
         id={`reminder-${id}`}
-        label={`提醒：${title}`}
+        label={m.cardLabel(title)}
         partial={false}
         ended={ended}
         targets={{ [actions[0]!.id]: id, [actions[1]!.id]: id }}
@@ -104,8 +118,8 @@ export function ReminderCard({ view }: { view: ReminderCardView }) {
                 for={actions[1]!.id}
                 param="remindAt"
                 kind="datetime"
-                label="改到"
-                presets={reminderPresets(at, fired)}
+                label={m.moveToLabel}
+                presets={reminderPresets(at, locale, fired)}
                 freeInput
                 previewedByCard
               />
@@ -119,15 +133,16 @@ export function ReminderCard({ view }: { view: ReminderCardView }) {
 }
 
 // 改时间的常用选项：一小时后、明天 09:00、原来那一天的后一天同一时刻、下周一 09:00。按下时才换算（resolveDatetimePreset）。
-function reminderPresets(at: Date | null, fired = false): Array<{ label: string; value: string }> {
+function reminderPresets(at: Date | null, locale: Locale, fired = false): Array<{ label: string; value: string }> {
+  const m = reminderMessages(locale);
   // 到点了：最常用的是再等一会儿。
-  const presets = [...(fired ? [{ label: '10 分钟后', value: '+10m' }] : []), { label: '1 小时后', value: '+1h' }, { label: '明天 09:00', value: '+1d 09:00' }];
+  const presets = [...(fired ? [{ label: m.in10Minutes, value: '+10m' }] : []), { label: m.in1Hour, value: '+1h' }, { label: m.tomorrow9, value: '+1d 09:00' }];
   if (at) {
     const next = new Date(at);
     next.setDate(next.getDate() + 1);
-    if (next.getTime() > Date.now()) presets.push({ label: shortTimeWords(next), value: next.toISOString() });
+    if (next.getTime() > Date.now()) presets.push({ label: shortTimeWords(next, Date.now(), locale), value: next.toISOString() });
   }
-  presets.push({ label: '下周一 09:00', value: 'mon 09:00' });
+  presets.push({ label: m.nextMonday9, value: 'mon 09:00' });
   return presets;
 }
 
@@ -138,20 +153,22 @@ function ReminderPage({ at, tone, stage, expanded = false, reminderId }: {
   const pendingIso = usePendingValue(reminderId ?? 0, 'remindAt');
   const pending = expanded && pendingIso ? new Date(pendingIso) : null;
   const shown = pending ?? at;
-  const weekday = (date: Date) => `周${WEEKDAYS[date.getDay()]}`;
+  const locale = useLocale();
+  const m = reminderMessages(locale);
+  const weekday = (date: Date) => weekdayWord(date, locale);
   return (
     <Tile
       testID={`reminder-page${expanded ? '-open' : ''}`}
       attached
       size={expanded ? 'md' : 'sm'}
       tone={tone}
-      eyebrow={shown ? `${shown.getMonth() + 1}月` : '提醒'}
+      eyebrow={shown ? monthWord(shown, locale) : m.reminder}
       value={shown ? shown.getDate() : '—'}
       done={stage === 'acked'}
       crossed={stage === 'cancelled'}
       highlight={pending !== null}
       {...(expanded && shown ? { above: weekday(shown), caption: `${pad(shown.getHours())}:${pad(shown.getMinutes())}` } : {})}
-      {...(pending && at ? { was: `原 ${weekday(at)} ${at.getDate()}` } : {})}
+      {...(pending && at ? { was: m.was(weekday(at), at.getDate()) } : {})}
     />
   );
 }
@@ -163,7 +180,9 @@ function ReminderLines({ reminderId, title, at, stage, level, changedAt, note = 
 }) {
   const pendingIso = usePendingValue(reminderId, 'remindAt');
   const pending = pendingIso ? new Date(pendingIso) : null;
-  const when = at ? shortTimeWords(at) : null;
+  const locale = useLocale();
+  const m = reminderMessages(locale);
+  const when = at ? shortTimeWords(at, Date.now(), locale) : null;
   const clock = (date: Date) => `${pad(date.getHours())}:${pad(date.getMinutes())}`;
   const day = (date: Date) => `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${clock(date)}`;
   let line;
@@ -172,19 +191,19 @@ function ReminderLines({ reminderId, title, at, stage, level, changedAt, note = 
       <Row items="center" gap="icon-label" flexWrap="wrap">
         <Text size="note" tone="muted" textDecorationLine="line-through">{when}</Text>
         <Text size="note" tone="secondary">→</Text>
-        <Text size="note" weight="semibold" tone="accent">{shortTimeWords(pending)}</Text>
+        <Text size="note" weight="semibold" tone="accent">{shortTimeWords(pending, Date.now(), locale)}</Text>
       </Row>
     );
   } else if (stage === 'acked') {
-    line = <Text size="note" tone="success-dark">{changedAt ? `${clock(changedAt)} 已确认` : '已确认'}</Text>;
+    line = <Text size="note" tone="success-dark">{changedAt ? m.ackedAt(clock(changedAt)) : m.acked}</Text>;
   } else if (stage === 'cancelled') {
-    line = <Text size="note" tone="secondary">{changedAt ? `你在 ${day(changedAt)} 取消` : '已取消'}</Text>;
+    line = <Text size="note" tone="secondary">{changedAt ? m.cancelledAt(day(changedAt)) : m.cancelled}</Text>;
   } else {
     // 到点了先说到点了：重要的提醒到点以后不再说「到点会打断你」。
     const tail = stage === 'fired'
-      ? <Text testID="reminder-card-fired" size="note" tone="warning-dark">{level === 'interrupt' ? '重要，到点了' : '到点了'}</Text>
+      ? <Text testID="reminder-card-fired" size="note" tone="warning-dark">{level === 'interrupt' ? m.importantDue : m.due}</Text>
       : level === 'interrupt'
-        ? <Text size="note" tone="warning-dark">重要，到点会打断你</Text>
+        ? <Text size="note" tone="warning-dark">{m.importantInterrupts}</Text>
         : at ? <LiveRemaining at={at} /> : null;
     line = (
       <Row items="center" gap="icon-label" flexWrap="wrap">
@@ -214,7 +233,8 @@ function ReminderLines({ reminderId, title, at, stage, level, changedAt, note = 
 // 剩余时间每 30 秒更新一次。
 function LiveRemaining({ at }: { at: Date }) {
   const now = useMinuteClock();
-  return <Text size="note" tone="accent">{remainingWords(at, now)}</Text>;
+  const locale = useLocale();
+  return <Text size="note" tone="accent">{remainingWords(at, now, locale)}</Text>;
 }
 
 function useMinuteClock(): number {

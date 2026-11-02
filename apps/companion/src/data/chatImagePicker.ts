@@ -1,4 +1,7 @@
+import { DEFAULT_LOCALE, type Locale } from '@/i18n';
+
 import { ChatImageError, type ComposerImage } from './chatImagePicker.types';
+import { imagePickerMessages } from './imagePicker.messages';
 
 export { ChatImageError, type ComposerImage } from './chatImagePicker.types';
 
@@ -10,6 +13,6 @@ export async function pickImageFiles(): Promise<Blob[]> {
   return [];
 }
 
-export async function prepareChatImage(_file: Blob): Promise<ComposerImage> {
-  throw new ChatImageError('这个平台还不能发图片');
+export async function prepareChatImage(_file: Blob, locale: Locale = DEFAULT_LOCALE): Promise<ComposerImage> {
+  throw new ChatImageError(imagePickerMessages(locale).chatUnsupported);
 }

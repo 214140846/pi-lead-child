@@ -62,7 +62,8 @@ import {
   verificationState,
   type ReviewVerdictRow,
 } from "@pi-lead-child/engine";
-import { activeDelegationPolicy, isLightTask, leadDisplayName } from "@pi-lead-child/store";
+import { activeDelegationPolicy, getLocale, isLightTask, leadDisplayName } from "@pi-lead-child/store";
+import { controlPlaneMessages } from "./control-plane.messages.js";
 import { itemHasRun } from "@pi-lead-child/engine";
 import type { Db } from "@pi-lead-child/store";
 import { activeRun, getRun, latestSessionRun, listRuns, runTokenUsage } from "@pi-lead-child/store";
@@ -526,40 +527,15 @@ export function createControlPlaneService(db: Db, options: ControlPlaneOptions) 
             : request.state === "started"
               ? run?.state === "running" ? "running" : "starting"
               : "failed";
+    // 读的时候现算，按用户现在选的语言。
+    const m = controlPlaneMessages(getLocale(db)).execution;
     const label = (() => {
-      if (suspended && !activeExecutionRun) return "派发已挂起";
-      if (waitingForBackoff && !activeExecutionRun) return "瞬时失败 · 等待自动重试";
-      if (outcomeRepair) {
-        if (state === "waiting_dispatch") return "成果修复 · 等待 agent";
-        if (state === "starting") return "成果修复 · 启动中";
-        if (state === "running") return "正在补交成果";
-        if (state === "blocked") return "成果修复受阻";
-        if (state === "failed") return "成果修复失败";
-        return "成果修复";
-      }
-      if (runtimeRecovery) {
-        if (state === "waiting_dispatch") return "正在恢复 · 等待 agent";
-        if (state === "starting") return "正在恢复 · 启动中";
-        // 新的 Run 跑起来，恢复就完成了：和 Run 行一样写「执行中」（2026-10-24 #117：Run 156 在跑，工单头还写「正在恢复」）。
-        // kind 仍是 recovery，失败的 Run 留下的 blocker 仍然不算「需要你」（protocol 的 needs-user.ts）。
-        if (state === "running") return "执行中";
-        if (state === "blocked") return "恢复受阻";
-        if (state === "failed") return "恢复失败";
-        return "正在恢复";
-      }
-      if (kind === "rework") {
-        if (state === "waiting_dispatch") return "返工已请求，等待 agent";
-        if (state === "starting") return "返工 Run 正在启动";
-        if (state === "running") return "返工 Run 已启动";
-        if (state === "blocked") return "返工派发受阻";
-        if (state === "failed") return "返工启动失败";
-        return "返工已请求";
-      }
-      if (state === "waiting_dispatch") return "等待 agent 派发";
-      if (state === "starting") return "Run 正在启动";
-      if (state === "running") return "Run 已启动";
-      if (state === "blocked") return "派发受阻";
-      return "启动失败";
+      if (suspended && !activeExecutionRun) return m.suspended;
+      if (waitingForBackoff && !activeExecutionRun) return m.backoff;
+      // 新的 Run 跑起来，恢复就完成了：和 Run 行一样写「执行中」（2026-10-24 #117：Run 156 在跑，工单头还写「正在恢复」）。
+      // kind 仍是 recovery，失败的 Run 留下的 blocker 仍然不算「需要你」（protocol 的 needs-user.ts）。
+      const words = outcomeRepair ? m.outcomeRepair : runtimeRecovery ? m.recovery : kind === "rework" ? m.rework : m.execution;
+      return words[state] ?? words.other;
     })();
     return {
       kind,
@@ -570,11 +546,11 @@ export function createControlPlaneService(db: Db, options: ControlPlaneOptions) 
       reason: activeExecutionRun
         ? null
         : blockedByRelation
-        ? "等待 depends_on 依赖完成"
+        ? m.dependsOn
         : suspended
         ? request.suspended_reason
         : waitingForBackoff
-        ? `瞬时失败，系统会在 ${localIso(new Date(request.not_before!))} 自动重试。`
+        ? m.retryAt(localIso(new Date(request.not_before!)))
         : dispatchReason(item.id, request.id),
       updatedAt: iso(activeExecutionRun?.started_at ?? request.updated_at) ?? request.updated_at,
     };
@@ -863,7 +839,7 @@ export function createControlPlaneService(db: Db, options: ControlPlaneOptions) 
       ? [
           ["Agent", runtimeDisplayName(run.runtime)],
           ["Runtime", run.runtime],
-          ["Model", run.model ?? "默认模型"],
+          ["Model", run.model ?? controlPlaneMessages(getLocale(db)).defaultModel],
           ["Failure category", failureCategory(failure)],
           ["Error code", run.error_code ?? "unknown"],
         ].filter(([label]) => !existingFactLabels.has(label))
@@ -1398,6 +1374,9 @@ export function createControlPlaneService(db: Db, options: ControlPlaneOptions) 
     // 收件箱（阶段 1）：每张等你的工单为什么在等、从什么时候开始；Lead 最近 7 天自己处理掉的事；你上次看的时间。
     // 「等你」用 ticketNeedsUser，和角标、会话底栏、工单 tab 的「等你」是同一组。
     inboxView(): InboxView {
+      // 原因和「Lead 已处理」的说明读的时候现算，按用户现在选的语言。
+      const m = controlPlaneMessages(getLocale(db));
+      const leadName = leadDisplayName(db);
       const approvalsByItem = new Map<number, { action: string; created_at: string }>();
       for (const approval of pendingApprovals(db)) {
         if (approval.item_id !== null && !approvalsByItem.has(approval.item_id)) approvalsByItem.set(approval.item_id, approval);
@@ -1412,7 +1391,7 @@ export function createControlPlaneService(db: Db, options: ControlPlaneOptions) 
         // 等你回答的决定（attention.pendingDecisionCount）：原因写这条决定自己的说明，时间从它提出时算（2026-10-16）。
         const decision = needs === "decision" && summary.attention.pendingDecisionCount ? oldestUserDecision(item.id) : null;
         const reason = needs === "approval" && approval
-          ? `等你批准：${approval.action}`
+          ? m.inbox.approval(approval.action)
           : decision
             ? decision.reason
             : needs === "blocked"
@@ -1420,10 +1399,10 @@ export function createControlPlaneService(db: Db, options: ControlPlaneOptions) 
             : needs === "decision" || needs === "review_dispatch" || needs === "acceptance"
               ? (summary.reviewState?.reason ?? summary.reviewState?.label ?? null)
               : needs === "stalled"
-                ? "Run 很久没有动静"
+                ? m.inbox.stalled
                 : needs === "capability"
-                  ? "续作在等一个还没部署的能力"
-                  : `${leadDisplayName(db)} 建的草稿，等你确认才会开始`;
+                  ? m.inbox.capability
+                  : m.inbox.draft(leadName);
         const since = needs === "approval" && approval
           ? iso(approval.created_at) ?? approval.created_at
           : decision
@@ -1447,13 +1426,11 @@ export function createControlPlaneService(db: Db, options: ControlPlaneOptions) 
       // Lead 改了你定的日期（阶段 3）：可以改，但要告诉你，写在「Lead 已处理」里（透明度要求，不是权限限制）。
       const overrides = leadOverridesOfUser(db, weekAgo).map(({ change, milestone }) => {
         const label = milestone.label ?? MILESTONE_KIND_LABELS[milestone.kind];
-        const verb = change.change === "moved" ? "改了日期" : change.change === "cancelled" ? "取消了它"
-          : change.change === "completed" ? "标为完成" : change.change === "missed" ? "标为没赶上"
-            : change.change === "relabeled" ? "改了名字" : "恢复了它";
+        const verb = m.leadHandled.milestoneVerb(change.change);
         return {
           id: `milestone-change:${change.id}`,
           ticketId: milestone.item_id,
-          problem: `#${milestone.item_id} 的「${label}」是你定的，${leadDisplayName(db)} ${verb}`,
+          problem: m.leadHandled.milestone(milestone.item_id, label, leadName, verb),
           cause: null,
           action: change.reason ?? verb,
           followUp: null,
@@ -1465,7 +1442,7 @@ export function createControlPlaneService(db: Db, options: ControlPlaneOptions) 
       const reminderOverrides = leadReminderOverridesOfUser(db, weekAgo).map((override) => ({
         id: `reminder-reschedule:${override.eventId}`,
         ticketId: override.itemId,
-        problem: `提醒「${override.title}」的时间是你定的，${leadDisplayName(db)} 改到了 ${localIso(new Date(override.to))}`,
+        problem: m.leadHandled.reminder(override.title, leadName, localIso(new Date(override.to))),
         cause: null,
         action: override.reason,
         followUp: null,
@@ -1476,7 +1453,7 @@ export function createControlPlaneService(db: Db, options: ControlPlaneOptions) 
       const stops = leadOwnStops(db, weekAgo).map((stop) => ({
         id: `ticket-stop:${stop.eventId}`,
         ticketId: stop.itemId,
-        problem: `${leadDisplayName(db)} 停下了工单 #${stop.itemId}「${stop.title}」，它回到了待开始`,
+        problem: m.leadHandled.stop(leadName, stop.itemId, stop.title),
         cause: null,
         action: stop.reason,
         followUp: null,

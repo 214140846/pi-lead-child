@@ -7,9 +7,10 @@ import {
   REPLY_STYLE_RESOURCE, REPLY_STYLE_TEXT_MAX_LENGTH, replyStyleLength,
   type ReplyStyleDto, type ReplyStyleUpdateRequest, type UiActionInputOf,
 } from "@pi-lead-child/protocol";
-import { getReplyStyle, publishGatewayEvent } from "@pi-lead-child/store";
+import { getLocale, getReplyStyle, publishGatewayEvent } from "@pi-lead-child/store";
 import { extractReplyStyle } from "../reply-style-extract.js";
 import { ReplyStyleError, replyStyleChangeSummary, updateReplyStyle, type ReplyStyleUpdateOutcome } from "../reply-style.js";
+import { replyStyleMessages } from "../reply-style.messages.js";
 import { AVAILABLE } from "../ticket-actions/types.js";
 import { UiActionError, type UiActionDefinition, type UiActionEnv, type UiActionTargetKind } from "./types.js";
 
@@ -73,10 +74,12 @@ export const REPLY_STYLE_ACTIONS = {
       const outcome = result as ReplyStyleUpdateOutcome;
       if (!outcome.changed) return null;
       const mode = (run.input as ReplyStyleUpdateRequest).mode;
+      // 主人操作按写入时用户选的语言写。
+      const locale = getLocale(run.db);
       return {
         action: "channel.reply_style",
-        target: { key: "channel:reply_style", label: "代回复风格", ticketId: null },
-        summary: replyStyleChangeSummary(outcome.before, outcome.after, mode),
+        target: { key: "channel:reply_style", label: replyStyleMessages(locale).target, ticketId: null },
+        summary: replyStyleChangeSummary(outcome.before, outcome.after, mode, locale),
         detail: { mode, length: replyStyleLength(outcome.after) },
         undo: { kind: "reply_style", before: outcome.before, after: outcome.after },
       };

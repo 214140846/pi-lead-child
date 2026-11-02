@@ -117,7 +117,7 @@ describe("a failed compaction", () => {
 
     await chat("看一下 #77");
     await vi.waitFor(async () => expect((await overview()).lead).toMatchObject({
-      state: "degraded", reason: "Paimon 的上下文压缩失败",
+      state: "degraded", reason: "The context compaction of Paimon failed",
     }));
     expect((await overview()).lead!.detail).toContain("Auto-compaction failed: 503 upstream connect error");
     expect(logs.some((line) => line.includes("compaction failed") && line.includes("Auto-compaction failed"))).toBe(true);
@@ -182,7 +182,7 @@ describe("a failed compaction", () => {
     await chat("看一下 #77");
     await vi.waitFor(() => expect(lead.aborts).toHaveLength(1), { timeout: 2_000 });
     await vi.waitFor(async () => expect((await overview()).lead).toMatchObject({
-      state: "degraded", reason: "Paimon 的上下文压缩失败",
+      state: "degraded", reason: "The context compaction of Paimon failed",
     }));
     expect((await overview()).lead!.detail).toContain("超时");
     expect(logs.some((line) => line.includes("compaction failed"))).toBe(true);
@@ -230,7 +230,10 @@ describe("compactionEndOutcome", () => {
 describe("the Lead health tracker", () => {
   it("shows a compaction failure as its own reason until the next successful model call", () => {
     const changes: string[] = [];
-    const health = createLeadHealthTracker({ nextScheduledAttempt: () => null, onChange: (status) => changes.push(status.state) });
+    // 原因是顶栏显示的，按用户选的语言（这里是中文）。
+    const health = createLeadHealthTracker({
+      nextScheduledAttempt: () => null, onChange: (status) => changes.push(status.state), locale: () => "zh",
+    });
     // 压缩失败不算模型调用的失败（failures 不变）：停摆兜底只看模型调用的失败。
     health.compactionFailed("上下文压缩失败：Auto-compaction failed: 503");
     expect(health.status()).toMatchObject({
@@ -246,5 +249,13 @@ describe("the Lead health tracker", () => {
     health.succeeded();
     expect(health.status()).toMatchObject({ state: "online", reason: null, detail: null });
     expect(changes).toEqual(["degraded", "degraded", "degraded", "online"]);
+  });
+
+  it("writes the reason in English when no language is given", () => {
+    const health = createLeadHealthTracker({ nextScheduledAttempt: () => null, onChange: () => {}, leadName: () => "Jarvis" });
+    health.compactionFailed("上下文压缩失败：Auto-compaction failed: 503");
+    expect(health.status().reason).toBe("The context compaction of Jarvis failed");
+    health.failed("503 Service Unavailable");
+    expect(health.status().reason).toBe("The model service of Jarvis is not available now");
   });
 });

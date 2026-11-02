@@ -1,12 +1,16 @@
 import { Box, Button, Column, ConfirmBar, OptionPills, Row, Text, TextField, type DataTone } from '@pi-lead-child/components';
 import {
-  resolveDatetimePreset, ticketNeedsUser, type TicketSummary, type UiActionButtonTarget, type UiActionView, type UiBinding,
+  DEFAULT_LOCALE, intlLocale, resolveDatetimePreset, ticketNeedsUser,
+  type Locale, type TicketSummary, type UiActionButtonTarget, type UiActionView, type UiBinding,
 } from '@pi-lead-child/protocol';
 import { useCallback, useContext, useEffect, useState } from 'react';
+
+import { useLocale, useMessages } from '@/i18n';
 
 import { useCompanionRuntime } from '../../state/CompanionStateProvider';
 import { useConversationItemDetail, useTicketActions, useTicketSummary } from '../../state/hooks';
 import { FormContext } from './Disclosure';
+import { genuiMessages } from './genui.messages';
 
 // 收起和展开、参数状态在 Disclosure.tsx（不依赖运行时，系统卡也用）。这里照旧导出，原来的引用不用改。
 export { DisclosureView, SurfaceFormProvider, usePendingValue, type ActionTargets, type DisclosureProps } from './Disclosure';
@@ -48,30 +52,36 @@ function useNow(enabled: boolean): number {
   return now;
 }
 
-const WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六'];
 const pad = (value: number) => String(value).padStart(2, '0');
 
-/** 一个时刻的短说法：六天以内写「周五 14:00」，再远写「11-03 14:00」。 */
-export function shortTimeWords(at: Date, now: number = Date.now()): string {
-  const clock = `${pad(at.getHours())}:${pad(at.getMinutes())}`;
-  return Math.abs(at.getTime() - now) < 6 * 86_400_000 ? `周${WEEKDAYS[at.getDay()]} ${clock}` : `${pad(at.getMonth() + 1)}-${pad(at.getDate())} ${clock}`;
+/** 星期的短名字（「周五」「Fri」），按界面语言。 */
+export function weekdayWord(at: Date, locale: Locale = DEFAULT_LOCALE): string {
+  return new Intl.DateTimeFormat(intlLocale(locale), { weekday: 'short' }).format(at);
 }
 
-/** 剩余时间：「还有 3 天 1 小时」「还有 25 分钟」「已过 2 小时」。 */
-export function remainingWords(at: Date, now: number): string {
+/** 一个时刻的短说法：六天以内写「周五 14:00」，再远写「11-03 14:00」。24 小时制。locale 不给时是英文。 */
+export function shortTimeWords(at: Date, now: number = Date.now(), locale: Locale = DEFAULT_LOCALE): string {
+  const clock = `${pad(at.getHours())}:${pad(at.getMinutes())}`;
+  return Math.abs(at.getTime() - now) < 6 * 86_400_000 ? `${weekdayWord(at, locale)} ${clock}` : `${pad(at.getMonth() + 1)}-${pad(at.getDate())} ${clock}`;
+}
+
+/** 剩余时间：「还有 3 天 1 小时」「还有 25 分钟」「已过 2 小时」。locale 不给时是英文。 */
+export function remainingWords(at: Date, now: number, locale: Locale = DEFAULT_LOCALE): string {
+  const m = genuiMessages(locale).controls;
   const diff = at.getTime() - now;
   const minutes = Math.round(Math.abs(diff) / 60_000);
   const days = Math.floor(minutes / 1440);
   const hours = Math.floor((minutes % 1440) / 60);
   const rest = minutes % 60;
-  const span = days > 0 ? `${days} 天${hours ? ` ${hours} 小时` : ''}` : hours > 0 ? `${hours} 小时${rest ? ` ${rest} 分钟` : ''}` : `${Math.max(rest, 1)} 分钟`;
-  return diff >= 0 ? `还有 ${span}` : `已过 ${span}`;
+  const span = days > 0 ? `${m.days(days)}${hours ? ` ${m.hours(hours)}` : ''}`
+    : hours > 0 ? `${m.hours(hours)}${rest ? ` ${m.minutes(rest)}` : ''}` : m.minutes(Math.max(rest, 1));
+  return diff >= 0 ? m.remaining(span) : m.past(span);
 }
 
-function timeWords(at: Date, format: NonNullable<UiBinding['format']>, now: number): string {
+function timeWords(at: Date, format: NonNullable<UiBinding['format']>, now: number, locale: Locale): string {
   if (format === 'clock') return `${pad(at.getHours())}:${pad(at.getMinutes())}`;
-  if (format === 'date') return `周${WEEKDAYS[at.getDay()]} ${pad(at.getMonth() + 1)}-${pad(at.getDate())} ${pad(at.getHours())}:${pad(at.getMinutes())}`;
-  return remainingWords(at, now);
+  if (format === 'date') return `${weekdayWord(at, locale)} ${pad(at.getMonth() + 1)}-${pad(at.getDate())} ${pad(at.getHours())}:${pad(at.getMinutes())}`;
+  return remainingWords(at, now, locale);
 }
 
 export type BoundValue = {
@@ -82,6 +92,7 @@ export type BoundValue = {
 
 /** 一个绑定现在的文字和色调。还没读到时 text 和 tone 是 null，调用方显示快照或占位。 */
 export function useBinding(bind: UiBinding | undefined): BoundValue {
+  const locale = useLocale();
   const ticketId = bind?.ticket ?? 0;
   const listed = useTicketSummary(ticketId);
   // 提醒的时刻只在 TicketDetail 里：绑定 remindAt 时总要读它；只绑状态时，工单列表里没有才读。
@@ -101,7 +112,7 @@ export function useBinding(bind: UiBinding | undefined): BoundValue {
   // 结束了的提醒不再倒数：写它原来的时刻。
   const format = ended && (bind.format ?? 'remaining') === 'remaining' ? 'date' : bind.format ?? 'remaining';
   const changed = pending && !Number.isNaN(pending.getTime()) && pending.getTime() !== at.getTime() ? pending : null;
-  return { text: timeWords(at, format, now), tone, ended, at, pending: changed, pendingText: changed ? timeWords(changed, format, now) : null };
+  return { text: timeWords(at, format, now, locale), tone, ended, at, pending: changed, pendingText: changed ? timeWords(changed, format, now, locale) : null };
 }
 
 // ——— 参数和按钮 ———
@@ -133,11 +144,13 @@ const FREE = '__free__';
 // 参数输入：一排常用选项，加一个自由输入。datetime 选中以后在下面写出换算好的时刻，用户知道按下按钮会改到哪一刻。
 export function FieldView({ id, for: actionId, param, kind, label, presets, freeInput, previewedByCard = false }: FieldProps) {
   const form = useContext(FormContext);
+  const locale = useLocale();
+  const m = useMessages(genuiMessages).controls;
   const raw = form.values[actionId]?.[param] ?? null;
   const [freeMode, setFreeMode] = useState(false);
   const [free, setFree] = useState('');
   const selected = freeMode ? FREE : presets.some((preset) => preset.value === raw) ? raw : null;
-  const options = freeInput ? [...presets, { label: '自己填', value: FREE }] : presets;
+  const options = freeInput ? [...presets, { label: m.freeInput, value: FREE }] : presets;
   const resolved = kind === 'datetime' && raw ? resolveDatetimePreset(raw) : null;
   return (
     <Column testID={`surface-field-${id}`} gap="text-stack">
@@ -156,7 +169,7 @@ export function FieldView({ id, for: actionId, param, kind, label, presets, free
         <TextField
           testID={`surface-field-${id}-free`}
           value={free}
-          placeholder={kind === 'datetime' ? '10-30 14:00' : '写一个值'}
+          placeholder={kind === 'datetime' ? '10-30 14:00' : m.freePlaceholder}
           size="sm"
           onChangeText={(text) => {
             setFree(text);
@@ -166,7 +179,7 @@ export function FieldView({ id, for: actionId, param, kind, label, presets, free
         />
       ) : null}
       {resolved && !previewedByCard ? (
-        <Text testID={`surface-field-${id}-preview`} size="meta" tone="accent">{`改到 ${timeWords(new Date(resolved), 'date', Date.now())}`}</Text>
+        <Text testID={`surface-field-${id}-preview`} size="meta" tone="accent">{m.changeTo(timeWords(new Date(resolved), 'date', Date.now(), locale))}</Text>
       ) : null}
     </Column>
   );
@@ -192,6 +205,7 @@ type Availability = { label: string; available: boolean; reason: string | null; 
 // 按钮现在能不能按：工单操作用工单详情同一份清单；别的对象按需读 /v1/actions/:type/:id。
 function useAvailability(target: UiActionButtonTarget, action: string): Availability & { reload: () => void } {
   const runtime = useCompanionRuntime();
+  const m = useMessages(genuiMessages).controls;
   const ticketActions = useTicketActions(target.type === 'ticket' ? target.id : 0);
   const [views, setViews] = useState<UiActionView[] | null>(null);
   const [epoch, setEpoch] = useState(0);
@@ -208,14 +222,14 @@ function useAvailability(target: UiActionButtonTarget, action: string): Availabi
     const view = ticketActions.actions.find((entry) => entry.id === action);
     const loaded = ticketActions.resource?.state === 'ready' || ticketActions.actions.length > 0;
     return {
-      label: view?.label ?? action, available: Boolean(view?.available), reason: view?.reason ?? (loaded ? '现在不能做这个操作' : null),
-      confirm: view?.irreversible ? `${view.label}以后收不回。` : null, loaded, reload,
+      label: view?.label ?? action, available: Boolean(view?.available), reason: view?.reason ?? (loaded ? m.unavailable : null),
+      confirm: view?.irreversible ? m.irreversible(view.label) : null, loaded, reload,
     };
   }
   const view = views?.find((entry) => entry.id === action);
   return {
-    label: view?.label ?? action, available: Boolean(view?.available), reason: view?.reason ?? (views ? '现在不能做这个操作' : null),
-    confirm: view?.confirm ?? (view?.irreversible ? `${view.label}以后收不回。` : null), loaded: views !== null, reload,
+    label: view?.label ?? action, available: Boolean(view?.available), reason: view?.reason ?? (views ? m.unavailable : null),
+    confirm: view?.confirm ?? (view?.irreversible ? m.irreversible(view.label) : null), loaded: views !== null, reload,
   };
 }
 
@@ -228,6 +242,7 @@ const ROLE = {
 // 一个按钮按下以后做什么：能不能按、要不要先确认、执行、出错。按钮自己和操作组的确认行共用。
 function useActionRunner({ id, target, action, input, label, confirmText, labelWithValue }: ActionProps) {
   const runtime = useCompanionRuntime();
+  const locale = useLocale();
   const form = useContext(FormContext);
   const availability = useAvailability(target, action);
   const [busy, setBusy] = useState(false);
@@ -256,7 +271,7 @@ function useActionRunner({ id, target, action, input, label, confirmText, labelW
   const picked = Object.values(filled).map((value) => resolveDatetimePreset(value) ?? null).find(Boolean);
   return {
     availability, busy, error, run,
-    text: labelWithValue && picked ? labelWithValue.replace('{value}', shortTimeWords(new Date(picked))) : label ?? availability.label,
+    text: labelWithValue && picked ? labelWithValue.replace('{value}', shortTimeWords(new Date(picked), Date.now(), locale)) : label ?? availability.label,
     needsConfirm: confirmText !== undefined || availability.confirm !== null || action === 'cancel',
     confirmText: confirmText ?? availability.confirm,
     danger: action === 'cancel',
@@ -268,15 +283,16 @@ function useActionRunner({ id, target, action, input, label, confirmText, labelW
 export function ActionButton(props: ActionProps & { onConfirmRequest?: () => void }) {
   const { id, role, partial = false, onConfirmRequest } = props;
   const runner = useActionRunner(props);
+  const m = useMessages(genuiMessages).controls;
   const [confirming, setConfirming] = useState(false);
   if (confirming) {
     return (
       <ConfirmBar
         testID={`surface-action-${id}-confirm`}
-        title={`${runner.text}？`}
+        title={m.confirmTitle(runner.text)}
         {...(runner.confirmText ? { note: runner.confirmText } : {})}
-        confirmLabel={`确认${runner.text}`}
-        cancelLabel="算了"
+        confirmLabel={m.confirm(runner.text)}
+        cancelLabel={m.cancel}
         tone={runner.danger ? 'danger' : 'accent'}
         busy={runner.busy}
         onConfirm={() => void runner.run().then((ok) => { if (ok) setConfirming(false); })}
@@ -307,13 +323,14 @@ export function ActionButton(props: ActionProps & { onConfirmRequest?: () => voi
 // 操作组的确认行：整排按钮换成一行，左边一句后果，右边「算了」和确认（视觉稿提醒卡的「确认取消」）。
 function ConfirmRow({ action, onCancel }: { action: ActionProps; onCancel: () => void }) {
   const runner = useActionRunner(action);
+  const m = useMessages(genuiMessages).controls;
   return (
     <Column testID={`surface-action-${action.id}-confirm`} gap="text-stack">
       <Row items="center" gap="actions" justify="flex-end" flexWrap="wrap">
-        <Text flex={1} minW={0} size="secondary" tone="strong">{runner.confirmText ?? `${runner.text}？`}</Text>
-        <Button label="算了" size="sm" variant="ghost" tone="neutral" onPress={onCancel} testID={`surface-action-${action.id}-confirm-cancel`} />
+        <Text flex={1} minW={0} size="secondary" tone="strong">{runner.confirmText ?? m.confirmTitle(runner.text)}</Text>
+        <Button label={m.cancel} size="sm" variant="ghost" tone="neutral" onPress={onCancel} testID={`surface-action-${action.id}-confirm-cancel`} />
         <Button
-          label={`确认${runner.text}`}
+          label={m.confirm(runner.text)}
           size="sm"
           variant="solid"
           tone={runner.danger ? 'danger' : 'accent'}

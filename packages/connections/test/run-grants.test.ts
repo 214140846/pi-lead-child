@@ -124,9 +124,9 @@ describe("a run with a grant sees and calls only what the grant allows", () => {
     await hub.callTool("github", "pull_request_review_write", { ...prArgs(), method: "submit_pending", event: "COMMENT", body: "看过了" }, asRun(runId));
     expect(gh.submitted("Acme", "x", 101)).toMatchObject([{ state: "COMMENTED", comments: [{ path: "src/a.ts", line: 2 }] }]);
     expect(writes.map((write) => write.description.summary)).toEqual([
-      "在 Acme/x#101 上建了一个没提交的 review",
-      "在 Acme/x#101 的 review 里加了一条行内评论（src/a.ts:2）",
-      "在 Acme/x#101 上提交了 review（COMMENT）",
+      "Created an unsubmitted review on Acme/x#101",
+      "Added a line comment to the review on Acme/x#101 (src/a.ts:2)",
+      "Submitted a review (COMMENT) on Acme/x#101",
     ]);
     expect(writes[2]).toMatchObject({ runId, itemId, connection: "github", ruleId: "review:acme/x#101:comment", description: { url: "https://github.com/Acme/x/pull/101" } });
   });

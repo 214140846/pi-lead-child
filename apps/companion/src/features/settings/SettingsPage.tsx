@@ -2,21 +2,27 @@ import { Column, Pressable, Row, Screen, ScrollArea, Text, useBreakpoint } from 
 import { useRouter, type Href } from 'expo-router';
 import type { ReactNode } from 'react';
 
+import { useMessages } from '@/i18n';
+
+import { settingsMessages } from './settings.messages';
+
 type SettingsPageProps = {
   // 不给时不画标题：内容自己有标题（例如手机上一个连接的详情）。
   title?: string;
   // 标题下面的一句说明。
   description?: string;
   // 手机上左上角的返回：回到哪一页、按钮上写什么。缺省回到设置首页。
-  back?: { label: string; href: string };
+  back?: { label: string; href: string } | undefined;
   children?: ReactNode;
 };
 
 // 设置里一个分组的页面。
 // 桌面上侧栏和滚动区由 SettingsDesktopShell 提供，这里只画标题和内容。
 // 手机上是一整屏：左上角「‹ 设置」，下面是标题和可以滚动的内容。
-export function SettingsPage({ title, description, back = { label: '设置', href: '/settings' }, children }: SettingsPageProps) {
+export function SettingsPage({ title, description, back: backTo, children }: SettingsPageProps) {
   const { desktop } = useBreakpoint();
+  const m = useMessages(settingsMessages);
+  const back = backTo ?? { label: m.title, href: '/settings' };
   const router = useRouter();
   const heading = title === undefined ? null : (
     <Column gap="group-label" mb="page-section">
@@ -35,7 +41,7 @@ export function SettingsPage({ title, description, back = { label: '设置', hre
         {/* 栈里有那一页时退回去；没有时（从别处直接打开这一页）换成那一页，不会退出设置。 */}
         <Pressable
           testID="settings-back"
-          aria-label={`返回${back.label}`}
+          aria-label={m.back(back.label)}
           onPress={() => router.dismissTo(back.href as Href)}
           h={36}
           px={6} // spacing-exempt: 返回链接点击区

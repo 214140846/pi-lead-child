@@ -1,7 +1,10 @@
 import { Box, Card, Column, Icon, ListItem, Text } from '@pi-lead-child/components';
 import type { KernelArtifact } from '@pi-lead-child/protocol';
 
+import { useMessages } from '@/i18n';
 import type { ArtifactDownloadState } from '@/state/types';
+
+import { ticketRecordsMessages } from './ticketRecords.messages';
 
 // 工单产物列表。可用的产物可以下载；下载中可以取消，失败可以重试。
 export function ArtifactList({
@@ -15,6 +18,8 @@ export function ArtifactList({
   onDownload?: (artifactId: number) => void;
   onCancel?: (artifactId: number) => void;
 }) {
+  const messages = useMessages(ticketRecordsMessages);
+  const m = messages.artifact;
   return (
     <Column testID="artifact-list" gap="stacked-card">
       {items.map((artifact) => {
@@ -22,12 +27,12 @@ export function ArtifactList({
         const available = artifact.availability === 'available';
         const downloading = state?.state === 'downloading';
         const label = !available
-          ? artifact.availability === 'metadata_only' ? '仅元数据' : '不可用'
-          : downloading ? '取消' : state?.state === 'error' ? '重试' : state?.state === 'succeeded' ? '已下载' : '下载';
+          ? artifact.availability === 'metadata_only' ? m.metadataOnly : m.unavailable
+          : downloading ? messages.cancel : state?.state === 'error' ? messages.retry : state?.state === 'succeeded' ? m.downloaded : m.download;
         const meta = [
           artifact.kind,
           artifact.byteLength === null ? null : formatBytes(artifact.byteLength),
-          !available ? label : downloading ? '下载中' : state?.state === 'error' ? '下载失败' : state?.state === 'succeeded' ? '下载完成' : null,
+          !available ? label : downloading ? m.downloading : state?.state === 'error' ? m.downloadFailed : state?.state === 'succeeded' ? m.downloadDone : null,
         ].filter(Boolean).join(' · ');
         const onPress = !available
           ? undefined
@@ -37,7 +42,7 @@ export function ArtifactList({
         return (
           <Card
             key={artifact.id}
-            aria-label={`${label} ${artifact.name}${state?.state === 'error' && state.error ? `，${state.error}` : ''}`}
+            aria-label={m.label(label, artifact.name, state?.state === 'error' && state.error ? state.error : null)}
             minH={60}
             overflow="hidden"
             borderColor="border-soft"

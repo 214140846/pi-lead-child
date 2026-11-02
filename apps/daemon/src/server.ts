@@ -24,6 +24,7 @@ import { contextUsageLine, leadContextUsage, type LeadContextUsage } from "@pi-l
 import { userMessagePlacement } from "./user-placement.js";
 import { createLeadInput, defaultDigestBatch, isReminderFireEvent, type DigestBatchPolicy } from "./lead-input.js";
 import { compactionEndOutcome, createLeadHealthTracker, isEmptyLengthStop, leadContextFullError } from "./lead-health.js";
+import { serverMessages } from "./server.messages.js";
 import { dnsProbe, NetworkMonitor, type NetworkProbe } from "./network.js";
 import { DEFAULT_MODEL_CATALOG_REFRESH_MS, startModelCatalogWatch } from "./model-catalog-watch.js";
 import { recordRunFinished, recordRunFinishedAtTerminalEvent } from "./run-finished.js";
@@ -77,7 +78,7 @@ import {
 } from "@pi-lead-child/store";
 import { addNotification, getNotification, listNotifications, markNotificationDelivered } from "@pi-lead-child/store";
 import { installLedgerGuards, ledgerGuardsEnabled, ledgerGuardTriggers, missingLedgerGuards, recordSecurityAlert } from "@pi-lead-child/store";
-import { loadLastPatrolAt, saveLastPatrolAt } from "@pi-lead-child/store";
+import { getLocale, loadLastPatrolAt, saveLastPatrolAt } from "@pi-lead-child/store";
 import { repairMissingBlockerAlerts } from "@pi-lead-child/store";
 import { pendingApprovals, getApproval, isStandingOrderProposal, pendingApprovalLine } from "@pi-lead-child/store";
 import { blockerHasConversationRecord } from "@pi-lead-child/store";
@@ -1248,7 +1249,9 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
       sealChannelTurn(previous);
       return;
     }
-    settleAnsweredTogether(previous, next, next.placement === "followUp" ? "和后面的排队消息一起回答" : "和后面的插话一起回答");
+    // 结局的说明写进这一轮、界面显示：按写入时用户选的语言。
+    const m = serverMessages(getLocale(db)).queue;
+    settleAnsweredTogether(previous, next, next.placement === "followUp" ? m.answeredWithFollowUp : m.answeredWithSteer);
   }
 
   // 系统回合没有发起的 binding（origin_binding_id 为空），所以事件发给所有带 chat scope 的客户端。
@@ -1651,7 +1654,7 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
     if (!update || (update.type !== "toolcall_start" && update.type !== "toolcall_delta")) return;
     const block = update.partial?.content?.[update.contentIndex];
     if (!block || block.type !== "toolCall" || block.name !== "render_ui" || typeof block.id !== "string") return;
-    const surface = partialUiSurface(block.arguments, block.id);
+    const surface = partialUiSurface(block.arguments, block.id, "zh");
     if (!surface) return;
     const key = JSON.stringify(surface);
     const last = streamedSurfaces.get(block.id);
@@ -1975,9 +1978,16 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
 
   type QueuedInput = (typeof queuedInputs)[number];
 
+  // 排队消息的说明和错误：界面直接显示，按用户现在选的语言。
+  function queueMessages() {
+    return serverMessages(getLocale(db)).queue;
+  }
+
   // 等单独开一轮的追问为什么插不进正在跑的这一轮（快照里的 heldReason）。
   function heldFollowUpReason(): string {
-    return runOrigin.external ? "这一轮读过外部内容，这条要单独开一轮" : "这条排在下一轮单独回答，插不进正在跑的这一轮";
+    // 快照里的说明，界面显示：按读的时候用户选的语言。
+    const m = queueMessages();
+    return runOrigin.external ? m.heldExternal : m.heldNextTurn;
   }
 
   function followUpSnapshot(): FollowUpEntry[] {
@@ -1996,9 +2006,9 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
     const target = queuedInputs.find((input) => input.kind === "followUp" && input.entry.turn.id === turnId);
     if (target) return target;
     if (carryOverTurns.some((carried) => carried.entry.turn.id === turnId)) {
-      throw new UiActionError("unavailable", `${heldFollowUpReason()}。`);
+      throw new UiActionError("unavailable", queueMessages().sentence(heldFollowUpReason()));
     }
-    throw new UiActionError("not_found", `排着的追问 ${turnId} 不在了：它已经交给 ${leadDisplayName(db)}，或者不存在`);
+    throw new UiActionError("not_found", queueMessages().followUpGone(turnId, leadDisplayName(db)));
   }
 
   // pi 没有「只取出一条」的接口：把它的队列整个取出来（clearQueue），按原来的先后放回去，只拿掉 drop 这一条。
@@ -2068,12 +2078,12 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
   // 插进这一轮：和用户发送时选「插话」走同一条路（steerLead），placement 变成 steered，Lead 接下来说的话长在它下面。
   async function steerFollowUp(turnId: string): Promise<FollowUpActionResult> {
     const target = piQueuedFollowUp(turnId);
-    if (!busy) throw new UiActionError("unavailable", `${leadDisplayName(db)} 已经答完这一轮了，这条马上就交给它`);
-    if (!session.clearQueue) throw new UiActionError("unavailable", "这个 Lead 会话不能改排队");
+    if (!busy) throw new UiActionError("unavailable", queueMessages().turnDone(leadDisplayName(db)));
+    if (!session.clearQueue) throw new UiActionError("unavailable", queueMessages().cannotChangeQueue);
     const { found, done } = requeueWithout(target);
     if (!found) {
       await done;
-      throw new UiActionError("unavailable", `这条已经交给 ${leadDisplayName(db)} 了`);
+      throw new UiActionError("unavailable", queueMessages().alreadyDelivered(leadDisplayName(db)));
     }
     const steered = steerLead(target.userPrompt ?? target.prompt, target.entry.turn, target.entry.commandId);
     await done;
@@ -2091,11 +2101,11 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
       return { turnId, placement: "cancelled" };
     }
     const target = piQueuedFollowUp(turnId);
-    if (!session.clearQueue) throw new UiActionError("unavailable", "这个 Lead 会话不能改排队");
+    if (!session.clearQueue) throw new UiActionError("unavailable", queueMessages().cannotChangeQueue);
     const { found, done } = requeueWithout(target);
     if (found) settleCancelledFollowUp(target.entry, by);
     await done;
-    if (!found) throw new UiActionError("unavailable", `这条已经交给 ${leadDisplayName(db)} 了，取消不了`);
+    if (!found) throw new UiActionError("unavailable", queueMessages().cannotCancel(leadDisplayName(db)));
     return { turnId, placement: "cancelled" };
   }
 
@@ -2376,7 +2386,8 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
     // 权限设置被绕过设置页改了（2026-10-19 审查）。hub 已经恢复成更严的值；这里记一条安全报警，
     // 下面 owner-actions 那一步直接推给用户，不经过 Lead：改动可能就是一个 child 做的。
     onSettingsAlert: (alert) => {
-      const text = connectionSettingsTamperAlertText(alert);
+      // 告警推给用户、写进收件箱：按写入时用户选的语言写。根因（rootCause）是给 Lead 的，照旧是中文。
+      const text = connectionSettingsTamperAlertText(alert, getLocale(db));
       try {
         recordSecurityAlert(db, {
           kind: CONNECTION_SETTINGS_TAMPERED_KIND,
@@ -2386,7 +2397,7 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
           rootCause: {
             code: "connection_settings_tampered",
             scope: "connection",
-            evidence: `封印 ${alert.seal}；账本里是「${describeConnectionSettings(alert.found)}」，记录的是「${describeConnectionSettings(alert.expected)}」`,
+            evidence: `封印 ${alert.seal}；账本里是「${describeConnectionSettings(alert.found, "zh")}」，记录的是「${describeConnectionSettings(alert.expected, "zh")}」`,
             next_step: "查是哪个进程直接改了 plc.db；需要放开时在设置 → 连接里改",
           },
           payload: {
@@ -2454,7 +2465,7 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
   });
   // config.json 被 daemon 以外的进程改了（config-watch.ts，2026-10-19 审查）：记一条安全报警，下面 owner-actions 那一步直接推。
   const configWatch = createConfigWatch(envConfigPath(opts.dataDir), ({ hash, changed }) => {
-    const text = configChangedAlertText(changed, leadDisplayName(db));
+    const text = configChangedAlertText(changed, leadDisplayName(db), getLocale(db));
     try {
       recordSecurityAlert(db, {
         kind: CONFIG_CHANGED_OUTSIDE_API_KIND, entityKey: "config:config.json", sourceRef: `config-change:${hash ?? "deleted"}`,
@@ -2486,7 +2497,7 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
     installLedgerGuards(db);
     for (const name of missing) guardedAtStart.add(name);
     if (!removed.length) return;
-    const text = ledgerGuardRemovedAlertText(removed.length);
+    const text = ledgerGuardRemovedAlertText(removed.length, getLocale(db));
     recordSecurityAlert(db, {
       kind: LEDGER_GUARD_REMOVED_KIND, entityKey: "ledger:plc.db", title: text.title, body: text.body,
       rootCause: {
@@ -2789,7 +2800,7 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
       const previousSpec = selectedLeadSpec();
       const previous = choiceOf(previousSpec);
       if (spec === previousSpec && spec === leadModelName) return { previous, selected: choice, applied: "unchanged" };
-      if (!modelFailover || !switchLeadModel) throw new UiActionError("unavailable", "这个 Lead 会话不能在运行中换模型");
+      if (!modelFailover || !switchLeadModel) throw new UiActionError("unavailable", serverMessages(getLocale(db)).model.cannotSwitchWhileRunning);
       // 在不在目录里、推理强度支不支持：不行时拒绝，原因里写着可选的。
       try {
         await assertConfiguredLeadModel(spec, loadLeadModelConfig(opts.dataDir));
@@ -2809,7 +2820,7 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
         // 换不过去（例如注册不了这个模型）：原因在日志里。config 退回原来的顺序。
         setLeadModelInConfig(previousSpec, opts.dataDir);
         rebuildModelFailover();
-        throw new UiActionError("unavailable", `换不到 ${spec}，还在用 ${leadModelName}`);
+        throw new UiActionError("unavailable", serverMessages(getLocale(db)).model.switchFailed(spec, leadModelName));
       }
       return { previous, selected: choice, applied: "now" };
     },
@@ -2835,7 +2846,7 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
         const previousModels = loadLeadModelConfig(opts.dataDir).models;
         const previousPrimary = previousModels[0] ?? leadModelName;
         const switching = primary !== previousPrimary || (primary !== leadModelName && !modelFailover?.blockedModels().some((entry) => entry.model === leadModelName));
-        if (switching && (!modelFailover || !switchLeadModel)) throw new UiActionError("unavailable", "这个 Lead 会话不能在运行中换模型");
+        if (switching && (!modelFailover || !switchLeadModel)) throw new UiActionError("unavailable", serverMessages(getLocale(db)).model.cannotSwitchWhileRunning);
         setLeadModelChainInConfig(specs, opts.dataDir);
         rebuildModelFailover();
         leadCatalogCache = null;
@@ -2849,7 +2860,7 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
         if (leadModelName !== primary) {
           setLeadModelChainInConfig(previousModels, opts.dataDir);
           rebuildModelFailover();
-          throw new UiActionError("unavailable", `换不到 ${primary}，还在用 ${leadModelName}`);
+          throw new UiActionError("unavailable", serverMessages(getLocale(db)).model.switchFailed(primary, leadModelName));
         }
         return "now";
       },
@@ -2968,6 +2979,7 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
     lastPatrolAt: loadLastPatrolAt(db),
     savePatrol: (at) => saveLastPatrolAt(db, at),
     leadName: () => leadDisplayName(db),
+    locale: () => getLocale(db),
   });
   // 断网不是模型的问题（2026-10-16）：系统回合叫醒 Lead 之前先探网络，不通时等它恢复，恢复后马上接着做。
   const network = new NetworkMonitor({
@@ -3286,22 +3298,26 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
 
   const clockOf = (at: number) => localIso(new Date(at)).slice(11, 16);
 
+  // 每次整段重写，按写的时候用户选的语言（lead-outage.ts 读回时两种语言都认）。
   function outageText(endedAt: number | null): string {
     const current = outage!;
     const name = leadDisplayName(db);
+    const locale = getLocale(db);
+    const m = serverMessages(locale).outage;
     const headline = leadOutageHeadline({
       start: clockOf(current.since),
       end: endedAt === null ? null : clockOf(endedAt),
-      cause: leadOutageCause(current.kind),
+      cause: leadOutageCause(current.kind, locale),
       pending: current.items.length,
       resumed: endedAt !== null,
       durationMs: endedAt === null ? null : endedAt - current.since,
       name,
+      locale,
     });
     const lines = current.items.map((item) => {
       // 「已推送给你」以外的状态读回时都算 inbox（lead-outage.ts 的 restoreOutages），所以可以写名字。
-      const status = item.kind === "pushed" ? "已推送给你" : endedAt === null ? `等 ${name} 恢复后处理` : `已交给 ${name}`;
-      return `· ${item.line} —— ${status}`;
+      const status = item.kind === "pushed" ? m.pushed : endedAt === null ? m.waiting(name) : m.handedOver(name);
+      return m.item(item.line, status);
     });
     return [headline, ...lines].join("\n");
   }
@@ -3328,8 +3344,9 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
   function backlogLine(row: ReturnType<typeof listLeadBacklog>[number]): string {
     const item = row.item_id === null ? null : getItem(db, row.item_id);
     const summary = row.summary.trim().replace(new RegExp(`^工单\\s*#${row.item_id ?? "x"}\\s*`, "u"), "");
-    const text = userFacingBacklogText(summary, leadDisplayName(db));
-    return item ? `工单 #${item.id}「${item.display_title ?? item.title}」：${text}` : text;
+    const locale = getLocale(db);
+    const text = userFacingBacklogText(summary, leadDisplayName(db), locale);
+    return item ? serverMessages(locale).outage.ticket(item.id, item.display_title ?? item.title, text) : text;
   }
 
   function summarizeBacklogForUser(incapacity: { reason: string; kind: LeadModelFailureKind | "silent"; since: number }): void {
@@ -3340,7 +3357,9 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
     const items: OutageItem[] = [
       ...rows.map((row) => ({ line: backlogLine(row), kind: "inbox" as const, hasRecord: blockerHasConversationRecord(db, row) })),
       ...notes.map((note) => ({
-        line: userFacingBacklogText(`${note.title}${note.body ? `：${note.body.split("\n")[0]}` : ""}`, leadDisplayName(db)),
+        line: userFacingBacklogText(
+          serverMessages(getLocale(db)).outage.note(note.title, note.body ? note.body.split("\n")[0]! : null), leadDisplayName(db), getLocale(db),
+        ),
         kind: "pushed" as const, hasRecord: false,
       })),
       ...approvals.map((approval) => ({
@@ -3354,8 +3373,9 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
     outage.kind = incapacity.kind;
     outage.items.push(...items);
     const title = leadOutageHeadline({
-      start: clockOf(outage.since), end: null, cause: leadOutageCause(outage.kind), pending: outage.items.length, resumed: false,
+      start: clockOf(outage.since), end: null, cause: leadOutageCause(outage.kind, getLocale(db)), pending: outage.items.length, resumed: false,
       name: leadDisplayName(db),
+      locale: getLocale(db),
     });
     escalateLeadBacklog(db, rows.map((row) => row.id), { reason: incapacity.reason, at: now });
     for (const note of notes) markNotificationDelivered(db, note.id, "fallback", now);
@@ -3439,13 +3459,15 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
     const trigger = payload.trigger && typeof payload.trigger === "object"
       ? String((payload.trigger as { summary?: unknown }).summary ?? "") : "";
     const name = leadDisplayName(db);
+    // 会话里的系统通知：按写入时用户选的语言写。
+    const m = serverMessages(getLocale(db)).mustTell;
     const text = event.kind === "lead.model_switched"
-      ? `${name} 的模型从 ${String(payload.from)} 换成了 ${String(payload.to)}。${typeof payload.reason === "string" && payload.reason ? `原因：${payload.reason}。` : ""}`
+      ? m.modelSwitched(name, String(payload.from), String(payload.to), typeof payload.reason === "string" && payload.reason ? payload.reason : null)
       : event.kind === LEAD_WAIT_EXPIRED_KIND
-      ? `${name} 在等的事到了超时还没有完成：${note}`
-      : `${trigger ? `${trigger}。` : ""}${note ? `（${name} 当时记下：${note}）` : ""}`;
+      ? m.waitExpired(name, note)
+      : m.triggered(name, trigger, note);
     log(`lead stayed silent on event #${event.seq} that must be told; telling the user directly`);
-    publishSystemNotice(SYSTEM_TURN_ORIGINS.fallbackNotice, text.trim() || `${name} 在等的事有了结果。`, {
+    publishSystemNotice(SYSTEM_TURN_ORIGINS.fallbackNotice, text.trim() || m.waitDone(name), {
       id: `turn_must_tell_${event.seq}`,
     });
   }
@@ -3678,7 +3700,7 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
       let emptyUserTurn = false;
       if (tail && tail.placement === "steer" && !tail.assistantText.trim() && tail.drewSurface !== true) {
         // 插话送到了，Lead 看过以后没有另外说话（例如只调了工具）：它的结局是 done，不是「Lead 未生成回复」。
-        settleAnsweredTogether(tail, null, `插话送到了这一轮，${leadDisplayName(db)} 看过了，没有另外回答`);
+        settleAnsweredTogether(tail, null, serverMessages(getLocale(db)).queue.steerSeen(leadDisplayName(db)));
       } else if (tail) {
         sealChannelTurn(tail);
         emptyUserTurn = !isSystemTurnOrigin(tail.turn.origin_kind) && shouldFailEmptyLeadTurn({
@@ -3691,7 +3713,7 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
       // 会话报告送到、却没有 clearQueue 时不动它们：它们可能还在 pi 的队列里，下一次运行开头送到。
       if (!inputDeliveryEvents || session.clearQueue) {
         for (const input of queuedInputs.splice(0)) {
-          if (input.entry !== tail) settleAnsweredTogether(input.entry, null, `插话送到了这一轮，${leadDisplayName(db)} 看过了，没有另外回答`);
+          if (input.entry !== tail) settleAnsweredTogether(input.entry, null, serverMessages(getLocale(db)).queue.steerSeen(leadDisplayName(db)));
         }
       }
       if (!emptyUserTurn) {
@@ -4195,7 +4217,7 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
   uiActionServices.leadQueue = {
     snapshot: leadQueueSnapshot,
     moveNext: (key) => {
-      if (!leadInput.promote(key)) throw new UiActionError("not_found", `${key} 现在没有排着的消息`);
+      if (!leadInput.promote(key)) throw new UiActionError("not_found", serverMessages(getLocale(db)).queue.nothingQueued(key));
       log(`lead queue: moved ${key} to the front`);
       publishLeadQueue();
       return leadQueueSnapshot();
@@ -4204,7 +4226,7 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
     // 没有卡、卡已经不能「我自己回」的，直接记成处理完。Lead 不再处理它们。
     remove: async (key, by) => {
       const queued = leadInput.queuedMessages(key);
-      if (!queued.length) throw new UiActionError("not_found", `${key} 现在没有排着的消息`);
+      if (!queued.length) throw new UiActionError("not_found", serverMessages(getLocale(db)).queue.nothingQueued(key));
       const cardIds = [...new Set(queued.map((event) => Number(event.payload.cardId)).filter((id) => Number.isSafeInteger(id) && id > 0))];
       for (const cardId of cardIds) {
         const card = getChannelCard(db, cardId);
@@ -4338,6 +4360,7 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
         const text = ownerActionRecordText({
           summary: String(event.payload.summary ?? ""),
           deviceName: typeof source?.deviceName === "string" && source.deviceName ? source.deviceName : "手机",
+          locale: "zh",
         });
         publishSystemNotice(SYSTEM_TURN_ORIGINS.ownerAction, `${text.title}\n${text.body}`, { id: ownerActionTurnId(event.eventId, bindingId) });
       }

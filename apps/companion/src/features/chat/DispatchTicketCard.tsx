@@ -2,12 +2,15 @@ import { AnchoredPanel, Box, Column, Dot, Icon, Pressable, Row, Text, type Color
 import type { KernelCheckpoint } from '@pi-lead-child/protocol';
 import { useMemo, useState } from 'react';
 
+import { useLocale, useMessages } from '@/i18n';
+
 import { StatusBadge } from '../../components/StatusBadge';
 import { useControlPlaneStore } from '../../state/CompanionStateProvider';
 import { useConversationItemDetail, useTicketCheckpoints, useTicketSummary } from '../../state/hooks';
 import type { ConversationCardEntity } from '../../state/types';
 import { ticketDisplayTitle, ticketSummaryToTicket, type Ticket } from '../workspace/model';
 import { formatCheckpointTime } from './CheckpointCard';
+import { dispatchMessages } from './dispatch.messages';
 import { dispatchUpdates, type DispatchUpdate, type DispatchUpdateTone, type DispatchWindow } from './dispatchCards';
 import { useOpenTicket } from './useOpenTicket';
 
@@ -25,13 +28,15 @@ export function DispatchTicketCard({ card, scope }: { card: TicketCard; scope: D
   const item = summary ?? detail?.ticket;
   const ticket = item ? ticketSummaryToTicket(item) : undefined;
   const openTicket = useOpenTicket();
+  const locale = useLocale();
+  const m = dispatchMessages(locale);
   const checkpointsById = useControlPlaneStore((state) => state.checkpointsById);
   const ticketCheckpointIds = useControlPlaneStore((state) => state.checkpointIdsByTicket[card.ticketId] ?? EMPTY_IDS);
   const updates = useMemo(() => {
     const ids = [...new Set([...scope.checkpointIds, ...ticketCheckpointIds])];
     const checkpoints = ids.flatMap((id) => checkpointsById[id] ? [checkpointsById[id] as KernelCheckpoint] : []);
-    return dispatchUpdates({ ticketId: card.ticketId, scope, checkpoints, ticket: item });
-  }, [card.ticketId, checkpointsById, item, scope, ticketCheckpointIds]);
+    return dispatchUpdates({ ticketId: card.ticketId, scope, checkpoints, ticket: item, locale });
+  }, [card.ticketId, checkpointsById, item, locale, scope, ticketCheckpointIds]);
   // 「N 条新」：卡片收着的时候来的更新。展开看过以后清零。
   const [seenAt, setSeenAt] = useState(() => Date.now());
   const fresh = updates.filter((update) => Date.parse(update.at) > seenAt).length;
@@ -45,7 +50,7 @@ export function DispatchTicketCard({ card, scope }: { card: TicketCard; scope: D
     close();
     openTicket(card.ticketId);
   };
-  const title = ticket ? ticketDisplayTitle(ticket) : `工单 #${card.ticketId}`;
+  const title = ticket ? ticketDisplayTitle(ticket) : m.ticketNumber(card.ticketId);
   const header = (expanded: boolean) => (
     <DispatchHeader
       ticketId={card.ticketId}
@@ -64,7 +69,7 @@ export function DispatchTicketCard({ card, scope }: { card: TicketCard; scope: D
       testID={`dispatch-card-${card.ticketId}`}
       open={open}
       onClose={close}
-      label={`#${card.ticketId} 的进展`}
+      label={m.progressOf(card.ticketId)}
       header={header(true)}
       body={<DispatchUpdates ticketId={card.ticketId} updates={updates} />}
     >
@@ -83,12 +88,13 @@ function DispatchHeader({ ticketId, title, ticket, count, fresh, expanded, onTog
   onToggle: () => void;
   onOpenTicket: () => void;
 }) {
+  const m = useMessages(dispatchMessages);
   return (
     <Row items="center" minH={56} pl="card">
       {/* 工单号代表这张工单：点它去工单详情。↗ 说明点了会跳走。 */}
       <Pressable
         testID={`dispatch-card-${ticketId}-open`}
-        aria-label={`打开工单 #${ticketId} 详情`}
+        aria-label={m.openDetails(ticketId)}
         onPress={onOpenTicket}
         feedback="none"
         px={4} // spacing-exempt: 按钮点击区
@@ -104,7 +110,7 @@ function DispatchHeader({ ticketId, title, ticket, count, fresh, expanded, onTog
       {/* 这一行的其余地方：打开、收起浮层。 */}
       <Pressable
         testID={`dispatch-card-${ticketId}-toggle`}
-        aria-label={expanded ? `收起 #${ticketId} 的进展` : `展开 #${ticketId} 的进展`}
+        aria-label={expanded ? m.hideProgress(ticketId) : m.showProgress(ticketId)}
         aria-expanded={expanded}
         onPress={onToggle}
         feedback="highlight"
@@ -122,10 +128,10 @@ function DispatchHeader({ ticketId, title, ticket, count, fresh, expanded, onTog
           {fresh > 0 ? (
             <Row testID={`dispatch-card-${ticketId}-fresh`} items="center" gap="icon-label" shrink={0}>
               <Dot color="accent" size={6} />
-              <Text size="meta" weight="semibold" tone="accent">{`${fresh} 条新`}</Text>
+              <Text size="meta" weight="semibold" tone="accent">{m.fresh(fresh)}</Text>
             </Row>
           ) : count > 0 ? (
-            <Text size="meta" tone="secondary" shrink={0}>{`${count} 条`}</Text>
+            <Text size="meta" tone="secondary" shrink={0}>{m.count(count)}</Text>
           ) : null}
           <Icon name={expanded ? 'chevron-up' : 'chevron-down'} size={14} color="text-secondary" weight="semibold" />
         </Row>
@@ -137,13 +143,14 @@ function DispatchHeader({ ticketId, title, ticket, count, fresh, expanded, onTog
 // 浮层里的关键更新。打开时才去取这张工单的全部 checkpoint（里程碑不在会话卡片里）。
 function DispatchUpdates({ ticketId, updates }: { ticketId: number; updates: readonly DispatchUpdate[] }) {
   useTicketCheckpoints(ticketId);
+  const m = useMessages(dispatchMessages);
   return (
     // spacing-exempt: 弹层面板自己的规格
     <Column gap="card-section" px={18} pt={14} pb={16}>
       {updates.length === 0 ? (
-        <Text size="secondary" tone="secondary">child 还没有汇报。</Text>
+        <Text size="secondary" tone="secondary">{m.noReport}</Text>
       ) : updates.map((update) => <UpdateRow key={update.id} update={update} />)}
-      <Text size="note" tone="secondary">只显示关键更新。完整记录在工单详情里。</Text>
+      <Text size="note" tone="secondary">{m.keyOnly}</Text>
     </Column>
   );
 }
@@ -156,7 +163,8 @@ const TONE_TEXT: Record<DispatchUpdateTone, TextTone> = {
 };
 
 function UpdateRow({ update }: { update: DispatchUpdate }) {
-  const meta = [update.source, formatCheckpointTime(update.at)].filter(Boolean).join(' · ');
+  const locale = useLocale();
+  const meta = [update.source, formatCheckpointTime(update.at, undefined, locale)].filter(Boolean).join(' · ');
   return (
     <Column testID={`dispatch-update-${update.id}`} gap="text-stack">
       <Row items="center" gap="inline-item">

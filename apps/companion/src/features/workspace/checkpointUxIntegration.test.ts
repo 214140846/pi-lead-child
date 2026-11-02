@@ -622,8 +622,8 @@ describe('checkpoint control-plane UX integration', () => {
     });
     expect(detail.artifactState).toEqual({
       kind: 'unsupported',
-      title: '产物能力尚未接入',
-      body: '当前内核还没有可读取的 Artifact 资源，不会从文件路径伪造产物。',
+      title: 'Artifacts are not available yet',
+      body: 'The current kernel has no artifact resource to read. The app does not make artifacts from file paths.',
     });
     expect(detail).not.toHaveProperty('metrics');
   });
@@ -735,7 +735,7 @@ describe('checkpoint control-plane UX integration', () => {
     expect.soft(connectedThread).toContain('useTicketWorkbench');
     expect.soft(connectedThread).toContain('useTicketCheckpoints');
     expect.soft(connectedThread).toContain('useTicketInterventions');
-    expect.soft(connectedThread).toContain('checkpointToPresentation');
+    expect.soft(connectedThread).toContain('checkpointPresentationFor');
     expect.soft(connectedThread).toContain('interventionToAuthority');
     expect.soft(connectedThread).toContain('resourceToCheckpointFeedResource');
     expect.soft(connectedThread).toContain('loadOlderCheckpoints');
@@ -745,16 +745,16 @@ describe('checkpoint control-plane UX integration', () => {
     // 工单消息断线时也能发：先进本机发件箱，连接恢复后发送（2026-10-16）。
     expect.soft(connectedThread).toContain("onSendMessage: (message) => void runtime.sendChat(message, ticketId)");
     expect.soft(connectedThread).toContain("onLoadOlder: checkpointPage?.hasMore && connected");
-    expect.soft(checkpointFeed).toContain('加载更早的进展');
-    expect.soft(checkpointFeed).toContain('正在加载更早的进展');
-    expect.soft(checkpointFeed).toContain('更早的进展加载失败');
+    expect.soft(checkpointFeed).toContain('m.loadOlder');
+    expect.soft(checkpointFeed).toContain('m.loadingOlder');
+    expect.soft(checkpointFeed).toContain('m.olderFailed');
     expect.soft(connectedThread).not.toContain('ControlPlaneClient');
     expect.soft(conversation).toContain('useConversationCards');
     expect.soft(conversation).toContain('loadOlderConversationCards');
     expect.soft(conversation).toContain('conversationCardPagesByResource');
-    expect.soft(conversation).toContain('加载更早的会话卡片');
-    expect.soft(conversation).toContain('正在加载更早的会话卡片');
-    expect.soft(conversation).toContain('更早的会话卡片加载失败');
+    expect.soft(conversation).toContain('m.history.load');
+    expect.soft(conversation).toContain('m.history.loading');
+    expect.soft(conversation).toContain('m.history.failed');
     expect.soft(conversation).toMatch(/ConversationCard|TicketExecutionCard/);
     expect.soft(interventionPanel).toContain('<Button');
     expect.soft(interventionPanel).toContain('testID={`intervention-action-${action.id}`}');
@@ -790,6 +790,6 @@ describe('checkpoint control-plane UX integration', () => {
     // SlidePanel 的 modal 面板暴露为对话框；SegmentedControl 暴露 tablist/tab 和选中状态。
     // 这两项语义由组件库实现和测试（packages/components/test）。
     expect.soft(webWorkbench).toContain('<SlidePanel edge="right" modal');
-    expect.soft(workRail).toMatch(/<SegmentedControl\s+options=\{RAIL_VIEWS\}\s+value=\{view\}/);
+    expect.soft(workRail).toMatch(/<SegmentedControl\s+options=\{railViews\}\s+value=\{view\}/);
   });
 });

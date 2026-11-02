@@ -62,12 +62,12 @@ describe('the phone settings home', () => {
   it('shows Paimon first, then the groups as rows that push their section', () => {
     renderWith(<SettingsHome />);
     expect(screen.getByTestId('settings-paimon-name').textContent).toBe('Paimon');
-    expect(screen.getByTestId('settings-paimon-status').textContent).toBe('在线');
-    expect(screen.getByText('账号')).toBeTruthy();
-    expect(screen.getByText('设备')).toBeTruthy();
+    expect(screen.getByTestId('settings-paimon-status').textContent).toBe('Online');
+    expect(screen.getByText('Account')).toBeTruthy();
+    expect(screen.getByText('Devices')).toBeTruthy();
     // Lead 分组（标题是它的名字）排在「账号」前面，第一行是「身份与风格」。
     const home = screen.getByTestId('settings-home').textContent ?? '';
-    expect(home.indexOf('身份与风格')).toBeLessThan(home.indexOf('账号'));
+    expect(home.indexOf('Identity & style')).toBeLessThan(home.indexOf('Account'));
     fireEvent.click(screen.getByTestId('settings-row-profile'));
     expect(router.push).toHaveBeenLastCalledWith('/settings/profile');
 
@@ -111,17 +111,17 @@ describe('the phone settings home', () => {
 
 describe('a phone settings section', () => {
   it('has a back button to settings', () => {
-    renderWith(<SettingsPage title="本设备" />);
-    expect(screen.getByTestId('settings-back').textContent).toBe('‹ 设置');
-    expect(screen.getByTestId('settings-page-title').textContent).toBe('本设备');
+    renderWith(<SettingsPage title="This device" />);
+    expect(screen.getByTestId('settings-back').textContent).toBe('‹ Settings');
+    expect(screen.getByTestId('settings-page-title').textContent).toBe('This device');
     fireEvent.click(screen.getByTestId('settings-back'));
     expect(router.dismissTo).toHaveBeenCalledWith('/settings');
   });
 
   it('has no back button on desktop, where the sidebar stays', () => {
     setViewportWidth(1280);
-    renderWith(<SettingsPage title="本设备" />);
+    renderWith(<SettingsPage title="This device" />);
     expect(screen.queryByTestId('settings-back')).toBeNull();
-    expect(screen.getByTestId('settings-page-title').textContent).toBe('本设备');
+    expect(screen.getByTestId('settings-page-title').textContent).toBe('This device');
   });
 });

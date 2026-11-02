@@ -7,6 +7,8 @@ import { Pressable } from '../primitives/Pressable';
 import { Box, Column, Row } from '../primitives/layout';
 import { Text } from '../primitives/Text';
 import { palette } from '../theme/tokens';
+import { useMessages } from '../i18n';
+import { displayMessages } from './display.messages';
 
 export type PopoverProps = {
   /** 触发按钮给读屏的说法，例如「依据：系统通知，查看来源」。 */
@@ -31,6 +33,7 @@ const MAX_HEIGHT = 420;
 // 点开以后看详情的小浮层。宽屏时浮在触发按钮下面（下面放不下就放上面）；手机宽度时是从底部升起的面板。
 // 点外面、按 Esc（web）或返回键（Android）关闭。用 React Native 的 Modal：web 上渲染到 body，不被滚动区裁掉。
 export function Popover({ label, trigger, title, children, width = 360, testID }: PopoverProps) {
+  const m = useMessages(displayMessages);
   const anchorRef = useRef<View>(null);
   const [anchor, setAnchor] = useState<Anchor | null>(null);
   const breakpoint = useBreakpoint();
@@ -82,7 +85,7 @@ export function Popover({ label, trigger, title, children, width = 360, testID }
         animationType={Platform.OS === 'web' ? 'none' : sheet ? 'slide' : 'fade'}
       >
         <Pressable
-          aria-label="关闭"
+          aria-label={m.close}
           feedback="none"
           cursor="default"
           onPress={close}
@@ -105,7 +108,7 @@ export function Popover({ label, trigger, title, children, width = 360, testID }
             <Row items="center" gap="inline-item" pl="card" pr="card" py="card" borderBottomWidth={1} borderBottomColor="border-soft">
               {sheet ? <Box position="absolute" t={5} l={0} r={0} items="center"><Box w={36} h={4} rounded="full" bg="border-strong" /></Box> : null}
               <Text flex={1} minW={0} size="section-title" weight="extrabold" numberOfLines={1} pt={sheet ? 6 : 0}>{title ?? label}</Text>
-              <IconButton icon="close" label="关闭" onPress={close} size="sm" />
+              <IconButton icon="close" label={m.close} onPress={close} size="sm" />
             </Row>
             <ScrollView style={styles.body} contentContainerStyle={styles.bodyContent}>
               {typeof children === 'function' ? children(close) : children}

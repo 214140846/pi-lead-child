@@ -516,7 +516,7 @@ describe("immediate notifications", () => {
        VALUES (?, 'terminal_handoff_failed', 'immediate', ?, '', ?)`,
     ).run(itemId, "没人播报的通知", new Date(Date.now() - 60_000).toISOString());
     const { desktop } = await start(stubLead("error"));
-    await vi.waitFor(() => expect(desktop.some((text) => text.startsWith("Paimon 离线 "))).toBe(true));
+    await vi.waitFor(() => expect(desktop.some((text) => text.startsWith("Paimon offline "))).toBe(true));
     const [summary] = db.prepare("SELECT assistant_text, state, origin_binding_id FROM channel_turns WHERE origin_kind=?")
       .all(SYSTEM_TURN_ORIGINS.fallbackNotice) as Array<{ assistant_text: string; state: string; origin_binding_id: string | null }>;
     expect(summary).toMatchObject({ state: "completed", origin_binding_id: null });

@@ -98,9 +98,9 @@ describe('the queue status bar above the composer', () => {
     const { runtime } = setup();
     expect(screen.queryByTestId('lead-queue-bar')).toBeNull();
     pushQueue(runtime, { busy: true, entries: [entry('slack:@U1', '李雷', { next: true, actions: ['remove'] })] });
-    expect(screen.getByTestId('lead-queue-summary').textContent).toBe('排队 1 条：李雷');
+    expect(screen.getByTestId('lead-queue-summary').textContent).toBe('1 message in the queue: 李雷');
     pushQueue(runtime, { busy: true, entries: [lilei, kent] });
-    expect(screen.getByTestId('lead-queue-summary').textContent).toBe('排队 3 条：李雷、Kent');
+    expect(screen.getByTestId('lead-queue-summary').textContent).toBe('3 messages in the queue: 李雷, Kent');
     // 这一轮结束、Lead 拿走了排着的消息：状态栏消失。
     pushQueue(runtime, { busy: true, entries: [] });
     expect(screen.queryByTestId('lead-queue-bar')).toBeNull();
@@ -116,16 +116,16 @@ describe('the queue status bar above the composer', () => {
     const { runtime } = setup();
     pushQueue(runtime, { busy: true, entries: [lilei, kent] });
     const panel = await openPanel();
-    expect(within(panel).getByTestId('lead-queue-entry-slack:@U1-state').textContent).toBe('下一个');
-    expect(within(panel).getByTestId('lead-queue-entry-slack:@U2-state').textContent).toBe('排队中');
+    expect(within(panel).getByTestId('lead-queue-entry-slack:@U1-state').textContent).toBe('Next');
+    expect(within(panel).getByTestId('lead-queue-entry-slack:@U2-state').textContent).toBe('Queued');
     expect(within(panel).getByTestId('lead-queue-entry-slack:@U2-excerpt').textContent).toBe('那个机器人 不好用');
-    expect(within(panel).getByText('2 条')).toBeTruthy();
+    expect(within(panel).getByText('2 messages')).toBeTruthy();
     // 收起态没有按钮：操作在「⋯」里。
-    expect(within(panel).queryAllByRole('button', { name: /^(排到下一个|移出队列|打开卡)$/u })).toEqual([]);
+    expect(within(panel).queryAllByRole('button', { name: /^(Move to next|Remove from queue|Open card)$/u })).toEqual([]);
     const first = await openMenu('slack:@U1');
     expect(within(first).queryByTestId('lead-queue-entry-slack:@U1-move_next')).toBeNull();
     expect(within(first).getByTestId('lead-queue-entry-slack:@U1-remove')).toBeTruthy();
-    fireEvent.click(within(first).getByRole('button', { name: '关闭' }));
+    fireEvent.click(within(first).getByRole('button', { name: 'Close' }));
     const second = await openMenu('slack:@U2');
     expect(within(second).getByTestId('lead-queue-entry-slack:@U2-move_next')).toBeTruthy();
   });
@@ -151,7 +151,7 @@ describe('the queue status bar above the composer', () => {
     expect(leadQueueAction).toHaveBeenCalledWith('remove', 'slack:@U2');
     await waitFor(() => expect(screen.queryByTestId('lead-queue-entry-slack:@U2')).toBeNull());
     expect(screen.getByTestId('lead-queue-entry-slack:@U1')).toBeTruthy();
-    expect(screen.getAllByTestId('lead-queue-summary')[0]!.textContent).toBe('排队 1 条：李雷');
+    expect(screen.getAllByTestId('lead-queue-summary')[0]!.textContent).toBe('1 message in the queue: 李雷');
   });
 
   it('moves a conversation to the front', async () => {
@@ -164,7 +164,7 @@ describe('the queue status bar above the composer', () => {
     await openPanel();
     fireEvent.click(within(await openMenu('slack:@U2')).getByTestId('lead-queue-entry-slack:@U2-move_next'));
     expect(leadQueueAction).toHaveBeenCalledWith('move_next', 'slack:@U2');
-    await waitFor(() => expect(screen.getByTestId('lead-queue-entry-slack:@U2-state').textContent).toBe('下一个'));
+    await waitFor(() => expect(screen.getByTestId('lead-queue-entry-slack:@U2-state').textContent).toBe('Next'));
   });
 
   it('says why an action did not go through and keeps the entry', async () => {
@@ -172,7 +172,7 @@ describe('the queue status bar above the composer', () => {
     pushQueue(runtime, { busy: true, entries: [lilei, kent] });
     await openPanel();
     fireEvent.click(within(await openMenu('slack:@U2')).getByTestId('lead-queue-entry-slack:@U2-move_next'));
-    expect(await screen.findByText('没有做成：Kent的私信已经是下一个。')).toBeTruthy();
+    expect(await screen.findByText('Did not complete: Kent的私信已经是下一个。')).toBeTruthy();
     expect(screen.getByTestId('lead-queue-entry-slack:@U2')).toBeTruthy();
   });
 

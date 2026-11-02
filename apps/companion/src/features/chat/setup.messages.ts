@@ -1,0 +1,51 @@
+// 首次启动引导的准备清单卡和建议卡（SetupCards.tsx）。各项的名字、理由和按钮字来自 protocol 的 setupItemMeta。
+import { defineMessages } from '@/i18n';
+
+export const setupMessages = defineMessages({
+  en: {
+    hint: {
+      connect: (title: string) => `Connect ${title}`,
+      memory: 'Add embedding to memory',
+      slack: 'Connect Slack',
+      profile: 'Look at "Identity and style"',
+      brain: 'Set up the brain model',
+    },
+    ready: (title: string) => `"${title}" is set up`,
+    snoozed: (title: string) => `OK. No more reminders about "${title}" for 7 days.`,
+    dismissed: (title: string) => `OK. No more reminders about "${title}".`,
+    readyMark: 'Set up',
+    notReadyMark: 'Not set up',
+    allReady: (count: number) => `Ready: all ${count} key settings are set up`,
+    checklistTitle: 'Setup checklist',
+    checklistOnce: (leadName: string) => `This checklist comes only once. To set things up later, tell ${leadName}, or go to Settings.`,
+    open: (cta: string, title: string) => `${cta}: ${title}`,
+    moreLabel: (title: string) => `Suggestion for "${title}": later, or do not remind me again`,
+    snoozeDetail: 'No more reminders about this item for 7 days',
+    dismissDetail: 'Set it up later in Settings',
+    pending: (label: string) => `${label}…`,
+    failed: (error: string) => `Did not complete: ${error}`,
+  },
+  zh: {
+    hint: {
+      connect: (title) => `建议连上 ${title}`,
+      memory: '建议给记忆接上 embedding',
+      slack: '建议接上 Slack',
+      profile: '建议看看「身份与风格」',
+      brain: '建议配好大脑模型',
+    },
+    ready: (title) => `「${title}」配好了`,
+    snoozed: (title) => `好，「${title}」7 天内不再提`,
+    dismissed: (title) => `好，以后不再提「${title}」`,
+    readyMark: '已配好',
+    notReadyMark: '没配',
+    allReady: (count) => `准备好了：${count} 项关键设置都配好了`,
+    checklistTitle: '准备清单',
+    checklistOnce: (leadName) => `这张清单只发这一次。之后想配，跟 ${leadName} 说一声，或者去「设置」。`,
+    open: (cta, title) => `${cta}：${title}`,
+    moreLabel: (title) => `「${title}」的建议：以后再说、不用再提`,
+    snoozeDetail: '7 天内不再提这一项',
+    dismissDetail: '以后在「设置」里自己配',
+    pending: (label) => `正在${label}…`,
+    failed: (error) => `没有做成：${error}`,
+  },
+});

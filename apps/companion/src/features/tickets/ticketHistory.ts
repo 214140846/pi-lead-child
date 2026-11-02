@@ -1,10 +1,11 @@
-import type { ActivityDto, TicketDetail, TicketRelation, TicketSummary } from '@pi-lead-child/protocol';
+import type { ActivityDto, Locale, TicketDetail, TicketRelation, TicketSummary } from '@pi-lead-child/protocol';
 
 import type { AttemptEntity } from '@/state/types';
 
 import { decisionLabel } from './decisionLabels';
 import { timeLabel } from './timeLabels';
 import { runOutcome, type RunFacts, type RunOutcomeTone } from './runFacts';
+import { ticketHistoryMessages } from './ticketHistory.messages';
 
 export type LifecyclePresentation = {
   id: string;
@@ -68,30 +69,28 @@ export type RelationPresentation = TicketRelation & {
 };
 
 // leadName 是 Lead 的名字（useLeadName）。
-function actorLabel(actor: ActivityDto['actor'], leadName: string): string {
-  return actor === 'lead' ? leadName : { user: '用户', child: '执行 Agent', system: '系统' }[actor];
+function actorLabel(actor: ActivityDto['actor'], leadName: string, locale: Locale): string {
+  return actor === 'lead' ? leadName : ticketHistoryMessages(locale).actor[actor];
 }
-
-const transitionLabels: Record<string, string> = {
-  draft: '待确认', ready: '已确认 / 就绪', active: '开始执行', blocked: '进入阻塞',
-  cancelled: '已取消', review: '进入 Review', done: '已完成',
-  scheduled: '已排期', fired: '已触发', acked: '已确认',
-};
 
 export function buildLifecyclePresentation(input: {
   ticketId: number;
   detail?: TicketDetail;
   activities: ActivityDto[];
   leadName: string;
+  /** 界面语言。不给时按英文。 */
+  locale?: Locale;
 }): LifecyclePresentation[] {
   const { leadName } = input;
+  const locale = input.locale ?? 'en';
+  const m = ticketHistoryMessages(locale);
   const items: LifecyclePresentation[] = [];
   if (input.detail) {
     items.push({
       id: `ticket:${input.ticketId}:created`,
-      title: '创建工单',
+      title: m.createdTicket,
       createdAt: input.detail.createdAt,
-      actor: input.detail.createdBy ? actorLabel(input.detail.createdBy, leadName) : '未记录',
+      actor: input.detail.createdBy ? actorLabel(input.detail.createdBy, leadName, locale) : m.notRecorded,
       reason: null,
       sourceTicketId: input.ticketId,
       attemptId: null,
@@ -101,26 +100,26 @@ export function buildLifecyclePresentation(input: {
     if (activity.kind === 'transition') {
       const from = text(activity.payload.from);
       const to = text(activity.payload.to);
-      const label = to ? transitionLabels[to] ?? `状态变为 ${to}` : '状态变更';
+      const label = to ? m.transition[to] ?? m.stateChangedTo(to) : m.stateChanged;
       items.push({
         id: `activity:${activity.id}`,
-        title: from && to ? `${label}（${from} → ${to}）` : label,
+        title: from && to ? m.transitionTitle(label, from, to) : label,
         createdAt: activity.createdAt,
-        actor: actorLabel(activity.actor, leadName),
-        reason: text(activity.payload.reason) ?? '未记录原因',
+        actor: actorLabel(activity.actor, leadName, locale),
+        reason: text(activity.payload.reason) ?? m.noReason,
         sourceTicketId: activity.ticketId,
         attemptId: activity.attemptId,
       });
     } else if (activity.kind === 'decision') {
-      const label = decisionLabel(text(activity.payload.decision), leadName, activity.payload);
-      const reason = decisionReason(activity.payload) ?? text(activity.payload.summary);
+      const label = decisionLabel(text(activity.payload.decision), leadName, activity.payload, locale);
+      const reason = decisionReason(activity.payload, locale) ?? text(activity.payload.summary);
       items.push({
         id: `activity:${activity.id}`,
         title: label.title,
         createdAt: activity.createdAt,
-        actor: actorLabel(activity.actor, leadName),
+        actor: actorLabel(activity.actor, leadName, locale),
         // 没收录的机器 id 不当标题，留在说明里方便排查。
-        reason: [reason, label.unknownId ? `记录类型 ${label.unknownId}` : null].filter(Boolean).join(' · ') || null,
+        reason: [reason, label.unknownId ? m.recordType(label.unknownId) : null].filter(Boolean).join(' · ') || null,
         sourceTicketId: activity.ticketId,
         attemptId: activity.attemptId,
       });
@@ -130,9 +129,9 @@ export function buildLifecyclePresentation(input: {
       const effort = text(activity.payload.effort);
       items.push({
         id: `activity:${activity.id}`,
-        title: activity.attemptId === null ? 'Run 开始启动' : `Run #${activity.attemptId} 开始启动`,
+        title: m.runStarting(activity.attemptId),
         createdAt: activity.createdAt,
-        actor: actorLabel(activity.actor, leadName),
+        actor: actorLabel(activity.actor, leadName, locale),
         reason: [runtime, model, effort ? `effort ${effort}` : null].filter(Boolean).join(' · ') || null,
         sourceTicketId: activity.ticketId,
         attemptId: activity.attemptId,
@@ -140,20 +139,20 @@ export function buildLifecyclePresentation(input: {
     } else if (activity.kind === 'crash') {
       items.push({
         id: `activity:${activity.id}`,
-        title: activity.attemptId === null ? 'Run 失败' : `Run #${activity.attemptId} 失败`,
+        title: m.runFailed(activity.attemptId),
         createdAt: activity.createdAt,
-        actor: actorLabel(activity.actor, leadName),
-        reason: decisionReason(activity.payload),
+        actor: actorLabel(activity.actor, leadName, locale),
+        reason: decisionReason(activity.payload, locale),
         sourceTicketId: activity.ticketId,
         attemptId: activity.attemptId,
       });
     } else if (activity.kind === 'notification') {
       items.push({
         id: `activity:${activity.id}`,
-        title: text(activity.payload.title) ?? '系统阻塞',
+        title: text(activity.payload.title) ?? m.systemBlock,
         createdAt: activity.createdAt,
-        actor: actorLabel(activity.actor, leadName),
-        reason: text(activity.payload.summary) ?? decisionReason(activity.payload),
+        actor: actorLabel(activity.actor, leadName, locale),
+        reason: text(activity.payload.summary) ?? decisionReason(activity.payload, locale),
         sourceTicketId: activity.ticketId,
         attemptId: activity.attemptId,
       });
@@ -166,14 +165,16 @@ export function buildLifecyclePresentation(input: {
 export function buildAttemptPresentation(
   attempts: AttemptEntity[],
   facts: ReadonlyMap<number, RunFacts> = new Map(),
+  locale: Locale = 'en',
 ): AttemptPresentation[] {
+  const m = ticketHistoryMessages(locale);
   return [...attempts].sort((left, right) => left.startedAt.localeCompare(right.startedAt) || left.id - right.id)
     .map((attempt) => {
       const failure = attempt.errorMessage ?? attempt.errorCode;
       const preview = failure ? truncateText(failure, 240) : null;
-      const outcome = runOutcome(attempt, facts.get(attempt.id));
-      const runtime = attempt.runtime ?? '未知 runtime';
-      const model = attempt.model ?? '未记录 model';
+      const outcome = runOutcome(attempt, facts.get(attempt.id), locale);
+      const runtime = attempt.runtime ?? m.unknownRuntime;
+      const model = attempt.model ?? m.modelNotRecorded;
       return {
         id: attempt.id,
         runtime,
@@ -198,7 +199,9 @@ export function buildRelationPresentation(
   detail: TicketDetail | undefined,
   tickets: TicketSummary[],
   leadName: string,
+  locale: Locale = 'en',
 ): RelationPresentation[] {
+  const m = ticketHistoryMessages(locale);
   const byId = new Map(tickets.map((ticket) => [ticket.id, ticket]));
   return (detail?.relations ?? []).map((relation) => {
     const related = byId.get(relation.ticketId);
@@ -206,12 +209,12 @@ export function buildRelationPresentation(
     ...relation,
     title: related?.title ?? null,
     relatedStage: related?.stage ?? null,
-    label: relationLabel(relation.kind),
+    label: m.relation[relation.kind],
     group: relationGroup(relation.kind),
-    groupLabel: relationGroupLabel(relation.kind),
-    stateLabel: relation.active === false ? '已撤销' : '有效',
-    meta: relationMeta(relation, leadName),
-    detail: relationDetail(relation, related?.stage ?? null),
+    groupLabel: m.relationGroup[relationGroup(relation.kind)],
+    stateLabel: relation.active === false ? m.relationRevoked : m.relationActive,
+    meta: relationMeta(relation, leadName, locale),
+    detail: relationDetail(relation, related?.stage ?? null, locale),
   });
   }).sort((left, right) => relationGroupOrder(left.group) - relationGroupOrder(right.group)
     || Number(left.active === false) - Number(right.active === false)
@@ -224,18 +227,19 @@ export function truncateText(value: string, limit: number): string {
   return points.length <= limit ? value : `${points.slice(0, limit).join('')}…`;
 }
 
-function decisionReason(payload: Record<string, unknown>): string | null {
+function decisionReason(payload: Record<string, unknown>, locale: Locale): string | null {
+  const m = ticketHistoryMessages(locale);
   const direct = text(payload.reason) ?? text(payload.message) ?? text(payload.text);
   if (direct) return direct;
   const mode = text(payload.mode);
   const restored = integerList(payload.restoredItemIds);
   const retained = integerList(payload.retainedCancelledIds);
   const parts = [
-    mode ? `模式：${mode}` : null,
-    restored.length > 0 ? `恢复：${restored.map((id) => `#${id}`).join('、')}` : null,
-    retained.length > 0 ? `保留取消：${retained.map((id) => `#${id}`).join('、')}` : null,
+    mode ? m.reasonMode(mode) : null,
+    restored.length > 0 ? m.reasonRestored(restored.map((id) => `#${id}`)) : null,
+    retained.length > 0 ? m.reasonKeptCancelled(retained.map((id) => `#${id}`)) : null,
   ].filter((part): part is string => part !== null);
-  return parts.join('；') || null;
+  return m.joinParts(parts) || null;
 }
 
 function text(value: unknown): string | null {
@@ -254,22 +258,6 @@ function duration(startedAt: string, endedAt: string | null): number | null {
   return Number.isFinite(value) ? Math.max(0, value) : null;
 }
 
-function relationLabel(kind: TicketRelation['kind']): string {
-  return {
-    parent_of: '父工单',
-    child_of: '子工单',
-    depends_on: '依赖',
-    blocks: '阻塞',
-    implements: '实施',
-    implemented_by: '实施任务',
-    supersedes: '替代',
-    superseded_by: '被替代',
-    duplicates: '重复于',
-    duplicated_by: '被标为 canonical',
-    relates_to: '相关事项',
-  }[kind];
-}
-
 function relationGroup(kind: TicketRelation['kind']): RelationPresentation['group'] {
   if (kind === 'parent_of' || kind === 'child_of') return 'family';
   if (kind === 'depends_on' || kind === 'blocks') return 'dependency';
@@ -277,17 +265,6 @@ function relationGroup(kind: TicketRelation['kind']): RelationPresentation['grou
   if (kind === 'supersedes' || kind === 'superseded_by') return 'replacement';
   if (kind === 'duplicates' || kind === 'duplicated_by') return 'duplicate';
   return 'related';
-}
-
-function relationGroupLabel(kind: TicketRelation['kind']): string {
-  return {
-    family: '父子',
-    dependency: '依赖 / 阻塞',
-    implementation: '实施',
-    replacement: '替代',
-    duplicate: '重复',
-    related: '相关事项',
-  }[relationGroup(kind)];
 }
 
 function relationGroupOrder(group: RelationPresentation['group']): number {
@@ -301,30 +278,32 @@ function relationGroupOrder(group: RelationPresentation['group']): number {
   }[group];
 }
 
-function relationMeta(relation: TicketRelation, leadName: string): string {
-  const source = relation.source === 'tree' ? '任务树' : '关系账本';
-  const actor = relation.createdBy ? actorLabel(relation.createdBy, leadName) : source;
-  const created = relation.createdAt ? timeLabel(relation.createdAt) : '既有结构';
-  const revoked = relation.revokedAt ? ` · 撤销 ${timeLabel(relation.revokedAt)}` : '';
+function relationMeta(relation: TicketRelation, leadName: string, locale: Locale): string {
+  const m = ticketHistoryMessages(locale);
+  const source = relation.source === 'tree' ? m.relationSource.tree : m.relationSource.ledger;
+  const actor = relation.createdBy ? actorLabel(relation.createdBy, leadName, locale) : source;
+  const created = relation.createdAt ? timeLabel(relation.createdAt, undefined, locale) : m.existingStructure;
+  const revoked = relation.revokedAt ? m.revokedAt(timeLabel(relation.revokedAt, undefined, locale)) : '';
   return `${source} · ${actor} · ${created}${revoked}`;
 }
 
-function relationDetail(relation: TicketRelation, relatedStage: TicketSummary['stage'] | null): string | null {
+function relationDetail(relation: TicketRelation, relatedStage: TicketSummary['stage'] | null, locale: Locale): string | null {
+  const m = ticketHistoryMessages(locale);
   const gate = relation.executionGate === 'target_done'
     ? relation.kind === 'implements'
       ? relatedStage === 'done'
-        ? `闸门已满足：#${relation.ticketId} 已完成，当前工单可启动`
-        : `等待 #${relation.ticketId} 验收完成后启动`
+        ? m.gateMet(relation.ticketId)
+        : m.gateWaiting(relation.ticketId)
       : relation.kind === 'implemented_by'
         ? relatedStage === 'done'
-          ? `#${relation.ticketId} 已完成`
-          : `#${relation.ticketId} 将在当前工单验收完成后启动`
+          ? m.relatedDone(relation.ticketId)
+          : m.relatedStartsAfter(relation.ticketId)
         : null
     : null;
   const parts = [
     gate,
-    relation.reason ? `原因：${relation.reason}` : null,
-    relation.revokeReason ? `撤销原因：${relation.revokeReason}` : null,
+    relation.reason ? m.reason(relation.reason) : null,
+    relation.revokeReason ? m.revokeReason(relation.revokeReason) : null,
   ].filter((part): part is string => part !== null);
-  return parts.join('；') || null;
+  return m.joinParts(parts) || null;
 }

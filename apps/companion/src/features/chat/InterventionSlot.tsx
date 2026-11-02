@@ -1,8 +1,11 @@
 import { Card, Text } from '@pi-lead-child/components';
 
+import { useMessages } from '@/i18n';
+
 import { useCompanionRuntime, useControlPlaneStore, useWorkspaceStore } from '../../state/CompanionStateProvider';
 import { useConnectionState, useLeadName, useTicketCheckpoints, useTicketInterventions } from '../../state/hooks';
 import { InterventionCard } from './InterventionCard';
+import { interventionMessages } from './intervention.messages';
 import { useOpenTicket } from './useOpenTicket';
 
 // 一条介入请求，只凭编号画（genui 的对象节点 Intervention，2026-10-27）：和会话里的介入请求卡是同一张。
@@ -14,6 +17,7 @@ export function InterventionSlot({ kind, id, ticket, checkpoint }: {
   ticket: number;
   checkpoint?: number;
 }) {
+  const m = useMessages(interventionMessages);
   const runtime = useCompanionRuntime();
   const connected = useConnectionState() === 'connected';
   const leadName = useLeadName();
@@ -28,7 +32,7 @@ export function InterventionSlot({ kind, id, ticket, checkpoint }: {
   if (!intervention) {
     return (
       <Card testID={`intervention-slot-${interventionId}`} w="100%" p="card" rounded="xl" borderWidth={1} borderColor="border">
-        <Text size="secondary" tone="secondary">{`${kind === 'approval' ? '审批' : '决定'} #${id}（工单 #${ticket}）正在同步。`}</Text>
+        <Text size="secondary" tone="secondary">{m.syncing(kind, id, ticket)}</Text>
       </Card>
     );
   }

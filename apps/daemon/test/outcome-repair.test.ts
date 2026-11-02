@@ -183,7 +183,7 @@ describe("outcome repair turn (spec D4)", () => {
     expect(repairStart.prompt).toContain("\"validations\"");
     // 修复回合开始时，工单还在 blocked。修复回合里 agent 也不能改变 stage。
     expect(runtime.stageAtStart).toEqual(["active", "blocked"]);
-    expect(statusChange).toEqual([expect.stringMatching(/outcome repair run/), "blocked", "recovery: 成果修复 · 启动中"]);
+    expect(statusChange).toEqual([expect.stringMatching(/outcome repair run/), "blocked", "recovery: Outcome repair · starting"]);
 
     // 成果登记在来源 Run 上，blocker 撤回，stage 按现有规则推进到 review。
     expect(getOutcomeSnapshotForRun(db, source!.id)).toMatchObject({

@@ -4,6 +4,8 @@ import { Button, type ButtonTone } from '../controls/Button';
 import { FactList, type FactItem } from '../data/FactList';
 import { Column, Row } from '../primitives/layout';
 import { Text } from '../primitives/Text';
+import { useMessages } from '../i18n';
+import { displayMessages } from './display.messages';
 
 export type ConfirmBarProps = {
   /** 一句问题，例如「推到 GitHub，开一个草稿 PR？」。 */
@@ -27,9 +29,11 @@ export type ConfirmBarProps = {
 
 // 对外操作之前的一次确认（第四轮画板：开 PR、不等核查直接验收）。放在底部操作栏的位置（ActionBar 的 confirm）。
 export function ConfirmBar({
-  title, details = [], note, children, confirmLabel, cancelLabel = '取消', onConfirm, onCancel, tone = 'accent', busy = false,
+  title, details = [], note, children, confirmLabel, cancelLabel: cancelLabelProp, onConfirm, onCancel, tone = 'accent', busy = false,
   testID,
 }: ConfirmBarProps) {
+  const m = useMessages(displayMessages);
+  const cancelLabel = cancelLabelProp ?? m.cancel;
   return (
     <Column testID={testID} role="dialog" aria-label={title} px="card" pt="card" pb="card">
       <Text size="card-title" weight="extrabold">{title}</Text>

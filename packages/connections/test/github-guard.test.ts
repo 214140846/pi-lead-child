@@ -1,5 +1,5 @@
 // GitHub 的工具守卫（landing.md C2，src/github-guard.ts）：对所有调用方生效。APPROVE 以前代码查四条：
-// 检查都通过、review 线程都 resolve、不是 draft、head 就是 review 过的那个提交。有一条不过就拒绝并给出原因。
+// 没有失败的检查、review 线程都 resolve、不是 draft、head 就是 review 过的那个提交。有一条不过就拒绝并给出原因。
 // 带清单的 Run 按它的读取记录认「review 过的提交」；Lead 这类调用方要在 commitID 里写明。GitHub 是假的 MCP 服务器。
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
@@ -90,7 +90,7 @@ describe("approving a PR, for a run with a grant", () => {
       .rejects.toMatchObject({ message: expect.stringContaining("review 以后 PR 又有了新的提交（review 的是 aaaaaaa，现在是 bbbbbbb）") });
   });
 
-  it("refuses a draft, a failing check, a pending check, and an unresolved thread, naming which", async () => {
+  it("refuses a draft, a failing check, and an unresolved thread, naming which", async () => {
     const h = await hub();
     const runId = approveRun();
     await review(h, runId);
@@ -102,11 +102,9 @@ describe("approving a PR, for a run with a grant", () => {
 
     pr.checkRuns = [{ name: "test", status: "completed", conclusion: "failure" }];
     await expect(attempt()).rejects.toMatchObject({ message: expect.stringContaining("检查没通过：test") });
-    pr.checkRuns = [{ name: "test", status: "in_progress", conclusion: null }];
-    await expect(attempt()).rejects.toMatchObject({ message: expect.stringContaining("检查还没跑完：test") });
     pr.checkRuns = [];
-    pr.statuses = [{ context: "ci/legacy", state: "pending" }];
-    await expect(attempt()).rejects.toMatchObject({ message: expect.stringContaining("检查还没跑完：ci/legacy") });
+    pr.statuses = [{ context: "ci/legacy", state: "error" }];
+    await expect(attempt()).rejects.toMatchObject({ message: expect.stringContaining("检查没通过：ci/legacy") });
     pr.statuses = [];
 
     pr.threads = [{ id: "t1", isResolved: false, path: "a.ts", line: 2, body: "?" }, { id: "t2", isResolved: true }];
@@ -132,6 +130,27 @@ describe("approving a PR, for Lead and other callers", () => {
     pr.checkRuns = [];
     await h.callTool("github", "pull_request_review_write", { ...approve, commitID: HEAD }, lead);
     expect(approved()).toHaveLength(1);
+  });
+
+  // 2026-10-30：PR 上有一个要等人 approve 才变绿的状态，它在 approve 以前一直是 pending。
+  // 守卫以前要求检查都跑完，于是 approve 永远被拒绝。还在跑的检查不再拦 APPROVE：合并时分支保护还会再查。
+  it("approves while a check is still running, such as a status that waits for a human approval", async () => {
+    const h = await hub();
+    const lead = { role: "lead" as const, confirmed: true };
+    pr.checkRuns = [{ name: "test", status: "completed", conclusion: "success" }, { name: "e2e", status: "in_progress", conclusion: null }];
+    pr.statuses = [{ context: "review/human-approval", state: "pending" }];
+    await h.callTool("github", "pull_request_review_write", { ...approve, commitID: HEAD }, lead);
+    expect(approved()).toHaveLength(1);
+  });
+
+  it("says a refusal comes from the plc guard, not from GitHub, and that settings cannot change it", async () => {
+    const h = await hub();
+    const lead = { role: "lead" as const, confirmed: true };
+    pr.checkRuns = [{ name: "test", status: "completed", conclusion: "failure" }];
+    const refused = await h.callTool("github", "pull_request_review_write", { ...approve, commitID: HEAD }, lead).catch((error) => error);
+    expect(refused).toMatchObject({ code: "forbidden", message: expect.stringContaining("plc 的 GitHub 守卫拒绝了这次调用") });
+    expect(refused.message).not.toMatch(/^GitHub 拒绝/);
+    expect(refused.next).toEqual(expect.stringContaining("设置里改不了"));
   });
 
   it("never reads a denied file from a repository, for anyone", async () => {

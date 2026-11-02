@@ -10,6 +10,8 @@ import type {
 } from '@pi-lead-child/protocol';
 import { useState, type ReactNode } from 'react';
 
+import { useLocale, useMessages, type Locale } from '@/i18n';
+
 import { StatusBadge } from '@/components/StatusBadge';
 import { MarkdownMessage } from '@/features/chat/MarkdownMessage';
 import { useLeadName } from '@/state/hooks';
@@ -34,17 +36,16 @@ import { TicketChatDock, type TicketChatAction } from './TicketChatDock';
 import type { TicketActionReceipt, TicketRunProgress } from './ticketChatStatus';
 import { isTicketBlockedForActions, ticketDecision } from './ticketDecision';
 import {
-  CHILD_BADGES,
   DELIVERY_OPERATIONS,
-  DETAIL_SECTION_TITLES,
-  REVIEWER_STATUS_LABELS,
   barCaption,
   briefPreview,
   briefSummary,
+  childBadge,
   clockText,
   criteriaPresentation,
   criteriaSourceLabel,
   detailActionBar,
+  detailSectionTitles,
   detailStage,
   durationText,
   executionSummary,
@@ -56,6 +57,7 @@ import {
   planSteps,
   planSummary,
   reviewWentAgainst,
+  reviewerStatusLabels,
   sectionCollapsed,
   sourceLabels,
   splitRequestText,
@@ -72,6 +74,8 @@ import type { AttemptPresentation, LifecyclePresentation, RelationPresentation }
 import type { TicketLogPresentation } from './ticketLogs';
 import { TicketRecords } from './TicketRecords';
 import type { TicketStoryEntry } from './ticketStory';
+import { ticketStateMessages } from './ticketState.messages';
+import { ticketThreadMessages } from './ticketThread.messages';
 import { useRememberedSections } from './useRememberedSections';
 
 export type { TicketLogPresentation } from './ticketLogs';
@@ -215,10 +219,12 @@ const REPLY_OPERATIONS: Record<TicketReplyActionId, TicketOperationId | null> = 
 const CONFIRMED_OPERATIONS = new Set<string>(['open_pr', 'abandon', 'cancel', 'stop_run', 'rework']);
 
 // 「更多」里要你写一段话才能做的操作：页面上还没有表单，先打开工单对话请 Lead 代你做（spec 5.11）。
-const CHAT_OPERATIONS: Record<string, (ticketId: string) => string> = {
-  edit_acceptance_criteria: (ticketId) => `改一下 #${ticketId} 的验收标准：`,
+// 预填的话在文案的 prefill 里。
+type ThreadMessages = ReturnType<typeof ticketThreadMessages>;
+const CHAT_OPERATIONS: Record<string, (m: ThreadMessages, ticketId: string) => string> = {
+  edit_acceptance_criteria: (m, ticketId) => m.prefill.criteria(ticketId),
   // 放宽子 agent 的权限要写放宽到哪里（scope）。只属于你：Lead 在你这一轮里代你做。
-  widen_grant: (ticketId) => `放宽 #${ticketId} 的子 agent 的权限：`,
+  widen_grant: (m, ticketId) => m.prefill.widenGrant(ticketId),
 };
 
 // 工单详情（工单详情与验收 spec 第 3 节，第四轮画板 D4-running、D4-review-pass）。自上而下：
@@ -289,7 +295,10 @@ export function TicketThread({
   onLegacyAction,
 }: TicketThreadProps) {
   const leadName = useLeadName();
-  const sources = sourceLabels(leadName);
+  const locale = useLocale();
+  const m = useMessages(ticketThreadMessages);
+  const sources = sourceLabels(leadName, locale);
+  const titles = detailSectionTitles(locale);
   const [remembered, remember] = useRememberedSections();
   const [headerCompact, setHeaderCompact] = useState(false);
   const [briefOpen, setBriefOpen] = useState(false);
@@ -320,6 +329,7 @@ export function TicketThread({
     blocker: blockerCheckpoint ? { title: blockerCheckpoint.title, summary: blockerCheckpoint.summary } : null,
     liveRun,
     leadName,
+    locale,
   });
   const workspace = delivery?.workspace ?? null;
   const reviewAgainst = reviewWentAgainst(ticket);
@@ -333,6 +343,7 @@ export function TicketThread({
     decisionHeadline: decision.headline,
     integration: workspace?.integration ?? null,
     pullRequestUrl: workspace?.pullRequestUrl ?? null,
+    locale,
   });
 
   const openRecords = () => {
@@ -368,7 +379,7 @@ export function TicketThread({
     setBarMenuOpen(false);
     const chat = CHAT_OPERATIONS[action.id];
     if (chat) {
-      prefill(chat(displayId));
+      prefill(chat(m, displayId));
       return;
     }
     if (!canRun(action)) return;
@@ -428,7 +439,7 @@ export function TicketThread({
         />
       )}
       onClose={standalone ? undefined : onClose}
-      closeLabel="关闭工单详情"
+      closeLabel={m.closeDetail}
       onBack={standalone ? onClose : undefined}
       dense={standalone}
     />
@@ -444,15 +455,15 @@ export function TicketThread({
   const relationsSection = (
     <Section
       testID="ticket-section-relations"
-      title={DETAIL_SECTION_TITLES.relations}
-      summary={hasRelations ? relationsSummary(childTickets, relationLinks) : (
+      title={titles.relations}
+      summary={hasRelations ? relationsSummary(childTickets, relationLinks, m) : (
         <Row items="baseline" gap="inline-item" flexWrap="wrap">
-          <Text size="secondary" tone="secondary">没有子工单</Text>
-          <Button testID="ticket-split-request" label="拆成子工单" variant="link" size="xs" onPress={() => prefill(splitRequestText(displayId))} disabled={!onPrefillChat} />
+          <Text size="secondary" tone="secondary">{m.noChildren}</Text>
+          <Button testID="ticket-split-request" label={m.split} variant="link" size="xs" onPress={() => prefill(splitRequestText(displayId, locale))} disabled={!onPrefillChat} />
           <Text size="secondary" tone="secondary">·</Text>
-          <Text size="secondary" tone="secondary">没有父工单和相关工单</Text>
+          <Text size="secondary" tone="secondary">{m.noRelations}</Text>
           {linkAction ? (
-            <Button testID="ticket-link-open" label="关联工单" variant="link" size="xs" onPress={() => setLinkFormOpen(true)} disabled={!linkAction.available} />
+            <Button testID="ticket-link-open" label={m.linkTicket} variant="link" size="xs" onPress={() => setLinkFormOpen(true)} disabled={!linkAction.available} />
           ) : null}
         </Row>
       )}
@@ -467,10 +478,10 @@ export function TicketThread({
           divider={index > 0}
           id={`#${child.displayId}`}
           title={child.title}
-          badge={CHILD_BADGES[child.state]}
-          detail={child.createdBy === 'lead' ? `${leadName} 拆的` : child.createdBy === 'child' ? '执行 agent 拆的' : undefined}
+          badge={childBadge(child.state, locale)}
+          detail={child.createdBy === 'lead' ? m.splitBy.lead(leadName) : child.createdBy === 'child' ? m.splitBy.child : undefined}
           onPress={onOpenTicket ? () => onOpenTicket(child.id) : undefined}
-          accessibilityLabel={`打开子工单 #${child.displayId}，${CHILD_BADGES[child.state].label}`}
+          accessibilityLabel={m.openChild(child.displayId, childBadge(child.state, locale).label)}
         />
       ))}
       {relationLinks.map((relation, index) => (
@@ -486,9 +497,9 @@ export function TicketThread({
           // 解除关联：关系账本里的关系才有编号（父子树上的关系没有），能不能点按清单。
           action={unlinkAction && relation.relationId ? {
             icon: 'close',
-            label: `解除和 #${relation.ticketId} 的关联`,
+            label: m.unlink(relation.ticketId),
             disabled: !canRun(unlinkAction),
-            onPress: () => runAction(unlinkAction, { input: { relationId: relation.relationId! }, reason: '在工单详情里解除关联' }),
+            onPress: () => runAction(unlinkAction, { input: { relationId: relation.relationId! }, reason: m.unlinkReason }),
           } : undefined}
         />
       ))}
@@ -496,7 +507,7 @@ export function TicketThread({
         <RecordRow
           divider
           testID="ticket-link-open"
-          title="关联工单"
+          title={m.linkTicket}
           detail={linkAction.available ? undefined : linkAction.reason ?? undefined}
           onPress={linkAction.available ? () => setLinkFormOpen(true) : undefined}
         />
@@ -520,8 +531,8 @@ export function TicketThread({
   const taskSection = brief.full ? (
     <Section
       testID="ticket-section-task"
-      title={DETAIL_SECTION_TITLES.task}
-      source={writerLabel(facts?.createdBy, leadName)}
+      title={titles.task}
+      source={writerLabel(facts?.createdBy, leadName, locale)}
       summary={collapsed('task') ? briefSummary(brief.full, ticket.summary) : undefined}
       collapsed={collapsed('task')}
       onToggle={toggle('task')}
@@ -530,7 +541,7 @@ export function TicketThread({
         <MarkdownMessage markdown={briefOpen ? brief.full : brief.preview} />
         {brief.truncated ? (
           <Row>
-            <Button testID="ticket-brief-toggle" label={briefOpen ? '收起' : '展开全文'} variant="link" size="xs" onPress={() => setBriefOpen((open) => !open)} />
+            <Button testID="ticket-brief-toggle" label={briefOpen ? m.collapse : m.showAll} variant="link" size="xs" onPress={() => setBriefOpen((open) => !open)} />
           </Row>
         ) : null}
       </Column>
@@ -538,7 +549,7 @@ export function TicketThread({
   ) : null;
 
   // ── 验收标准 ──
-  const criteria = criteriaPresentation(acceptanceCriteria);
+  const criteria = criteriaPresentation(acceptanceCriteria, locale);
   const confirmAction = findAction(actions, 'confirm_criterion');
   const unconfirmAction = findAction(actions, 'unconfirm_criterion');
   const deliverySequence = acceptanceCriteria?.delivery?.sequence;
@@ -551,23 +562,23 @@ export function TicketThread({
   const criteriaSection = (
     <Section
       testID="ticket-section-criteria"
-      title={DETAIL_SECTION_TITLES.criteria}
-      source={criteriaSourceLabel(acceptanceCriteria, leadName)}
+      title={titles.criteria}
+      source={criteriaSourceLabel(acceptanceCriteria, leadName, locale)}
       variant="subtle"
       summary={criteria.summary}
       collapsed={collapsed('criteria')}
       onToggle={toggle('criteria')}
     >
       {criteria.empty ? (
-        <Text size="secondary" tone="secondary">这张工单没有结构化的验收标准。任务说明里写的要求以原文为准。</Text>
+        <Text size="secondary" tone="secondary">{m.noCriteria}</Text>
       ) : (
         <Checklist
           testID="ticket-criteria"
           items={criteria.items}
-          columns={criteria.compare ? [{ label: sources.reviewer, emptyLabel: '核查员还没有结论' }] : []}
-          checkColumn={criteria.compare ? '你' : undefined}
+          columns={criteria.compare ? [{ label: sources.reviewer, emptyLabel: m.reviewerNoVerdict }] : []}
+          checkColumn={criteria.compare ? m.you : undefined}
           onToggle={canToggleCriteria ? toggleCriterion : undefined}
-          checkLabel={(_item, index) => `你确认达到：验收标准 ${index + 1}`}
+          checkLabel={(_item, index) => m.confirmCriterion(index + 1)}
         />
       )}
     </Section>
@@ -582,34 +593,34 @@ export function TicketThread({
   const delegationBusy = delegationActionState?.pending ?? false;
   const delegationEntry: Pick<FactItem, 'action' | 'detail'> = delegated
     ? onSetLeadDelegation
-      ? { action: { label: delegationBusy ? '处理中' : '撤销托管', onPress: () => onSetLeadDelegation(false), disabled: delegationBusy, testID: 'lead-delegation-revoke' } }
+      ? { action: { label: delegationBusy ? m.working : m.revokeDelegation, onPress: () => onSetLeadDelegation(false), disabled: delegationBusy, testID: 'lead-delegation-revoke' } }
       : {}
     : delegateAction
       ? {
           action: {
-            label: pendingActionId === delegateAction.id ? '处理中' : '授权托管',
+            label: pendingActionId === delegateAction.id ? m.working : m.grantDelegation,
             onPress: () => runAction(delegateAction, { input: { maxReworkCycles: 1 } }),
             disabled: !canRun(delegateAction),
             testID: 'lead-delegation-grant',
           },
-          ...(delegateAction.available ? {} : { detail: delegateAction.reason ?? '现在不能托管。' }),
+          ...(delegateAction.available ? {} : { detail: delegateAction.reason ?? m.cannotDelegate }),
         }
       : ticket.verificationPolicy === 'independent_reviewer' && onSetLeadDelegation
-        ? { action: { label: delegationBusy ? '处理中' : '授权托管', onPress: () => onSetLeadDelegation(true), disabled: delegationBusy, testID: 'lead-delegation-grant' } }
+        ? { action: { label: delegationBusy ? m.working : m.grantDelegation, onPress: () => onSetLeadDelegation(true), disabled: delegationBusy, testID: 'lead-delegation-grant' } }
         : {};
   const infoItems: FactItem[] = [
-    ...(facts ? [{ label: '建单', value: `${creatorName(facts.createdBy, leadName)} · ${clockText(facts.createdAt)}` }] : []),
-    ...(facts ? [{ label: '最后更新', value: clockText(facts.updatedAt) }] : []),
-    { label: '截止和提醒', value: facts?.dueAt ? clockText(facts.dueAt) : '没有', ...delegatedEntry(actions, 'set_due', '设置', () => prefill(`把 #${displayId} 的截止时间设成：`)) },
-    { label: '预算', value: budgetText(facts), ...delegatedEntry(actions, 'set_budget', '设置', () => prefill(`给 #${displayId} 设预算：`)) },
-    { label: '验收方式', value: acceptanceText(ticket, leadName), ...delegationEntry },
+    ...(facts ? [{ label: m.created, value: m.createdValue(creatorName(facts.createdBy, leadName, m), clockText(facts.createdAt, undefined, locale)) }] : []),
+    ...(facts ? [{ label: m.updated, value: clockText(facts.updatedAt, undefined, locale) }] : []),
+    { label: m.dueAndReminders, value: facts?.dueAt ? clockText(facts.dueAt, undefined, locale) : m.none, ...delegatedEntry(actions, 'set_due', m.set, () => prefill(m.prefill.due(displayId))) },
+    { label: m.budget, value: budgetText(facts, m), ...delegatedEntry(actions, 'set_budget', m.set, () => prefill(m.prefill.budget(displayId))) },
+    { label: m.acceptance, value: acceptanceText(ticket, leadName, m), ...delegationEntry },
   ];
   const infoSection = (
     <Section
       testID="ticket-section-info"
-      title={DETAIL_SECTION_TITLES.info}
+      title={titles.info}
       source={sources.system}
-      summary={collapsed('info') ? acceptanceText(ticket, leadName) : undefined}
+      summary={collapsed('info') ? acceptanceText(ticket, leadName, m) : undefined}
       collapsed={collapsed('info')}
       onToggle={toggle('info')}
     >
@@ -629,27 +640,27 @@ export function TicketThread({
   const changeReviewer = findAction(actions, 'change_reviewer');
   const profileItems: FactItem[] = [
     {
-      label: '执行者',
-      value: profileText(executor ?? (ticket.runtimeName ? { runtime: runtimeDisplayName(ticket.runtimeName) ?? ticket.runtimeName, model: null, effort: null } : null)),
-      ...delegatedEntry(actions, 'set_run_profile' as TicketOperationId, '换模型和强度', () => prefill(`把 #${displayId} 执行者的模型和推理强度换成：`), 'end'),
+      label: m.executor,
+      value: profileText(executor ?? (ticket.runtimeName ? { runtime: runtimeDisplayName(ticket.runtimeName) ?? ticket.runtimeName, model: null, effort: null } : null), m),
+      ...delegatedEntry(actions, 'set_run_profile' as TicketOperationId, m.changeProfile, () => prefill(m.prefill.runProfile(displayId)), 'end'),
     },
     ...(reviewer ? [{
-      label: '核查员',
-      value: `${profileText(reviewer)} · ${REVIEWER_STATUS_LABELS[reviewer.status]}`,
+      label: m.reviewer,
+      value: `${profileText(reviewer, m)} · ${reviewerStatusLabels(locale)[reviewer.status]}`,
       ...(changeReviewer?.available ? {
-        action: { label: '换核查员', align: 'end' as const, onPress: () => prefill(`把 #${displayId} 的核查员换成：`), testID: 'ticket-change-reviewer' },
+        action: { label: m.changeReviewer, align: 'end' as const, onPress: () => prefill(m.prefill.reviewer(displayId)), testID: 'ticket-change-reviewer' },
       } : {}),
     }] : []),
   ];
   const latestProgress = running ? checkpoints.find((checkpoint) => checkpoint.source === 'agent_reported') ?? null : null;
   const recentLogs = running ? logs.slice(-5).reverse() : [];
-  const steps = planSteps(executionPlan);
+  const steps = planSteps(executionPlan, locale);
   const executionSection = ticket.hasRun || stage !== 'draft' ? (
     <Section
       testID="ticket-section-execution"
       variant="group"
-      title={DETAIL_SECTION_TITLES.execution}
-      summary={collapsed('execution') ? executionSummary(executor?.runtime ?? agent, usage) : undefined}
+      title={titles.execution}
+      summary={collapsed('execution') ? executionSummary(executor?.runtime ?? agent, usage, locale) : undefined}
       collapsed={collapsed('execution')}
       onToggle={toggle('execution')}
     >
@@ -657,33 +668,33 @@ export function TicketThread({
         <Section testID="ticket-execution-profiles" variant="part" divider={false}>
           <FactList variant="labeled" items={profileItems} />
         </Section>
-        <Section testID="ticket-execution-usage" variant="part" title="用量" source={sources.system}>
+        <Section testID="ticket-execution-usage" variant="part" title={m.usage} source={sources.system}>
           <Column gap="card-row">
-            <Stats variant="compact" items={usageStats(usage)} />
-            <Text size="note" tone="secondary">{usageCaption(running)}</Text>
+            <Stats variant="compact" items={usageStats(usage, locale)} />
+            <Text size="note" tone="secondary">{usageCaption(running, locale)}</Text>
           </Column>
         </Section>
-        <Section testID="ticket-execution-plan" variant="part" title="执行计划" source={sources.child} summary={planSummary(executionPlan) ?? undefined} summaryMono>
+        <Section testID="ticket-execution-plan" variant="part" title={m.plan} source={sources.child} summary={planSummary(executionPlan, undefined, locale) ?? undefined} summaryMono>
           {steps.length > 0
             ? <Steps variant="compact" items={steps} />
-            : <Text size="secondary" tone="secondary">{executionPlan === undefined ? '正在读取执行计划。' : '执行 agent 没有提交计划。'}</Text>}
+            : <Text size="secondary" tone="secondary">{executionPlan === undefined ? m.planLoading : m.noPlan}</Text>}
         </Section>
         {running ? (
-          <Section testID="ticket-execution-now" variant="part" title="现在" source={sources.child} summary={latestProgress ? `${clockText(latestProgress.createdAt)} 说的` : undefined}>
-            <Text size="body">{latestProgress ? latestProgress.summary || latestProgress.title : '执行 agent 还没有说进展。'}</Text>
+          <Section testID="ticket-execution-now" variant="part" title={m.now} source={sources.child} summary={latestProgress ? m.saidAt(clockText(latestProgress.createdAt, undefined, locale)) : undefined}>
+            <Text size="body">{latestProgress ? latestProgress.summary || latestProgress.title : m.noProgress}</Text>
           </Section>
         ) : null}
         {recentLogs.length > 0 ? (
-          <Section testID="ticket-execution-actions" variant="part" title="最近的动作" source={sources.system}>
+          <Section testID="ticket-execution-actions" variant="part" title={m.recentActions} source={sources.system}>
             <Timeline
               variant="compact"
               // 只写做了什么（工具和它的主要参数）；耗时、输出大小这些在完整记录里。
-              items={recentLogs.map((log) => ({ at: clockText(log.createdAt), text: log.title }))}
+              items={recentLogs.map((log) => ({ at: clockText(log.createdAt, undefined, locale), text: log.title }))}
             />
           </Section>
         ) : null}
-        <Section testID="ticket-execution-runs" variant="part" title="运行记录" source={sources.system} summary={attempts.length > 0 ? '点一行，在中间栏看完整记录' : undefined} inset={attempts.length === 0}>
-          {attempts.length === 0 ? <Text size="secondary" tone="secondary">还没有运行。</Text> : null}
+        <Section testID="ticket-execution-runs" variant="part" title={m.runs} source={sources.system} summary={attempts.length > 0 ? m.runsHint : undefined} inset={attempts.length === 0}>
+          {attempts.length === 0 ? <Text size="secondary" tone="secondary">{m.noRuns}</Text> : null}
           {attempts.map((attempt, index) => (
             <RecordRow
               key={attempt.id}
@@ -693,16 +704,16 @@ export function TicketThread({
               title={attempt.purposeLabel}
               meta={`· ${runChoice(attempt)}`}
               badge={{ label: attempt.result, tone: RUN_TONE[attempt.resultTone] }}
-              detail={runDetail(attempt)}
+              detail={runDetail(attempt, m, locale)}
               detailMono
               onPress={openRecords}
-              accessibilityLabel={`在中间栏看 #${attempt.id} 的记录`}
+              accessibilityLabel={m.runRecords(attempt.id)}
             />
           ))}
         </Section>
         {ticket.workflowKind === 'coding' && ticket.workspace ? (
           <Section testID="ticket-execution-workspace" variant="part">
-            <FactList variant="labeled" items={[workspaceFact(stage, ticket, workspace)]} />
+            <FactList variant="labeled" items={[workspaceFact(stage, ticket, workspace, m, locale)]} />
           </Section>
         ) : null}
       </Card>
@@ -715,19 +726,19 @@ export function TicketThread({
     <Section
       testID="ticket-section-delivery"
       variant="group"
-      title={DETAIL_SECTION_TITLES.delivery}
-      summary={deliverySummary(stage, latestOutcome, acceptanceCriteria?.delivery ?? null)}
+      title={titles.delivery}
+      summary={deliverySummary(stage, latestOutcome, acceptanceCriteria?.delivery ?? null, m, locale)}
       collapsed={latestOutcome ? collapsed('delivery') : false}
       onToggle={latestOutcome ? toggle('delivery') : undefined}
     >
       <Card overflow="hidden">
         {latestOutcome ? (
-          <Section testID="ticket-delivery-summary" variant="part" divider={false} title="做了什么" source={sources.child}>
+          <Section testID="ticket-delivery-summary" variant="part" divider={false} title={m.whatWasDone} source={sources.child}>
             <Text size="body" numberOfLines={4}>{latestOutcome.summary}</Text>
           </Section>
         ) : (
           <Section testID="ticket-delivery-pending" variant="part" divider={false}>
-            <Text size="secondary" tone="secondary">{stage === 'cancelled' ? '工单已取消，没有交付。' : '还没交付。'}</Text>
+            <Text size="secondary" tone="secondary">{stage === 'cancelled' ? m.cancelledNoDelivery : m.notDelivered}</Text>
           </Section>
         )}
       </Card>
@@ -739,25 +750,25 @@ export function TicketThread({
     <Section
       testID="ticket-section-history"
       variant="group"
-      title={DETAIL_SECTION_TITLES.history}
-      summary={collapsed('history') ? `${story.length} 件事` : undefined}
+      title={titles.history}
+      summary={collapsed('history') ? m.eventCount(story.length) : undefined}
       collapsed={collapsed('history')}
       onToggle={toggle('history')}
     >
       <Card overflow="hidden">
-        <Section testID="ticket-history-story" variant="part" divider={false} title="经过" source={sources.system}>
+        <Section testID="ticket-history-story" variant="part" divider={false} title={m.story} source={sources.system}>
           {story.length > 0
-            ? <Timeline testID="ticket-history-timeline" variant="compact" items={historyItems(story)} />
-            : <Text size="secondary" tone="secondary">还没有工单级的事件。</Text>}
+            ? <Timeline testID="ticket-history-timeline" variant="compact" items={historyItems(story, undefined, locale)} />
+            : <Text size="secondary" tone="secondary">{m.noStory}</Text>}
         </Section>
         <RecordRow
           divider
           testID="ticket-records-open"
-          title="完整记录"
-          meta="进展、每次运行的日志、原始事件，在中间栏打开"
+          title={m.fullRecords}
+          meta={m.fullRecordsMeta}
           onPress={openRecords}
           pressIcon="arrow-up-right"
-          accessibilityLabel="打开完整记录"
+          accessibilityLabel={m.openFullRecords}
         />
       </Card>
     </Section>
@@ -772,15 +783,15 @@ export function TicketThread({
   const actionsCaption = actions.length > 0
     ? null
     : actionsStatus === 'loading'
-      ? '正在读取这张工单能做的操作。'
+      ? m.actionsLoading
       : actionsStatus === 'error'
-        ? '读不到这张工单能做的操作。'
-        : actionsStatus === 'unsupported' ? '这个连接读不了工单能做的操作，按钮都不画。' : null;
+        ? m.actionsError
+        : actionsStatus === 'unsupported' ? m.actionsUnsupported : null;
   const retryButton = actions.length === 0 && actionsStatus === 'error' && onRetryActions
-    ? { label: '重试', onPress: onRetryActions, tone: 'neutral' as const, testID: 'ticket-actions-retry' }
+    ? { label: m.retry, onPress: onRetryActions, tone: 'neutral' as const, testID: 'ticket-actions-retry' }
     : undefined;
   const deliveryCaption = [bar.primary, bar.secondary].some((action) => action?.available && waitingForDelivery(action))
-    ? '正在读取这次交付。'
+    ? m.deliveryLoading
     : null;
   const barButton = (action: TicketAction | null, slot: 'primary' | 'secondary') => action ? {
     label: pendingActionId === action.id ? `${action.label}…` : action.label,
@@ -793,18 +804,18 @@ export function TicketThread({
     <ActionBar
       testID="ticket-action-bar"
       next={next}
-      caption={actionState?.error ?? actionsCaption ?? deliveryCaption ?? barCaption(bar, acceptanceCriteria)}
+      caption={actionState?.error ?? actionsCaption ?? deliveryCaption ?? barCaption(bar, acceptanceCriteria, locale)}
       primary={barButton(bar.primary, 'primary')}
       secondary={barButton(bar.secondary, 'secondary') ?? retryButton}
       more={bar.more.length + legacyActions.length > 0 ? {
-        label: `更多操作：${[...bar.more, ...legacyActions].map((action) => action.label).join('、')}`,
+        label: m.moreActions([...bar.more, ...legacyActions].map((action) => action.label)),
         onPress: () => setBarMenuOpen(true),
         testID: 'ticket-bar-more',
       } : undefined}
       confirm={restoring ? (
         <ConfirmBar
           testID="ticket-confirm"
-          title={restoring.label === '继续恢复' ? '继续恢复这一组工单？' : '恢复这张工单？'}
+          title={restoring.label === ticketStateMessages(locale).continueRestore ? m.restoreGroup : m.restoreOne}
           note={restoring.note ?? undefined}
           confirmLabel={restoring.label}
           busy={pendingActionId !== null}
@@ -817,12 +828,12 @@ export function TicketThread({
           {cancelledChildren > 0 && ticket.status !== 'draft' ? (
             <ChoiceGroup
               variant="radio"
-              accessibilityLabel="恢复哪些工单"
+              accessibilityLabel={m.restoreScope}
               value={restoreMode}
               onSelect={(mode) => setRestoreMode(mode === 'root_only' ? 'root_only' : 'review_tree')}
               options={[
-                { id: 'review_tree', label: '恢复整组任务', description: `这张和 ${cancelledChildren} 张已取消的子工单；同名重复的保持取消。` },
-                { id: 'root_only', label: '只恢复这张', description: '子工单保持取消。' },
+                { id: 'review_tree', label: m.restoreTree, description: m.restoreTreeDetail(cancelledChildren) },
+                { id: 'root_only', label: m.restoreRoot, description: m.restoreRootDetail },
               ]}
             />
           ) : null}
@@ -830,12 +841,12 @@ export function TicketThread({
       ) : confirming ? (
         <ConfirmBar
           testID="ticket-confirm"
-          title={confirmTitle(confirming, reviewer, reviewAgainst, accepts(confirming))}
+          title={confirmTitle(confirming, reviewer, reviewAgainst, accepts(confirming), m)}
           details={confirming.id === 'open_pr' && workspace ? [
-            { label: '推送', value: workspace.branch ?? '这张工单的分支', mono: true },
-            { label: '目标', value: workspace.target ?? '原分支', mono: true },
+            { label: m.push, value: workspace.branch ?? m.pushBranch, mono: true },
+            { label: m.target, value: workspace.target ?? m.originalBranch, mono: true },
           ] : []}
-          note={confirmNote(confirming, reviewAgainst, accepts(confirming))}
+          note={confirmNote(confirming, reviewAgainst, accepts(confirming), m)}
           confirmLabel={confirming.label}
           tone={confirming.irreversible || confirming.id === 'cancel' ? 'danger' : 'accent'}
           busy={pendingActionId !== null}
@@ -847,7 +858,7 @@ export function TicketThread({
               testID="ticket-rework-reason"
               value={reworkReason}
               onChangeText={setReworkReason}
-              placeholder="写下要修什么（可选）。执行 agent 会收到核查意见和你写的话。"
+              placeholder={m.reworkPlaceholder}
               multiline
             />
           ) : null}
@@ -944,7 +955,7 @@ export function TicketThread({
                     {pendingDecisions.map((intervention) => (
                       <InterventionPanel
                         key={intervention.id}
-                        intervention={buildInterventionPresentation(intervention)}
+                        intervention={buildInterventionPresentation(intervention, locale)}
                         commandState={interventionCommandStates[intervention.id]}
                         onResolve={onResolveIntervention}
                       />
@@ -964,14 +975,14 @@ export function TicketThread({
           </ScrollArea>
         )}
       </DockedLayout>
-      <Sheet testID="ticket-bar-menu" open={barMenuOpen} onClose={() => setBarMenuOpen(false)} title="更多操作">
+      <Sheet testID="ticket-bar-menu" open={barMenuOpen} onClose={() => setBarMenuOpen(false)} title={m.moreActionsTitle}>
         {bar.more.map((action, index) => (
           <RecordRow
             key={action.id}
             testID={`ticket-bar-menu-${action.id}`}
             divider={index > 0}
             title={action.label}
-            detail={waitingForDelivery(action) ? '正在读取这次交付。' : actionNote(action, reviewAgainst && accepts(action))}
+            detail={waitingForDelivery(action) ? m.deliveryLoading : actionNote(action, m, reviewAgainst && accepts(action))}
             onPress={canRun(action) || CHAT_OPERATIONS[action.id] ? () => choose(action) : undefined}
           />
         ))}
@@ -992,12 +1003,7 @@ export function TicketThread({
 
 // ── 头部的「更多」 ──────────────────────────────────────────────────────────────────
 
-const PRIORITY_OPTIONS = [
-  { id: 'urgent', label: '紧急' },
-  { id: 'high', label: '高' },
-  { id: 'normal', label: '普通' },
-  { id: 'low', label: '低' },
-] as const;
+const PRIORITY_IDS = ['urgent', 'high', 'normal', 'low'] as const;
 
 function HeaderMenu({ link, actions, pendingActionId, onRun }: {
   link: string;
@@ -1005,13 +1011,14 @@ function HeaderMenu({ link, actions, pendingActionId, onRun }: {
   pendingActionId: string | null;
   onRun: (action: TicketAction, request: TicketActionRunRequest) => void;
 }) {
+  const m = useMessages(ticketThreadMessages);
   const [view, setView] = useState<'root' | 'set_priority' | 'set_project' | 'link'>('root');
   const [project, setProject] = useState('');
   return (
     <Popover
       testID="ticket-header-more"
-      label={`更多：复制链接、${actions.map((action) => action.label).join('、')}`}
-      title="工单操作"
+      label={m.headerMore(actions.map((action) => action.label))}
+      title={m.ticketActions}
       width={300}
       trigger={<Row testID="ticket-header-more-trigger"><Icon name="more" size={15} color="text-secondary" /></Row>}
     >
@@ -1019,17 +1026,17 @@ function HeaderMenu({ link, actions, pendingActionId, onRun }: {
         const done = () => { setView('root'); close(); };
         const action = view === 'root' ? null : actions.find((candidate) => candidate.id === view) ?? null;
         if (action?.id === 'set_priority') {
-          return PRIORITY_OPTIONS.map((option, index) => (
-            <RecordRow key={option.id} divider={index > 0} title={option.label} onPress={() => { onRun(action, { input: { priority: option.id } }); done(); }} />
+          return PRIORITY_IDS.map((id, index) => (
+            <RecordRow key={id} divider={index > 0} title={m.priority[id]} onPress={() => { onRun(action, { input: { priority: id } }); done(); }} />
           ));
         }
         if (action?.id === 'set_project') {
           return (
             <Column gap="form-field">
-              <TextField testID="ticket-project-input" value={project} onChangeText={setProject} placeholder="项目名" />
+              <TextField testID="ticket-project-input" value={project} onChangeText={setProject} placeholder={m.projectName} />
               <Row gap="actions">
-                <Button label="保存" size="sm" disabled={!project.trim() || pendingActionId !== null} onPress={() => { onRun(action, { input: { project: project.trim() } }); done(); }} />
-                <Button label="清掉项目" size="sm" variant="ghost" tone="neutral" onPress={() => { onRun(action, { input: { project: null } }); done(); }} />
+                <Button label={m.save} size="sm" disabled={!project.trim() || pendingActionId !== null} onPress={() => { onRun(action, { input: { project: project.trim() } }); done(); }} />
+                <Button label={m.clearProject} size="sm" variant="ghost" tone="neutral" onPress={() => { onRun(action, { input: { project: null } }); done(); }} />
               </Row>
             </Column>
           );
@@ -1041,7 +1048,7 @@ function HeaderMenu({ link, actions, pendingActionId, onRun }: {
           <Column>
             {/* 原生应用里还没有剪贴板（canCopyText），不给这一项。 */}
             {canCopyText && link ? (
-              <RecordRow testID="ticket-copy-link" title="复制链接" detail={link} detailMono onPress={() => { void copyText(link); done(); }} />
+              <RecordRow testID="ticket-copy-link" title={m.copyLink} detail={link} detailMono onPress={() => { void copyText(link); done(); }} />
             ) : null}
             {actions.map((candidate, index) => (
               <RecordRow
@@ -1049,7 +1056,7 @@ function HeaderMenu({ link, actions, pendingActionId, onRun }: {
                 divider={index > 0 || (canCopyText && Boolean(link))}
                 testID={`ticket-header-${candidate.id}`}
                 title={candidate.label}
-                detail={actionNote(candidate)}
+                detail={actionNote(candidate, m)}
                 onPress={candidate.available ? () => setView(candidate.id as typeof view) : undefined}
               />
             ))}
@@ -1060,11 +1067,7 @@ function HeaderMenu({ link, actions, pendingActionId, onRun }: {
   );
 }
 
-const RELATION_OPTIONS = [
-  { id: 'relates_to', label: '相关', description: '只记一笔，不影响谁先做。' },
-  { id: 'depends_on', label: '依赖它', description: '那张工单做完以前，这张不开跑。' },
-  { id: 'blocks', label: '挡住它', description: '这张做完以前，那张不开跑。' },
-] as const;
+const RELATION_IDS = ['relates_to', 'depends_on', 'blocks'] as const;
 
 // 关联一张工单：头部「更多」和关系那一块共用。走工单操作 link，和 Lead 的 ticket_action 是同一个函数。
 function LinkTicketForm({ action, pending, onCancel, onSubmit }: {
@@ -1073,23 +1076,25 @@ function LinkTicketForm({ action, pending, onCancel, onSubmit }: {
   onCancel: () => void;
   onSubmit: (request: TicketActionRunRequest) => void;
 }) {
+  const m = useMessages(ticketThreadMessages);
+  const relationOptions = RELATION_IDS.map((id) => ({ id, ...m.relationOptions[id] }));
   const [target, setTarget] = useState('');
   const [kind, setKind] = useState<string>('relates_to');
   const targetId = Number(target.replace(/^#/, '').trim());
   const valid = Number.isSafeInteger(targetId) && targetId > 0;
   return (
     <Column testID="ticket-link-form" gap="form-field">
-      <TextField testID="ticket-link-target" value={target} onChangeText={setTarget} placeholder="工单编号，例如 #18" />
-      <ChoiceGroup variant="radio" accessibilityLabel="和这张工单是什么关系" value={kind} onSelect={setKind} options={RELATION_OPTIONS} />
+      <TextField testID="ticket-link-target" value={target} onChangeText={setTarget} placeholder={m.linkTarget} />
+      <ChoiceGroup variant="radio" accessibilityLabel={m.linkKind} value={kind} onSelect={setKind} options={relationOptions} />
       <Row gap="actions">
         <Button
           testID="ticket-link-submit"
           label={pending ? `${action.label}…` : action.label}
           size="sm"
           disabled={!valid || pending || !action.available}
-          onPress={() => onSubmit({ input: { targetTicketId: targetId, relationType: kind }, reason: '在工单详情里关联' })}
+          onPress={() => onSubmit({ input: { targetTicketId: targetId, relationType: kind }, reason: m.linkReason })}
         />
-        <Button label="取消" size="sm" variant="ghost" tone="neutral" onPress={onCancel} />
+        <Button label={m.cancel} size="sm" variant="ghost" tone="neutral" onPress={onCancel} />
       </Row>
     </Column>
   );
@@ -1110,78 +1115,83 @@ function delegatedEntry(
 }
 
 // acceptingAgainst：这个操作会验收（验收，或等验收时的合并），而核查没有通过。
-function actionNote(action: TicketAction, acceptingAgainst = false): string | undefined {
-  if (!action.available) return action.reason ?? '现在不能做。';
-  if (acceptingAgainst) return '核查没有通过。做之前会再问你一次。';
-  if (CHAT_OPERATIONS[action.id]) return '打开工单对话，写下要怎么改。';
-  if (action.external) return '对外操作，做之前会再问你一次。';
-  if (action.irreversible) return '做了就收不回，做之前会再问你一次。';
+function actionNote(action: TicketAction, m: ThreadMessages, acceptingAgainst = false): string | undefined {
+  if (!action.available) return action.reason ?? m.cannotNow;
+  if (acceptingAgainst) return m.noteAgainst;
+  if (CHAT_OPERATIONS[action.id]) return m.noteChat;
+  if (action.external) return m.noteExternal;
+  if (action.irreversible) return m.noteIrreversible;
   return undefined;
 }
 
 // accepting：这个操作会验收（验收，或等验收时的合并）。
-function confirmTitle(action: TicketAction, reviewer: TicketThreadProps['reviewer'], reviewAgainst: boolean, accepting: boolean): string {
+function confirmTitle(
+  action: TicketAction,
+  reviewer: TicketThreadProps['reviewer'],
+  reviewAgainst: boolean,
+  accepting: boolean,
+  m: ThreadMessages,
+): string {
   if (action.id === 'merge' && accepting) {
-    if (reviewAgainst) return '核查没有通过，仍要验收并合并？';
-    if (reviewer && reviewer.status !== 'done') return '不等核查，直接验收并合并？';
+    if (reviewAgainst) return m.confirm.mergeAgainst;
+    if (reviewer && reviewer.status !== 'done') return m.confirm.mergeSkip;
   }
   switch (action.id) {
-    case 'open_pr': return '推到 GitHub，开一个草稿 PR？';
-    case 'abandon': return '放弃这次的改动？';
-    case 'cancel': return '取消这张工单？';
-    case 'stop_run': return '停下正在跑的这次运行？';
-    case 'rework': return '打回返工？';
+    case 'open_pr': return m.confirm.openPr;
+    case 'abandon': return m.confirm.abandon;
+    case 'cancel': return m.confirm.cancel;
+    case 'stop_run': return m.confirm.stopRun;
+    case 'rework': return m.confirm.rework;
     case 'complete':
-      if (reviewAgainst) return '核查没有通过，仍要验收？';
-      return reviewer && reviewer.status !== 'done' ? '不等核查，直接验收？' : '验收这张工单？';
-    default: return `${action.label}？`;
+      if (reviewAgainst) return m.confirm.completeAgainst;
+      return reviewer && reviewer.status !== 'done' ? m.confirm.completeSkip : m.confirm.complete;
+    default: return m.confirm.other(action.label);
   }
 }
 
-function confirmNote(action: TicketAction, reviewAgainst: boolean, accepting: boolean): string | undefined {
-  if (action.external) return '推送是对外操作：推送以后，仓库里有权限的人都能看到这个分支和 PR。';
-  if (action.irreversible) return '做了就收不回。';
-  if (accepting && reviewAgainst) return '没有通过的核查结论。现在验收，等于不按核查的结论结单。';
-  if (accepting) return '核查员还没有结论。现在验收，等于跳过独立核查。';
+function confirmNote(action: TicketAction, reviewAgainst: boolean, accepting: boolean, m: ThreadMessages): string | undefined {
+  if (action.external) return m.confirmNote.external;
+  if (action.irreversible) return m.confirmNote.irreversible;
+  if (accepting && reviewAgainst) return m.confirmNote.against;
+  if (accepting) return m.confirmNote.skip;
   return undefined;
 }
 
-function creatorName(createdBy: TicketDetailFacts['createdBy'], leadName: string): string {
+function creatorName(createdBy: TicketDetailFacts['createdBy'], leadName: string, m: ThreadMessages): string {
   switch (createdBy) {
-    case 'user': return '你';
-    case 'child': return '执行 agent';
-    case 'system': return '系统';
+    case 'user': return m.creator.user;
+    case 'child': return m.creator.child;
+    case 'system': return m.creator.system;
     default: return leadName;
   }
 }
 
-function budgetText(facts: TicketDetailFacts | null): string {
+function budgetText(facts: TicketDetailFacts | null, m: ThreadMessages): string {
   const parts = [
     facts?.tokenBudget ? `${facts.tokenBudget.toLocaleString('en-US')} token` : null,
     facts?.costBudgetUsd ? `$${facts.costBudgetUsd.toFixed(2)}` : null,
   ].filter(Boolean);
-  return parts.length > 0 ? parts.join(' · ') : '没设 token 和成本预算';
+  return parts.length > 0 ? parts.join(' · ') : m.noBudget;
 }
 
 // 验收方式：一句话说清楚谁核查、谁验收、是否托管、返工额度（4.3）。
-function acceptanceText(ticket: Ticket, leadName: string): string {
+function acceptanceText(ticket: Ticket, leadName: string, m: ThreadMessages): string {
+  const t = m.acceptanceText;
   const who = ticket.verificationPolicy === 'independent_reviewer'
-    ? '先由独立核查员核查，再由你验收。'
+    ? t.independent
     : ticket.verificationPolicy === 'lead_static'
-      ? `由 ${leadName} 静态核对，再由你验收。`
-      : '由你验收。';
-  if (ticket.acceptancePolicy !== 'delegated_to_lead') return `${who}没托管，返工由你决定。`;
+      ? t.leadStatic(leadName)
+      : t.you;
+  if (ticket.acceptancePolicy !== 'delegated_to_lead') return t.notDelegated(who);
   const review = ticket.reviewState;
-  const budget = review?.maxReworkCycles != null
-    ? `额度 ${review.maxReworkCycles} 次，${review.reworkCyclesUsed ? `已用 ${review.reworkCyclesUsed} 次` : '还没用'}。`
-    : '';
-  const rework = ticket.reworkPolicy === 'automatic' ? (budget ? `不通过时自动返工，${budget}` : '不通过时自动返工。') : '不通过时等你决定。';
-  return `${who}已托管给 ${leadName}：核查通过后系统自动验收；${rework}`;
+  const budget = review?.maxReworkCycles != null ? t.budget(review.maxReworkCycles, review.reworkCyclesUsed ?? 0) : '';
+  const rework = ticket.reworkPolicy === 'automatic' ? t.autoRework(budget) : t.waitRework;
+  return t.delegated(who, leadName, rework);
 }
 
-function profileText(profile: RunProfilePresentation | null): string {
-  if (!profile) return '还没定';
-  return [profile.runtime, profile.model, profile.effort ? `推理强度 ${profile.effort}` : null].filter(Boolean).join(' · ');
+function profileText(profile: RunProfilePresentation | null, m: ThreadMessages): string {
+  if (!profile) return m.notSet;
+  return [profile.runtime, profile.model, profile.effort ? m.effort(profile.effort) : null].filter(Boolean).join(' · ');
 }
 
 const RUN_TONE: Record<AttemptPresentation['resultTone'], 'success' | 'danger' | 'accent' | 'neutral'> = {
@@ -1193,31 +1203,41 @@ function runChoice(attempt: AttemptPresentation): string {
   return [runtimeDisplayName(attempt.runtime) ?? attempt.runtime, attempt.recordedModel, attempt.effort].filter(Boolean).join(' · ');
 }
 
-function runDetail(attempt: AttemptPresentation): string {
-  const start = clockText(attempt.startedAt);
-  const range = attempt.endedAt ? `${start}–${clockText(attempt.endedAt)}` : `${start} 开始`;
-  const duration = attempt.endedAt ? durationText(attempt.durationMs) : null;
+function runDetail(attempt: AttemptPresentation, m: ThreadMessages, locale: Locale): string {
+  const start = clockText(attempt.startedAt, undefined, locale);
+  const range = attempt.endedAt ? `${start}–${clockText(attempt.endedAt, undefined, locale)}` : m.started(start);
+  const duration = attempt.endedAt ? durationText(attempt.durationMs, locale) : null;
   return [range, duration].filter(Boolean).join(' · ');
 }
 
-function workspaceFact(stage: DetailStage, ticket: Ticket, workspace: TicketDelivery['workspace']): FactItem {
-  const mode = ticket.workspace?.mode === 'isolated' ? '隔离分支' : '共享工作区';
-  const badge = workspace ? integrationBadge(stage, workspace.integration) : null;
+function workspaceFact(
+  stage: DetailStage,
+  ticket: Ticket,
+  workspace: TicketDelivery['workspace'],
+  m: ThreadMessages,
+  locale: Locale,
+): FactItem {
+  const mode = ticket.workspace?.mode === 'isolated' ? m.isolatedBranch : m.sharedWorkspace;
+  const badge = workspace ? integrationBadge(stage, workspace.integration, locale) : null;
   return {
-    label: '工作区',
+    label: m.workspace,
     value: workspace?.branch ?? mode,
     mono: Boolean(workspace?.branch),
-    detail: [mode, workspace?.target ? `合并目标 ${workspace.target}` : null].filter(Boolean).join(' · '),
+    detail: [mode, workspace?.target ? m.mergeTarget(workspace.target) : null].filter(Boolean).join(' · '),
     ...(badge ? { badge } : {}),
   };
 }
 
-function relationsSummary(children: readonly ChildTicketPresentation[], relations: readonly RelationPresentation[]): string {
+function relationsSummary(
+  children: readonly ChildTicketPresentation[],
+  relations: readonly RelationPresentation[],
+  m: ThreadMessages,
+): string {
   const waiting = children.filter((child) => child.state === 'review').length;
   return [
-    children.length > 0 ? `${children.length} 张子工单` : null,
-    waiting > 0 ? `${waiting} 张等你验收` : null,
-    relations.length > 0 ? `${relations.length} 个关联` : null,
+    children.length > 0 ? m.relationsSummary.children(children.length) : null,
+    waiting > 0 ? m.relationsSummary.waiting(waiting) : null,
+    relations.length > 0 ? m.relationsSummary.links(relations.length) : null,
   ].filter(Boolean).join(' · ');
 }
 
@@ -1226,10 +1246,14 @@ function deliverySummary(
   stage: DetailStage,
   latest: KernelOutcomeSnapshotResource['latest'] | null,
   delivery: TicketAcceptanceCriteria['delivery'],
+  m: ThreadMessages,
+  locale: Locale,
 ): ReactNode {
-  if (stage === 'cancelled') return '已取消';
+  if (stage === 'cancelled') return m.cancelled;
   // 还没交付时正文就是这一句，标题行不再重复。
   if (!latest) return undefined;
-  if (delivery && delivery.attemptId === latest.executorAttemptId) return `第 ${delivery.sequence} 次交付 · ${clockText(delivery.deliveredAt)}`;
-  return `${clockText(latest.createdAt)} 交付`;
+  if (delivery && delivery.attemptId === latest.executorAttemptId) {
+    return m.deliveryNumber(delivery.sequence, clockText(delivery.deliveredAt, undefined, locale));
+  }
+  return m.deliveredAt(clockText(latest.createdAt, undefined, locale));
 }

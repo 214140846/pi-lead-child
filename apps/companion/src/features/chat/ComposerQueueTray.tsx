@@ -5,9 +5,12 @@ import type { FollowUpAction, LeadQueue, LeadQueueAction, LeadQueueEntry } from 
 import { useEffect, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 
+import { useLocale, useMessages } from '@/i18n';
+
 import { useCompanionRuntime, useControlPlaneStore } from '../../state/CompanionStateProvider';
 import type { ControlPlaneData, LeadTurnEntity } from '../../state/types';
-import { ACTION_LABELS } from './LeadQueueBar';
+import { composerMessages } from './composer.messages';
+import { queueActionLabels, queueClock } from './LeadQueueBar';
 import type { ComposerTray } from './MessageComposer';
 
 // 输入框上的状态栏（主题 11.13，2026-10-28 用户定：方案 C，贴着输入框，默认收起）。
@@ -19,17 +22,7 @@ import type { ComposerTray } from './MessageComposer';
 //   · ×（user_direct）：这一条不再发给 Lead。Lead 永远不能代你做。
 //   · 外部消息不给 Steer；「排到下一个」「移出队列」收在「⋯」里，和以前的排队面板一样。
 
-// 时间写本地的「时:分」（P14.2）。
-function clock(value: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return '';
-  return new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }).format(date);
-}
-
-const FOLLOW_UP_LABELS: Record<FollowUpAction, { busy: string }> = {
-  steer: { busy: '正在插入…' },
-  cancel: { busy: '正在取消…' },
-};
+// 时间写本地的「时:分」（P14.2，LeadQueueBar 的 queueClock）。
 
 // 你排着的追问：主会话里、还在排队的用户轮次，按发出的先后。
 export function isQueuedFollowUp(turn: Pick<LeadTurnEntity, 'placement' | 'state' | 'ticketId'>): boolean {
@@ -45,11 +38,12 @@ export function queuedFollowUpIds(state: Pick<ControlPlaneData, 'turnsById'>): s
 
 // 一条追问的原话：用户消息的文字；只发了图片时写「[图片]」。
 function useFollowUpText(turnId: string): { text: string; at: string } {
+  const imageOnly = useMessages(composerMessages).tray.imageOnly;
   return useControlPlaneStore(useShallow((state) => {
     const turn = state.turnsById[turnId];
     const part = turn ? state.messagePartsById[`${turn.userMessageId}:text`] : undefined;
     const text = part?.kind === 'text' ? part.text.trim() : '';
-    return { text: text || '[图片]', at: turn?.createdAt ?? '' };
+    return { text: text || imageOnly, at: turn?.createdAt ?? '' };
   }));
 }
 
@@ -59,10 +53,11 @@ export function queueCount(followUps: number, queue: Pick<LeadQueue, 'entries'> 
 }
 
 function CountLabel({ count }: { count: number }) {
+  const m = useMessages(composerMessages).tray;
   return (
     <Row items="center" gap="icon-label" shrink={0}>
       <Dot color="accent" size={7} />
-      <Text testID="queue-tray-count" size="label" weight="semibold" tone="strong">{`排队 ${count}`}</Text>
+      <Text testID="queue-tray-count" size="label" weight="semibold" tone="strong">{m.count(count)}</Text>
     </Row>
   );
 }
@@ -76,6 +71,10 @@ function FollowUpRow({ turnId, tagged, actions, pending, error, onAction }: {
   error: string | null;
   onAction: (action: FollowUpAction) => void;
 }) {
+  const locale = useLocale();
+  const all = composerMessages(locale);
+  const m = all.tray;
+  const busy: Record<FollowUpAction, string> = { steer: m.steering, cancel: m.cancelling };
   const { text, at } = useFollowUpText(turnId);
   return (
     <Column flex={1} minW={0} gap="text-stack">
@@ -83,18 +82,18 @@ function FollowUpRow({ turnId, tagged, actions, pending, error, onAction }: {
         <Icon name="reply" size={14} color="text-secondary" />
         {tagged ? (
           <Box px="pill-x" py="pill-y" rounded="md" bg="surface-muted" shrink={0}>
-            <Text size="meta" weight="semibold" tone="secondary">你的追问</Text>
+            <Text size="meta" weight="semibold" tone="secondary">{m.yourFollowUp}</Text>
           </Box>
         ) : null}
         <Text testID={`queue-follow-up-${turnId}-text`} size="body" numberOfLines={1} shrink={1}>{text}</Text>
-        <Text size="meta" tone="secondary" mono shrink={0}>{clock(at)}</Text>
+        <Text size="meta" tone="secondary" mono shrink={0}>{queueClock(at, locale)}</Text>
         <Box flex={1} />
-        {pending ? <Text size="label" weight="semibold" color="accent-strong">{FOLLOW_UP_LABELS[pending].busy}</Text> : null}
+        {pending ? <Text size="label" weight="semibold" color="accent-strong">{busy[pending]}</Text> : null}
         {actions && !pending ? (
           <>
             <Button
               testID={`queue-follow-up-${turnId}-steer`}
-              label="Steer"
+              label={m.steer}
               variant="outline"
               tone="neutral"
               size="xs"
@@ -103,7 +102,7 @@ function FollowUpRow({ turnId, tagged, actions, pending, error, onAction }: {
             <IconButton
               testID={`queue-follow-up-${turnId}-cancel`}
               icon="close"
-              label="取消这条追问"
+              label={m.cancelFollowUp}
               variant="ghost"
               size="xs"
               iconSize={14}
@@ -113,7 +112,7 @@ function FollowUpRow({ turnId, tagged, actions, pending, error, onAction }: {
           </>
         ) : null}
       </Row>
-      {error ? <Text size="note" tone="danger-dark">{`没有做成：${error}`}</Text> : null}
+      {error ? <Text size="note" tone="danger-dark">{all.queue.failed(error)}</Text> : null}
     </Column>
   );
 }
@@ -124,7 +123,11 @@ function ExternalRow({ entry, pending, error, onAction }: {
   error: string | null;
   onAction: (action: LeadQueueAction) => void;
 }) {
-  const who = entry.senders.join('、');
+  const locale = useLocale();
+  const all = composerMessages(locale);
+  const m = all.queue;
+  const ACTION_LABELS = queueActionLabels(locale);
+  const who = entry.senders.join(m.separator);
   return (
     <Column flex={1} minW={0} gap="text-stack">
       <Row items="center" gap="inline-item" minW={0}>
@@ -134,14 +137,14 @@ function ExternalRow({ entry, pending, error, onAction }: {
         <Text testID={`queue-external-${entry.key}-excerpt`} size="body" tone="strong" numberOfLines={1} shrink={1}>{entry.excerpt}</Text>
         <Box flex={1} />
         <Text size="label" weight="semibold" color="accent-strong" shrink={0}>
-          {pending ? ACTION_LABELS[pending].busy : entry.next ? '下一个' : '排队中'}
+          {pending ? ACTION_LABELS[pending].busy : entry.next ? m.next : m.queued}
         </Text>
-        <Text size="meta" tone="secondary" mono shrink={0}>{clock(entry.lastAt)}</Text>
+        <Text size="meta" tone="secondary" mono shrink={0}>{queueClock(entry.lastAt, locale)}</Text>
         {entry.actions.length ? (
           <Popover
             testID={`queue-external-${entry.key}-more`}
-            label={`更多：${entry.actions.map((action) => ACTION_LABELS[action].idle).join('、')}`}
-            title={`${who}的消息`}
+            label={m.more(entry.actions.map((action) => ACTION_LABELS[action].idle).join(m.separator))}
+            title={m.messagesOf(who)}
             width={260}
             trigger={<Icon name="more" size={16} color="text-secondary" />}
           >
@@ -162,7 +165,7 @@ function ExternalRow({ entry, pending, error, onAction }: {
           </Popover>
         ) : null}
       </Row>
-      {error ? <Text size="note" tone="danger-dark">{`没有做成：${error}`}</Text> : null}
+      {error ? <Text size="note" tone="danger-dark">{all.queue.failed(error)}</Text> : null}
     </Column>
   );
 }
@@ -172,6 +175,7 @@ type Item = { kind: 'follow_up'; id: string } | { kind: 'external'; id: string; 
 // 状态栏：返回输入卡片要的那一行和往上长的列表。没有排着的事时返回 null，输入框变回原来的样子。
 //   actions：daemon 支持 Steer 和取消（CHAT_FOLLOW_UP_ACTIONS_CAPABILITY）时才给这两个按钮。
 export function useComposerQueueTray({ leadName, actions }: { leadName: string; actions: boolean }): ComposerTray | null {
+  const m = useMessages(composerMessages);
   const runtime = useCompanionRuntime();
   const followUpIds = useControlPlaneStore(useShallow(queuedFollowUpIds));
   const queue = useControlPlaneStore((state) => state.leadQueue);
@@ -234,13 +238,13 @@ export function useComposerQueueTray({ leadName, actions }: { leadName: string; 
   const latest = followUpIds.length ? items.at(-1)! : items[0]!;
   const rest = items.filter((item) => item !== latest);
   const count = queueCount(followUpIds.length, queue?.busy ? queue : null);
-  const summary = `排队 ${count}`;
+  const summary = m.tray.count(count);
 
   // 收起时在那一行的最右边，展开时在列表头的最右边：同一个按钮，两个位置（只有一个看得见、点得到）。
   const toggle = (testID: string) => (
     <Pressable
       testID={testID}
-      aria-label={open ? `${summary}，收起` : `${summary}，展开`}
+      aria-label={open ? m.queue.collapse(summary) : m.queue.expand(summary)}
       aria-expanded={open}
       onPress={() => setOpen(!open)}
       feedback="highlight"
@@ -295,7 +299,7 @@ export function useComposerQueueTray({ leadName, actions }: { leadName: string; 
       >
         <Row items="center" gap="inline-item" px="composer-x" py="pill-y" bg="surface-subtle">
           <CountLabel count={count} />
-          <Text size="meta" tone="secondary" numberOfLines={1} shrink={1}>{`${leadName} 回完这一轮先答你的追问，再按顺序处理外部消息`}</Text>
+          <Text size="meta" tone="secondary" numberOfLines={1} shrink={1}>{m.tray.order(leadName)}</Text>
           <Box flex={1} />
           {toggle('queue-tray-collapse')}
         </Row>

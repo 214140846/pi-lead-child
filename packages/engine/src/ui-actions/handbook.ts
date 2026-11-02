@@ -13,12 +13,13 @@ import {
   type ChannelHandbook, type ChannelHandbookDto, type HandbookProposalRequest, type HandbookRehearsalRequest, type HandbookSuggestionKey,
 } from "@pi-lead-child/protocol";
 import {
-  CHANNEL_HANDBOOK_ORDER_ID, channelHandbookDto, getStandingOrder, planStandingOrderChange, proposeStandingOrderChange, publishGatewayEvent,
+  CHANNEL_HANDBOOK_ORDER_ID, channelHandbookDto, getLocale, getStandingOrder, planStandingOrderChange, proposeStandingOrderChange, publishGatewayEvent,
   StandingOrderChangeError, updateStandingOrderByUser,
 } from "@pi-lead-child/store";
 import { handbookSuggestions, handbookWithSuggestion, settleHandbookSuggestion } from "../channels/handbook-suggestions.js";
 import { proposeHandbookSituation } from "../handbook-propose.js";
 import { AVAILABLE } from "../ticket-actions/types.js";
+import { joinProblems } from "./problems.messages.js";
 import { UiActionError, type UiActionDefinition, type UiActionEnv, type UiActionRun, type UiActionTargetKind } from "./types.js";
 
 export const HANDBOOK_WHERE = "设置 → 消息通道 → 自动代你处理";
@@ -77,8 +78,10 @@ function changeError(error: unknown): never {
 function writeHandbook(
   run: UiActionRun<ChannelHandbookDto, unknown>, mode: "update" | "tighten", next: ChannelHandbook = run.input as ChannelHandbook,
 ): { order: { id: string; version: number }; unchanged?: true } {
-  const problems = channelHandbookProblems(next);
-  if (problems.length) throw new UiActionError("invalid_input", problems.join("；"));
+  // 设置页直接显示这些问题，按用户现在的语言写。
+  const locale = getLocale(run.db);
+  const problems = channelHandbookProblems(next, locale);
+  if (problems.length) throw new UiActionError("invalid_input", joinProblems(problems, locale));
   const order = getStandingOrder(run.db, CHANNEL_HANDBOOK_ORDER_ID);
   if (!order || order.action.type !== "rule") throw new UiActionError("unavailable", "库里没有交接说明（channel.handbook）");
   if (stableJson(next) === stableJson(run.target.requested)) return { order: { id: order.id, version: order.version }, unchanged: true };

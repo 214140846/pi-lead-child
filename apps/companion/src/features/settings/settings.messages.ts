@@ -1,0 +1,55 @@
+// 设置页外壳的文案：分组和条目的名字（也是每一页的标题）、返回链接。各分组页面自己的文案在各自的 *.messages.ts。
+import { defineMessages } from '@/i18n';
+
+import type { SettingsGroup, SettingsSectionId } from './settingsNav';
+
+export const settingsMessages = defineMessages({
+  en: {
+    title: 'Settings',
+    groups: { lead: 'Lead', account: 'Account', device: 'Devices', execution: 'Execution' } satisfies Record<SettingsGroup['id'], string>,
+    items: {
+      profile: 'Identity & style',
+      appearance: 'Appearance',
+      model: 'Models',
+      memory: 'Memory',
+      'standing-orders': 'Standing orders',
+      connections: 'Connections',
+      channels: 'Message channels',
+      device: 'This device',
+      devices: 'Paired devices',
+      runtimes: 'Runtimes',
+    } satisfies Record<SettingsSectionId, string>,
+    backToWorkspace: 'Back to workspace',
+    backToConversation: 'Back to conversation',
+    conversation: 'Conversation',
+    back: (label: string) => `Back to ${label}`,
+    online: 'Online',
+    onlineWith: (detail: string) => `Online · ${detail}`,
+    devicesDescription: 'Devices paired with this daemon.',
+    deviceDescription: (leadName: string) => `How this device is paired with ${leadName}.`,
+  },
+  zh: {
+    title: '设置',
+    groups: { lead: 'Lead', account: '账号', device: '设备', execution: '执行' },
+    items: {
+      profile: '身份与风格',
+      appearance: '外观',
+      model: '模型',
+      memory: '记忆',
+      'standing-orders': '常设指令',
+      connections: '连接',
+      channels: '消息通道',
+      device: '本设备',
+      devices: '已配对设备',
+      runtimes: '执行器',
+    },
+    backToWorkspace: '回到工作台',
+    backToConversation: '返回对话',
+    conversation: '对话',
+    back: (label) => `返回${label}`,
+    online: '在线',
+    onlineWith: (detail) => `在线 · ${detail}`,
+    devicesDescription: '和这台 daemon 配对过的设备。',
+    deviceDescription: (leadName) => `这台设备和 ${leadName} 的配对。`,
+  },
+});

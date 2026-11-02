@@ -3,6 +3,8 @@ import { Box, Column, Row } from '../primitives/layout';
 import { Text } from '../primitives/Text';
 import { formatNumber, withUnit } from './format';
 import { dataToneFill, type DataTone } from './tones';
+import { useMessages } from '../i18n';
+import { dataMessages } from './data.messages';
 
 export type BarChartBar = { label: string; value: number; tone?: DataTone };
 
@@ -23,15 +25,16 @@ const COLUMN_LABELS_LIMIT = 8;
 
 // 条形图。每根条形都有无障碍名称「名字：数值」。
 export function BarChart({ bars, unit, orientation = 'horizontal', max, testID }: BarChartProps) {
+  const m = useMessages(dataMessages);
   const full = max ?? Math.max(...bars.map((bar) => bar.value));
   const ratio = (value: number) => (full > 0 ? Math.min(1, value / full) : 0);
   if (orientation === 'vertical') {
-    return <ColumnChart testID={testID} bars={bars} unit={unit} scale={`${max === undefined ? '最高' : '满格'} ${withUnit(full, unit)}`} ratio={ratio} />;
+    return <ColumnChart testID={testID} bars={bars} unit={unit} scale={max === undefined ? m.scaleHighest(withUnit(full, unit)) : m.scaleFull(withUnit(full, unit))} ratio={ratio} />;
   }
   return (
     <Column testID={testID} gap="stacked-card">
       {bars.map((bar, index) => (
-        <Column key={index} gap="card-row" aria-label={`${bar.label}：${withUnit(bar.value, unit)}`} role="img">
+        <Column key={index} gap="card-row" aria-label={m.barValue(bar.label, withUnit(bar.value, unit))} role="img">
           <Row items="baseline" gap="inline-item">
             <Text flex={1} minW={0} size="label" numberOfLines={1}>{bar.label}</Text>
             <Text size="meta" mono tone="secondary" shrink={0}>{withUnit(bar.value, unit)}</Text>
@@ -49,6 +52,7 @@ export function BarChart({ bars, unit, orientation = 'horizontal', max, testID }
 function ColumnChart({ testID, bars, unit, scale, ratio }: {
   testID?: string; bars: readonly BarChartBar[]; unit?: string; scale: string; ratio: (value: number) => number;
 }) {
+  const m = useMessages(dataMessages);
   const labelled = bars.length <= COLUMN_LABELS_LIMIT;
   const area = labelled ? COLUMN_CHART_HEIGHT - 18 : COLUMN_CHART_HEIGHT;
   const gap = bars.length > 12 ? 3 : 8;
@@ -65,7 +69,7 @@ function ColumnChart({ testID, bars, unit, scale, ratio }: {
             justify="flex-end"
             items="center"
             gap="text-stack"
-            aria-label={`${bar.label}：${withUnit(bar.value, unit)}`}
+            aria-label={m.barValue(bar.label, withUnit(bar.value, unit))}
             role="img"
           >
             {labelled ? <Text size="meta" mono tone="secondary" numberOfLines={1}>{formatNumber(bar.value)}</Text> : null}
@@ -94,7 +98,7 @@ function ColumnChart({ testID, bars, unit, scale, ratio }: {
           <Text size="label" tone="secondary" numberOfLines={1}>{bars[bars.length - 1]!.label}</Text>
         </Row>
       )}
-      {labelled && unit ? <Text size="note" tone="secondary">{`单位：${unit}`}</Text> : null}
+      {labelled && unit ? <Text size="note" tone="secondary">{m.unit(unit)}</Text> : null}
     </Column>
   );
 }

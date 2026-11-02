@@ -1,12 +1,16 @@
 import { standingOrdersDescription } from '@/features/settings/standingOrderModel';
 import { StandingOrdersSection } from '@/features/settings/StandingOrdersSection';
+import { settingsMessages } from '@/features/settings/settings.messages';
 import { SettingsPage } from '@/features/settings/SettingsPage';
+import { useLocale, useMessages } from '@/i18n';
 import { useLeadName } from '@/state/hooks';
 
 export default function StandingOrdersRoute() {
+  const m = useMessages(settingsMessages);
   const leadName = useLeadName();
+  const locale = useLocale();
   return (
-    <SettingsPage title="常设指令" description={standingOrdersDescription(leadName)}>
+    <SettingsPage title={m.items['standing-orders']} description={standingOrdersDescription(leadName, locale)}>
       <StandingOrdersSection />
     </SettingsPage>
   );

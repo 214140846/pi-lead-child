@@ -5,6 +5,8 @@ import { useRouter } from 'expo-router';
 import { useState } from 'react';
 
 import { PairingScanner } from '@/components/PairingScanner';
+import { pairingMessages } from '@/components/pairing.messages';
+import { useMessages } from '@/i18n';
 import { resolveLoopbackAutoPairEndpoint } from '@pi-lead-child/client';
 import { useCompanionRuntime } from '@/state/CompanionStateProvider';
 import { isDevicePaired } from '@/features/settings/settingsNav';
@@ -17,6 +19,7 @@ export default function PairScreen() {
   const runtime = useCompanionRuntime();
   const phase = useConnectionPhase();
   const leadName = useLeadName();
+  const m = useMessages(pairingMessages);
   const controlPlaneError = useControlPlaneError();
   const [invitation, setInvitation] = useState('');
   const [endpoint, setEndpoint] = useState('');
@@ -40,7 +43,7 @@ export default function PairScreen() {
       await runtime.pairLoopback(loopbackEndpoint);
       router.back();
     } catch (reason) {
-      setFormError(pairingErrorText(reason));
+      setFormError(pairingErrorText(reason, m));
     } finally {
       setSubmitting(false);
     }
@@ -54,7 +57,7 @@ export default function PairScreen() {
       await runtime.pair(endpoint, code);
       router.back();
     } catch (reason) {
-      setFormError(pairingErrorText(reason));
+      setFormError(pairingErrorText(reason, m));
     } finally {
       setSubmitting(false);
     }
@@ -69,7 +72,7 @@ export default function PairScreen() {
       await runtime.pairSocket(uri);
       router.back();
     } catch (reason) {
-      setFormError(pairingErrorText(reason));
+      setFormError(pairingErrorText(reason, m));
     } finally {
       setSubmitting(false);
     }
@@ -79,7 +82,7 @@ export default function PairScreen() {
     setScannerOpen(false);
     setInvitation(uri);
     if (!uri.startsWith('plc-pair://')) {
-      setFormError(`二维码不是 ${leadName} 的配对邀请`);
+      setFormError(m.notInvitation(leadName));
       return;
     }
     void submitSocket(uri);
@@ -108,12 +111,12 @@ export default function PairScreen() {
           <Row justify="space-between" items="flex-start" mb="page-section">
             <Column gap="text-stack">
               <Text size="eyebrow" weight="extrabold" tone="muted" letterSpacing={1.1}>CONTROL PLANE</Text>
-              <Text size="page-title" weight="extrabold" letterSpacing={-0.5}>{`配对 ${leadName}`}</Text>
+              <Text size="page-title" weight="extrabold" letterSpacing={-0.5}>{m.title(leadName)}</Text>
             </Column>
             <IconButton
               testID="pair-close"
               icon="close"
-              label="关闭"
+              label={m.close}
               variant="soft"
               size="sm"
               rounded="md"
@@ -131,11 +134,11 @@ export default function PairScreen() {
                 <Card testID="pair-loopback" tone="success" rounded="xl" px="inset-x" py="inset-y" gap="card-row" mb="page-section">
                   <Row items="center" gap="icon-label">
                     <Dot color="success" size={8} />
-                    <Text size="card-title" weight="extrabold" tone="success-dark">本机自动配对</Text>
+                    <Text size="card-title" weight="extrabold" tone="success-dark">{m.loopbackTitle}</Text>
                   </Row>
-                  <Text size="secondary" tone="secondary">当前网页运行在本机，Companion 会直接和本机 daemon 配对，不需要复制配对码。</Text>
+                  <Text size="secondary" tone="secondary">{m.loopbackHelp}</Text>
                   <Button
-                    label={submitting ? '正在配对本机 daemon…' : '重试本机自动配对'}
+                    label={submitting ? m.loopbackPairing : m.loopbackRetry}
                     tone="success"
                     size="lg"
                     fullWidth
@@ -145,8 +148,8 @@ export default function PairScreen() {
                 </Card>
               ) : null}
               <Column mt="text-stack" mb="card-section" gap="text-stack">
-                <Text size="section-title" weight="extrabold">跨设备配对</Text>
-                <HelpText>只有在手机、另一台电脑或远程 daemon 上使用 Companion 时，才需要粘贴邀请 URI。</HelpText>
+                <Text size="section-title" weight="extrabold">{m.crossDeviceTitle}</Text>
+                <HelpText>{m.crossDeviceHelp}</HelpText>
               </Column>
               {!isWeb ? (
                 <Pressable
@@ -165,20 +168,20 @@ export default function PairScreen() {
                       <Icon name="qr-scan" color="white" size={23} />
                     </Box>
                     <Column flex={1} gap="text-stack">
-                      <Text size="card-title" weight="extrabold" color="white">扫描局域网配对码</Text>
-                      <Text size="secondary" color="ink-subtle">自动发现地址并校验 daemon 身份</Text>
+                      <Text size="card-title" weight="extrabold" color="white">{m.scanTitle}</Text>
+                      <Text size="secondary" color="ink-subtle">{m.scanHelp}</Text>
                     </Column>
                     <Icon name="chevron-right" color="ink-accent" size={17} />
                   </Row>
                 </Pressable>
               ) : null}
 
-              <FieldLabel>配对邀请 URI</FieldLabel>
+              <FieldLabel>{m.invitationLabel}</FieldLabel>
               <TextField
                 testID="pair-invitation"
                 value={invitation}
                 onChangeText={setInvitation}
-                placeholder="粘贴 plc-pair://connect?..."
+                placeholder={m.invitationPlaceholder}
                 variant="filled"
                 size="lg"
                 multiline
@@ -194,7 +197,7 @@ export default function PairScreen() {
               <Box mt="page-section">
                 <Button
                   testID="pair-invitation-submit"
-                  label={submitting ? '正在验证并配对…' : '使用邀请配对'}
+                  label={submitting ? m.invitationPairing : m.invitationSubmit}
                   size="xl"
                   fullWidth
                   disabled={invitationDisabled}
@@ -211,14 +214,14 @@ export default function PairScreen() {
               >
                 <Row items="center" justify="center" gap="icon-label">
                   {/* spacing-exempt: 说明文字字号 */}
-                  <Text size="12" weight="bold" tone="secondary">{manualVisible ? '收起旧版手动配对' : '使用旧版手动配对码'}</Text>
+                  <Text size="12" weight="bold" tone="secondary">{manualVisible ? m.manualHide : m.manualShow}</Text>
                   <Icon name={manualVisible ? 'chevron-up' : 'chevron-down'} color="text-secondary" size={16} />
                 </Row>
               </Pressable>
 
               {manualVisible ? (
                 <Card tone="subtle" bg="surface-muted" borderColor="border" rounded="xl" px="inset-x" py="inset-y" mt="card-row" gap="field">
-                  <FieldLabel>Daemon 地址</FieldLabel>
+                  <FieldLabel>{m.endpointLabel}</FieldLabel>
                   <TextField
                     value={endpoint}
                     onChangeText={setEndpoint}
@@ -230,7 +233,7 @@ export default function PairScreen() {
                     autoCorrect={false}
                   />
                   <Box h={11} />
-                  <FieldLabel>一次性配对码</FieldLabel>
+                  <FieldLabel>{m.codeLabel}</FieldLabel>
                   <TextField
                     value={code}
                     onChangeText={setCode}
@@ -245,7 +248,7 @@ export default function PairScreen() {
                   <Box h={11} />
                   <Button
                     testID="pair-manual-submit"
-                    label="使用配对码配对"
+                    label={m.manualSubmit}
                     variant="outline"
                     tone="neutral"
                     size="lg"
@@ -256,7 +259,7 @@ export default function PairScreen() {
                 </Card>
               ) : null}
               <Box mt="card-section">
-                <HelpText>邀请 15 分钟内有效且只能使用一次；二维码中的网关公钥会在加密握手中校验。</HelpText>
+                <HelpText>{m.invitationNote}</HelpText>
               </Box>
             </>
           )}
@@ -278,9 +281,9 @@ function ErrorText({ children }: { children: string }) {
   return <Text size="note" weight="semibold" tone="danger-dark">{children}</Text>;
 }
 
-function pairingErrorText(reason: unknown): string {
+function pairingErrorText(reason: unknown, m: ReturnType<typeof pairingMessages>): string {
   const message = reason instanceof Error ? reason.message : String(reason);
-  if (/loopback auto-pair|forbidden/i.test(message)) return '本机 daemon 没有允许当前网页端口自动配对。请重启 daemon 后重试，或改用跨设备邀请 URI。';
-  if (/failed to fetch|network|connect|timeout/i.test(message)) return '无法连接本机 daemon。请确认 daemon 正在运行，然后点击“重试本机自动配对”。';
-  return message || '配对没有完成，请检查连接方式后重试。';
+  if (/loopback auto-pair|forbidden/i.test(message)) return m.errorLoopbackForbidden;
+  if (/failed to fetch|network|connect|timeout/i.test(message)) return m.errorLoopbackUnreachable;
+  return message || m.errorUnknown;
 }

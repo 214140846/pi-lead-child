@@ -1,14 +1,15 @@
 import { Badge, Button, Card, Column, Dot, Icon, Pressable, Row, SegmentedControl, Text, TextField, useBreakpoint } from '@pi-lead-child/components';
-import type { FastModel, ModelProvider, ModelProviderApi, ModelSettingsDto } from '@pi-lead-child/protocol';
+import type { FastModel, Locale, ModelProvider, ModelProviderApi, ModelSettingsDto } from '@pi-lead-child/protocol';
 import { useState, type ReactNode } from 'react';
 
+import { useLocale } from '@/i18n';
 import { useCompanionRuntime } from '@/state/CompanionStateProvider';
 
 import { endpointProblem, keyHostChange, keyHostChangeNote, memoryNeedsUser, pendingRerankFlow, plaintextNote, testResultLabel } from './memoryModel';
+import { modelMessages } from './model.messages';
 import { useModelAction } from './useModelAction';
 import {
-  BRAIN_NAME, brainIndex, brainInUse, brainModelName, brainRoles, contextLabel, defaultExpanded, FAST_NAME, FAST_USES,
-  fastFormProblem, fastKeyLabel, fastModelSub, fastRoles, groupUseLabel, providerFormProblem, providerGroup, providerSub,
+  brainIndex, brainInUse, brainModelName, brainRoles, contextLabel, defaultExpanded, fastFormProblem, fastKeyLabel, fastModelSub, fastRoles, groupUseLabel, providerFormProblem, providerGroup, providerSub,
   releaseLabel, untilLabel, urlHost,
 } from './modelSettingsModel';
 import { useServerForm } from './useServerForm';
@@ -21,6 +22,8 @@ import { useServerForm } from './useServerForm';
 type Editing = { kind: 'provider'; name: string | null } | { kind: 'fast'; id: string | null } | null;
 
 export function ModelLibrary({ dto }: { dto: ModelSettingsDto }) {
+  const locale = useLocale();
+  const m = modelMessages(locale);
   const { tablet } = useBreakpoint();
   const [search, setSearch] = useState('');
   const [expanded, setExpanded] = useState<Set<string>>(() => defaultExpanded(dto));
@@ -40,21 +43,21 @@ export function ModelLibrary({ dto }: { dto: ModelSettingsDto }) {
   return (
     <Column testID="model-library" gap="group-label">
       <Row items="center" gap="inline-item" px="section-label-x" flexWrap="wrap">
-        <Text size="eyebrow" weight="bold" tone="secondary">模型库</Text>
-        <Text flex={1} size="meta" tone="muted">按服务商分组，组里最新发布的在上面</Text>
+        <Text size="eyebrow" weight="bold" tone="secondary">{m.library}</Text>
+        <Text flex={1} size="meta" tone="muted">{m.libraryHint}</Text>
         <Column w={tablet ? 220 : '100%'}>{/* spacing-exempt: 搜索框的宽度，组件规格 */}
-          <TextField testID="model-library-search" value={search} onChangeText={setSearch} placeholder="搜索模型" variant="filled" size="sm"
+          <TextField testID="model-library-search" value={search} onChangeText={setSearch} placeholder={m.searchModels} variant="filled" size="sm"
             autoCapitalize="none" autoCorrect={false} />
         </Column>
       </Row>
 
-      <Text size="label" weight="semibold" tone="strong" px="section-label-x" pt="section-label-top">{BRAIN_NAME}</Text>
+      <Text size="label" weight="semibold" tone="strong" px="section-label-x" pt="section-label-top">{m.brainName}</Text>
       <Card testID="model-providers" rounded="2xl" overflow="hidden">
         {dto.brain.providers.map((provider, i) => {
           const open = query.length > 0 || expanded.has(provider.name);
           const group = providerGroup(provider, used, { query, showAll: showAll.has(provider.name) });
           if (query && group.models.length === 0) return null;
-          const useLabel = groupUseLabel(dto, group);
+          const useLabel = groupUseLabel(dto, group, locale);
           const editingThis = editing?.kind === 'provider' && editing.name === provider.name;
           return (
             <Column key={provider.name} testID={`model-provider-${provider.name}`} borderTopWidth={i === 0 ? 0 : 1} borderTopColor="border-soft">
@@ -62,7 +65,7 @@ export function ModelLibrary({ dto }: { dto: ModelSettingsDto }) {
                 <Pressable
                   testID={`model-provider-toggle-${provider.name}`}
                   aria-expanded={open}
-                  aria-label={`${open ? '收起' : '展开'} ${provider.name}`}
+                  aria-label={open ? m.collapse(provider.name) : m.expand(provider.name)}
                   onPress={() => setExpanded((previous) => toggle(previous, provider.name))}
                   flex={1}
                   minW={0}
@@ -74,22 +77,22 @@ export function ModelLibrary({ dto }: { dto: ModelSettingsDto }) {
                   <Icon name={open ? 'chevron-down' : 'chevron-right'} size={14} color="text-muted" />
                   <Column flex={1} minW={0} gap="text-stack">
                     <Text size="card-title" weight="bold" numberOfLines={1}>{provider.name}</Text>
-                    <Text testID={`model-provider-sub-${provider.name}`} size="meta" tone="secondary" numberOfLines={1}>{providerSub(group)}</Text>
+                    <Text testID={`model-provider-sub-${provider.name}`} size="meta" tone="secondary" numberOfLines={1}>{providerSub(group, locale)}</Text>
                   </Column>
                 </Pressable>
                 {!open && useLabel ? <Text size="label" weight="semibold" tone="strong">{useLabel}</Text> : null}
-                <Button testID={`model-provider-edit-${provider.name}`} label={editingThis ? '收起设置' : '设置'} variant="ghost" tone="neutral" size="xs"
+                <Button testID={`model-provider-edit-${provider.name}`} label={editingThis ? m.closeSettings : m.settings} variant="ghost" tone="neutral" size="xs"
                   onPress={() => setEditing(editingThis ? null : { kind: 'provider', name: provider.name })} />
               </Row>
               {provider.problem ? (
                 <Text testID={`model-provider-problem-${provider.name}`} size="note" tone="danger-dark" pl="group-indent" pr="row-x" pb="row-y">
-                  {`拉不到目录：${provider.problem}`}
+                  {m.catalogFailed(provider.problem)}
                 </Text>
               ) : null}
               {editingThis ? <ProviderForm dto={dto} provider={provider} onDone={() => setEditing(null)} /> : null}
               {open ? group.models.map((model) => {
-                const roles = brainRoles(dto, model.model);
-                const release = releaseLabel(model.released);
+                const roles = brainRoles(dto, model.model, locale);
+                const release = releaseLabel(model.released, locale);
                 return (
                   <Row key={model.model} testID={`model-row-${model.model}`} items="center" gap="inline-item" pl="group-indent" pr="row-x" py="row-y"
                     borderTopWidth={1} borderTopColor="border-soft">
@@ -97,25 +100,25 @@ export function ModelLibrary({ dto }: { dto: ModelSettingsDto }) {
                       <Text size="body" weight="semibold" numberOfLines={1}>{brainModelName(model.model, index.get(model.model))}</Text>
                       <Text size="meta" tone="secondary" mono numberOfLines={1}>
                         {/* 手机上右边放不下日期：写进第二行。 */}
-                        {[model.id, model.image ? '图片' : null, contextLabel(model.contextWindow), tablet ? null : release].filter(Boolean).join(' · ')}
+                        {[model.id, model.image ? m.images : null, contextLabel(model.contextWindow), tablet ? null : release].filter(Boolean).join(' · ')}
                       </Text>
                     </Column>
                     {model.blockedUntil ? (
                       <Row items="center" gap="icon-label">
                         <Dot color="danger" size={7} />
-                        <Text size="label" weight="semibold" tone="danger-dark">{`额度用尽 · ${untilLabel(model.blockedUntil, now)} 恢复`}</Text>
+                        <Text size="label" weight="semibold" tone="danger-dark">{m.quotaBlocked(untilLabel(model.blockedUntil, now, locale))}</Text>
                       </Row>
                     ) : null}
-                    {roles.map((role) => <Badge key={role} label={role} tone={role === '主用' ? 'accent' : 'neutral'} size="xs" />)}
+                    {roles.map((role) => <Badge key={role} label={role} tone={role === m.primary ? 'accent' : 'neutral'} size="xs" />)}
                     {release && tablet ? <Text size="meta" tone="muted" mono>{release}</Text> : null}
                   </Row>
                 );
               }) : null}
               {open && group.hidden > 0 ? (
                 <Row items="center" gap="inline-item" pl="group-indent" pr="row-x" py="row-y" borderTopWidth={1} borderTopColor="border-soft">
-                  <Button testID={`model-provider-more-${provider.name}`} label={`显示其余 ${group.hidden} 个`} variant="link" size="xs"
+                  <Button testID={`model-provider-more-${provider.name}`} label={m.showRest(group.hidden)} variant="link" size="xs"
                     onPress={() => setShowAll((previous) => toggle(previous, provider.name))} />
-                  <Text size="meta" tone="muted">正在用的模型总会显示</Text>
+                  <Text size="meta" tone="muted">{m.inUseAlwaysShown}</Text>
                 </Row>
               ) : null}
             </Column>
@@ -123,12 +126,12 @@ export function ModelLibrary({ dto }: { dto: ModelSettingsDto }) {
         })}
         {editing?.kind === 'provider' && editing.name === null ? <ProviderForm dto={dto} provider={null} onDone={() => setEditing(null)} /> : null}
         <Row px="row-x" py="row-y" borderTopWidth={dto.brain.providers.length ? 1 : 0} borderTopColor="border-soft">
-          <Button testID="model-provider-add" label="接入服务商" icon="plus" variant="link" size="sm"
+          <Button testID="model-provider-add" label={m.addProvider} icon="plus" variant="link" size="sm"
             onPress={() => setEditing({ kind: 'provider', name: null })} />
         </Row>
       </Card>
 
-      <Text size="label" weight="semibold" tone="strong" px="section-label-x" pt="section-label-top">{FAST_NAME}</Text>
+      <Text size="label" weight="semibold" tone="strong" px="section-label-x" pt="section-label-top">{m.fastName}</Text>
       <Card testID="model-fast-library" rounded="2xl" overflow="hidden">
         {dto.fast.models.map((model, i) => {
           const editingThis = editing?.kind === 'fast' && editing.id === model.id;
@@ -148,10 +151,10 @@ export function ModelLibrary({ dto }: { dto: ModelSettingsDto }) {
               >
                 <Column flex={1} minW={0} gap="text-stack">
                   <Text size="card-title" weight="semibold" numberOfLines={1}>{model.name}</Text>
-                  <Text size="meta" tone={model.baseUrl ? 'secondary' : 'danger-dark'} numberOfLines={1}>{fastModelSub(model)}</Text>
+                  <Text size="meta" tone={model.baseUrl ? 'secondary' : 'danger-dark'} numberOfLines={1}>{fastModelSub(model, locale)}</Text>
                 </Column>
-                <Text size="meta" tone={model.apiKeySet ? 'muted' : 'warning-dark'}>{fastKeyLabel(model)}</Text>
-                {fastRoles(dto, model.id).map((role) => <Badge key={role} label={role} tone={role === '主用' ? 'accent' : 'neutral'} size="xs" />)}
+                <Text size="meta" tone={model.apiKeySet ? 'muted' : 'warning-dark'}>{fastKeyLabel(model, locale)}</Text>
+                {fastRoles(dto, model.id, locale).map((role) => <Badge key={role} label={role} tone={role === m.primary ? 'accent' : 'neutral'} size="xs" />)}
                 <Icon name={editingThis ? 'chevron-down' : 'chevron-right'} size={14} color="text-ghost" />
               </Pressable>
               {editingThis ? <FastModelForm dto={dto} model={model} onDone={() => setEditing(null)} /> : null}
@@ -160,8 +163,8 @@ export function ModelLibrary({ dto }: { dto: ModelSettingsDto }) {
         })}
         {editing?.kind === 'fast' && editing.id === null ? <FastModelForm dto={dto} model={null} onDone={() => setEditing(null)} /> : null}
         <Row items="center" gap="inline-item" px="row-x" py="row-y" borderTopWidth={dto.fast.models.length ? 1 : 0} borderTopColor="border-soft" flexWrap="wrap">
-          <Button testID="model-fast-add-entry" label="添加决策模型" icon="plus" variant="link" size="sm" onPress={() => setEditing({ kind: 'fast', id: null })} />
-          <Text flex={1} size="meta" tone="muted" align="right">{FAST_USES}</Text>
+          <Button testID="model-fast-add-entry" label={m.addFast} icon="plus" variant="link" size="sm" onPress={() => setEditing({ kind: 'fast', id: null })} />
+          <Text flex={1} size="meta" tone="muted" align="right">{m.fastUses}</Text>
         </Row>
       </Card>
     </Column>
@@ -191,13 +194,14 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
 function DeleteRow({ label, confirmText, blocked, busy, onDelete, testID }: {
   label: string; confirmText: string; blocked: string | null; busy: boolean; onDelete: () => void; testID: string;
 }) {
+  const m = modelMessages(useLocale());
   const [confirming, setConfirming] = useState(false);
   if (confirming) {
     return (
       <Row testID={`${testID}-confirm`} items="center" gap="actions" flexWrap="wrap">
         <Text flex={1} size="body" tone="secondary">{confirmText}</Text>
-        <Button testID={`${testID}-yes`} label="删除" variant="outline" tone="danger" size="sm" disabled={busy} onPress={onDelete} />
-        <Button label="取消" variant="ghost" tone="neutral" size="sm" onPress={() => setConfirming(false)} />
+        <Button testID={`${testID}-yes`} label={m.delete} variant="outline" tone="danger" size="sm" disabled={busy} onPress={onDelete} />
+        <Button label={m.cancel} variant="ghost" tone="neutral" size="sm" onPress={() => setConfirming(false)} />
       </Row>
     );
   }
@@ -209,38 +213,43 @@ function DeleteRow({ label, confirmText, blocked, busy, onDelete, testID }: {
   );
 }
 
-const API_OPTIONS: Array<{ value: ModelProviderApi; label: string }> = [
-  { value: 'openai-completions', label: 'OpenAI 兼容' },
-  { value: 'openai-responses', label: 'Responses' },
-  { value: 'anthropic-messages', label: 'Anthropic' },
-  { value: 'google-generative-ai', label: 'Google' },
-];
+function apiOptions(locale: Locale): Array<{ value: ModelProviderApi; label: string }> {
+  return [
+    { value: 'openai-completions', label: modelMessages(locale).apiCompatible },
+    { value: 'openai-responses', label: 'Responses' },
+    { value: 'anthropic-messages', label: 'Anthropic' },
+    { value: 'google-generative-ai', label: 'Google' },
+  ];
+}
 
 // 表单从一个可能是 null 的对象（新加的时候是 null）算出来的东西，都在组件外面的普通函数里算。网页包开着 React Compiler：
 // 组件里读 provider.name、model.baseUrl 这类属性时，编译器会把它提到渲染时当依赖读，对象是 null 时整个组件崩掉
 // （2026-10-29：「接入服务商」「添加决策模型」点了就报错）。函数只拿整个对象当参数，编译器的依赖是整个对象。
-function providerFacts(dto: ModelSettingsDto, provider: ModelProvider | null, baseUrl: string) {
+function providerFacts(dto: ModelSettingsDto, provider: ModelProvider | null, baseUrl: string, locale: Locale) {
   if (!provider) return { name: null, keySource: null, keyNote: null, inUse: [] as string[] };
+  const m = modelMessages(locale);
   const movedHost = baseUrl && urlHost(baseUrl) !== urlHost(provider.baseUrl) ? urlHost(baseUrl) : null;
   const keyNote = !movedHost ? null
-    : provider.keySource === 'settings' ? `地址换到了 ${movedHost}。已保存的 key 属于 ${provider.keyHost}，不会发给新地址，保存后会被删掉。`
-    : provider.keySource === 'config' ? `地址换到了 ${movedHost}。config.json 里的 key 保存后会被删掉，它不会发给新地址。`
+    : provider.keySource === 'settings' ? m.keyMovedSettings(movedHost, provider.keyHost ?? '')
+    : provider.keySource === 'config' ? m.keyMovedConfig(movedHost)
     : null;
   const inUse = dto.brain.chain.filter((choice) => choice.model.startsWith(`${provider.name}/`)).map((choice) => choice.model);
   return { name: provider.name, keySource: provider.keySource, keyNote, inUse };
 }
 
 function ProviderForm({ dto, provider, onDone }: { dto: ModelSettingsDto; provider: ModelProvider | null; onDone: () => void }) {
+  const locale = useLocale();
+  const m = modelMessages(locale);
   const { busy, run } = useModelAction();
   const isNew = provider === null;
   const { form, setForm, field } = useServerForm({ name: provider?.name ?? '', baseUrl: provider?.baseUrl ?? '', apiKey: '' });
   const [api, setApi] = useState<ModelProviderApi>(provider?.api ?? 'openai-completions');
   const [message, setMessage] = useState<{ text: string; error: boolean } | null>(null);
   const baseUrl = form.baseUrl.trim();
-  const facts = providerFacts(dto, provider, baseUrl);
+  const facts = providerFacts(dto, provider, baseUrl, locale);
   const { keyNote, inUse } = facts;
   const save = async () => {
-    const problem = providerFormProblem(form, isNew, dto.brain.providers.map((entry) => entry.name), baseUrl ? endpointProblem(baseUrl) : null);
+    const problem = providerFormProblem(form, isNew, dto.brain.providers.map((entry) => entry.name), baseUrl ? endpointProblem(baseUrl, locale) : null, locale);
     if (problem) {
       setMessage({ text: problem, error: true });
       return;
@@ -255,7 +264,7 @@ function ProviderForm({ dto, provider, onDone }: { dto: ModelSettingsDto; provid
     setForm((current) => ({ ...current, apiKey: '' }));
     const note = (outcome.result as { note?: string | null } | null)?.note;
     if (isNew) onDone();
-    else setMessage({ text: note ?? '已保存。下一次拉目录、换模型时用新的设置。', error: false });
+    else setMessage({ text: note ?? m.providerSaved, error: false });
   };
   const remove = async () => {
     if (facts.name === null) return;
@@ -266,27 +275,27 @@ function ProviderForm({ dto, provider, onDone }: { dto: ModelSettingsDto; provid
   return (
     <FormFrame testID={facts.name === null ? 'model-provider-form-new' : `model-provider-form-${facts.name}`}>
       {isNew ? (
-        <Field label="名字（模型写成 名字/模型 id）">
+        <Field label={m.providerName}>
           <TextField testID="model-provider-name" value={form.name} onChangeText={field('name')} placeholder="openai" variant="filled" size="sm" mono
             autoCapitalize="none" autoCorrect={false} />
         </Field>
       ) : null}
-      <Field label="地址">
+      <Field label={m.address}>
         <TextField testID="model-provider-url" value={form.baseUrl} onChangeText={field('baseUrl')} placeholder="https://api.openai.com/v1" variant="filled"
           size="sm" mono keyboardType="url" autoComplete="off" autoCapitalize="none" autoCorrect={false} />
       </Field>
-      {plaintextNote(form.baseUrl) ? <Text size="note" tone="warning-dark">{plaintextNote(form.baseUrl)}</Text> : null}
-      <Field label="接口格式">
-        <SegmentedControl testID="model-provider-api" options={API_OPTIONS} value={api} onChange={setApi} size="sm" />
+      {plaintextNote(form.baseUrl, locale) ? <Text size="note" tone="warning-dark">{plaintextNote(form.baseUrl, locale)}</Text> : null}
+      <Field label={m.apiFormat}>
+        <SegmentedControl testID="model-provider-api" options={apiOptions(locale)} value={api} onChange={setApi} size="sm" />
       </Field>
       <Field label="API key">
         <TextField
           testID="model-provider-key"
           value={form.apiKey}
           onChangeText={field('apiKey')}
-          placeholder={facts.keySource === 'settings' ? '已设置 · 要更换就粘贴新的'
-            : facts.keySource === 'config' ? '正在用 config.json 里的 key · 粘贴新的会改用这里的'
-            : '不需要时留空（例如本机的代理）'}
+          placeholder={facts.keySource === 'settings' ? m.keyPlaceholderSet
+            : facts.keySource === 'config' ? m.keyPlaceholderConfig
+            : m.keyPlaceholderOptional}
           variant="filled"
           size="sm"
           secure
@@ -297,19 +306,19 @@ function ProviderForm({ dto, provider, onDone }: { dto: ModelSettingsDto; provid
       </Field>
       {keyNote ? <Text testID="model-provider-key-note" size="note" tone="warning-dark">{keyNote}</Text> : null}
       <Text size="note" tone="secondary">
-        {`${BRAIN_NAME}用这里的模型时，会把对话发给 ${baseUrl ? urlHost(baseUrl) : '这个地址'}。key 只发给这个主机，只保存在这台 Mac 上。`}
+        {m.providerDataNote(baseUrl ? urlHost(baseUrl) : m.thisAddress)}
       </Text>
       <Row items="center" gap="actions" flexWrap="wrap">
-        <Button testID="model-provider-save" label={isNew ? '接入' : '保存'} size="sm" disabled={busy} onPress={() => void save()} />
-        <Button label="取消" variant="ghost" tone="neutral" size="sm" onPress={onDone} />
+        <Button testID="model-provider-save" label={isNew ? m.connect : m.save} size="sm" disabled={busy} onPress={() => void save()} />
+        <Button label={m.cancel} variant="ghost" tone="neutral" size="sm" onPress={onDone} />
       </Row>
       {message ? <Text testID="model-provider-message" size="note" tone={message.error ? 'danger-dark' : 'secondary'}>{message.text}</Text> : null}
       {facts.name !== null ? (
         <DeleteRow
           testID="model-provider-delete"
-          label="删除服务商"
-          confirmText={`删掉 ${facts.name}，它的 key 也一起删掉。`}
-          blocked={inUse.length ? `${BRAIN_NAME}的分工里还在用 ${inUse.join('、')}，先在上面换掉。` : null}
+          label={m.deleteProvider}
+          confirmText={m.deleteConfirm(facts.name)}
+          blocked={inUse.length ? m.providerInUse(inUse) : null}
           busy={busy}
           onDelete={() => void remove()}
         />
@@ -333,6 +342,8 @@ function fastModelFacts(dto: ModelSettingsDto, model: FastModel | null, formBase
 }
 
 function FastModelForm({ dto, model, onDone }: { dto: ModelSettingsDto; model: FastModel | null; onDone: () => void }) {
+  const locale = useLocale();
+  const m = modelMessages(locale);
   const runtime = useCompanionRuntime();
   const { busy, run } = useModelAction();
   const isNew = model === null;
@@ -343,9 +354,9 @@ function FastModelForm({ dto, model, onDone }: { dto: ModelSettingsDto; model: F
   const [tested, setTested] = useState<{ text: string; ok: boolean } | null>(null);
   const facts = fastModelFacts(dto, model, form.baseUrl);
   const { source, hostChange, savedHost, inChain } = facts;
-  const plaintext = plaintextNote(form.baseUrl);
+  const plaintext = plaintextNote(form.baseUrl, locale);
   const save = async () => {
-    const problem = fastFormProblem(form, form.baseUrl.trim() ? endpointProblem(form.baseUrl) : null);
+    const problem = fastFormProblem(form, form.baseUrl.trim() ? endpointProblem(form.baseUrl, locale) : null, locale);
     if (problem) {
       setMessage({ text: problem, error: true });
       return;
@@ -368,14 +379,14 @@ function FastModelForm({ dto, model, onDone }: { dto: ModelSettingsDto; model: F
       onDone();
       return;
     }
-    setMessage({ text: flow ? `已保存。重排开始往 ${flow.host} 发之前，会先问你：见上面。` : note ?? '已保存，下一次判断就用新的。', error: false });
+    setMessage({ text: flow ? m.fastSavedAsk(flow.host) : note ?? m.fastSaved, error: false });
   };
   const test = async () => {
     setTested(null);
     if (facts.id === null) return;
     const outcome = await run('test_fast_model', { id: facts.id });
     setTested(outcome.ok
-      ? { text: testResultLabel(outcome.result as { ok: boolean; message: string; latencyMs: number | null }), ok: (outcome.result as { ok: boolean }).ok }
+      ? { text: testResultLabel(outcome.result as { ok: boolean; message: string; latencyMs: number | null }, locale), ok: (outcome.result as { ok: boolean }).ok }
       : { text: outcome.error, ok: false });
   };
   const remove = async () => {
@@ -386,16 +397,16 @@ function FastModelForm({ dto, model, onDone }: { dto: ModelSettingsDto; model: F
   };
   return (
     <FormFrame testID={facts.id === null ? 'model-fast-form-new' : `model-fast-form-${facts.id}`}>
-      <Field label="名字">
+      <Field label={m.name}>
         <TextField testID="model-fast-name" value={form.name} onChangeText={field('name')} placeholder="decision-1" variant="filled" size="sm"
           autoCapitalize="none" autoCorrect={false} />
       </Field>
-      <Field label="地址（会请求 地址/v1/systemone）">
+      <Field label={m.fastAddress}>
         <TextField testID="model-fast-url" value={form.baseUrl} onChangeText={field('baseUrl')} placeholder="https://api.typesafe.ai" variant="filled"
           size="sm" mono keyboardType="url" autoComplete="off" autoCapitalize="none" autoCorrect={false} />
       </Field>
       {plaintext ? <Text testID="model-fast-plaintext" size="note" tone="warning-dark">{plaintext}</Text> : null}
-      <Field label="模型">
+      <Field label={m.model}>
         <TextField testID="model-fast-model" value={form.model} onChangeText={field('model')} placeholder="jev-latest" variant="filled" size="sm" mono
           autoCapitalize="none" autoCorrect={false} />
       </Field>
@@ -404,8 +415,8 @@ function FastModelForm({ dto, model, onDone }: { dto: ModelSettingsDto; model: F
           testID="model-fast-key"
           value={form.apiKey}
           onChangeText={field('apiKey')}
-          placeholder={hostChange ? `粘贴 ${hostChange.to} 的 API key` : !facts.apiKeySet ? '粘贴 API key'
-            : source === 'external' ? '正在用 Keychain 里的 key · 粘贴新的会改用这里的' : '已设置 · 要更换就粘贴新的'}
+          placeholder={hostChange ? m.pasteKeyFor(hostChange.to) : !facts.apiKeySet ? m.pasteKey
+            : source === 'external' ? m.keyPlaceholderKeychain : m.keyPlaceholderSet}
           variant="filled"
           size="sm"
           secure
@@ -414,26 +425,26 @@ function FastModelForm({ dto, model, onDone }: { dto: ModelSettingsDto; model: F
           autoCorrect={false}
         />
       </Field>
-      {hostChange ? <Text testID="model-fast-host-change" size="note" tone="warning-dark">{keyHostChangeNote(hostChange, source)}</Text> : null}
+      {hostChange ? <Text testID="model-fast-host-change" size="note" tone="warning-dark">{keyHostChangeNote(hostChange, source, locale)}</Text> : null}
       <Text testID="model-fast-data-note" size="note" tone="secondary">
-        {`轮到它判断时，会把要判断的内容发给 ${savedHost ?? (form.baseUrl.trim() ? urlHost(form.baseUrl.trim()) : '这个地址')}。key 只发给这个主机，只保存在这台 Mac 上。`}
+        {m.fastDataNote(savedHost ?? (form.baseUrl.trim() ? urlHost(form.baseUrl.trim()) : m.thisAddress))}
       </Text>
       <Row items="center" gap="actions" flexWrap="wrap">
-        <Button testID="model-fast-save" label={isNew ? '添加' : '保存'} size="sm" disabled={busy} onPress={() => void save()} />
+        <Button testID="model-fast-save" label={isNew ? m.add : m.save} size="sm" disabled={busy} onPress={() => void save()} />
         {facts.id !== null ? (
-          <Button testID="model-fast-test" label="测试已保存的配置" variant="outline" tone="neutral" size="sm" disabled={busy || !facts.apiKeySet}
+          <Button testID="model-fast-test" label={m.testSaved} variant="outline" tone="neutral" size="sm" disabled={busy || !facts.apiKeySet}
             onPress={() => void test()} />
         ) : null}
-        <Button label="取消" variant="ghost" tone="neutral" size="sm" onPress={onDone} />
+        <Button label={m.cancel} variant="ghost" tone="neutral" size="sm" onPress={onDone} />
         {tested ? <Text testID="model-fast-tested" size="label" weight="bold" tone={tested.ok ? 'success-dark' : 'danger-dark'}>{tested.text}</Text> : null}
       </Row>
       {message ? <Text testID="model-fast-form-message" size="note" tone={message.error ? 'danger-dark' : 'secondary'}>{message.text}</Text> : null}
       {facts.name !== null ? (
         <DeleteRow
           testID="model-fast-delete"
-          label="删除这条直觉"
-          confirmText={`删掉 ${facts.name}，它的 key 也一起删掉。`}
-          blocked={inChain ? `${facts.name} 还在${FAST_NAME}的分工里，先在上面移出。` : null}
+          label={m.deleteFast}
+          confirmText={m.deleteConfirm(facts.name)}
+          blocked={inChain ? m.fastInChain(facts.name) : null}
           busy={busy}
           onDelete={() => void remove()}
         />

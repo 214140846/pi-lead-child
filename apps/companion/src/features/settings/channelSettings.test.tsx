@@ -108,20 +108,22 @@ afterEach(() => {
 
 describe('the channel settings view model', () => {
   it('names the four states and says who is connected, or why it failed', () => {
-    expect(channelStatusView(slack())).toEqual({ label: '没有配置', tone: 'muted', detail: '还没有密钥。' });
-    expect(channelStatusView(slack({ status: 'connecting' }))).toMatchObject({ label: '连接中', tone: 'accent' });
-    expect(channelStatusView(saved(['vault', 'vault']))).toEqual({ label: '已连接', tone: 'success', detail: '用 bin 的账号，工作区 Acme。' });
-    expect(channelStatusView(saved(['vault', 'vault'], { account: { ...ACCOUNT, userName: '', teamName: '' } })).detail).toBe('用 U1 的账号，工作区 T1。');
-    expect(channelStatusView(slack({ status: 'error', lastError: 'invalid_auth' }))).toEqual({ label: '出错', tone: 'danger', detail: 'invalid_auth' });
-    expect(channelStatusView(slack({ status: 'error' })).detail).toBe('连不上，daemon 没有给出原因。');
+    expect(channelStatusView(slack(), 'en')).toEqual({ label: 'Not set up', tone: 'muted', detail: 'No secrets yet.' });
+    expect(channelStatusView(slack({ status: 'connecting' }), 'en')).toMatchObject({ label: 'Connecting', tone: 'accent' });
+    expect(channelStatusView(saved(['vault', 'vault']), 'en')).toEqual({ label: 'Connected', tone: 'success', detail: 'Uses the account of bin, workspace Acme.' });
+    expect(channelStatusView(saved(['vault', 'vault'], { account: { ...ACCOUNT, userName: '', teamName: '' } }), 'en').detail).toBe('Uses the account of U1, workspace T1.');
+    expect(channelStatusView(slack({ status: 'error', lastError: 'invalid_auth' }), 'en')).toEqual({ label: 'Error', tone: 'danger', detail: 'invalid_auth' });
+    expect(channelStatusView(slack({ status: 'error' }), 'en').detail).toBe('Cannot connect. The daemon gave no reason.');
+    expect(channelStatusView(saved(['vault', 'vault']), 'zh')).toEqual({ label: '已连接', tone: 'success', detail: '用 bin 的账号，工作区 Acme。' });
   });
 
   it('says where a saved secret comes from and never shows a value', () => {
     const [app] = slack().secrets;
-    expect(secretStateText(app!)).toBe('没有保存');
-    expect(secretStateText({ ...app!, present: true, origin: 'vault' })).toBe('已保存 · 来自设置页');
-    expect(secretStateText({ ...app!, present: true, origin: 'keychain' })).toBe('已保存 · 来自 Keychain');
-    expect(secretStateText({ ...app!, present: true, origin: 'env' })).toBe('已保存 · 来自环境变量');
+    expect(secretStateText(app!, 'en')).toBe('Not saved');
+    expect(secretStateText({ ...app!, present: true, origin: 'vault' }, 'en')).toBe('Saved · from the settings page');
+    expect(secretStateText({ ...app!, present: true, origin: 'keychain' }, 'en')).toBe('Saved · from Keychain');
+    expect(secretStateText({ ...app!, present: true, origin: 'env' }, 'en')).toBe('Saved · from an environment variable');
+    expect(secretStateText({ ...app!, present: true, origin: 'env' }, 'zh')).toBe('已保存 · 来自环境变量');
   });
 
   it('offers disconnect only for secrets saved on the settings page of this Mac', () => {
@@ -132,30 +134,34 @@ describe('the channel settings view model', () => {
   });
 
   it('explains how to delete Keychain and environment secrets in a terminal', () => {
-    const notes = externalSecretNotes(saved(['keychain', 'env']));
+    const notes = externalSecretNotes(saved(['keychain', 'env']), 'en');
     expect(notes).toHaveLength(2);
     expect(notes[0]).toMatchObject({ name: 'PLC_SLACK_APP_TOKEN', command: 'security delete-generic-password -a "$USER" -s "dev-secret:PLC_SLACK_APP_TOKEN"' });
     expect(notes[0]!.text).toContain('Keychain');
     expect(notes[1]).toMatchObject({ name: 'PLC_SLACK_USER_TOKEN', command: null });
-    expect(notes[1]!.text).toContain('环境变量 PLC_SLACK_USER_TOKEN');
-    expect(externalSecretNotes(saved(['vault', 'vault']))).toEqual([]);
+    expect(notes[1]!.text).toContain('environment variable PLC_SLACK_USER_TOKEN');
+    expect(externalSecretNotes(saved(['vault', 'vault']), 'en')).toEqual([]);
   });
 
   it('sends only the secrets you filled, and asks for the ones that were never saved', () => {
     const empty = { PLC_SLACK_APP_TOKEN: '', PLC_SLACK_USER_TOKEN: '' };
-    expect(secretRequest(slack(), { ...empty, PLC_SLACK_APP_TOKEN: 'xapp-1' })).toEqual({ problem: '还要填：User OAuth Token。' });
-    expect(secretRequest(slack(), { PLC_SLACK_APP_TOKEN: ' xapp-1 ', PLC_SLACK_USER_TOKEN: 'xoxp-2\n' }))
+    expect(secretRequest(slack(), { ...empty, PLC_SLACK_APP_TOKEN: 'xapp-1' }, 'en')).toEqual({ problem: 'Also fill in: User OAuth Token.' });
+    expect(secretRequest(slack(), { PLC_SLACK_APP_TOKEN: ' xapp-1 ', PLC_SLACK_USER_TOKEN: 'xoxp-2\n' }, 'en'))
       .toEqual({ secrets: { PLC_SLACK_APP_TOKEN: 'xapp-1', PLC_SLACK_USER_TOKEN: 'xoxp-2' } });
-    expect(secretRequest(saved(['vault', 'keychain']), empty)).toEqual({ problem: '先粘贴要更换的密钥。' });
-    expect(secretRequest(saved(['vault', 'keychain']), { ...empty, PLC_SLACK_USER_TOKEN: 'xoxp-new' }))
+    expect(secretRequest(saved(['vault', 'keychain']), empty, 'en')).toEqual({ problem: 'First paste the secret that you want to replace.' });
+    expect(secretRequest(saved(['vault', 'keychain']), { ...empty, PLC_SLACK_USER_TOKEN: 'xoxp-new' }, 'en'))
       .toEqual({ secrets: { PLC_SLACK_USER_TOKEN: 'xoxp-new' } });
   });
 
-  it('writes the test summary and the errors in Chinese', () => {
-    expect(testSummary(FAILED)).toBe('有检查没通过，见下面。密钥没有保存。');
-    expect(testSummary({ ok: true, checks: [], account: ACCOUNT, missingScopes: [] })).toBe('检查都通过了。用 bin 的账号，工作区 Acme。还没有保存。');
-    expect(channelErrorText(new ControlPlaneClientError('only the local web UI', 'forbidden', 403), 'Paimon')).toContain('密钥只能在这台 Mac 的网页上填。在运行 Paimon 的那台 Mac');
-    expect(channelErrorText(new Error('this client cannot manage channel settings'), 'Paimon')).toBe('这个版本的客户端不能设置消息通道。');
+  it('writes the test summary and the errors in the interface language', () => {
+    expect(testSummary(FAILED, 'en')).toBe('Some checks did not pass. See below. The secrets are not saved.');
+    expect(testSummary({ ok: true, checks: [], account: ACCOUNT, missingScopes: [] }, 'en'))
+      .toBe('All checks passed. Uses the account of bin, workspace Acme. The secrets are not saved yet.');
+    expect(channelErrorText(new ControlPlaneClientError('only the local web UI', 'forbidden', 403), 'Paimon', 'en'))
+      .toContain('You can enter the secrets only on the web page of this Mac. Open the web page on the Mac that runs Paimon');
+    expect(channelErrorText(new Error('this client cannot manage channel settings'), 'Paimon', 'en')).toBe('This version of the client cannot set up message channels.');
+    expect(testSummary({ ok: true, checks: [], account: ACCOUNT, missingScopes: [] }, 'zh')).toBe('检查都通过了。用 bin 的账号，工作区 Acme。还没有保存。');
+    expect(channelErrorText(new Error('this client cannot manage channel settings'), 'Paimon', 'zh')).toBe('这个版本的客户端不能设置消息通道。');
   });
 });
 
@@ -163,13 +169,13 @@ describe('the channel settings section', () => {
   it('shows each of the four states on the card', () => {
     const { runtime } = channelsRuntime([slack()]);
     const view = renderWithRuntime(<ChannelSettingsSection />, runtime);
-    expect(screen.getByTestId('channel-slack-status').textContent).toBe('没有配置');
-    expect(screen.getByTestId('channel-slack-detail').textContent).toBe('还没有密钥。');
+    expect(screen.getByTestId('channel-slack-status').textContent).toBe('Not set up');
+    expect(screen.getByTestId('channel-slack-detail').textContent).toBe('No secrets yet.');
 
     for (const [source, label, detail] of [
-      [slack({ status: 'connecting' }), '连接中', '正在连接…'],
-      [saved(['vault', 'vault']), '已连接', '用 bin 的账号，工作区 Acme。'],
-      [slack({ status: 'error', lastError: 'Slack 拒绝了这个令牌（invalid_auth）。' }), '出错', 'Slack 拒绝了这个令牌（invalid_auth）。'],
+      [slack({ status: 'connecting' }), 'Connecting', 'Connecting…'],
+      [saved(['vault', 'vault']), 'Connected', 'Uses the account of bin, workspace Acme.'],
+      [slack({ status: 'error', lastError: 'Slack 拒绝了这个令牌（invalid_auth）。' }), 'Error', 'Slack 拒绝了这个令牌（invalid_auth）。'],
     ] as const) {
       act(() => { runtime.control.setState({ channelSettings: { sources: [source] } }); });
       expect(screen.getByTestId('channel-slack-status').textContent).toBe(label);
@@ -190,8 +196,8 @@ describe('the channel settings section', () => {
     const app = screen.getByTestId('channel-slack-secret-PLC_SLACK_APP_TOKEN');
     expect(app.textContent).toContain('App-Level Token');
     expect(app.textContent).toContain('在 Basic Information → App-Level Tokens 里生成');
-    expect(app.textContent).toContain('已保存 · 来自设置页');
-    expect(screen.getByTestId('channel-slack-secret-PLC_SLACK_USER_TOKEN').textContent).toContain('已保存 · 来自 Keychain');
+    expect(app.textContent).toContain('Saved · from the settings page');
+    expect(screen.getByTestId('channel-slack-secret-PLC_SLACK_USER_TOKEN').textContent).toContain('Saved · from Keychain');
     for (const name of ['PLC_SLACK_APP_TOKEN', 'PLC_SLACK_USER_TOKEN']) {
       expect(input(name).value).toBe('');
       expect(input(name).type).toBe('password');
@@ -203,9 +209,10 @@ describe('the channel settings section', () => {
 
   it('shows only the state on a page that is not on this Mac', () => {
     render([saved(['vault', 'env'], { editable: false })]);
-    expect(screen.getByTestId('channel-slack-status').textContent).toBe('已连接');
-    expect(screen.getByTestId('channel-slack-read-only').textContent).toBe('密钥只能在这台 Mac 的网页上填。在运行 Paimon 的那台 Mac 上打开网页，再进设置 → 消息通道。');
-    expect(screen.getByTestId('channel-slack-secret-PLC_SLACK_USER_TOKEN').textContent).toContain('已保存 · 来自环境变量');
+    expect(screen.getByTestId('channel-slack-status').textContent).toBe('Connected');
+    expect(screen.getByTestId('channel-slack-read-only').textContent)
+      .toBe('You can enter the secrets only on the web page of this Mac. Open the web page on the Mac that runs Paimon, then go to Settings → Message channels.');
+    expect(screen.getByTestId('channel-slack-secret-PLC_SLACK_USER_TOKEN').textContent).toContain('Saved · from an environment variable');
     for (const missing of [
       'channel-slack-input-PLC_SLACK_APP_TOKEN', 'channel-slack-test', 'channel-slack-save', 'channel-slack-disconnect-start', 'channel-slack-app',
     ]) {
@@ -222,8 +229,8 @@ describe('the channel settings section', () => {
     expect(client.saveChannelSecrets).not.toHaveBeenCalled();
     expect(screen.getByTestId('channel-slack-check-app_token_kind').textContent).toBe('✓App-Level Token 的格式以 xapp- 开头。');
     expect(screen.getByTestId('channel-slack-check-user_token_kind').textContent).toBe('✗用户令牌这是 bot token，要的是你本人的 user token。');
-    expect(screen.getByTestId('channel-slack-check-missing-scopes').textContent).toBe('缺的权限：chat:write、im:history');
-    expect(screen.getByTestId('channel-slack-message').textContent).toBe('有检查没通过，见下面。密钥没有保存。');
+    expect(screen.getByTestId('channel-slack-check-missing-scopes').textContent).toBe('Missing permissions: chat:write, im:history');
+    expect(screen.getByTestId('channel-slack-message').textContent).toBe('Some checks did not pass. See below. The secrets are not saved.');
     // 测试不清空输入框。
     expect(input('PLC_SLACK_USER_TOKEN').value).toBe('xoxb-test-bot');
   });
@@ -233,7 +240,7 @@ describe('the channel settings section', () => {
     type('PLC_SLACK_APP_TOKEN', 'xapp-test-app');
     await act(async () => { fireEvent.click(screen.getByTestId('channel-slack-save')); });
     expect(client.saveChannelSecrets).not.toHaveBeenCalled();
-    expect(screen.getByTestId('channel-slack-message').textContent).toBe('还要填：User OAuth Token。');
+    expect(screen.getByTestId('channel-slack-message').textContent).toBe('Also fill in: User OAuth Token.');
   });
 
   it('shows the failed checks when the daemon refuses to save, and keeps the input', async () => {
@@ -243,10 +250,10 @@ describe('the channel settings section', () => {
     type('PLC_SLACK_USER_TOKEN', 'xoxb-test-bot');
     await act(async () => { fireEvent.click(screen.getByTestId('channel-slack-save')); });
     expect(saveChannelSecrets).toHaveBeenCalledWith('slack', { PLC_SLACK_APP_TOKEN: 'xapp-test-app', PLC_SLACK_USER_TOKEN: 'xoxb-test-bot' });
-    expect(screen.getByTestId('channel-slack-message').textContent).toBe('没有保存：有检查没通过，见下面。');
+    expect(screen.getByTestId('channel-slack-message').textContent).toBe('Not saved: some checks did not pass. See below.');
     expect(screen.getByTestId('channel-slack-check-user_token_kind').textContent).toContain('✗');
     expect(input('PLC_SLACK_USER_TOKEN').value).toBe('xoxb-test-bot');
-    expect(screen.getByTestId('channel-slack-status').textContent).toBe('没有配置');
+    expect(screen.getByTestId('channel-slack-status').textContent).toBe('Not set up');
   });
 
   it('clears the fields after a successful save and shows the new state', async () => {
@@ -257,9 +264,9 @@ describe('the channel settings section', () => {
     await act(async () => { fireEvent.click(screen.getByTestId('channel-slack-save')); });
     expect(input('PLC_SLACK_APP_TOKEN').value).toBe('');
     expect(input('PLC_SLACK_USER_TOKEN').value).toBe('');
-    expect(screen.getByTestId('channel-slack-message').textContent).toBe('已保存，正在用新的密钥连接。');
-    expect(screen.getByTestId('channel-slack-status').textContent).toBe('连接中');
-    expect(screen.getByTestId('channel-slack-secret-PLC_SLACK_APP_TOKEN').textContent).toContain('已保存 · 来自设置页');
+    expect(screen.getByTestId('channel-slack-message').textContent).toBe('Saved. Connecting with the new secrets.');
+    expect(screen.getByTestId('channel-slack-status').textContent).toBe('Connecting');
+    expect(screen.getByTestId('channel-slack-secret-PLC_SLACK_APP_TOKEN').textContent).toContain('Saved · from the settings page');
     // 页面上任何地方都没有刚才填的值。
     expect(document.body.textContent).not.toContain('xapp-test-app');
     expect(document.body.textContent).not.toContain('xoxp-test-user');
@@ -270,11 +277,11 @@ describe('the channel settings section', () => {
     const { runtime } = render([saved(['vault', 'vault'])], { clearChannelSecrets });
     fireEvent.click(screen.getByTestId('channel-slack-disconnect-start'));
     expect(clearChannelSecrets).not.toHaveBeenCalled();
-    expect(screen.getByTestId('channel-slack-disconnect-confirm').textContent).toContain('删掉设置页存的密钥并断开');
+    expect(screen.getByTestId('channel-slack-disconnect-confirm').textContent).toContain('Delete the secrets saved on the settings page and disconnect');
     await act(async () => { fireEvent.click(screen.getByTestId('channel-slack-disconnect')); });
     expect(clearChannelSecrets).toHaveBeenCalledWith('slack');
-    expect(screen.getByTestId('channel-slack-message').textContent).toBe('已断开，设置页存的密钥已删除。');
-    expect(screen.getByTestId('channel-slack-status').textContent).toBe('没有配置');
+    expect(screen.getByTestId('channel-slack-message').textContent).toBe('Disconnected. The secrets saved on the settings page are deleted.');
+    expect(screen.getByTestId('channel-slack-status').textContent).toBe('Not set up');
     expect(screen.queryByTestId('channel-slack-disconnect-start')).toBeNull();
 
     // 密钥都来自 Keychain 或环境变量：没有「断开」，只有终端里的说明。
@@ -294,7 +301,7 @@ describe('the channel settings section', () => {
 
     await act(async () => { fireEvent.click(screen.getByTestId('channel-slack-manifest-copy')); });
     expect(writeText).toHaveBeenCalledWith(MANIFEST);
-    expect(screen.getByTestId('channel-slack-manifest-copy').textContent).toContain('已复制');
+    expect(screen.getByTestId('channel-slack-manifest-copy').textContent).toContain('Copied');
 
     fireEvent.click(screen.getByTestId('channel-slack-manifest-toggle'));
     expect(screen.queryByTestId('channel-slack-manifest')).toBeNull();

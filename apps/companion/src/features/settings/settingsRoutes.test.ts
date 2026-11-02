@@ -2,6 +2,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
+import { settingsMessages } from './settings.messages';
 import { isDevicePaired, SETTINGS_GROUPS, settingsGroupLabel, settingsSectionForPath } from './settingsNav';
 
 const appFile = (path: string) => new URL(`../../app/${path}`, import.meta.url);
@@ -42,8 +43,13 @@ describe('settings routes', () => {
   it('points every sidebar entry at an existing route and has no entries for features that do not exist yet', () => {
     const items = SETTINGS_GROUPS.flatMap((group) => group.items);
     // Lead 分组在最上面（2026-10-22），第一项是「身份与风格」。
-    expect(SETTINGS_GROUPS.map((group) => group.label)).toEqual(['Lead', '账号', '设备', '执行']);
-    expect(items.map((item) => item.label)).toEqual(['身份与风格', '外观', '模型', '记忆', '常设指令', '连接', '消息通道', '本设备', '已配对设备', '执行器']);
+    const en = settingsMessages('en');
+    const zh = settingsMessages('zh');
+    expect(SETTINGS_GROUPS.map((group) => en.groups[group.id])).toEqual(['Lead', 'Account', 'Devices', 'Execution']);
+    expect(items.map((item) => zh.items[item.id])).toEqual(['身份与风格', '外观', '模型', '记忆', '常设指令', '连接', '消息通道', '本设备', '已配对设备', '执行器']);
+    expect(items.map((item) => en.items[item.id])).toEqual([
+      'Identity & style', 'Appearance', 'Models', 'Memory', 'Standing orders', 'Connections', 'Message channels', 'This device', 'Paired devices', 'Runtimes',
+    ]);
     // 消息通道在「账号」分组里，紧跟「连接」。
     expect(SETTINGS_GROUPS[1]!.items.map((item) => item.href)).toEqual(['/settings/connections', '/settings/channels']);
     for (const item of items) {
@@ -56,8 +62,9 @@ describe('settings routes', () => {
 describe('settingsGroupLabel', () => {
   it('titles the Lead group with the name the user gave it', () => {
     const [lead, account] = SETTINGS_GROUPS;
-    expect(settingsGroupLabel(lead!, 'Jarvis')).toBe('Jarvis');
-    expect(settingsGroupLabel(account!, 'Jarvis')).toBe('账号');
+    expect(settingsGroupLabel(lead!, 'Jarvis', settingsMessages('en'))).toBe('Jarvis');
+    expect(settingsGroupLabel(account!, 'Jarvis', settingsMessages('en'))).toBe('Account');
+    expect(settingsGroupLabel(account!, 'Jarvis', settingsMessages('zh'))).toBe('账号');
   });
 });
 

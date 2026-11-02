@@ -9,7 +9,7 @@
 //   - describe：写操作做完以后的一句话、对象和链接（动作层的记账和交回的结果用）。
 // 守卫的检查不看清单：清单说「谁能做」，守卫说「这个动作什么时候能做」。
 import { redactKnownValues, redactSecretText, secretEnvValues } from "@pi-lead-child/protocol";
-import type { ConnectionRole } from "@pi-lead-child/protocol";
+import type { ConnectionRole, Locale } from "@pi-lead-child/protocol";
 import type { RunReadLedger } from "./run-reads.js";
 
 export interface ToolCallContext {
@@ -25,6 +25,8 @@ export interface ToolCallContext {
   // 读同一个连接的一个只读工具（守卫自己查状态用）。不经过清单，不记进 Run 的读取记录。
   read(tool: string, args: Record<string, unknown>): Promise<{ text: string; isError: boolean }>;
   signal?: AbortSignal;
+  // 用户现在选的界面语言（store 的 getLocale）。describe 的 summary 给人看，按它写；check 的拒绝原因只给 agent 看，不管它。
+  locale: Locale;
 }
 
 export interface ToolCallResult {

@@ -1,6 +1,8 @@
 // 任务卡的模型：收起时那一行写什么、展开时怎么分组、参数怎么缩写。web 和原生实现都从这里取。
 import type { ColorToken } from '../theme/tokens';
 import type { TaskCardNote, TaskCardProps, TaskCardStep, TaskCardTool, TaskStepState } from './TaskCard.types';
+import type { Locale } from '../i18n';
+import { taskCardMessages } from './taskCard.messages';
 
 // 参数和结果在进卡片之前已经脱敏（protocol 的 projectToolDisplay，网关和客户端共用一套规则）。
 // 这里只排版：缩成一行、JSON 排成多行。一行摘要里不列出已经脱敏的字段。
@@ -150,52 +152,54 @@ export type TaskCardSummary = {
   detail: string | null;
 };
 
-export function formatDuration(ms: number | null | undefined): string | null {
+export function formatDuration(ms: number | null | undefined, locale: Locale = 'en'): string | null {
   if (ms === null || ms === undefined || !Number.isFinite(ms) || ms < 0) return null;
+  const m = taskCardMessages(locale);
   const seconds = Math.max(1, Math.round(ms / 1_000));
-  if (seconds < 60) return `${seconds} 秒`;
+  if (seconds < 60) return m.seconds(seconds);
   const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return seconds % 60 ? `${minutes} 分 ${seconds % 60} 秒` : `${minutes} 分`;
+  if (minutes < 60) return m.minutes(minutes, seconds % 60);
   const hours = Math.floor(minutes / 60);
-  return minutes % 60 ? `${hours} 小时 ${minutes % 60} 分` : `${hours} 小时`;
+  return m.hours(hours, minutes % 60);
 }
 
-export function taskCardSummary({ status, steps, durationMs }: Pick<TaskCardProps, 'status' | 'steps' | 'durationMs'>): TaskCardSummary {
+export function taskCardSummary(
+  { status, steps, durationMs }: Pick<TaskCardProps, 'status' | 'steps' | 'durationMs'>,
+  locale: Locale = 'en',
+): TaskCardSummary {
+  const m = taskCardMessages(locale);
   const tools = steps.filter((step): step is TaskCardTool => step.kind === 'tool');
-  const duration = formatDuration(durationMs);
+  const duration = formatDuration(durationMs, locale);
   if (status === 'thinking' || status === 'working') {
     // 还在跑：调用方给了用时（这一轮开始到现在）就写在后面，例如「Thinking · 12 秒」。
     const running = [...tools].reverse().find((step) => step.state === 'running');
     if (status === 'thinking' || !running) return { tone: 'running', title: 'Thinking', detail: duration };
     return { tone: 'running', title: running.name, detail: [summarizeToolArgs(running.args), duration].filter(Boolean).join(' · ') || null };
   }
-  const count = tools.length ? `${tools.length} 个工具` : null;
+  const count = tools.length ? m.toolCount(tools.length) : null;
   if (status === 'failed') {
     // 这一轮失败了，做完的工具照样做完了（例如提醒已经建好）：写出来，免得用户以为什么都没做、再发一次。
     const done = tools.filter((step) => step.state === 'done').length;
     const work = !count || done === 0 ? count
-      : done === tools.length ? `${tools.length} 个工具已完成` : `${count}，${done} 个已完成`;
+      : done === tools.length ? m.toolsDone(tools.length) : m.toolsPartlyDone(tools.length, done);
     // 说「回复未完成」：「未完成 · 1 个工具已完成」读起来自相矛盾（发布评审 3688968）。
-    return { tone: 'failed', title: ['回复未完成', work, duration].filter(Boolean).join(' · '), detail: null };
+    return { tone: 'failed', title: [m.replyNotFinished, work, duration].filter(Boolean).join(' · '), detail: null };
   }
   const failed = tools.filter((step) => step.state === 'failed').length;
   const stopped = tools.filter((step) => step.state === 'stopped').length;
   const parts = [
-    count ?? '已完成',
-    failed ? `${failed} 个失败` : null,
-    stopped ? `${stopped} 个未完成` : null,
+    count ?? m.allDone,
+    failed ? m.failedCount(failed) : null,
+    stopped ? m.stoppedCount(stopped) : null,
     duration,
   ].filter(Boolean);
   return { tone: 'done', title: parts.join(' · '), detail: null };
 }
 
 // 无障碍名称里的状态。
-export const stepStateLabel: Record<TaskStepState, string> = {
-  running: '运行中',
-  done: '完成',
-  failed: '失败',
-  stopped: '未完成',
-};
+export function stepStateLabel(state: TaskStepState, locale: Locale = 'en'): string {
+  return taskCardMessages(locale).stepState[state];
+}
 
 // ——— 视觉规格 ———
 export const taskCardSpec = {

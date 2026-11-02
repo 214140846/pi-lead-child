@@ -97,15 +97,15 @@ describe('the owner action card in the conversation', () => {
     renderCard({ getOwnerAction, disownOwnerAction });
     // 2026-10-27 画布「代你操作」状态 6：别的凭证做的，居中一行「CLI 凭证 #12 在 10:00 验收了…」，只有图标和「不是我」是红色。
     const card = screen.getByTestId(`owner-action-card-${EVENT_ID}`);
-    await vi.waitFor(() => expect(card.textContent).toMatch(/^CLI 凭证 #12 在 \d{2}:\d{2} 验收了工单 #5「登录页」不是我$/));
+    await vi.waitFor(() => expect(card.textContent).toMatch(/^CLI credential #12 at \d{2}:\d{2}: 验收了工单 #5「登录页」Not me$/));
     expect(getOwnerAction).toHaveBeenCalledWith(EVENT_ID);
 
     fireEvent.click(await screen.findByTestId(`owner-action-card-disown-${EVENT_ID}`));
     expect(disownOwnerAction).not.toHaveBeenCalled();
-    expect(screen.getByText(/并作废发出它的凭证/)).toBeTruthy();
+    expect(screen.getByText(/revoke the credential that sent it/)).toBeTruthy();
     fireEvent.click(screen.getByTestId(`owner-action-card-confirm-${EVENT_ID}`));
 
-    await vi.waitFor(() => expect(card.textContent).toContain('已处理「不是我」：已撤销 · 凭证已作废'));
+    await vi.waitFor(() => expect(card.textContent).toContain('Handled "Not me": Undone · Credential revoked'));
     expect(disownOwnerAction).toHaveBeenCalledWith(EVENT_ID);
     expect(screen.getByTestId(`owner-action-outcome-${EVENT_ID}`).textContent).toMatch(/回到待验收/);
     expect(screen.queryByTestId(`owner-action-card-disown-${EVENT_ID}`)).toBeNull();
@@ -114,7 +114,7 @@ describe('the owner action card in the conversation', () => {
   it('shows the outcome without a button when 「不是我」 was already pressed on another device', async () => {
     renderCard({ getOwnerAction: vi.fn(async () => DISOWNED), disownOwnerAction: vi.fn() });
     const card = screen.getByTestId(`owner-action-card-${EVENT_ID}`);
-    await vi.waitFor(() => expect(card.textContent).toContain('已处理「不是我」：已撤销 · 凭证已作废'));
+    await vi.waitFor(() => expect(card.textContent).toContain('Handled "Not me": Undone · Credential revoked'));
     expect(screen.queryByTestId(`owner-action-card-disown-${EVENT_ID}`)).toBeNull();
   });
 
@@ -136,11 +136,11 @@ describe('the owner action card in the conversation', () => {
     runtime.control.getState().replaceConversation('lead-session', [ownerTurn()]);
     renderUI(<CompanionRuntimeProvider runtime={runtime}><LeadConversation /></CompanionRuntimeProvider>);
     // 一行，左对齐（2026-10-28 改版稿第 1 组）：说明会截断，时间单独放，不被挤走；全文在点开的浮层里。
-    expect(screen.getByTestId('owner-action-own-text').textContent).toBe('你刚刚验收了工单 #5「登录页」');
+    expect(screen.getByTestId('owner-action-own-text').textContent).toBe('You just did this: 验收了工单 #5「登录页」');
     expect(screen.getByTestId('owner-action-own-time').textContent).toMatch(/^· \d\d:\d\d$/);
     expect(screen.getByTestId('owner-action-own-expand')).toBeTruthy();
     expect(screen.queryByTestId(`owner-action-card-${EVENT_ID}`)).toBeNull();
-    expect(screen.queryByText('不是我')).toBeNull();
+    expect(screen.queryByText('Not me')).toBeNull();
     expect(screen.queryByText(/凭证：plc/)).toBeNull();
     expect(getOwnerAction).not.toHaveBeenCalled();
   });
@@ -152,7 +152,7 @@ describe('the owner action card in the conversation', () => {
     });
     fireEvent.click(await screen.findByTestId(`owner-action-card-disown-${EVENT_ID}`));
     fireEvent.click(screen.getByTestId(`owner-action-card-confirm-${EVENT_ID}`));
-    expect(await screen.findByText('「不是我」没有完成：网关连不上')).toBeTruthy();
+    expect(await screen.findByText('"Not me" did not complete: 网关连不上')).toBeTruthy();
     expect(screen.getByTestId(`owner-action-card-confirm-${EVENT_ID}`)).toBeTruthy();
   });
 });
@@ -242,18 +242,18 @@ describe('an action Lead did for the user in conversation', () => {
     const disownOwnerAction = vi.fn(async () => UNDONE);
     renderCard({ getOwnerAction: vi.fn(async () => leadView()), disownOwnerAction });
     // 2026-10-27 画布「代你操作」状态 1–4：右对齐的注脚「Paimon 据此…」，点「撤销」原地换成确认，撤销以后原句划掉。
-    await vi.waitFor(() => expect(screen.getByTestId(`owner-action-card-disown-${EVENT_ID}`).textContent).toBe('撤销'));
+    await vi.waitFor(() => expect(screen.getByTestId(`owner-action-card-disown-${EVENT_ID}`).textContent).toBe('Undo'));
     const card = screen.getByTestId(`owner-action-card-${EVENT_ID}`);
-    expect(card.textContent).toContain('据此Lead 代你确认了工单 #5「登录页」');
+    expect(card.textContent).toContain('did this for you: Lead 代你确认了工单 #5「登录页」');
     fireEvent.click(screen.getByTestId(`owner-action-card-disown-${EVENT_ID}`));
-    expect(card.textContent).toContain('撤销「Lead 代你确认了工单 #5「登录页」」？凭证照常能用。');
-    expect(card.textContent).not.toMatch(/并作废发出它的凭证/);
+    expect(card.textContent).toContain('Undo "Lead 代你确认了工单 #5「登录页」"? The credential stays valid.');
+    expect(card.textContent).not.toMatch(/revoke the credential that sent it/);
     fireEvent.click(screen.getByTestId(`owner-action-card-confirm-${EVENT_ID}`));
-    await vi.waitFor(() => expect(card.textContent).toMatch(/\d{2}:\d{2} 已撤销/));
+    await vi.waitFor(() => expect(card.textContent).toMatch(/\d{2}:\d{2} Undone/));
     // 结果的说明在注脚点开的浮层里，注脚本身还是一行。
     expect(screen.queryByTestId(`owner-action-outcome-${EVENT_ID}`)).toBeNull();
-    fireEvent.click(within(card).getByRole('button', { name: /，展开$/ }));
-    expect((await screen.findByTestId(`owner-action-outcome-${EVENT_ID}`)).textContent).toContain('已处理「撤销」：已撤销 · 凭证没有作废');
+    fireEvent.click(within(card).getByRole('button', { name: /, expand$/ }));
+    expect((await screen.findByTestId(`owner-action-outcome-${EVENT_ID}`)).textContent).toContain('Handled "Undo": Undone · Credential not revoked');
     expect(disownOwnerAction).toHaveBeenCalledWith(EVENT_ID);
   });
 
@@ -292,11 +292,11 @@ describe('an action Lead did for the user in conversation', () => {
       />,
     );
     expect(screen.queryByTestId('owner-action-disown-42')).toBeNull();
-    expect(screen.getByTestId('owner-action-undo-42').textContent).toBe('撤销');
-    expect(screen.getByTestId('notification-ack-42').textContent).toBe('知道了');
+    expect(screen.getByTestId('owner-action-undo-42').textContent).toBe('Undo');
+    expect(screen.getByTestId('notification-ack-42').textContent).toBe('OK');
     fireEvent.click(screen.getByTestId('owner-action-undo-42'));
     expect(onDisown).not.toHaveBeenCalled();
-    expect(screen.getByText('撤销这次操作？不作废凭证。')).toBeTruthy();
+    expect(screen.getByText('Undo this action? Your credential stays valid.')).toBeTruthy();
     fireEvent.click(screen.getByTestId('owner-action-undo-confirm-42'));
     expect(onDisown).toHaveBeenCalledWith(EVENT_ID, 42);
   });
@@ -325,11 +325,11 @@ describe('several actions one sentence led to', () => {
     ]);
     renderUI(<CompanionRuntimeProvider runtime={runtime}><LeadConversation /></CompanionRuntimeProvider>);
     const group = screen.getByTestId('owner-action-group');
-    expect(group.textContent).toContain('据此做了 3 件事：取消了工单 #104、取消了工单 #105、关闭了 #102 的 PR');
+    expect(group.textContent).toContain('did 3 things for you: 取消了工单 #104; 取消了工单 #105; 关闭了 #102 的 PR');
     expect(screen.queryByTestId(`owner-action-card-${EVENTS[0]}`)).toBeNull();
-    fireEvent.click(within(group).getByRole('button', { name: /，展开$/ }));
+    fireEvent.click(within(group).getByRole('button', { name: /, expand$/ }));
     for (const eventId of EVENTS) expect(await screen.findByTestId(`owner-action-card-${eventId}`)).toBeTruthy();
-    await vi.waitFor(() => expect(screen.getAllByText('撤销')).toHaveLength(3));
+    await vi.waitFor(() => expect(screen.getAllByText('Undo')).toHaveLength(3));
   });
 
   it('keeps actions apart when you said something in between', () => {
@@ -357,7 +357,7 @@ describe('the lines you made one after another on this device', () => {
       { eventId: 'b', text: '把 Notion 的写入从「先问我」改成「直接执行」', time: '10:46' },
       { eventId: 'c', text: '把 Jira & Confluence 的写入从「先问我」改成「直接执行」', time: '10:47' },
     ]} />);
-    expect(screen.getByTestId('owner-action-own-group-text').textContent).toBe('你刚刚把 GitHub 的写入从「先问我」改成「直接执行」，还有 2 件');
+    expect(screen.getByTestId('owner-action-own-group-text').textContent).toBe('You just did this: 把 GitHub 的写入从「先问我」改成「直接执行」, and 2 more');
     expect(screen.getByTestId('owner-action-own-group-time').textContent).toBe('· 10:46–10:47');
     fireEvent.click(screen.getByTestId('owner-action-own-group-expand'));
     const details = await screen.findByTestId('owner-action-own-group-details');

@@ -10,6 +10,7 @@ import { createItem, listEvents, listNotifications, openDb } from "@pi-lead-chil
 import type { AgentRuntime, RuntimeEvent, RuntimeHandle } from "@pi-lead-child/runtime";
 import type { RuntimeId } from "@pi-lead-child/core";
 import { runItem } from "../src/children/manager.js";
+import { updateDesignPreferences } from "../src/design-preferences.js";
 import { commandOfToolEvent, detectLedgerWrite, sqlWrites } from "../src/children/ledger-write-detector.js";
 import { redactRuntimeEvent, scrubSessionFiles } from "../src/children/secret-scrub.js";
 
@@ -48,10 +49,15 @@ class LeakyRuntime implements AgentRuntime {
 }
 
 describe("a child that prints a key and writes the ledger", () => {
-  it("keeps the key out of the event log, the run file and the session file, and alerts once for the write", async () => {
+  // 告警推给用户：按写入时用户选的语言写。
+  it.each([
+    ["en", (itemId: number) => `The agent of ticket #${itemId} tried to change the ledger plc.db directly`],
+    ["zh", (itemId: number) => `工单 #${itemId} 的 agent 想直接改账本 plc.db`],
+  ] as const)("keeps the key out of the event log, the run file and the session file, and alerts once for the write (%s)", async (locale, title) => {
     const dir = tempDir("plc-child-secrets-");
     const dbPath = join(dir, "plc.db");
     const db = openDb(dbPath);
+    if (locale === "zh") updateDesignPreferences(db, { request: { locale }, caller: { kind: "user" } });
     const itemId = createItem(db, { title: "t", brief: "b", createdBy: "system" });
     const sessionDir = join(dir, "sessions", `item-${itemId}`);
 
@@ -78,7 +84,7 @@ describe("a child that prints a key and writes the ledger", () => {
     });
     const pushed = listNotifications(db, { state: ["pending"] }).filter((row) => row.kind === "security_alert");
     expect(pushed).toHaveLength(1);
-    expect(pushed[0]!.title).toContain(`工单 #${itemId}`);
+    expect(pushed[0]!.title).toBe(title(itemId));
   });
 });
 

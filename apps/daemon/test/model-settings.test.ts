@@ -8,7 +8,7 @@ import { tempDir } from "@pi-lead-child/core/testing";
 import { envConfigPath, loadPlcConfig, writePlcConfig } from "@pi-lead-child/core";
 import { Vault } from "@pi-lead-child/connections";
 import { loadLeadModelConfig, resolveLeadApiKey } from "@pi-lead-child/lead";
-import { UiActionError } from "@pi-lead-child/engine";
+import { UiActionError, updateDesignPreferences } from "@pi-lead-child/engine";
 import { ModelSettingsDtoSchema } from "@pi-lead-child/protocol";
 import { openDb } from "@pi-lead-child/store";
 import { Value } from "typebox/value";
@@ -134,7 +134,7 @@ describe("ModelSettings: the brain", () => {
     const t = setup();
     await expectRefused(t.settings.setBrainChain({ models: [
       { model: "vibeproxy/as4/claude-sonnet-5-5", effort: null }, { model: "vibeproxy/as4/claude-sonnet-5-5", effort: "high" },
-    ] }), "invalid_input", /出现了两次/);
+    ] }), "invalid_input", /in the list two times/);
     await expectRefused(t.settings.setBrainChain({ models: [{ model: "vibeproxy/gpt-9", effort: null }] }), "invalid_input", /不在已配置/);
     expect(t.chains).toEqual([]);
     const change = await t.settings.setBrainChain({ models: [
@@ -143,7 +143,8 @@ describe("ModelSettings: the brain", () => {
       { model: "vibeproxy/as4/claude-sonnet-5-5", effort: null },
     ] });
     expect(t.chains).toEqual([["vibeproxy/as4/claude-haiku-5-5", "vibeproxy/gemini-3.8-flash-high", "vibeproxy/as4/claude-sonnet-5-5"]]);
-    expect(change).toMatchObject({ applied: "now", summary: expect.stringContaining("主用 vibeproxy/as4/claude-haiku-5-5") });
+    expect(change).toMatchObject({ applied: "now", summary: "Brain: primary vibeproxy/as4/claude-haiku-5-5, backups vibeproxy/gemini-3.8-flash-high, vibeproxy/as4/claude-sonnet-5-5",
+    });
   });
 
   it("uses at most one primary and three backups from a hand-edited lead.models", () => {
@@ -164,7 +165,7 @@ describe("ModelSettings: the brain", () => {
     expect(dto.brain.providers.find((entry) => entry.name === "openai")).toMatchObject({ keySet: true, keySource: "settings", keyHost: "api.openai.com" });
 
     const moved = await t.settings.saveProvider({ name: "openai", baseUrl: "https://gateway.example.com/v1", api: "openai-completions" });
-    expect(moved.note).toContain("原来的 key 只给 api.openai.com");
+    expect(moved.note).toBe("The address changed to gateway.example.com. The old key was only for api.openai.com, so the daemon deleted it.");
     expect(t.secrets().get("lead.provider.openai")).toBeNull();
     expect(resolveLeadApiKey(loadLeadModelConfig(t.dataDir).providers.openai!, {}, "openai")).toBeUndefined();
   });
@@ -174,13 +175,13 @@ describe("ModelSettings: the brain", () => {
     const file = loadPlcConfig(t.dataDir);
     writePlcConfig({ ...file, lead: { ...file.lead, providers: { ...file.lead!.providers, corp: { baseUrl: "https://llm.corp.example.com/v1", apiKey: "plain-key" } } } }, t.dataDir);
     const change = await t.settings.saveProvider({ name: "corp", baseUrl: "https://llm2.corp.example.com/v1", api: "openai-completions" });
-    expect(change.note).toContain("config.json 里原来的 key 已经删掉");
+    expect(change.note).toContain("the daemon deleted the old key in config.json");
     expect(loadPlcConfig(t.dataDir).lead?.providers?.corp).not.toHaveProperty("apiKey");
   });
 
   it("refuses to remove a provider whose model is in the chain, and removes its sealed key otherwise", async () => {
     const t = setup();
-    await expectRefused(t.settings.removeProvider("vibeproxy"), "invalid_input", /还在用/);
+    await expectRefused(t.settings.removeProvider("vibeproxy"), "invalid_input", /still uses vibeproxy\/as4\/claude-sonnet-5-5/);
     await t.settings.saveProvider({ name: "openai", baseUrl: "https://api.openai.com/v1", api: "openai-completions", apiKey: "sk-test-1" });
     await t.settings.removeProvider("openai");
     expect(loadPlcConfig(t.dataDir).lead?.providers).not.toHaveProperty("openai");
@@ -227,9 +228,9 @@ describe("ModelSettings: the fast models (decision models)", () => {
   it("checks the fast chain: known entries, no repeats, at most three backups, and a fallback the brain can use", async () => {
     const t = setup();
     for (const name of ["a", "b", "c", "d"]) await t.settings.saveFastModel({ name, baseUrl: `https://${name}.example.com`, model: "jev-latest" });
-    await expectRefused(t.settings.setFastChain({ chain: ["jev", "a", "b", "c", "d"] }), "invalid_input", /备用最多 3 个/);
+    await expectRefused(t.settings.setFastChain({ chain: ["jev", "a", "b", "c", "d"] }), "invalid_input", /at most 3 backups/);
     await expectRefused(t.settings.setFastChain({ chain: ["nope"] }), "not_found");
-    await expectRefused(t.settings.setFastChain({ chain: ["a", "a"] }), "invalid_input", /两次/);
+    await expectRefused(t.settings.setFastChain({ chain: ["a", "a"] }), "invalid_input", /two times/);
     await expectRefused(
       t.settings.setFastChain({ chain: ["a"], llmFallback: { model: "vibeproxy/gpt-9", effort: null } }), "invalid_input", /不在已配置/,
     );
@@ -247,7 +248,7 @@ describe("ModelSettings: the fast models (decision models)", () => {
   it("refuses to remove a decision model in the chain, and drops its key when it goes", async () => {
     const t = setup();
     await t.settings.saveFastModel({ name: "decision-1", baseUrl: "https://jev.example.com", model: "jev-latest", apiKey: "tsk-1" });
-    await expectRefused(t.settings.removeFastModel("jev"), "invalid_input", /还在直觉的分工里/);
+    await expectRefused(t.settings.removeFastModel("jev"), "invalid_input", /still in the intuition assignment/);
     await t.settings.removeFastModel("decision-1");
     expect(loadDecisionModels(t.dataDir).entries.map((entry) => entry.id)).toEqual(["jev"]);
     expect(t.secrets().get("decision.apiKey.decision-1")).toBeNull();
@@ -257,7 +258,25 @@ describe("ModelSettings: the fast models (decision models)", () => {
     const t = setup();
     await t.settings.saveFastModel({ name: "decision-1", baseUrl: "https://jev.example.com", model: "jev-latest", apiKey: "tsk-1" });
     const moved = await t.settings.saveFastModel({ id: "decision-1", name: "decision-1", baseUrl: "https://jev2.example.com", model: "jev-latest" });
-    expect(moved.note).toContain("原来的 key 只给 jev.example.com");
+    expect(moved.note).toContain("The old key was only for jev.example.com");
     expect(t.secrets().get("decision.apiKey.decision-1")).toBeNull();
+  });
+});
+
+describe("ModelSettings in Chinese", () => {
+  it("writes the summaries, notes and errors in the language the user chose", async () => {
+    const t = setup();
+    updateDesignPreferences(t.db, { request: { locale: "zh" }, caller: { kind: "user" } });
+    const change = await t.settings.setBrainChain({ models: [{ model: "vibeproxy/as4/claude-haiku-5-5", effort: null }] });
+    expect(change.summary).toBe("大脑：主用 vibeproxy/as4/claude-haiku-5-5，没有备用");
+    await expectRefused(t.settings.setBrainChain({ models: [] }), "invalid_input", /至少要有一个主用/);
+    await t.settings.saveProvider({ name: "openai", baseUrl: "https://api.openai.com/v1", api: "openai-completions", apiKey: "sk-test-0123456789" });
+    const moved = await t.settings.saveProvider({ name: "openai", baseUrl: "https://gateway.example.com/v1", api: "openai-completions" });
+    expect(moved).toMatchObject({
+      summary: "改了服务商 openai（gateway.example.com）",
+      note: "地址换到了 gateway.example.com，原来的 key 只给 api.openai.com，已经删掉。",
+    });
+    await expectRefused(t.settings.removeFastModel("jev"), "invalid_input", /还在直觉的分工里/);
+    await expectRefused(t.settings.saveFastModel({ name: "x", baseUrl: "https://user:pass@x.example.com", model: "m" }), "invalid_input", /用户名或密码/);
   });
 });

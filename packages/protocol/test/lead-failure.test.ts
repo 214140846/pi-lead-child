@@ -145,3 +145,14 @@ describe("a failure that never reached the model service", () => {
     }
   });
 });
+
+// 界面语言是英文时（2026-11-01）：同样的分类，英文的说法。
+describe("the failure sentences in English", () => {
+  it("writes the reason, the turn failure and the waiting sentence in English", () => {
+    expect(leadModelFailureReason("unavailable", "Paimon", "en")).toBe("The model service of Paimon is not available now");
+    expect(leadTurnFailureSentence("401 Unauthorized", { system: true, name: "Paimon", locale: "en" }))
+      .toBe("The model account of Paimon failed authentication. The system cannot recover by itself. Check the model account of Paimon.");
+    expect(leadTurnWaitingSentence(LEAD_RESTART_INTERRUPTED_ERROR, "model", "Paimon", "en"))
+      .toBe("Paimon is restarting. This message has no answer yet. It gets an answer automatically after the restart.");
+  });
+});

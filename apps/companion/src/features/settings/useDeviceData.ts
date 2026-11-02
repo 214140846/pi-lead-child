@@ -1,6 +1,7 @@
 import type { AdminBinding, BindingDto } from '@pi-lead-child/protocol';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
+import { useLocale } from '@/i18n';
 import { useCompanionRuntime } from '@/state/CompanionStateProvider';
 
 import { isForbidden, reasonText } from './deviceModel';
@@ -14,6 +15,10 @@ export type OwnBindingState = {
 // 这台设备的 binding（GET /v1/paired/me）。没有配对时不请求。
 export function useOwnBinding(paired: boolean): OwnBindingState {
   const runtime = useCompanionRuntime();
+  // 错误的文字按出错时的界面语言写。语言放在 ref 里：换语言不重新请求。
+  const currentLocale = useLocale();
+  const locale = useRef(currentLocale);
+  locale.current = currentLocale;
   const [state, setState] = useState<OwnBindingState>(() => ({ binding: runtime.currentBinding(), error: null }));
   useEffect(() => {
     if (!paired) {
@@ -25,7 +30,7 @@ export function useOwnBinding(paired: boolean): OwnBindingState {
     runtime.getOwnBinding(controller.signal).then(
       (binding) => { if (!controller.signal.aborted) setState({ binding, error: null }); },
       (reason: unknown) => {
-        if (!controller.signal.aborted) setState((current) => ({ binding: current.binding, error: reasonText(reason) }));
+        if (!controller.signal.aborted) setState((current) => ({ binding: current.binding, error: reasonText(reason, locale.current) }));
       },
     );
     return () => controller.abort();
@@ -43,6 +48,9 @@ export type BindingListState =
 // 全部 binding（GET /v1/admin/bindings）。没有配对时不请求。
 export function useBindingList(paired: boolean): BindingListState & { reload: () => void } {
   const runtime = useCompanionRuntime();
+  const currentLocale = useLocale();
+  const locale = useRef(currentLocale);
+  locale.current = currentLocale;
   const [state, setState] = useState<BindingListState>({ state: 'loading' });
   const [generation, setGeneration] = useState(0);
   useEffect(() => {
@@ -52,7 +60,7 @@ export function useBindingList(paired: boolean): BindingListState & { reload: ()
       (items) => { if (!controller.signal.aborted) setState({ state: 'ready', items }); },
       (reason: unknown) => {
         if (controller.signal.aborted) return;
-        setState(isForbidden(reason) ? { state: 'forbidden' } : { state: 'error', error: reasonText(reason) });
+        setState(isForbidden(reason) ? { state: 'forbidden' } : { state: 'error', error: reasonText(reason, locale.current) });
       },
     );
     return () => controller.abort();

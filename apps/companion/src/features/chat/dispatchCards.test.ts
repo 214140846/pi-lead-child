@@ -131,8 +131,8 @@ describe('the key updates in the panel', () => {
   it('lists milestones and reports since the dispatch, oldest first, without progress pings', () => {
     const rows = dispatchUpdates({ ticketId: 77, scope, checkpoints, ticket: ticket({ stage: 'review' }) });
     expect(rows.map((row) => [row.label, row.title])).toEqual([
-      ['阶段完成', '四项目标技能均已存在'],
-      ['已提交复核', '目标技能已核查，提交 review'],
+      ['Stage complete', '四项目标技能均已存在'],
+      ['Sent for review', '目标技能已核查，提交 review'],
     ]);
     expect(rows[0]!.body).toBeNull();
     expect(rows[1]!.body).toBe('目标技能已核查，提交 review的说明');
@@ -141,7 +141,7 @@ describe('the key updates in the panel', () => {
 
   it('ends with the ending when the ticket finished inside this dispatch', () => {
     const rows = dispatchUpdates({ ticketId: 77, scope, checkpoints, ticket: ticket({ stage: 'done', stageChangedAt: T('10:27:19') }) });
-    expect(rows.at(-1)).toMatchObject({ label: '进入终态', title: '工单已完成', tone: 'success', at: T('10:27:19') });
+    expect(rows.at(-1)).toMatchObject({ label: 'Ended', title: 'Ticket done', tone: 'success', at: T('10:27:19') });
   });
 
   // gateway 只在 review 阶段给核查结论（reviewState）；结单以后不知道是谁验收的，就不说「核查通过」。
@@ -152,7 +152,7 @@ describe('the key updates in the panel', () => {
       reviewState: { state: 'review_failed', label: '核查不通过，等你决定', reviewerAttemptId: 89, verdict: 'fail', reason: '两个核心缺陷都已复现' } as TicketSummary['reviewState'],
     });
     const rows = dispatchUpdates({ ticketId: 77, scope, checkpoints, ticket: waiting });
-    expect(rows.at(-1)).toMatchObject({ label: '核查不通过', source: 'reviewer #89', title: '核查不通过，等你决定', body: '两个核心缺陷都已复现', tone: 'danger' });
+    expect(rows.at(-1)).toMatchObject({ label: 'Review failed', source: 'reviewer #89', title: '核查不通过，等你决定', body: '两个核心缺陷都已复现', tone: 'danger' });
     const pending = ticket({ stage: 'review', stageChangedAt: T('10:25:27'), reviewState: { state: 'independent_review', label: '独立核查进行中', reviewerAttemptId: null, verdict: null, reason: null } as TicketSummary['reviewState'] });
     expect(dispatchUpdates({ ticketId: 77, scope, checkpoints, ticket: pending }).map((row) => row.id)).toEqual(['checkpoint:185', 'checkpoint:186']);
   });

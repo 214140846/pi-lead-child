@@ -50,7 +50,7 @@ function turn(id: string, overrides: Partial<ConversationTurn>): ConversationTur
   };
 }
 
-// 会话里有一条发给 #7 的工单消息（回执），和一轮建了 #8 的 Lead 回复（嵌入的工单卡片）。
+// 会话里有一条Ticket message to #7（回执），和一轮建了 #8 的 Lead 回复（嵌入的工单卡片）。
 function runtimeOnConversation() {
   const runtime = createCompanionStateRuntime({
     client: {} as CompanionRuntimeDependencies['client'],
@@ -112,7 +112,7 @@ describe('opening a ticket from the phone conversation', () => {
   it('opens the ticket from a routed-message receipt, and 返回 goes back to the conversation', () => {
     const runtime = renderPhoneConversation();
 
-    fireEvent.click(screen.getByRole('button', { name: `发给 #${ROUTED} 的工单消息` }));
+    fireEvent.click(screen.getByRole('button', { name: `Ticket message to #${ROUTED}` }));
     expectThreadOpenOn(runtime, ROUTED);
     // 你点回执是想看那条消息的回答：工单对话直接展开（方案 D），手机上也能回复（复核 P0-2）。
     expect(runtime.workspace.getState().ticketChatExpandedId).toBe(ROUTED);

@@ -1,4 +1,6 @@
-import type { BrainModel, ModelProvider, ModelProviderApi, ModelSettingsDto } from '@pi-lead-child/protocol';
+import type { BrainModel, Locale, ModelProvider, ModelProviderApi, ModelSettingsDto } from '@pi-lead-child/protocol';
+
+import { onboardingMessages } from './onboarding.messages';
 
 // 首次启动页（2026-10-30，.scratch/onboarding/spec.md，画布 A1、A3）的纯函数：服务商预设、接入时的请求、推荐哪个模型。
 // 首次启动时还没有任何服务商（用户 2026-10-30）：先选接口类型、填 key 或地址，连接后读这家的模型列表，再选模型。
@@ -15,16 +17,30 @@ export interface FirstRunPreset {
   api: ModelProviderApi | null;
 }
 
-export const FIRST_RUN_PRESETS: readonly FirstRunPreset[] = [
-  { id: 'anthropic', label: 'Anthropic', description: 'Claude 系列 · 只填 key', name: 'anthropic', baseUrl: 'https://api.anthropic.com', api: 'anthropic-messages' },
-  { id: 'openai', label: 'OpenAI', description: 'GPT 系列 · 只填 key', name: 'openai', baseUrl: 'https://api.openai.com/v1', api: 'openai-responses' },
+const PRESETS: readonly Omit<FirstRunPreset, 'label' | 'description'>[] = [
+  { id: 'anthropic', name: 'anthropic', baseUrl: 'https://api.anthropic.com', api: 'anthropic-messages' },
+  { id: 'openai', name: 'openai', baseUrl: 'https://api.openai.com/v1', api: 'openai-responses' },
   // Gemini 走 Google 的 OpenAI 兼容端点：目录和对话都用 Bearer key。
-  { id: 'google', label: 'Google', description: 'Gemini 系列 · 只填 key', name: 'google', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', api: 'openai-completions' },
-  { id: 'custom', label: '其他服务', description: 'OpenAI 兼容：vibeproxy、OpenRouter、公司网关，要填地址', name: null, baseUrl: null, api: null },
+  { id: 'google', name: 'google', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', api: 'openai-completions' },
+  { id: 'custom', name: null, baseUrl: null, api: null },
 ];
 
-export function firstRunPreset(id: FirstRunPresetId): FirstRunPreset {
-  return FIRST_RUN_PRESETS.find((preset) => preset.id === id) ?? FIRST_RUN_PRESETS[0]!;
+// 品牌名不翻译；其他服务的名字和每一项的说明按界面语言。
+const BRAND_LABELS: Record<Exclude<FirstRunPresetId, 'custom'>, string> = { anthropic: 'Anthropic', openai: 'OpenAI', google: 'Google' };
+
+/** 预设的服务商，名字和说明按界面语言。 */
+export function firstRunPresets(locale: Locale): FirstRunPreset[] {
+  const m = onboardingMessages(locale);
+  return PRESETS.map((preset) => ({
+    ...preset,
+    label: preset.id === 'custom' ? m.customLabel : BRAND_LABELS[preset.id],
+    description: m.presets[preset.id],
+  }));
+}
+
+export function firstRunPreset(id: FirstRunPresetId, locale: Locale): FirstRunPreset {
+  const presets = firstRunPresets(locale);
+  return presets.find((preset) => preset.id === id) ?? presets[0]!;
 }
 
 /** 其他服务的名字：从主机名来（127.0.0.1:8317 → local-8317，api.example.com → example），和已有的重名时加编号。 */
@@ -57,15 +73,17 @@ export interface FirstRunProviderForm {
 export function firstRunProviderRequest(
   form: FirstRunProviderForm,
   existing: readonly string[],
+  locale: Locale,
 ): { ok: true; input: { name: string; baseUrl: string; api: ModelProviderApi; apiKey?: string } } | { ok: false; problem: string } {
-  const preset = firstRunPreset(form.preset);
+  const m = onboardingMessages(locale);
+  const preset = firstRunPreset(form.preset, locale);
   const apiKey = form.apiKey.trim();
   if (preset.id !== 'custom') {
-    if (!apiKey) return { ok: false, problem: `填上 ${preset.label} 的 API key。` };
+    if (!apiKey) return { ok: false, problem: m.keyMissing(preset.label) };
     return { ok: true, input: { name: preset.name!, baseUrl: preset.baseUrl!, api: preset.api!, apiKey } };
   }
   const baseUrl = form.baseUrl.trim().replace(/\/+$/, '');
-  if (!/^https?:\/\/[^\s]+$/.test(baseUrl)) return { ok: false, problem: '服务地址要以 http:// 或 https:// 开头。' };
+  if (!/^https?:\/\/[^\s]+$/.test(baseUrl)) return { ok: false, problem: m.badUrl };
   return { ok: true, input: { name: customProviderName(baseUrl, existing), baseUrl, api: form.api, ...(apiKey ? { apiKey } : {}) } };
 }
 
@@ -91,19 +109,20 @@ export function firstRunModelList(models: readonly BrainModel[], limit: number |
 }
 
 /** 模型名下面的一行：上下文窗口、能不能看图。 */
-export function firstRunModelMeta(model: BrainModel): string {
+export function firstRunModelMeta(model: BrainModel, locale: Locale): string {
+  const m = onboardingMessages(locale);
   const parts: string[] = [];
-  if (model.image) parts.push('图片');
+  if (model.image) parts.push(m.image);
   if (model.contextWindow) {
-    parts.push(model.contextWindow >= 1_000_000 ? `${Math.round(model.contextWindow / 100_000) / 10}M 上下文` : `${Math.round(model.contextWindow / 1000)}K 上下文`);
+    parts.push(m.context(model.contextWindow >= 1_000_000 ? `${Math.round(model.contextWindow / 100_000) / 10}M` : `${Math.round(model.contextWindow / 1000)}K`));
   }
-  if (model.released?.source === 'provider') parts.push(`发布于 ${model.released.at.slice(0, 10)}`);
+  if (model.released?.source === 'provider') parts.push(m.released(model.released.at.slice(0, 10)));
   return parts.join(' · ') || model.id;
 }
 
 // 页面要的事实都在这里算：网页包开着 React Compiler，组件里读一个可能是 null 的对象的属性时，编译器会把它提到渲染时读，
 // 对象是 null 时整个组件崩掉（2026-10-29 设置 → 模型踩过）。组件只拿这个函数的结果。
-export function firstRunProviderFacts(provider: ModelProvider | null) {
+export function firstRunProviderFacts(provider: ModelProvider | null, locale: Locale) {
   if (!provider) return { connected: false, name: null, modelCount: 0, models: [] as BrainModel[], problem: null };
   const connected = provider.problem === null && provider.models.length > 0;
   return {
@@ -112,7 +131,7 @@ export function firstRunProviderFacts(provider: ModelProvider | null) {
     modelCount: provider.models.length,
     models: provider.models,
     // 接入了，但目录读不出来：说明原因，留在第一步。
-    problem: connected ? null : provider.problem ?? `${provider.name} 的目录里一个模型也没有。检查地址和接口格式。`,
+    problem: connected ? null : provider.problem ?? onboardingMessages(locale).emptyCatalog(provider.name),
   };
 }
 

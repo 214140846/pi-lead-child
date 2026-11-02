@@ -70,29 +70,29 @@ describe('the ticket chat dock', () => {
   it('shows the latest reply as plain text while collapsed, with the composer', () => {
     renderDock();
     const preview = screen.getByTestId('ticket-chat-preview');
-    expect(preview.textContent).toContain('执行 agent · ');
+    expect(preview.textContent).toContain('Executor agent · ');
     expect(preview.textContent).toContain('我建议派一次新的核查，把 typecheck / build 补齐。');
     expect(within(screen.getByTestId('ticket-chat-dock')).getByRole('textbox')).toBeTruthy();
     // 2026-10-15 方案 A：说明写清楚消息会去哪里。没有 Run 在跑时开一个对话 Run。
     // （以前写「发给 #66 的执行 agent · child #87 · 每条消息开一次对话 Run」：#87 其实是核查 agent，运行中也不会开对话 Run。）
     expect(screen.getByTestId('ticket-chat-identity').textContent)
-      .toBe('发给 #66 的 agent · 开一次对话 Run，不改变工单状态');
+      .toBe('To the agent of #66 · Starts a conversation Run. The ticket state does not change.');
   });
 
   it('marks a reply that arrived after the last one you saw', () => {
     renderDock({ seenMessageId: 'something-older' });
-    expect(screen.getByTestId('ticket-chat-dock-toggle').textContent).toContain('新回复');
+    expect(screen.getByTestId('ticket-chat-dock-toggle').textContent).toContain('New reply');
   });
 
   it('counts the messages you already had as seen the first time', () => {
     const { onSeen, messageIds } = renderDock({ seenMessageId: null });
     expect(onSeen).toHaveBeenCalledWith(messageIds[messageIds.length - 1]);
-    expect(screen.getByTestId('ticket-chat-dock-toggle').textContent).not.toContain('新回复');
+    expect(screen.getByTestId('ticket-chat-dock-toggle').textContent).not.toContain('New reply');
   });
 
   it('regression #66: shows your latest action when it is newer than the last message', () => {
-    renderDock({ receipt: { title: '你派发了独立核查', createdAt: '2026-10-14T10:10:53.000Z' } });
-    expect(screen.getByTestId('ticket-chat-receipt').textContent).toContain('你派发了独立核查');
+    renderDock({ receipt: { title: 'You requested an independent review', createdAt: '2026-10-14T10:10:53.000Z' } });
+    expect(screen.getByTestId('ticket-chat-receipt').textContent).toContain('You requested an independent review');
     expect(screen.queryByTestId('ticket-chat-preview')).toBeNull();
   });
 
@@ -104,15 +104,15 @@ describe('the ticket chat dock', () => {
     });
     const row = screen.getByTestId('ticket-chat-live-run');
     expect(row.textContent).toContain('核查 Run #73 · 正在准备');
-    expect(row.textContent).toContain('已 13 分钟');
-    expect(row.textContent).toContain('可能卡住了');
+    expect(row.textContent).toContain('13 min so far');
+    expect(row.textContent).toContain('It can be stuck.');
   });
 
   it('expands when you send a message, so you see your message and the answer', () => {
     const { onSendMessage, onExpandedChange } = renderDock();
     const input = within(screen.getByTestId('ticket-chat-dock')).getByRole('textbox');
     fireEvent.change(input, { target: { value: 'typecheck 为什么没跑？' } });
-    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
     expect(onSendMessage).toHaveBeenCalledWith('typecheck 为什么没跑？');
     expect(onExpandedChange).toHaveBeenCalledWith(true);
   });
@@ -120,9 +120,9 @@ describe('the ticket chat dock', () => {
   // 复核 P1-9：回复问「你要我现在就发起吗？」，答案在决策卡上。现在回复下面就有按钮。
   // 回复在问哪几个动作由 daemon 的快模型判断，结果在这一轮的 replyActions 里（2026-10-19）。
   const ACTIONS: TicketChatDockProps['actions'] = [
-    { id: 'request_review', label: '派发独立核查', tone: 'primary', recommended: true, disabled: false },
-    { id: 'complete', label: '仍要验收通过', tone: 'danger', recommended: false, disabled: false },
-    { id: 'cancel', label: '取消工单', tone: 'danger', recommended: false, disabled: false },
+    { id: 'request_review', label: 'Request independent review', tone: 'primary', recommended: true, disabled: false },
+    { id: 'complete', label: 'Accept anyway', tone: 'danger', recommended: false, disabled: false },
+    { id: 'cancel', label: 'Cancel ticket', tone: 'danger', recommended: false, disabled: false },
   ];
 
   it('regression #66: puts the action the reply asks about under the reply', () => {
@@ -130,7 +130,7 @@ describe('the ticket chat dock', () => {
     const { onExpandedChange } = renderDock({ actions: ACTIONS, onAction });
     const row = screen.getByTestId('ticket-chat-actions');
     // 模型说回复只问到核查，所以只有这一个按钮。
-    expect(within(row).getAllByRole('button').map((button) => button.textContent)).toEqual(['派发独立核查']);
+    expect(within(row).getAllByRole('button').map((button) => button.textContent)).toEqual(['Request independent review']);
 
     fireEvent.click(within(row).getByTestId('ticket-chat-action-request_review'));
 
@@ -148,7 +148,7 @@ describe('the ticket chat dock', () => {
   it('shows only the asked actions that the ticket can take now', () => {
     renderDock({ actions: ACTIONS, onAction: vi.fn() }, [turn({ replyActions: ['rework', 'complete', 'request_review'] })]);
     const row = screen.getByTestId('ticket-chat-actions');
-    expect(within(row).getAllByRole('button').map((button) => button.textContent)).toEqual(['派发独立核查', '仍要验收通过']);
+    expect(within(row).getAllByRole('button').map((button) => button.textContent)).toEqual(['Request independent review', 'Accept anyway']);
   });
 
   // 以前这里用关键词表和「最后一段有问号」判断。现在没有模型的结果（还在判断、模型不可用）就不给按钮，
@@ -167,7 +167,7 @@ describe('the ticket chat dock', () => {
     renderDock({
       actions: ACTIONS,
       onAction: vi.fn(),
-      receipt: { title: '你派发了独立核查', createdAt: '2026-10-14T10:10:53.000Z' },
+      receipt: { title: 'You requested an independent review', createdAt: '2026-10-14T10:10:53.000Z' },
     });
     expect(screen.queryByTestId('ticket-chat-actions')).toBeNull();
   });
@@ -197,9 +197,9 @@ describe('a failed ticket reply in the collapsed dock', () => {
       }],
     })]);
     const preview = screen.getByTestId('ticket-chat-preview').textContent ?? '';
-    expect(preview).not.toContain('工单本身没有变化');
-    expect(preview).not.toContain('重发');
-    expect(preview).toContain('做过的事不会重做');
+    expect(preview).not.toContain('The ticket did not change');
+    expect(preview).not.toContain('Resend');
+    expect(preview).toContain('Work that it did is not done again');
   });
 
   // 展开后的失败行拿到这一轮的工具（TicketConversation 传 tools）：去掉它，「重发」会回来，这条就失败。
@@ -214,13 +214,13 @@ describe('a failed ticket reply in the collapsed dock', () => {
       }],
     })]);
     const card = screen.getByTestId('failure-card');
-    expect(within(card).queryByRole('button', { name: '重发' })).toBeNull();
-    expect(card.textContent).toContain('做过的事不会重做');
+    expect(within(card).queryByRole('button', { name: 'Resend' })).toBeNull();
+    expect(card.textContent).toContain('Work that it did is not done again');
   });
 
   it('still offers the resend when no tool ran', () => {
     renderDock({}, [turn(failed)]);
-    expect(screen.getByTestId('ticket-chat-preview').textContent).toContain('没能回答这条消息，工单本身没有变化。展开后可以重发。');
+    expect(screen.getByTestId('ticket-chat-preview').textContent).toContain('This message got no answer. The ticket did not change. Expand to send it again.');
   });
 });
 
@@ -267,22 +267,22 @@ describe('the ticket chat composer', () => {
   it('sends a progress question to the agent, with no answerer and no switch', () => {
     const { onSendMessage } = renderDock({ chatResume: resume });
     type('现在进展怎么样');
-    expect(screen.getByTestId('ticket-chat-identity').textContent).toBe('发给 #66 的核查 agent · 续接 Run #73 的会话，不改变工单状态');
+    expect(screen.getByTestId('ticket-chat-identity').textContent).toBe('To the reviewer agent of #66 · Continues the session of Run #73. The ticket state does not change.');
     expect(screen.queryByText(/由 Lead 回答/)).toBeNull();
     expect(screen.queryByText('改问 Lead')).toBeNull();
     expect(screen.queryByText('改问执行者')).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
     expect(onSendMessage).toHaveBeenCalledWith('现在进展怎么样');
   });
 
   it('shows the estimated cost of resuming an ended session', () => {
     renderDock({ chatResume: resume });
-    expect(screen.getByTestId('ticket-chat-cost').textContent).toBe('预估成本：约 45.6 万 token（按这个会话上次的用量）');
+    expect(screen.getByTestId('ticket-chat-cost').textContent).toBe('Estimated cost: about 456K tokens (from the last usage of this session)');
   });
 
   it('says it cannot estimate the cost when the last run reported no usage', () => {
     renderDock({ chatResume: { ...resume, lastTokens: null } });
-    expect(screen.getByTestId('ticket-chat-cost').textContent).toBe('预估成本：无法估算');
+    expect(screen.getByTestId('ticket-chat-cost').textContent).toBe('Estimated cost: unknown');
   });
 
   it('shows no cost when nothing is resumed', () => {

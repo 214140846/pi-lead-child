@@ -89,7 +89,7 @@ describe('whose turn it is', () => {
     // #77 在跑，#66 的独立核查在排队：两张。#18 和 #52 都没有 Run。
     expect(chipCount('ticket-filter-running')).toBe('2');
     // 会话里的执行中写在顶栏（方案 C，2026-10-28，主题 11.14）。
-    expect(screen.getByTestId('lead-running-count').getAttribute('aria-label')).toBe('执行中 2');
+    expect(screen.getByTestId('lead-running-count').getAttribute('aria-label')).toBe('Running 2');
 
     act(() => runtime.workspace.getState().setTicketFilter('running'));
     const rail = screen.getByTestId('grouped-ticket-list');
@@ -105,7 +105,7 @@ describe('whose turn it is', () => {
     renderUI(<CompanionRuntimeProvider runtime={runtime}><Workbench /></CompanionRuntimeProvider>);
 
     const header = screen.getByTestId('work-rail-header');
-    expect(within(header).getByText('2 个 Run 在跑')).toBeTruthy();
+    expect(within(header).getByText('2 Runs are running')).toBeTruthy();
     expect(screen.queryByText('任务线程模式')).toBeNull();
   });
 

@@ -138,7 +138,7 @@ describe("Lead's context is full and the summary does not fit", () => {
     expect(logs.some((line) => line.includes("turn error") && line.includes("Context overflow"))).toBe(true);
     // 过了宽限期按停摆处理：积压的事汇总给用户，原因写上下文满了。
     await vi.waitFor(() => expect(listNotifications(db).filter((row) => row.kind === "lead_unavailable")).toMatchObject([
-      { title: expect.stringContaining("上下文满了") },
+      { title: expect.stringContaining("context full") },
     ]), { timeout: 10_000 });
     // 失败的系统回合不在会话里留一张张失败卡片：顶栏和停摆通知已经说了。
     expect(db.prepare("SELECT count(*) AS n FROM channel_turns WHERE state = 'failed'").get()).toEqual({ n: 0 });

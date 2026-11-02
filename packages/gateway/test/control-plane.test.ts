@@ -12,7 +12,7 @@ import { createMilestone, setAgendaNote } from "@pi-lead-child/store";
 import { createTurn, publishGatewayEvent } from "@pi-lead-child/store";
 import { tempDir } from "@pi-lead-child/core/testing";
 import { createControlPlaneService } from "../src/control-plane.js";
-import { createCoordinator, createOrchestrator } from "@pi-lead-child/engine";
+import { createCoordinator, createOrchestrator, updateDesignPreferences } from "@pi-lead-child/engine";
 import { createProject, linkProjectRepository, mergeProjects, setItemDisplayTitle, setProjectStatus, updateProjectSummary } from "@pi-lead-child/store";
 import { createRuntimeEventStore } from "@pi-lead-child/store";
 import { upsertItemExecutionCard } from "@pi-lead-child/store";
@@ -1130,7 +1130,7 @@ describe("control-plane snapshots", () => {
     expect(ticket.executionState).toMatchObject({
       kind: "recovery",
       state: "running",
-      label: "执行中",
+      label: "Running",
       attemptId: activeRunId,
       reason: null,
     });
@@ -1140,6 +1140,8 @@ describe("control-plane snapshots", () => {
   // 工单头还写「正在恢复」，同一时刻 Run 行写「执行中」。新 Run 跑起来恢复就完成了：标签和 Run 行一样。
   // kind 仍是 recovery：恢复期间留下的 blocker 不算「需要你」，这个判断不变。
   it("says a recovered ticket is running once its new run runs, while waiting stays a recovery", () => {
+    // 标签按用户选的界面语言写（缺省英文）。这条用中文。
+    updateDesignPreferences(db, { request: { locale: "zh" }, caller: { kind: "user" } });
     const itemId = createItem(db, { title: "quota", brief: "b", createdBy: "system" });
     transition(db, { itemId, to: "active", actor: "system", reason: "start" });
     const failedRunId = createRun(db, { itemId, runtime: "claude" });
@@ -1258,8 +1260,8 @@ describe("the inbox view", () => {
 
     expect(view.tickets).toEqual(expect.arrayContaining([
       { ticketId: blocked, reason: "Run #54 交付的成果格式不合法", since: "2026-08-25T08:01:12.000Z" },
-      expect.objectContaining({ ticketId: draft, reason: "Paimon 建的草稿，等你确认才会开始" }),
-      expect.objectContaining({ ticketId: approval, reason: "等你批准：删除 /tmp/plc-demo" }),
+      expect.objectContaining({ ticketId: draft, reason: "Paimon created this draft. It starts after you confirm it" }),
+      expect.objectContaining({ ticketId: approval, reason: "Waiting for your approval: 删除 /tmp/plc-demo" }),
     ]));
     expect(view.tickets.map((fact) => fact.ticketId).sort((a, b) => a - b)).toEqual([blocked, draft, approval].sort((a, b) => a - b));
     expect(view.seenAt).toBeNull();
@@ -1403,7 +1405,7 @@ describe("the timeline", () => {
     const timeline = service().timeline(range);
     expect(timeline.entries.find((entry) => entry.id === `defer:${deferred}`)).toMatchObject({ kind: "deferred_start", status: "upcoming" });
     expect(timeline.entries.find((entry) => entry.id === `fire:${fireId}`)).toMatchObject({
-      kind: "routine_fired", status: "failed", detail: "失败：runtime not configured",
+      kind: "routine_fired", status: "failed", detail: "Failed: runtime not configured",
     });
     const routines = timeline.entries.filter((entry) => entry.kind === "routine");
     // 将来的按 cron 展开，从现在开始；过去没触发过的不列。
@@ -1421,7 +1423,10 @@ describe("the timeline", () => {
     createMilestone(db, far, { kind: "release", at: "2026-10-25T10:00:00.000Z" }, { actor: "user" });
 
     const risks = Object.fromEntries(service().timeline(range).entries.map((entry) => [entry.ticketId, entry.risk]));
-    expect(risks[notStarted]).toEqual({ reason: "not_started", label: "还没开始" });
+    expect(risks[notStarted]).toEqual({ reason: "not_started", label: "Not started yet" });
+    updateDesignPreferences(db, { request: { locale: "zh" }, caller: { kind: "user" } });
+    const zh = Object.fromEntries(service().timeline(range).entries.map((entry) => [entry.ticketId, entry.risk]));
+    expect(zh[notStarted]).toEqual({ reason: "not_started", label: "还没开始" });
     // 一周以后的节点不算风险。
     expect(risks[far]).toBeNull();
     expect(waiting).toBeGreaterThan(0);

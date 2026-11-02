@@ -17,7 +17,7 @@ const seed = (id: string): StandingOrderState => {
 
 function classify(after: StandingOrderState, options: { before?: StandingOrderState | null; active?: StandingOrderState[] } = {}) {
   const before = options.before !== undefined ? options.before : seeds.find((order) => order.id === after.id) ?? null;
-  return classifyStandingOrderChange({ active: options.active ?? seeds, before, after: { ...after, reason: "测试" } });
+  return classifyStandingOrderChange({ active: options.active ?? seeds, before, after: { ...after, reason: "测试" }, locale: "zh" });
 }
 const tierOf = (after: StandingOrderState, options?: Parameters<typeof classify>[1]) => classify(after, options).tier;
 
@@ -352,5 +352,24 @@ describe("channel.authority: the auto-handling switch and the confidence model",
     expect(tier({ noReplyBelow: 0.4 })).toBe("permissive");
     expect(tier({ noReplyBelow: 0.2 })).toBe("conservative");
     expect(tier({ priorStrength: 20 })).toBe("permissive");
+  });
+});
+
+describe("the language of the findings", () => {
+  it("writes English by default and Chinese when the caller asks for zh", () => {
+    const after = withParams("channel.authority", { autoReply: false });
+    const before = seed("channel.authority");
+    const english = classifyStandingOrderChange({ active: seeds, before, after });
+    expect(english.findings.map((item) => item.detail)).toEqual(["autoReply (auto-handle for you) changes from true to false."]);
+    const chinese = classifyStandingOrderChange({ active: seeds, before, after, locale: "zh" });
+    expect(chinese.findings.map((item) => item.detail)).toEqual(["autoReply（自动代你处理）从 true 改为 false"]);
+    // 判断完以后不留下语言：下一次不传 locale 时还是英文。
+    expect(classifyStandingOrderChange({ active: seeds, before, after }).findings[0]!.detail).toContain("changes from");
+  });
+
+  it("writes hard-rule refusals in English", () => {
+    const refused = classifyStandingOrderChange({ active: seeds, before: seed("reminder.fire"), after: { ...seed("reminder.fire"), status: "disabled" } });
+    expect(refused.tier).toBe("forbidden");
+    expect(refused.findings[0]!.detail).toBe("A due reminder always sends a notification. reminder.fire cannot be turned off.");
   });
 });

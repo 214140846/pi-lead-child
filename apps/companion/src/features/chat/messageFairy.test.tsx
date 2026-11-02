@@ -86,7 +86,7 @@ describe('the Fairy in Lead message headers', () => {
   it('thinks while the latest reply is still streaming', () => {
     render([earlier, { ...latest, state: 'streaming', assistantText: '我先查' }]);
     const marks = screen.getAllByTestId('message-fairy');
-    expect(marks.at(-1)!.getAttribute('aria-label')).toBe('Jarvis 在想');
+    expect(marks.at(-1)!.getAttribute('aria-label')).toBe('Jarvis is thinking');
     expect(marks[0]!.getAttribute('aria-label')).toBe('Jarvis');
   });
 });

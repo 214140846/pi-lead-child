@@ -18,6 +18,8 @@ import {
   type WorkspaceControlActionId,
 } from '@pi-lead-child/protocol';
 
+import { DEFAULT_LOCALE, type Locale } from '@/i18n';
+
 import { leadNameNow } from '@/state/leadName';
 import { resolvedByLabel } from '@/features/chat/resolvedByLabel';
 import type { ControlPlanePhase, ResourceLoadState } from '@/state/types';
@@ -25,6 +27,7 @@ import type { ConnectionState } from '@pi-lead-child/client';
 
 import { systemCheckpointText } from './systemCheckpointText';
 import { runtimeDisplayName } from './runtimeNames';
+import { workspaceModelMessages } from './model.messages';
 
 export type RailView = 'inbox' | 'tickets' | 'projects' | 'agenda';
 
@@ -141,19 +144,15 @@ export type WorkspaceStatusPresentation = {
   retentionLabel?: string;
 };
 
-const workspaceStateLabels: Record<NonNullable<TicketSummary['workspace']>['state'], string> = {
-  requested: '等待创建', provisioning: '正在创建', active: '可执行', idle: '空闲',
-  review_hold: '等待核查', pending_integration: '等待合并', released: '已释放',
-  cleaning: '正在清理', cleaned: '已清理', archived: '已归档', failed: '创建失败', blocked: '已阻塞',
-};
-
 export function workspaceStatusPresentation(
   workspace: NonNullable<TicketSummary['workspace']>,
+  locale: Locale = DEFAULT_LOCALE,
 ): WorkspaceStatusPresentation {
-  const modeLabel = workspace.mode === 'isolated' ? '隔离工作区' : '共享工作区';
-  const kindLabel = workspace.kind === 'reviewer' ? '核查工作区'
-    : workspace.kind === 'isolated_child' ? '子工单工作区'
-      : workspace.kind === 'experiment' ? '实验工作区' : '主工作区';
+  const m = workspaceModelMessages(locale).workFolder;
+  const modeLabel = workspace.mode === 'isolated' ? m.isolated : m.shared;
+  const kindLabel = workspace.kind === 'reviewer' ? m.reviewer
+    : workspace.kind === 'isolated_child' ? m.isolatedChild
+      : workspace.kind === 'experiment' ? m.experiment : m.main;
   const stateTone = workspace.mergeStatus === 'conflict' || workspace.state === 'failed' || workspace.state === 'blocked'
     ? 'danger'
     : workspace.state === 'review_hold' || workspace.state === 'pending_integration'
@@ -163,36 +162,36 @@ export function workspaceStatusPresentation(
         : workspace.state === 'released' || workspace.state === 'cleaned' || workspace.state === 'archived'
           ? 'success' : 'neutral';
   const nextStep = workspace.mergeStatus === 'conflict'
-    ? '合并发生冲突，先解决冲突或放弃这次变更，才能释放 workspace。'
+    ? m.next.conflict
     : workspace.state === 'review_hold'
-    ? '核查期间工作区受保护，暂不可修改。'
+    ? m.next.reviewHold
     : workspace.state === 'pending_integration'
-      ? '确认合并或放弃变更后，才能释放 workspace。'
+      ? m.next.pendingIntegration
       : workspace.state === 'released'
-        ? '释放完成，满足保留期和六项检查后才能清理。'
+        ? m.next.released
         : workspace.state === 'failed' || workspace.state === 'blocked'
-          ? '先查看 workspace 错误，再重新创建或恢复。'
+          ? m.next.failed
           : workspace.state === 'active'
-            ? '工作区已就绪，执行进度以工单状态为准。'
+            ? m.next.active
             : workspace.state === 'cleaning'
-              ? '清理尚未完成，等待系统确认结果。'
+              ? m.next.cleaning
               : workspace.state === 'cleaned'
-                ? '工作区已完成清理。'
+                ? m.next.cleaned
                 : workspace.state === 'requested' || workspace.state === 'provisioning'
-                  ? '工作区创建完成后才可执行。'
-                  : '工作区状态与工单验收状态分别记录。';
+                  ? m.next.requested
+                  : m.next.other;
   return {
-    title: '工作区', modeLabel, kindLabel,
-    stateLabel: workspaceStateLabels[workspace.state], stateTone, nextStep,
+    title: m.title, modeLabel, kindLabel,
+    stateLabel: m.state[workspace.state], stateTone, nextStep,
     ...(workspace.mergeStatus && workspace.mergeStatus !== 'n/a'
-      ? { mergeLabel: workspace.mergeStatus === 'conflict' ? '合并冲突' : workspace.mergeStatus === 'pending' ? '等待合并' : workspace.mergeStatus === 'merged' ? '已合并' : '已放弃' }
+      ? { mergeLabel: workspace.mergeStatus === 'conflict' ? m.merge.conflict : workspace.mergeStatus === 'pending' ? m.merge.pending : workspace.mergeStatus === 'merged' ? m.merge.merged : m.merge.discarded }
       : {}),
-    ...(workspace.retainedUntil ? { retentionLabel: `保留至 ${workspace.retainedUntil.slice(0, 16).replace('T', ' ')}` } : {}),
+    ...(workspace.retainedUntil ? { retentionLabel: m.retainedUntil(workspace.retainedUntil.slice(0, 16).replace('T', ' ')) } : {}),
   };
 }
 
-export function ticketContextLabel(selectedTicketId: number | null, ticketId: number): string | null {
-  return selectedTicketId !== null && selectedTicketId !== ticketId ? `其他工单 · #${ticketId}` : null;
+export function ticketContextLabel(selectedTicketId: number | null, ticketId: number, locale: Locale = DEFAULT_LOCALE): string | null {
+  return selectedTicketId !== null && selectedTicketId !== ticketId ? workspaceModelMessages(locale).otherTicket(ticketId) : null;
 }
 
 export type ArtifactCapability = 'loading' | 'available' | 'unsupported';
@@ -210,8 +209,8 @@ export function ticketTitle(ticket: Pick<Ticket, 'title' | 'displayTitle'>): str
 // 没有项目的工单，服务端归在 id 和名字都是 'unknown' 的项目下。界面上叫「未归属」。
 export const UNASSIGNED_PROJECT = 'unknown';
 
-export function projectDisplayName(name: string): string {
-  return name === UNASSIGNED_PROJECT ? '未归属' : name;
+export function projectDisplayName(name: string, locale: Locale = DEFAULT_LOCALE): string {
+  return name === UNASSIGNED_PROJECT ? workspaceModelMessages(locale).unassignedProject : name;
 }
 
 // 工单 tab 只看一个项目时的范围。knownNames 是当前的项目名：不在其中的工单算「未归属」，和服务端一致。
@@ -229,7 +228,7 @@ export type ArtifactPresentationState =
   | { kind: 'available'; title: string; body: string };
 
 export type TicketDetailPresentation = {
-  tabs: typeof TICKET_DETAIL_TABS;
+  tabs: ReturnType<typeof ticketDetailTabs>;
   properties: TicketPropertyPresentation[];
   artifactState: ArtifactPresentationState;
 };
@@ -333,6 +332,9 @@ function compareCheckpointRecency(
   return right.id.localeCompare(left.id, undefined, { numeric: true });
 }
 
+// 服务端写进进展记录的标题（engine 的 terminal-handoff.ts）。这是数据，不是界面文字：按它认出这种记录，不翻译。
+const TERMINAL_HANDOFF_FAILURE_TITLE = '运行结束，交接失败';
+
 export function activeTerminalHandoffFailure(
   status: TicketStatus,
   checkpoints: CheckpointPresentationInput[],
@@ -342,7 +344,7 @@ export function activeTerminalHandoffFailure(
   const latestBlocked = latestBlockedCheckpoint(checkpoints);
 
   return latestBlocked?.source === 'system_derived'
-    && latestBlocked.title === '运行结束，交接失败'
+    && latestBlocked.title === TERMINAL_HANDOFF_FAILURE_TITLE
     ? latestBlocked
     : undefined;
 }
@@ -380,11 +382,14 @@ const railViewOrder: Record<RailView, number> = {
 
 // 没有「详情」tab：说明文字由 TicketThread 的头部渲染，再开一个 tab 装同一段字，
 // 用户看到的就是同一段话出现两次。tab 只用来放头部装不下的执行细节。
-export const TICKET_DETAIL_TABS = [
-  { id: 'progress', label: '验收证据' },
-  { id: 'artifacts', label: '产物' },
-  { id: 'logs', label: '日志' },
-] as const satisfies readonly { id: TicketDetailTab; label: string }[];
+export function ticketDetailTabs(locale: Locale = DEFAULT_LOCALE): readonly { id: TicketDetailTab; label: string }[] {
+  const m = workspaceModelMessages(locale).detailTabs;
+  return [
+    { id: 'progress', label: m.progress },
+    { id: 'artifacts', label: m.artifacts },
+    { id: 'logs', label: m.logs },
+  ];
+}
 
 // 执行类面板（PoW/checkpoint、产物、日志）的数据源是 Run，仅在该 item 至少存在过一个 Run
 // 时渲染（kernel spec §11）。这一条同时修好三个页面：提醒页、draft 未跑过的任务页、
@@ -424,63 +429,74 @@ export type TicketActionPresentation = {
   tone: TicketActionTone;
 };
 
-const ticketActionCopy: Record<TicketActionId, { label: string; tone: TicketActionTone }> = {
-  confirm: { label: '确认开跑', tone: 'primary' },
-  start: { label: '开始执行', tone: 'primary' },
-  complete: { label: '验收通过', tone: 'primary' },
-  ack: { label: '知道了', tone: 'primary' },
-  rework: { label: '打回返工', tone: 'neutral' },
-  stop: { label: '停下', tone: 'neutral' },
-  unconfirm: { label: '撤回确认', tone: 'neutral' },
-  restore: { label: '恢复', tone: 'neutral' },
-  cancel: { label: '取消工单', tone: 'danger' },
-  release: { label: '释放工作区', tone: 'neutral' },
-  cleanup: { label: '清理工作区', tone: 'danger' },
+const ticketActionTone: Record<TicketActionId, TicketActionTone> = {
+  confirm: 'primary',
+  start: 'primary',
+  complete: 'primary',
+  ack: 'primary',
+  rework: 'neutral',
+  stop: 'neutral',
+  unconfirm: 'neutral',
+  restore: 'neutral',
+  cancel: 'danger',
+  release: 'neutral',
+  cleanup: 'danger',
 };
 
 export function buildTicketActionPresentation(
   ticket: { kind: TicketKind; status: TicketStatus; workspace?: TicketSummary["workspace"] },
+  locale: Locale = DEFAULT_LOCALE,
 ): TicketActionPresentation[] {
-  const itemActions = userItemActionsFor(ticket.kind, ticket.status)
-    .map((id) => ({ id, ...ticketActionCopy[id] }));
+  const labels = workspaceModelMessages(locale).actions;
+  const copy = (id: TicketActionId) => ({ id, label: labels[id], tone: ticketActionTone[id] });
+  const itemActions = userItemActionsFor(ticket.kind, ticket.status).map(copy);
   const workspaceActions = ticket.workspace?.availableActions ?? [];
   return [
     ...itemActions,
-    ...workspaceActions.map((id) => ({ id, ...ticketActionCopy[id] })),
+    ...workspaceActions.map(copy),
   ];
 }
 
-export const TICKET_RAIL_FILTERS = [
-  { id: 'all', label: '全部' },
-  { id: 'todo', label: '等你' },
-  { id: 'running', label: '在执行' },
-  { id: 'queued', label: '排队' },
-] as const satisfies readonly { id: TicketFilter; label: string }[];
+export function ticketRailFilters(locale: Locale = DEFAULT_LOCALE): readonly { id: TicketFilter; label: string }[] {
+  const m = workspaceModelMessages(locale).filters;
+  return [
+    { id: 'all', label: m.all },
+    { id: 'todo', label: m.todo },
+    { id: 'running', label: m.running },
+    { id: 'queued', label: m.queued },
+  ];
+}
+
+// 兼容区域外的调用（app/(tabs)/tickets.tsx）：英文。界面按语言取时用 ticketRailFilters(locale)。
+export const TICKET_RAIL_FILTERS = ticketRailFilters(DEFAULT_LOCALE);
 
 // 这个文件里给人看的文字称呼 Lead 时写 Lead 的名字。这些纯函数离组件太远，读最近一次取到的名字（leadNameNow）。
 export function ticketRailEmptyCopy(
   state: Exclude<TicketRailState, 'populated'>,
+  locale: Locale = DEFAULT_LOCALE,
 ): { title: string; body: string; actionLabel?: string } {
   const leadName = leadNameNow();
+  const m = workspaceModelMessages(locale).empty;
   return {
-    loading: { title: '正在读取工单', body: `等待 ${leadName} 返回真实工单列表。` },
-    first_use: { title: '还没有任务', body: `在中间对话里告诉 ${leadName} 目标，它会建工单并派 child 执行。` },
-    all_completed: { title: '全部完成', body: '所有 child 已完成，暂无待办。有新目标随时告诉我。', actionLabel: '新建任务' },
-    no_results: { title: '没有匹配的工单', body: '当前筛选或搜索条件下没有工单。', actionLabel: '清除筛选' },
+    loading: { title: m.loadingTitle, body: m.loadingBody(leadName) },
+    first_use: { title: m.firstUseTitle, body: m.firstUseBody(leadName) },
+    all_completed: { title: m.allCompletedTitle, body: m.allCompletedBody, actionLabel: m.allCompletedAction },
+    no_results: { title: m.noResultsTitle, body: m.noResultsBody, actionLabel: m.noResultsAction },
   }[state];
 }
 
 // 分组就是「现在轮到谁」。Lead 的后台工作和已结束的工单默认收起。
-function ticketGroupMetadata(id: TicketGroupId): Omit<TicketRailGroup, 'items' | 'count'> {
+function ticketGroupMetadata(id: TicketGroupId, locale: Locale): Omit<TicketRailGroup, 'items' | 'count'> {
   const leadName = leadNameNow();
+  const m = workspaceModelMessages(locale).groups;
   const metadata: Record<TicketGroupId, Omit<TicketRailGroup, 'items' | 'count'>> = {
-    needs_intervention: { id: 'needs_intervention', label: '等你', collapsible: true, collapsedByDefault: false },
-    running: { id: 'running', label: '在执行', collapsible: true, collapsedByDefault: false },
-    queued: { id: 'queued', label: '排队 · 没人在动', collapsible: true, collapsedByDefault: false },
-    lead: { id: 'lead', label: `${leadName} 处理中`, collapsible: true, collapsedByDefault: false },
-    background: { id: 'background', label: `${leadName} 后台`, collapsible: true, collapsedByDefault: true },
-    completed: { id: 'completed', label: '已完成', collapsible: true, collapsedByDefault: true },
-    cancelled: { id: 'cancelled', label: '已取消', collapsible: true, collapsedByDefault: true },
+    needs_intervention: { id: 'needs_intervention', label: m.needsIntervention, collapsible: true, collapsedByDefault: false },
+    running: { id: 'running', label: m.running, collapsible: true, collapsedByDefault: false },
+    queued: { id: 'queued', label: m.queued, collapsible: true, collapsedByDefault: false },
+    lead: { id: 'lead', label: m.lead(leadName), collapsible: true, collapsedByDefault: false },
+    background: { id: 'background', label: m.background(leadName), collapsible: true, collapsedByDefault: true },
+    completed: { id: 'completed', label: m.completed, collapsible: true, collapsedByDefault: true },
+    cancelled: { id: 'cancelled', label: m.cancelled, collapsible: true, collapsedByDefault: true },
   };
   return metadata[id];
 }
@@ -488,23 +504,6 @@ function ticketGroupMetadata(id: TicketGroupId): Omit<TicketRailGroup, 'items' |
 export const TICKET_GROUP_ORDER = [
   'needs_intervention', 'running', 'lead', 'queued', 'background', 'completed', 'cancelled',
 ] as const satisfies readonly TicketGroupId[];
-
-const checkpointKindLabel: Record<CheckpointKind, string> = {
-  progress: '进行中',
-  milestone: '已完成阶段',
-  decision: '方向调整',
-  delegation: '已委派',
-  blocked: '需要介入',
-  completed: '执行完成，等待验收',
-};
-
-const interventionStateLabel: Record<InterventionState, string> = {
-  pending: '需要你介入',
-  resolved: '已解决',
-  rejected: '已拒绝',
-  dismissed: '已撤销',
-  expired: '已过期',
-};
 
 export function resolveRailViewDirection(
   previous: RailView,
@@ -543,61 +542,62 @@ export type ReviewNoticePresentation = {
   acceptanceRisk: string | null;
 };
 
-const verificationText: Record<'pass' | 'fail' | 'unknown', string> = {
-  pass: '通过（PASS）',
-  fail: '不通过（FAIL）',
-  unknown: '未知',
-};
-
 function reviewBudgetFact(
   review: NonNullable<TicketSummary['reviewState']>,
+  locale: Locale,
 ): { label: string; value: string }[] {
   if (review.reworkCyclesUsed === undefined || review.maxReworkCycles === undefined
       || review.maxReworkCycles === null) {
     return [];
   }
-  return [{ label: '已用返工次数', value: `${review.reworkCyclesUsed}/${review.maxReworkCycles}` }];
+  return [{ label: workspaceModelMessages(locale).facts.reworkUsed, value: `${review.reworkCyclesUsed}/${review.maxReworkCycles}` }];
 }
 
 /** 作废的核查：它是谁、核查的是哪次交付、被哪次交付作废（F9）。 */
-export function supersededReviewText(review: NonNullable<TicketSummary['reviewState']>): string | null {
+export function supersededReviewText(review: NonNullable<TicketSummary['reviewState']>, locale: Locale = DEFAULT_LOCALE): string | null {
   const superseded = review.supersededReview;
   if (!superseded) return null;
+  const m = workspaceModelMessages(locale).facts;
   return [
     `Run #${superseded.reviewerAttemptId} · ${superseded.verdict.toUpperCase()}`,
-    superseded.reviewedRunId === null ? null : `核查的是 Run #${superseded.reviewedRunId}`,
-    superseded.supersededByRunId === null ? '已作废' : `已被 Run #${superseded.supersededByRunId} 作废`,
+    superseded.reviewedRunId === null ? null : m.reviewedRun(superseded.reviewedRunId),
+    superseded.supersededByRunId === null ? m.superseded : m.supersededBy(superseded.supersededByRunId),
   ].filter(Boolean).join(' · ');
 }
 
-function reviewHashFacts(review: NonNullable<TicketSummary['reviewState']>): { label: string; value: string }[] {
+function reviewHashFacts(review: NonNullable<TicketSummary['reviewState']>, locale: Locale): { label: string; value: string }[] {
   // 哈希描述的是某一次核查看到的工作区。没有当前有效的核查时，它不是当前事实，不显示。
   if (review.reviewerAttemptId === null) return [];
   const state = review.reviewerHashState;
   if (state === undefined && review.reviewerPreHash === undefined && review.reviewerPostHash === undefined) return [];
-  const short = (value: string | null | undefined) => value ? `${value.slice(0, 8)}…${value.slice(-6)}` : '缺失';
+  const m = workspaceModelMessages(locale).facts;
+  const short = (value: string | null | undefined) => value ? `${value.slice(0, 8)}…${value.slice(-6)}` : m.missing;
   if (state === 'matching' || state === 'drifted') return [
-    { label: '工作区完整性', value: state === 'matching' ? 'pre/post hash 一致' : 'pre/post hash 不一致' },
-    { label: '核查快照', value: `${short(review.reviewerPreHash)} → ${short(review.reviewerPostHash)}` },
+    { label: m.integrity, value: state === 'matching' ? m.hashMatch : m.hashDrift },
+    { label: m.snapshot, value: `${short(review.reviewerPreHash)} → ${short(review.reviewerPostHash)}` },
   ];
-  if (state === 'missing') return [{ label: '工作区完整性', value: '缺少 reviewer hash' }];
-  return [{ label: '工作区完整性', value: '未知' }];
+  if (state === 'missing') return [{ label: m.integrity, value: m.hashMissing }];
+  return [{ label: m.integrity, value: m.unknown }];
 }
 
 export function buildReviewNoticePresentation(
   ticket: Pick<Ticket, 'status' | 'reviewState' | 'acceptancePolicy'>,
+  locale: Locale = DEFAULT_LOCALE,
 ): ReviewNoticePresentation | null {
   const review = ticket.reviewState;
   if (ticket.status !== 'review' || !review) return null;
-  const verification = verificationText[review.verdict ?? 'unknown'];
+  const messages = workspaceModelMessages(locale);
+  const m = messages.review;
+  const verification = messages.verification[review.verdict ?? 'unknown'];
+  const superseded = supersededReviewText(review, locale);
   const facts = [
-    { label: '当前验证状态', value: verification },
+    { label: messages.facts.verification, value: verification },
     ...(review.reviewerAttemptId === null
       ? []
-      : [{ label: '核查 Run', value: `#${review.reviewerAttemptId}` }]),
-    ...(supersededReviewText(review) ? [{ label: '上次核查', value: supersededReviewText(review)! }] : []),
-    ...reviewBudgetFact(review),
-    ...reviewHashFacts(review),
+      : [{ label: messages.facts.reviewRun, value: `#${review.reviewerAttemptId}` }]),
+    ...(superseded ? [{ label: messages.facts.lastReview, value: superseded }] : []),
+    ...reviewBudgetFact(review, locale),
+    ...reviewHashFacts(review, locale),
   ];
   const base = { id: review.state, facts, body: review.reason ?? '' };
 
@@ -607,30 +607,28 @@ export function buildReviewNoticePresentation(
         ...base,
         tone: 'danger',
         title: review.outcomeRecoveryFailed
-          ? '这张工单卡住了，不是在等你验收'
-          : '返工额度已用尽，自动化已停止',
+          ? m.stuckTitle
+          : m.exhaustedTitle,
         body: review.reason
-          ?? '自动返工已停止，且当前没有可验收的核查结论。',
+          ?? m.exhaustedBody,
         // 按钮不删。用户仍然是唯一能拍板的人——把入口拿掉，就是把用户锁在自己的闸门外面，
         // 而这正是本仓库反复修的那个错。改的是它的分量：默认动作变成需要承担风险的动作。
-        acceptanceRisk: `当前验证状态为${verification}，`
-          + `${review.outcomeRecoveryFailed ? '最后一次执行没有登记任何成果快照，' : ''}`
-          + '现在点"验收通过"等于在没有通过证据的情况下结单。',
+        acceptanceRisk: m.exhaustedRisk(verification, review.outcomeRecoveryFailed === true),
       };
     case 'evidence_conflict':
       return {
         ...base,
         tone: 'danger',
-        title: '证据冲突，需要你判断',
-        body: review.reason ?? '核查报告与产物证据互相矛盾，自动化已停手。',
-        acceptanceRisk: '核查证据自相矛盾，验收前请先确认以哪一份为准。',
+        title: m.conflictTitle,
+        body: review.reason ?? m.conflictBody,
+        acceptanceRisk: m.conflictRisk,
       };
     case 'review_failed':
       return {
         ...base,
         tone: 'attention',
-        title: '独立核查不通过',
-        body: review.reason ?? '核查未通过，等待返工。',
+        title: m.failedTitle,
+        body: review.reason ?? m.failedBody,
         acceptanceRisk: null,
       };
     case 'review_passed':
@@ -638,16 +636,16 @@ export function buildReviewNoticePresentation(
         ...base,
         tone: 'success',
         // 还停在 review 的 PASS 就是在等用户验收：托管的 PASS 会在出结论时直接结单。
-        title: '核查通过，等待你验收',
-        body: review.reason ?? '独立核查已通过。',
+        title: m.passedTitle,
+        body: review.reason ?? m.passedBody,
         acceptanceRisk: null,
       };
     case 'waiting_user':
       return {
         ...base,
         tone: 'info',
-        title: '等待你验收',
-        body: review.reason ?? '这张工单没有独立核查，由你判断是否完成。',
+        title: m.waitingTitle,
+        body: review.reason ?? m.waitingBody,
         acceptanceRisk: null,
       };
     default:
@@ -655,9 +653,9 @@ export function buildReviewNoticePresentation(
         ...base,
         tone: 'info',
         title: review.label,
-        body: review.reason ?? '执行已结束，独立核查尚未给出结论。',
+        body: review.reason ?? m.pendingBody,
         // 核查还没有结论就点验收，等于替 reviewer 下结论。提示但不拦。
-        acceptanceRisk: '独立核查尚未给出结论，现在验收等于跳过核查。',
+        acceptanceRisk: m.pendingRisk,
       };
   }
 }
@@ -669,11 +667,9 @@ export function isReviewDeadlocked(
   return ticket.status === 'review' && ticket.reviewState?.state === 'rework_exhausted';
 }
 
-function leadHandlingLabel(): string {
-  return `${leadNameNow()} 处理中`;
+function leadHandlingLabel(locale: Locale): string {
+  return workspaceModelMessages(locale).leadHandling(leadNameNow());
 }
-// 和 protocol 的 ticketNeedsUserLabel('decision') 同一个说法。
-const PENDING_DECISION_LABEL = ticketNeedsUserLabel('decision');
 
 export function isRuntimeRecoveryActive(
   ticket: { executionState?: TicketSummary['executionState'] },
@@ -724,8 +720,9 @@ export function groupForTicket(ticket: Ticket): TicketGroupId {
 
 export function buildTicketRailPresentation(
   allItems: Ticket[],
-  options: { filter: TicketFilter; query?: string; loading?: boolean; project?: TicketProjectScope | null },
+  options: { filter: TicketFilter; query?: string; loading?: boolean; project?: TicketProjectScope | null; locale?: Locale },
 ): TicketRailPresentation {
+  const locale = options.locale ?? DEFAULT_LOCALE;
   const query = options.query?.trim().toLocaleLowerCase() ?? '';
   // 从项目 tab 点进来时只看这个项目。筛选条上的数字也只数这个项目，和项目 tab 一样。
   const projectScope = options.project ?? null;
@@ -759,7 +756,7 @@ export function buildTicketRailPresentation(
     .map((id): TicketRailGroup => {
       const grouped = groupItems.get(id)!;
       return {
-        ...ticketGroupMetadata(id),
+        ...ticketGroupMetadata(id, locale),
         count: grouped.length,
         items: grouped,
       };
@@ -787,30 +784,32 @@ export function projectTicketSecondaryMeta(ticket: Ticket): string[] {
   return [ticket.agentLabel, ticket.runtimeName, ticket.runtimeLabel, elapsed].filter((value): value is string => Boolean(value));
 }
 
-export function buildInterventionPresentation(authority: InterventionAuthority): InterventionPresentation {
+export function buildInterventionPresentation(authority: InterventionAuthority, locale: Locale = DEFAULT_LOCALE): InterventionPresentation {
+  const messages = workspaceModelMessages(locale);
+  const m = messages.intervention;
   const actions: InterventionActionPresentation[] = [];
   if (authority.state === 'pending' && authority.canRespond) {
     if (authority.kind === 'approval') {
       actions.push(
-        { id: 'reject', label: '拒绝', tone: 'secondary' },
-        { id: 'approve_once', label: '授权本次', tone: 'primary' },
+        { id: 'reject', label: m.reject, tone: 'secondary' },
+        { id: 'approve_once', label: m.approveOnce, tone: 'primary' },
       );
-      if (authority.allowSessionApproval) actions.push({ id: 'approve_session', label: '本会话允许', tone: 'secondary' });
+      if (authority.allowSessionApproval) actions.push({ id: 'approve_session', label: m.approveSession, tone: 'secondary' });
     } else {
       for (const option of authority.options ?? []) {
         actions.push({ id: `option:${option.id}`, label: option.label, tone: actions.length === 0 ? 'primary' : 'secondary' });
       }
-      if (authority.allowCustom) actions.push({ id: 'custom', label: '其他决定', tone: 'secondary' });
+      if (authority.allowCustom) actions.push({ id: 'custom', label: m.custom, tone: 'secondary' });
     }
   }
 
   let resolutionText: string | undefined;
   if (authority.state === 'resolved' || authority.state === 'rejected' || authority.state === 'dismissed') {
-    resolutionText = [resolvedByLabel(authority.resolvedBy, leadNameNow()), authority.resolutionLabel ?? (authority.state === 'rejected' ? '已拒绝' : '已解决')]
+    resolutionText = [resolvedByLabel(authority.resolvedBy, leadNameNow(), locale), authority.resolutionLabel ?? (authority.state === 'rejected' ? m.rejected : m.resolved)]
       .filter(Boolean)
       .join(' · ');
   } else if (authority.state === 'expired') {
-    resolutionText = authority.expiryExplanation ?? `操作已过期，请等待 ${leadNameNow()} 重新评估。`;
+    resolutionText = authority.expiryExplanation ?? m.expired(leadNameNow());
   }
 
   return {
@@ -819,8 +818,8 @@ export function buildInterventionPresentation(authority: InterventionAuthority):
     state: authority.state,
     // 等你处理的介入和收件箱、状态标签同一种说法：「待你决定」「待审批」（2026-10-16）。
     stateLabel: authority.state === 'pending'
-      ? ticketNeedsUserLabel(authority.kind === 'approval' ? 'approval' : 'decision')
-      : interventionStateLabel[authority.state],
+      ? ticketNeedsUserLabel(authority.kind === 'approval' ? 'approval' : 'decision', locale)
+      : messages.interventionState[authority.state],
     tone: authority.state === 'pending'
       ? 'attention'
       : authority.state === 'resolved'
@@ -840,12 +839,6 @@ export function buildInterventionPresentation(authority: InterventionAuthority):
 // 诊断键值里没有信息的取值（Failure scope unknown、Needs none）。
 const UNINFORMATIVE_FACT = /^(?:unknown|none|n\/a|-)?$/i;
 
-const historicalCheckpointKindLabel: Partial<Record<CheckpointKind, string>> = {
-  progress: '进展',
-  blocked: '当时阻塞',
-  completed: '已提交验收',
-};
-
 function latestCheckpointIdOf(checkpoints: CheckpointPresentationInput[], kind?: CheckpointKind): string | undefined {
   return checkpoints.filter((checkpoint) => !kind || checkpoint.kind === kind).sort(compareCheckpointRecency)[0]?.id;
 }
@@ -859,13 +852,17 @@ function checkpointKindLabelFor(
   ticketStatus: TicketStatus | undefined,
   deliveryRunId: number | null | undefined,
   runs: CheckpointRunFacts | undefined,
+  locale: Locale,
 ): string {
+  const messages = workspaceModelMessages(locale);
+  const checkpointKindLabel = messages.checkpointKind;
+  const historicalCheckpointKindLabel: Partial<Record<CheckpointKind, string>> = messages.historicalCheckpointKind;
   if (ticketStatus === undefined) return checkpointKindLabel[checkpoint.kind];
   // 「当时阻塞」只给真让工单阻塞过的 Run。#66 上对话 Run #71 崩溃了，工单一直在 review：那是一次没有回答的对话。
   const run = checkpoint.kind === 'blocked' && checkpoint.attemptId !== null && checkpoint.attemptId !== undefined
     ? runs?.get(checkpoint.attemptId)
     : undefined;
-  if (run && !run.blockedTicket) return run.purpose === 'conversation' ? '对话失败' : '运行失败';
+  if (run && !run.blockedTicket) return run.purpose === 'conversation' ? messages.conversationFailed : messages.runFailed;
   // "执行完成，等待验收"只属于正在等待验收的那次交付。#66 上它挂在两个月前 Run #42 的提交记录上，
   // 而在等验收的是 Run #49。
   const sameDelivery = deliveryRunId === undefined || deliveryRunId === null || checkpoint.attemptId === deliveryRunId;
@@ -883,12 +880,14 @@ export function buildCheckpointFeedPresentation(
   checkpoints: CheckpointPresentationInput[],
   interventions: Record<string, InterventionAuthority>,
   resource: CheckpointFeedResource = { state: 'ready' },
-  context: { ticketStatus?: TicketStatus; deliveryRunId?: number | null; runs?: CheckpointRunFacts } = {},
+  context: { ticketStatus?: TicketStatus; deliveryRunId?: number | null; runs?: CheckpointRunFacts; locale?: Locale } = {},
 ): CheckpointFeedPresentation {
+  const locale = context.locale ?? DEFAULT_LOCALE;
+  const checkpointKindLabel = workspaceModelMessages(locale).checkpointKind;
   const items = checkpoints
     .map((checkpoint): CheckpointPresentation => {
       const authority = checkpoint.interventionId ? interventions[checkpoint.interventionId] : undefined;
-      const kindLabel = checkpointKindLabelFor(checkpoint, checkpoints, context.ticketStatus, context.deliveryRunId, context.runs);
+      const kindLabel = checkpointKindLabelFor(checkpoint, checkpoints, context.ticketStatus, context.deliveryRunId, context.runs, locale);
       const historical = kindLabel !== checkpointKindLabel[checkpoint.kind];
       // 「下一步」说的是现在要做什么。过去的记录不再有下一步：#66 上它们是写给 agent 的提示和早已作废的指令。
       // 系统记的「Run started」的下一步一直是写给 agent 的（"Answer the ticket-scoped conversation…"），也不显示。
@@ -897,12 +896,12 @@ export function buildCheckpointFeedPresentation(
       const agentInstruction = checkpoint.source === 'system_derived' && checkpoint.kind === 'progress';
       return {
         ...rest,
-        ...systemCheckpointText(checkpoint),
+        ...systemCheckpointText(checkpoint, locale),
         ...(historical || agentInstruction || !nextStep ? {} : { nextStep }),
         ...(informativeFacts && informativeFacts.length > 0 ? { keyFacts: informativeFacts } : {}),
         kindLabel,
         ...(historical ? { historical: true } : {}),
-        ...(authority ? { intervention: buildInterventionPresentation(authority) } : {}),
+        ...(authority ? { intervention: buildInterventionPresentation(authority, locale) } : {}),
       };
     })
     .sort((left, right) => {
@@ -925,11 +924,21 @@ export function buildCheckpointFeedPresentation(
   return { state: 'empty', items: [] };
 }
 
+// 只收一个参数：调用方会直接写 .map(checkpointToPresentation)。按界面语言取时用 checkpointPresentationFor(locale)。
 export function checkpointToPresentation(checkpoint: KernelCheckpoint): CheckpointPresentationInput {
+  return checkpointPresentationFor(DEFAULT_LOCALE)(checkpoint);
+}
+
+export function checkpointPresentationFor(locale: Locale): (checkpoint: KernelCheckpoint) => CheckpointPresentationInput {
+  return (checkpoint) => localizedCheckpointPresentation(checkpoint, locale);
+}
+
+function localizedCheckpointPresentation(checkpoint: KernelCheckpoint, locale: Locale): CheckpointPresentationInput {
+  const m = workspaceModelMessages(locale);
   const attemptLabel = checkpoint.attemptId === null ? '' : ` #${checkpoint.attemptId}`;
   const sourceLabel = checkpoint.source === 'system_derived'
-    ? '系统记录'
-    : `${checkpoint.author.runtime ?? checkpoint.author.kind} ${checkpoint.author.kind}${attemptLabel} 汇报`;
+    ? m.systemRecord
+    : m.reportFrom(`${checkpoint.author.runtime ?? checkpoint.author.kind} ${checkpoint.author.kind}${attemptLabel}`);
   const actionRef = checkpoint.actionRef;
   const interventionId = actionRef === null
     ? undefined
@@ -961,7 +970,9 @@ export function checkpointToPresentation(checkpoint: KernelCheckpoint): Checkpoi
 export function interventionToAuthority(
   intervention: KernelIntervention,
   canRespond: boolean,
+  locale: Locale = DEFAULT_LOCALE,
 ): InterventionAuthority {
+  const m = workspaceModelMessages(locale).intervention;
   const pending = intervention.state === 'pending';
   const state: InterventionState = intervention.state === 'approved'
     ? 'resolved'
@@ -970,18 +981,18 @@ export function interventionToAuthority(
   if (intervention.resolution) {
     if (intervention.kind === 'approval') {
       resolutionLabel = intervention.resolution.decision === 'approve_session'
-        ? '本会话已允许'
+        ? m.allowedSession
         : intervention.resolution.decision === 'approve'
-          ? '已授权本次'
-          : '已拒绝';
+          ? m.allowedOnce
+          : m.rejected;
     } else if (intervention.resolution.kind === 'option') {
       resolutionLabel = intervention.options.find((option) => option.id === intervention.resolution?.optionId)?.label
         ?? intervention.resolution.optionId
-        ?? '已选择';
+        ?? m.selected;
     } else if (intervention.resolution.kind === 'text') {
-      resolutionLabel = intervention.resolution.text ?? '已回复';
+      resolutionLabel = intervention.resolution.text ?? m.replied;
     } else {
-      resolutionLabel = '已撤销';
+      resolutionLabel = m.withdrawn;
     }
   }
   return {
@@ -998,7 +1009,7 @@ export function interventionToAuthority(
         }),
     ...(intervention.resolvedBy ? { resolvedBy: intervention.resolvedBy } : {}),
     ...(resolutionLabel ? { resolutionLabel } : {}),
-    ...(state === 'expired' ? { expiryExplanation: `操作已过期，请等待 ${leadNameNow()} 重新评估。` } : {}),
+    ...(state === 'expired' ? { expiryExplanation: m.expired(leadNameNow()) } : {}),
   };
 }
 
@@ -1029,6 +1040,7 @@ export function resourceToCheckpointFeedResource(
   phase: ControlPlanePhase,
   resource: Pick<ResourceLoadState, 'state' | 'error'> | undefined,
   connectionState?: ConnectionState,
+  locale: Locale = DEFAULT_LOCALE,
 ): CheckpointFeedResource {
   if (
     (connectionState !== undefined && connectionState !== 'connected') ||
@@ -1040,63 +1052,54 @@ export function resourceToCheckpointFeedResource(
     return { state: 'error', ...(resource.error ? { error: resource.error } : {}) };
   }
   if (resource?.state === 'ready' || resource?.state === 'stale') return { state: 'ready' };
-  if (resource?.state === 'unsupported') return { state: 'error', error: '当前内核不支持 Checkpoint 资源。' };
+  if (resource?.state === 'unsupported') return { state: 'error', error: workspaceModelMessages(locale).checkpointUnsupported };
   return { state: 'loading' };
 }
 
 export function buildTicketDetailPresentation(
   ticket: Ticket,
-  options: { timing?: { elapsedMs: number | null | undefined }; artifactCapability: ArtifactCapability; artifactCount?: number },
+  options: { timing?: { elapsedMs: number | null | undefined }; artifactCapability: ArtifactCapability; artifactCount?: number; locale?: Locale },
 ): TicketDetailPresentation {
+  const locale = options.locale ?? DEFAULT_LOCALE;
+  const m = workspaceModelMessages(locale);
   const elapsed = formatCompactElapsed(options.timing?.elapsedMs ?? ticket.elapsedMs);
   const properties: TicketPropertyPresentation[] = [];
-  if (ticket.project) properties.push({ id: 'project', label: '项目', value: ticket.project });
-  if (ticket.agentLabel) properties.push({ id: 'agent', label: '执行 agent', value: ticket.agentLabel });
-  if (ticket.runtimeName) properties.push({ id: 'runtime', label: '执行引擎', value: ticket.runtimeName });
-  if (ticket.sessionId) properties.push({ id: 'session', label: '会话 ID', value: ticket.sessionId });
-  properties.push({ id: 'elapsed', label: '耗时', value: elapsed ?? '尚未开始' });
+  if (ticket.project) properties.push({ id: 'project', label: m.properties.project, value: ticket.project });
+  if (ticket.agentLabel) properties.push({ id: 'agent', label: m.properties.agent, value: ticket.agentLabel });
+  if (ticket.runtimeName) properties.push({ id: 'runtime', label: m.properties.runtime, value: ticket.runtimeName });
+  if (ticket.sessionId) properties.push({ id: 'session', label: m.properties.session, value: ticket.sessionId });
+  properties.push({ id: 'elapsed', label: m.properties.elapsed, value: elapsed ?? m.properties.notStarted });
 
   let artifactState: ArtifactPresentationState;
   if (options.artifactCapability === 'loading') {
-    artifactState = { kind: 'loading', title: '正在读取产物', body: '等待内核返回真实 Artifact 资源。' };
+    artifactState = { kind: 'loading', title: m.artifacts.loadingTitle, body: m.artifacts.loadingBody };
   } else if (options.artifactCapability === 'unsupported') {
-    artifactState = { kind: 'unsupported', title: '产物能力尚未接入', body: '当前内核还没有可读取的 Artifact 资源，不会从文件路径伪造产物。' };
+    artifactState = { kind: 'unsupported', title: m.artifacts.unsupportedTitle, body: m.artifacts.unsupportedBody };
   } else if ((options.artifactCount ?? 0) === 0) {
-    artifactState = { kind: 'empty', title: '还没有产物', body: 'child 提交真实 Artifact 后会显示在这里。' };
+    artifactState = { kind: 'empty', title: m.artifacts.emptyTitle, body: m.artifacts.emptyBody };
   } else {
-    artifactState = { kind: 'available', title: `${options.artifactCount} 个产物`, body: '真实 Artifact 已由内核返回。' };
+    artifactState = { kind: 'available', title: m.artifacts.availableTitle(options.artifactCount ?? 0), body: m.artifacts.availableBody };
   }
 
-  return { tabs: TICKET_DETAIL_TABS, properties, artifactState };
+  return { tabs: ticketDetailTabs(locale), properties, artifactState };
 }
 
 // 两台状态机各自的取值都要有标签（kernel spec §6.1/§6.2）：少一半就会在提醒页面
-// 显示 undefined。
-const statusLabel: Record<TicketStatus, string> = {
-  draft: '待确认', ready: '待开始', active: '进行中', blocked: '阻塞',
-  review: '待验收', done: '完成', cancelled: '已取消',
-  scheduled: '已排期', fired: '已提醒', acked: '已确认',
-};
-
-export function ticketStatusLabel(status: TicketStatus): string {
-  return statusLabel[status];
+// 显示 undefined。标签在 model.messages.ts 的 status 里，类型保证两种语言都齐。
+export function ticketStatusLabel(status: TicketStatus, locale: Locale = DEFAULT_LOCALE): string {
+  return workspaceModelMessages(locale).status[status];
 }
 
-const priorityLabel: Record<TicketSummary['priority'], string> = {
-  urgent: '紧急', high: '高', normal: '普通', low: '低',
-};
-
-const runtimeLabel: Record<TicketSummary['runtime']['state'], string> = {
-  idle: '空闲', starting: '启动中', running: '运行中', stale: '停滞', blocked: '需介入',
-};
-
-const workflowRuntimeLabel: Partial<Record<NonNullable<TicketSummary['workflowState']>, string>> = {
-  waiting_dependency: '等待依赖',
-  waiting_capability: '等待能力部署',
-  continuing: '续作中',
-};
-
-export function ticketSummaryToTicket(ticket: TicketSummary, workItem?: KernelTicketWorkItem | KernelTicketWorkItemV2): Ticket {
+export function ticketSummaryToTicket(
+  ticket: TicketSummary,
+  workItem?: KernelTicketWorkItem | KernelTicketWorkItemV2,
+  locale: Locale = DEFAULT_LOCALE,
+): Ticket {
+  const m = workspaceModelMessages(locale);
+  const statusLabel: Record<TicketStatus, string> = m.status;
+  const priorityLabel: Record<TicketSummary['priority'], string> = m.priority;
+  const runtimeLabel: Record<TicketSummary['runtime']['state'], string> = m.runtime;
+  const workflowRuntimeLabel: Partial<Record<NonNullable<TicketSummary['workflowState']>, string>> = m.workflow;
   const execution = workItem?.activeExecution;
   const progress = workItem && 'progress' in workItem ? workItem.progress : null;
   const recoveryInProgress = isRuntimeRecoveryActive(ticket);
@@ -1119,10 +1122,11 @@ export function ticketSummaryToTicket(ticket: TicketSummary, workItem?: KernelTi
   const executionHeartbeat = ticket.executionState?.state === 'starting' || ticket.executionState?.state === 'running';
   // 等你回答的决定压过其他说法（2026-10-16）：会话里的工单卡、决定卡的工单头、列表和详情都写「待你决定」。
   const pendingDecisionCount = ticket.attention.pendingDecisionCount ?? 0;
+  // 和 protocol 的 ticketNeedsUserLabel('decision') 同一个说法。
   const projectedStatusLabel = pendingDecisionCount > 0
-    ? PENDING_DECISION_LABEL
+    ? ticketNeedsUserLabel('decision', locale)
     : leadHandling && !recoveryInProgress
-    ? leadHandlingLabel()
+    ? leadHandlingLabel(locale)
     : ticket.executionState?.kind === 'rework' || ticket.executionState?.kind === 'recovery'
       ? ticket.executionState.label
       : ticket.reviewState?.label ?? statusLabel[ticket.stage];
@@ -1144,7 +1148,7 @@ export function ticketSummaryToTicket(ticket: TicketSummary, workItem?: KernelTi
     priorityLabel: priorityLabel[ticket.priority],
     ...(ticket.project === null ? {} : { project: ticket.project }),
     runtimeLabel: leadHandling && !recoveryInProgress
-      ? leadHandlingLabel()
+      ? leadHandlingLabel(locale)
       : ticket.executionState?.label
         ?? workflowRuntimeLabel[ticket.workflowState ?? 'idle']
         ?? runtimeLabel[ticket.runtime.state],
@@ -1187,38 +1191,42 @@ export function ticketDisplayTitle(ticket: Pick<Ticket, 'title' | 'displayTitle'
 
 // 工单卡第二行的现状：在跑的 Run、runtime 和跑了多久，例如「Run #87 · Codex · 已 12 分钟」。
 // 只用 TicketSummary 投影出来的数据，不用 Lead 写的话。没有在跑的东西时返回 null。
-export function ticketNowLine(ticket: Ticket): string | null {
+export function ticketNowLine(ticket: Ticket, locale: Locale = DEFAULT_LOCALE): string | null {
   if (!ticket.heartbeat) return null;
   const run = ticket.agentLabel?.replace(/^child #/, 'Run #') ?? null;
   const runtime = runtimeDisplayName(ticket.runtimeName);
   const minutes = ticket.elapsedMs !== null && ticket.elapsedMs !== undefined && ticket.elapsedMs >= 60_000
-    ? `已 ${Math.floor(ticket.elapsedMs / 60_000)} 分钟`
+    ? workspaceModelMessages(locale).minutesSoFar(Math.floor(ticket.elapsedMs / 60_000))
     : null;
   const parts = [run, runtime, minutes].filter((part): part is string => Boolean(part));
   return parts.length ? parts.join(' · ') : null;
 }
 
-export function formatTicketHeartbeatLabel(ticket: Ticket): string {
+export function formatTicketHeartbeatLabel(ticket: Ticket, locale: Locale = DEFAULT_LOCALE): string {
+  const m = workspaceModelMessages(locale).heartbeat;
   if (isRuntimeRecoveryActive(ticket)) return ticket.executionState!.label;
-  if (ticket.leadHandling && !ticket.needsAttention) return leadHandlingLabel();
+  if (ticket.leadHandling && !ticket.needsAttention) return leadHandlingLabel(locale);
   if (ticket.executionState?.state === 'blocked' || ticket.executionState?.state === 'failed') {
-    return '需要你';
+    return m.needsYou;
   }
-  if (ticket.status === 'blocked') return '需要介入';
+  if (ticket.status === 'blocked') return m.needsAction;
   if (ticket.status === 'review') {
     if (ticket.reviewState?.state === 'review_failed'
         || ticket.reviewState?.state === 'evidence_conflict'
         || ticket.reviewState?.state === 'rework_exhausted') {
-      return '需要你';
+      return m.needsYou;
     }
     if (ticket.reviewState) return ticket.reviewState.label;
-    return ticket.progressPercent === undefined ? '待验收' : `待验收 · ${ticket.progressPercent}%`;
+    return ticket.progressPercent === undefined ? m.toAccept : m.toAcceptPercent(ticket.progressPercent);
   }
-  if (ticket.needsAttention) return '需要你';
-  if (ticket.heartbeat && ticket.progressPercent !== undefined) return `心跳 · ${ticket.progressPercent}%`;
-  if (ticket.heartbeat) return '心跳';
+  if (ticket.needsAttention) return m.needsYou;
+  if (ticket.heartbeat && ticket.progressPercent !== undefined) return m.beatPercent(ticket.progressPercent);
+  if (ticket.heartbeat) return m.beat;
   return ticket.runtimeLabel;
 }
+
+// 「停滞」的标签：Ticket 可能按任何一种语言建，两种都认。
+const STALE_RUNTIME_LABELS = new Set([workspaceModelMessages('en').runtime.stale, workspaceModelMessages('zh').runtime.stale]);
 
 export type TicketNextActionPresentation = {
   label: string;
@@ -1251,66 +1259,71 @@ export function ticketAttentionReason(ticket: Ticket): TicketAttentionReason | n
   if (ticket.workspace?.state === 'failed') return 'workspace_failed';
   if (ticket.workspace?.state === 'blocked') return 'workspace_blocked';
   if (ticket.workflowState === 'waiting_capability') return 'capability_waiting';
-  if (ticket.runtimeLabel === '停滞' || ticket.runtimeLabel === '过期') return 'runtime_stale';
+  if (STALE_RUNTIME_LABELS.has(ticket.runtimeLabel)) return 'runtime_stale';
   if (ticket.status === 'blocked') return 'ticket_blocked';
   if (ticket.needsAttention) return 'user_attention';
   return null;
 }
 
-export function ticketNextActionPresentation(ticket: Ticket): TicketNextActionPresentation | null {
+export function ticketNextActionPresentation(ticket: Ticket, locale: Locale = DEFAULT_LOCALE): TicketNextActionPresentation | null {
   if (ticket.status === 'done' || ticket.status === 'acked' || ticket.status === 'cancelled') return null;
+  const m = workspaceModelMessages(locale);
   if (ticket.leadHandling && !ticket.needsAttention) {
     const leadName = leadNameNow();
-    return { label: `${leadName} 正在处理`, body: `系统发现了异常，${leadName} 正在处理，处理完会告诉你。需要你时它会直接找你。`, tone: 'info' };
+    return { label: m.leadHandling(leadName), body: m.next.leadHandlingBody(leadName), tone: 'info' };
   }
   const attentionReason = ticketAttentionReason(ticket);
   if (attentionReason === 'execution_blocked' || attentionReason === 'execution_failed') {
-    return { label: '需要你处理执行异常', body: ticket.executionState?.reason ?? '执行没有继续推进，请查看错误并选择恢复或停止。', tone: 'danger' };
+    return { label: m.next.executionLabel, body: ticket.executionState?.reason ?? m.next.executionBody, tone: 'danger' };
   }
   if (attentionReason === 'evidence_conflict') {
-    return { label: '需要你判断证据冲突', body: '核查结论与产物证据不一致，验收前请先确认依据。', tone: 'danger' };
+    return { label: m.next.conflictLabel, body: m.next.conflictBody, tone: 'danger' };
   }
   if (attentionReason === 'review_failed') {
-    return { label: '需要你决定是否返工', body: '独立核查未通过，当前不会自动修改这张工单。', tone: 'attention' };
+    return { label: m.next.reviewFailedLabel, body: m.next.reviewFailedBody, tone: 'attention' };
   }
   if (attentionReason === 'merge_conflict') {
-    return { label: '需要你处理合并冲突', body: '工作区变更无法自动合并，请先解决冲突或放弃变更。', tone: 'danger' };
+    return { label: m.next.mergeLabel, body: m.next.mergeBody, tone: 'danger' };
   }
   if (attentionReason === 'workspace_failed' || attentionReason === 'workspace_blocked') {
-    return { label: '需要你处理工作区异常', body: '工作区没有准备好，请查看错误后重新创建或恢复。', tone: 'danger' };
+    return { label: m.next.workFolderLabel, body: m.next.workFolderBody, tone: 'danger' };
   }
   if (ticket.status === 'review') {
-    return { label: '需要你验收', body: '执行已结束，请查看验收依据后通过或退回返工。', tone: 'attention' };
+    return { label: m.next.acceptLabel, body: m.next.acceptBody, tone: 'attention' };
   }
   if (attentionReason || ticket.status === 'draft') {
-    return { label: '需要你介入', body: ticket.summary || '这张工单暂时无法自动推进。', tone: 'attention' };
+    return { label: m.next.actLabel, body: ticket.summary || m.next.actBody, tone: 'attention' };
   }
   if (ticket.status === 'active' || ticket.status === 'ready') {
-    return { label: '系统正在执行', body: `${leadNameNow()} 和 child 正在推进这张工单，暂时不需要你操作。`, tone: 'info' };
+    return { label: m.next.runningLabel, body: m.next.runningBody(leadNameNow()), tone: 'info' };
   }
   return null;
 }
 
-export function ticketRailCaption(ticket: Ticket): string {
-  if (ticket.status === 'done' || ticket.status === 'acked') return `#${ticket.id} · 已完成`;
-  if (ticket.status === 'cancelled') return `#${ticket.id} · 已取消`;
+export function ticketRailCaption(ticket: Ticket, locale: Locale = DEFAULT_LOCALE): string {
+  const messages = workspaceModelMessages(locale);
+  const m = messages.caption;
+  if (ticket.status === 'done' || ticket.status === 'acked') return `#${ticket.id} · ${m.completed}`;
+  if (ticket.status === 'cancelled') return `#${ticket.id} · ${m.cancelled}`;
   if (isRuntimeRecoveryActive(ticket)) return `#${ticket.id} · ${ticket.executionState!.label}`;
-  if (ticket.leadHandling && !ticket.needsAttention) return `#${ticket.id} · ${leadHandlingLabel()}`;
+  if (ticket.leadHandling && !ticket.needsAttention) return `#${ticket.id} · ${leadHandlingLabel(locale)}`;
   if (ticket.status === 'review') {
-    return `#${ticket.id} · ${ticket.statusLabel || '待验收'}${ticket.needsAttention ? ' · 需要处理' : ''}`;
+    return `#${ticket.id} · ${ticket.statusLabel || m.toAccept}${ticket.needsAttention ? ` · ${m.needsHandling}` : ''}`;
   }
   const attentionReason = ticketAttentionReason(ticket);
-  if (attentionReason === 'ticket_blocked') return `#${ticket.id} · 阻塞 · 需要介入`;
-  if (attentionReason) return `#${ticket.id} · ${ticket.statusLabel || ticket.runtimeLabel} · 需要介入`;
-  if (ticket.turn === 'queued') return `#${ticket.id} · 排队 · 没有 Run 在跑`;
-  if (ticket.turn === 'lead') return `#${ticket.id} · ${ticket.background ? `${leadNameNow()} 后台` : ticket.statusLabel || leadHandlingLabel()}`;
-  return `#${ticket.id} · ${ticket.agentLabel ?? 'child'} ${ticket.runtimeLabel === '运行中' ? '执行中' : ticket.runtimeLabel}`;
+  if (attentionReason === 'ticket_blocked') return `#${ticket.id} · ${m.blocked}`;
+  if (attentionReason) return `#${ticket.id} · ${ticket.statusLabel || ticket.runtimeLabel} · ${m.needsAction}`;
+  if (ticket.turn === 'queued') return `#${ticket.id} · ${m.queued}`;
+  if (ticket.turn === 'lead') return `#${ticket.id} · ${ticket.background ? m.background(leadNameNow()) : ticket.statusLabel || leadHandlingLabel(locale)}`;
+  const runtime = ticket.runtimeLabel === messages.runtime.running ? m.executing : ticket.runtimeLabel;
+  return `#${ticket.id} · ${ticket.agentLabel ?? 'child'} ${runtime}`;
 }
 
 export function buildPowMetricPresentation(
   pow: Pick<KernelTicketPow, 'metrics'>,
   checkpoint?: { keyFacts?: KernelCheckpoint['keyFacts'] },
 ): PowMetricPresentation {
+  // keyFacts 的 label 是 agent 写进进展记录的数据，不是界面文字：按原样匹配，不翻译。
   const coverageFact = checkpoint?.keyFacts?.find((fact) => fact.label === '能力覆盖');
   const gapFact = checkpoint?.keyFacts?.find((fact) => fact.label === '发现缺口');
   const coverage = coverageFact?.value.match(/^\s*(\d+)\s*\/\s*(\d+)\s*$/);
@@ -1325,6 +1338,7 @@ export function resolveWorkspaceTickets(
   connected: boolean,
   liveTickets: TicketSummary[],
   workItems: (KernelTicketWorkItem | KernelTicketWorkItemV2)[] = [],
+  locale: Locale = DEFAULT_LOCALE,
 ): Ticket[] {
   if (!connected) return [];
   const workItemsByTicket = new Map(workItems.map((item) => [item.ticketId, item]));
@@ -1332,7 +1346,7 @@ export function resolveWorkspaceTickets(
   // 它们算在「需要我」里，就得在收件箱里找得到（实例上的 #75：父工单已经完成，它自己还阻塞着）。
   return liveTickets
     .filter((ticket) => ticket.parentTicketId == null || ticketNeedsUser(ticket) !== null)
-    .map((ticket) => ticketSummaryToTicket(ticket, workItemsByTicket.get(ticket.id)));
+    .map((ticket) => ticketSummaryToTicket(ticket, workItemsByTicket.get(ticket.id), locale));
 }
 
 export function resolveWorkspaceTicket(
@@ -1340,12 +1354,13 @@ export function resolveWorkspaceTicket(
   liveTickets: TicketSummary[],
   selectedTicketId: number | string | null,
   workItems: (KernelTicketWorkItem | KernelTicketWorkItemV2)[] = [],
+  locale: Locale = DEFAULT_LOCALE,
 ): Ticket | undefined {
   if (!connected || selectedTicketId === null) return undefined;
   const summary = liveTickets.find((ticket) => String(ticket.id) === String(selectedTicketId));
   if (!summary) return undefined;
   const workItem = workItems.find((item) => item.ticketId === summary.id);
-  return ticketSummaryToTicket(summary, workItem);
+  return ticketSummaryToTicket(summary, workItem, locale);
 }
 
 export function shouldShowWorkspaceBootShell(
@@ -1355,12 +1370,13 @@ export function shouldShowWorkspaceBootShell(
   return !hydrated || phase === 'loading' || phase === 'connecting';
 }
 
-export function buildWeek(referenceDate: string): WeekDay[] {
+export function buildWeek(referenceDate: string, locale: Locale = DEFAULT_LOCALE): WeekDay[] {
   const reference = new Date(`${referenceDate}T12:00:00`);
   const mondayOffset = (reference.getDay() + 6) % 7;
   const monday = new Date(reference);
   monday.setDate(reference.getDate() - mondayOffset);
-  const weekdayLabels = ['一', '二', '三', '四', '五', '六', '日'];
+  const weekday = workspaceModelMessages(locale).weekday;
+  const weekdayLabels = [0, 1, 2, 3, 4, 5, 6].map(weekday);
 
   return weekdayLabels.map((weekdayLabel, index) => {
     const date = new Date(monday);

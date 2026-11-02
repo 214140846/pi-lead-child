@@ -322,7 +322,7 @@ export function validateStandingOrderDefinition(definition: StandingOrderDefinit
     && !Value.Check(STANDING_ORDER_RULE_PARAMS[definition.action.rule], definition.action.params)) {
     errors.push(`规则 ${definition.action.rule} 的参数不符合 schema`);
   } else if (definition.action.type === "rule" && definition.action.rule === "channel.handbook") {
-    errors.push(...channelHandbookProblems(definition.action.params));
+    errors.push(...channelHandbookProblems(definition.action.params, "zh"));
   }
   if (definition.limits !== null && !Value.Check(StandingOrderLimitsSchema, definition.limits)) errors.push("上限不符合 schema");
   if (definition.escalateTo !== null && !isTriageLevel(definition.escalateTo)) errors.push(`escalateTo ${String(definition.escalateTo)} 不是级别`);

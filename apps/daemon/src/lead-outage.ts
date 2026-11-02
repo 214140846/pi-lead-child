@@ -4,7 +4,8 @@
 //     停摆只记在内存里时，重启后那张卡片永远停在「起」，新的停摆另开一张。
 // 停摆通知的 id 是 turn_outage_<开始的毫秒>（writeOutageNotice），正文是 leadOutageHeadline 加每件事一行。
 import type { Db } from "@pi-lead-child/store";
-import { isLeadOutageHeadline, leadOutageCause, type LeadModelFailureKind } from "@pi-lead-child/protocol";
+import { isLeadOutageHeadline, leadOutageCause, LOCALES, type LeadModelFailureKind } from "@pi-lead-child/protocol";
+import { serverMessages } from "./server.messages.js";
 
 export type OutageKind = LeadModelFailureKind | "silent";
 export type OutageItem = { line: string; kind: "inbox" | "pushed"; hasRecord: boolean };
@@ -17,8 +18,13 @@ export interface OpenOutage {
 
 const OUTAGE_KINDS: readonly OutageKind[] = ["network", "unavailable", "busy", "auth", "config", "unknown", "silent"];
 const TURN_PREFIX = "turn_outage_";
-// 每件事一行：「· <事> —— <状态>」。状态是 daemon 自己写的那几种（outageText）。
-const ITEM_LINE = /^·\s*(.+?)\s+——\s+(.+)$/u;
+// 每件事一行：中文是「· <事> —— <状态>」，英文是「· <事> — <状态>」（2026-11-01）。状态是 daemon 自己写的那几种（outageText）。
+const ITEM_LINE = /^·\s*(.+?)\s+——?\s+(.+)$/u;
+// 还没结束的标题里的原因：中文「<开始> 起（原因）」，英文「offline since <开始> (原因) · 」。
+const OPEN_CAUSE_ZH = /起（(.+?)）/u;
+const OPEN_CAUSE_EN = / offline since \d{1,2}:\d{2} \((.+)\) · /u;
+// 读回时认两种语言写的「已推送给你」：通知按写入时的语言写，用户之后可能换了语言。
+const PUSHED_STATUSES = new Set(LOCALES.map((locale) => serverMessages(locale).outage.pushed));
 
 /** 新的一次停摆从什么时候算：Lead 不能工作的起点，但不早于上一次停摆恢复的时间。 */
 export function outageStart(incapacitySince: number, lastEndedAt: number | null): number {
@@ -68,21 +74,21 @@ export function restoreOutages(db: Db): { open: OpenOutage | null; lastEndedAt: 
     const [headline = "", ...lines] = row.assistant_text.split("\n");
     // 标题开头是 Lead 的名字，写下以后可能又改过：不认具体的名字（protocol 的 isLeadOutageHeadline）。
     if (!Number.isFinite(since) || !isLeadOutageHeadline(headline)) continue;
-    // 还没结束的标题写着「<开始> 起（原因）」；结束了的写着结束时间。
-    const cause = /起（(.+?)）/u.exec(headline)?.[1];
+    // 还没结束的标题写着「<开始> 起（原因）」（英文是「since <开始> (原因)」）；结束了的写着结束时间。
+    const cause = (OPEN_CAUSE_ZH.exec(headline) ?? OPEN_CAUSE_EN.exec(headline))?.[1];
     if (cause === undefined) {
       const ended = Date.parse(row.updated_at);
       if (Number.isFinite(ended)) lastEndedAt = Math.max(lastEndedAt ?? ended, ended);
       latestClosedSince = Math.max(latestClosedSince ?? since, since);
       continue;
     }
-    // 2026-10-22 以前「没有响应」写成「Lead 没有响应」。
-    const kind = OUTAGE_KINDS.find((candidate) => leadOutageCause(candidate) === cause)
+    // 原因按写入时的语言写，两种语言都认。2026-10-22 以前「没有响应」写成「Lead 没有响应」。
+    const kind = OUTAGE_KINDS.find((candidate) => LOCALES.some((locale) => leadOutageCause(candidate, locale) === cause))
       ?? (cause.endsWith("没有响应") ? "silent" : "unknown");
     const items = lines.flatMap((line): OutageItem[] => {
       const parsed = ITEM_LINE.exec(line.trim());
       if (!parsed) return [];
-      return [{ line: parsed[1]!, kind: parsed[2] === "已推送给你" ? "pushed" : "inbox", hasRecord: false }];
+      return [{ line: parsed[1]!, kind: PUSHED_STATUSES.has(parsed[2]!) ? "pushed" : "inbox", hasRecord: false }];
     });
     open = { since, kind, items, turnId: row.id };
   }

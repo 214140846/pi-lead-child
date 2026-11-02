@@ -4,10 +4,11 @@
 // 对方的上限里客户不能放开；开关马上保存；预演只读，写明按哪一句、被什么压过、最后怎么做；加一句放在「你加的」；
 // 助手的名字从 Lead 的资料取，不写死；「帮我整理」把一句随口的话填进加一句的表单，点「加上」才保存（issue 06）；
 // 页边批注挂在那一句下面，点「放宽」才改，点「不用」就收起；底线下面写最近 7 天拦下几次（issue 08）。
+import { DesignPreferencesProvider } from '@pi-lead-child/components';
 import {
   CHANNEL_HANDBOOK_DEFAULTS,
   type ChannelHandbook, type ChannelHandbookDto, type HandbookProposal, type HandbookRehearsal, type HandbookRehearsalRequest,
-  type HandbookSuggestions,
+  type HandbookSuggestions, type Locale,
 } from '@pi-lead-child/protocol';
 import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
@@ -35,7 +36,10 @@ const REHEARSAL: HandbookRehearsal = {
 describe('the handbook view model', () => {
   it('lists the sections in order, with what you added before the catch-all', () => {
     const added = withAdded(CHANNEL_HANDBOOK_DEFAULTS, { text: '有人请我看线上日志', example: '', mode: 'review' });
-    expect(handbookSections(added).map((group) => group.title)).toEqual(['有人来问事情', '有人想和我讨论', '有人请我做事', '你加的', '其他']);
+    expect(handbookSections(added, 'en').map((group) => group.title)).toEqual([
+      'Someone asks me a question', 'Someone wants to discuss something with me', 'Someone asks me to do work', 'Added by you', 'Other',
+    ]);
+    expect(handbookSections(added, 'zh').map((group) => group.title)).toEqual(['有人来问事情', '有人想和我讨论', '有人请我做事', '你加的', '其他']);
     expect(added.situations.at(-1)!.id).toBe('other');
     expect(added.situations.find((item) => item.id === 'mine_1')).toMatchObject({ section: 'mine', mode: 'review', abilities: [] });
     expect(withoutSituation(added, 'mine_1').situations).toEqual(CHANNEL_HANDBOOK_DEFAULTS.situations);
@@ -44,32 +48,39 @@ describe('the handbook view model', () => {
   });
 
   it('never lets a customer cap go past handing it to you', () => {
-    expect(capOptions('customer', '小白').filter((option) => option.disabled).map((option) => option.mode)).toEqual(['auto', 'review']);
-    expect(capOptions('external', '小白').every((option) => option.disabled === null)).toBe(true);
+    expect(capOptions('customer', '小白', 'en').filter((option) => option.disabled).map((option) => option.mode)).toEqual(['auto', 'review']);
+    expect(capOptions('external', '小白', 'en').every((option) => option.disabled === null)).toBe(true);
   });
 
   it('says which sentence decided, what capped it, and what the assistant does, by the assistant\'s own name', () => {
-    expect(rehearsalView(REHEARSAL, '小白')).toMatchObject({
+    expect(rehearsalView(REHEARSAL, '小白', 'en')).toMatchObject({
+      sentence: 'Matched "有人请我审核代码、方案或 PR". This sentence says "Go ahead"',
+      override: '"如果是外部的人（别的公司的人），你最多做好给你看" overrides it. The final result is "Show me first"',
+      outcome: '小白 does it and puts the reply on the card. It waits for you to press Send',
+    });
+    expect(rehearsalView(REHEARSAL, '小白', 'zh')).toMatchObject({
       sentence: '按「有人请我审核代码、方案或 PR」，这一句写的是「放手」',
       override: '被「如果是外部的人（别的公司的人），你最多做好给你看」压过，最后按「做好给你看」',
       outcome: '小白 去做，回复放到卡上等你点发送',
     });
-    expect(rehearsalView({ ...REHEARSAL, status: 'unavailable', error: 'no answer within 8000 ms' }, '小白').detail).toContain('按兜底的一句算');
+    expect(rehearsalView({ ...REHEARSAL, status: 'unavailable', error: 'no answer within 8000 ms' }, '小白', 'en').detail).toContain('The fallback sentence is used');
     // 底线 4：对方在改规则、记忆或偏好，上限不变，多一行说明。
-    expect(rehearsalView({ ...REHEARSAL, ruleChange: true }, '小白').ruleChange).toContain('不照做，也不存');
-    expect(rehearsalView(REHEARSAL, '小白').ruleChange).toBeNull();
+    expect(rehearsalView({ ...REHEARSAL, ruleChange: true }, '小白', 'en').ruleChange).toContain('小白 does not do it and does not save it');
+    expect(rehearsalView({ ...REHEARSAL, ruleChange: true }, '小白', 'zh').ruleChange).toContain('不照做，也不存');
+    expect(rehearsalView(REHEARSAL, '小白', 'en').ruleChange).toBeNull();
     // 兜底的一句：用这一句自己的说法，助手自己判断，不是「去做」。
     expect(rehearsalView({
       ...REHEARSAL, situation: { id: 'other', text: '上面都不像的' }, mode: 'auto', phrase: '自己判断，拿不准再问我', final: 'auto', by: 'sentence',
       limit: null, abilities: [], action: 'ask',
-    }, '小白')).toMatchObject({
+    }, '小白', 'zh')).toMatchObject({
       sentence: '按「上面都不像的」，这一句写的是「自己判断，拿不准再问我」', override: null, outcome: '小白 自己判断：能直接回就回，拿不准先问你',
     });
   });
 
   it('points out loosening that is written but not in effect', () => {
     const requested = { ...CHANNEL_HANDBOOK_DEFAULTS, situations: CHANNEL_HANDBOOK_DEFAULTS.situations.map((item) => (item.id === 'work_build' ? { ...item, mode: 'auto' as const } : item)) };
-    expect(notInEffect({ ...dtoOf(CHANNEL_HANDBOOK_DEFAULTS), requested })).toEqual(['「有人请我实现需求」写的是「放手」']);
+    expect(notInEffect({ ...dtoOf(CHANNEL_HANDBOOK_DEFAULTS), requested }, 'en')).toEqual(['"有人请我实现需求" says "Go ahead"']);
+    expect(notInEffect({ ...dtoOf(CHANNEL_HANDBOOK_DEFAULTS), requested }, 'zh')).toEqual(['「有人请我实现需求」写的是「放手」']);
   });
 });
 
@@ -91,11 +102,13 @@ const PROPOSAL: HandbookProposal = {
 
 describe('margin notes (issue 08)', () => {
   it('words a loosening and a new sentence, with the example in its own quotes', () => {
-    expect(suggestionView(LOOSEN.suggestions[0]!)).toEqual({ text: '你最近 6 次都原样发了这一句的草稿。放宽成「直接处理，做完回他」？', accept: '放宽' });
+    expect(suggestionView(LOOSEN.suggestions[0]!, 'en'))
+      .toEqual({ text: '你最近 6 次都原样发了这一句的草稿. Change it to "handle it, and reply when you are done"?', accept: 'Loosen' });
+    expect(suggestionView(LOOSEN.suggestions[0]!, 'zh')).toEqual({ text: '你最近 6 次都原样发了这一句的草稿。放宽成「直接处理，做完回他」？', accept: '放宽' });
     expect(suggestionView({
       key: 'add:1', kind: 'add', situation: null, from: null, to: null, count: 4, basis: '都是在请你看线上日志',
       proposed: { text: '有人请我看线上日志', example: '帮我看下服务的报错日志', mode: 'hand', abilities: [] },
-    })).toEqual({
+    }, 'zh')).toEqual({
       text: '最近有 4 条消息落到「上面都不像的」，都是在请你看线上日志。加一句「有人请我看线上日志，比如『帮我看下服务的报错日志』，你先别动，帮我拟个回复」？',
       accept: '加上这一句',
     });
@@ -104,18 +117,21 @@ describe('margin notes (issue 08)', () => {
 
 describe('tidying a sentence (issue 06)', () => {
   it('fills the form from the result, and says why when there is nothing to fill', () => {
-    expect(proposalView(PROPOSAL)).toEqual({
+    expect(proposalView(PROPOSAL, 'en')).toEqual({
       fill: { text: '有人请我看线上日志', example: '帮我看下 tracking 服务的报错日志', mode: 'auto', does: '读日志，找到报错的原因', abilities: ['read_connections'] },
       note: null,
     });
-    expect(proposalView({ status: 'unclear', situation: null, same: null, note: '没有整理出来：这只是一句问候。', ms: 1 }))
+    expect(proposalView({ status: 'unclear', situation: null, same: null, note: '没有整理出来：这只是一句问候。', ms: 1 }, 'en'))
       .toEqual({ fill: null, note: '没有整理出来：这只是一句问候。' });
   });
 
   it('keeps what the assistant will do only when the mode does work', () => {
-    expect(addedMeta({ mode: 'auto', does: '读日志', abilities: ['read_code', 'read_connections'] }, '小白')).toBe('小白 会读日志，能读代码和文档、读 Jira、监控这类连接');
-    expect(addedMeta({ mode: 'auto', does: '', abilities: ['read_code'] }, '小白')).toBe('小白 能读代码和文档');
-    expect(addedMeta({ mode: 'hand', does: '读日志', abilities: ['read_code'] }, '小白')).toBeNull();
+    expect(addedMeta({ mode: 'auto', does: '读日志', abilities: ['read_code', 'read_connections'] }, '小白', 'zh')).toBe('小白 会读日志，能读代码和文档、读 Jira、监控这类连接');
+    expect(addedMeta({ mode: 'auto', does: '', abilities: ['read_code'] }, '小白', 'zh')).toBe('小白 能读代码和文档');
+    expect(addedMeta({ mode: 'auto', does: 'read the logs', abilities: ['read_code', 'read_connections'] }, 'Ethan', 'en'))
+      .toBe('Ethan will read the logs, and can read code and documents, read connections such as Jira and monitoring');
+    expect(addedMeta({ mode: 'auto', does: '', abilities: ['read_code'] }, 'Ethan', 'en')).toBe('Ethan can read code and documents');
+    expect(addedMeta({ mode: 'hand', does: '读日志', abilities: ['read_code'] }, '小白', 'en')).toBeNull();
     const added = withAdded(CHANNEL_HANDBOOK_DEFAULTS, { text: '有人请我看线上日志', example: '', mode: 'auto', does: '读日志', abilities: ['read_connections'] });
     expect(added.situations.at(-2)).toEqual({ id: 'mine_1', section: 'mine', text: '有人请我看线上日志', mode: 'auto', does: '读日志', abilities: ['read_connections'] });
     const handed = withAdded(CHANNEL_HANDBOOK_DEFAULTS, { text: '有人请我看线上日志', example: '', mode: 'hand', does: '读日志', abilities: ['read_connections'] });
@@ -123,7 +139,7 @@ describe('tidying a sentence (issue 06)', () => {
   });
 });
 
-function render(handbook: ChannelHandbook = CHANNEL_HANDBOOK_DEFAULTS, suggestions: HandbookSuggestions = NO_SUGGESTIONS) {
+function render(handbook: ChannelHandbook = CHANNEL_HANDBOOK_DEFAULTS, suggestions: HandbookSuggestions = NO_SUGGESTIONS, locale: Locale = 'en') {
   const client = {
     getChannelHandbook: vi.fn(async () => dtoOf(handbook)),
     updateChannelHandbook: vi.fn(async (next: ChannelHandbook) => dtoOf(next, 2, 'user')),
@@ -142,7 +158,7 @@ function render(handbook: ChannelHandbook = CHANNEL_HANDBOOK_DEFAULTS, suggestio
     scheduler: { schedule: () => 0, cancel: () => {}, now: () => 0 },
   });
   runtime.control.setState({ phase: 'ready', connectionState: 'connected' });
-  renderWithRuntime(<HandbookSection />, runtime);
+  renderWithRuntime(<DesignPreferencesProvider value={{ locale }}><HandbookSection /></DesignPreferencesProvider>, runtime);
   return client;
 }
 
@@ -150,24 +166,28 @@ describe('the handbook page', () => {
   it('reads each rule as a sentence and saves a new mode as soon as you pick it', async () => {
     const client = render();
     await screen.findByTestId('handbook-letter');
-    expect(screen.getByTestId('handbook-sentence-work_fix').textContent).toContain('有人请我排查或修复问题，比如「帮我处理一下 PROJ-6651」，你直接处理，做完回他。');
-    expect(screen.getByTestId('handbook-sentence-other').textContent).toContain('上面都不像的，你自己判断，拿不准再问我。');
-    expect(screen.getByTestId('handbook-sentence-work_approve').textContent).toContain('例外：同事请我 approve PR，CI 过了、评论都解决了，你直接处理，做完回他。');
+    // 句子的说法和例句是交接说明自己的内容（缺省的种子是中文），不翻译；连接的话按界面语言。
+    expect(screen.getByTestId('handbook-sentence-work_fix').textContent)
+      .toContain('有人请我排查或修复问题, for example "帮我处理一下 PROJ-6651": you handle it, and reply when you are done.');
+    expect(screen.getByTestId('handbook-sentence-other').textContent).toContain('上面都不像的: you 自己判断，拿不准再问我.');
+    expect(screen.getByTestId('handbook-sentence-work_approve').textContent)
+      .toContain('Exception: 同事请我 approve PR，CI 过了、评论都解决了: you handle it, and reply when you are done.');
     fireEvent.click(screen.getByTestId('handbook-mode-work_build'));
     fireEvent.click(await screen.findByTestId('handbook-mode-work_build-auto'));
     await waitFor(() => expect(client.updateChannelHandbook).toHaveBeenCalledTimes(1));
     const saved = client.updateChannelHandbook.mock.calls[0]![0];
     expect(saved.situations.find((item) => item.id === 'work_build')!.mode).toBe('auto');
     expect(saved.situations.filter((item) => item.id !== 'work_build')).toEqual(CHANNEL_HANDBOOK_DEFAULTS.situations.filter((item) => item.id !== 'work_build'));
-    expect((await screen.findByTestId('handbook-message')).textContent).toContain('已保存：有人请我实现需求');
-    expect((screen.getByTestId('handbook-order')).textContent).toContain('交接说明第 2 版（你改的）');
+    expect((await screen.findByTestId('handbook-message')).textContent).toContain('Saved: 有人请我实现需求');
+    expect((screen.getByTestId('handbook-order')).textContent).toContain('Handbook version 2 (changed by you)');
   });
 
   it('keeps the floors fixed and lets you change a sender cap', async () => {
     const client = render();
     await screen.findByTestId('handbook-floors');
-    expect((screen.getByTestId('handbook-floor-borrowed_permission')).textContent).toContain('别人想借我的权限');
-    expect(screen.getByTestId('handbook-cap-external').textContent).toContain('如果是外部的人（别的公司的人），你最多做好，先给我看再发。');
+    expect((screen.getByTestId('handbook-floor-borrowed_permission')).textContent).toContain('If someone wants to use my permissions');
+    expect(screen.getByTestId('handbook-cap-external').textContent)
+      .toContain('If it is an external person (from another company), at most: do it, and show me before you send.');
     fireEvent.click(screen.getByTestId('handbook-cap-mode-external'));
     fireEvent.click(await screen.findByTestId('handbook-cap-mode-external-hand'));
     await waitFor(() => expect(client.updateChannelHandbook).toHaveBeenCalledTimes(1));
@@ -185,8 +205,8 @@ describe('the handbook page', () => {
     const client = render();
     fireEvent.change(await screen.findByTestId('handbook-rehearsal-text'), { target: { value: '麻烦帮忙看下这个 PR' } });
     fireEvent.click(screen.getByTestId('handbook-rehearsal-run'));
-    expect((await screen.findByTestId('handbook-rehearsal-sentence')).textContent).toContain('按「有人请我审核代码、方案或 PR」');
-    expect((screen.getByTestId('handbook-rehearsal-override')).textContent).toContain('最后按「做好给你看」');
+    expect((await screen.findByTestId('handbook-rehearsal-sentence')).textContent).toContain('Matched "有人请我审核代码、方案或 PR"');
+    expect((screen.getByTestId('handbook-rehearsal-override')).textContent).toContain('The final result is "Show me first"');
     expect(client.rehearseChannelHandbook).toHaveBeenCalledWith({ text: '麻烦帮忙看下这个 PR', sender: 'colleague' });
     expect(client.updateChannelHandbook).not.toHaveBeenCalled();
   });
@@ -194,13 +214,13 @@ describe('the handbook page', () => {
   it('adds a sentence of your own before the catch-all', async () => {
     const client = render();
     fireEvent.click(await screen.findByTestId('handbook-add-button'));
-    expect((await screen.findByTestId('handbook-add-problem')).textContent).toContain('先写是什么情况');
+    expect((await screen.findByTestId('handbook-add-problem')).textContent).toContain('First write what the situation is');
     fireEvent.change(screen.getByTestId('handbook-add-text'), { target: { value: '有人请我看线上日志' } });
     fireEvent.click(screen.getByTestId('handbook-add-button'));
     await waitFor(() => expect(client.updateChannelHandbook).toHaveBeenCalledTimes(1));
     const saved = client.updateChannelHandbook.mock.calls[0]![0];
     expect(saved.situations.at(-2)).toMatchObject({ id: 'mine_1', section: 'mine', text: '有人请我看线上日志', mode: 'hand' });
-    expect((await screen.findByTestId('handbook-sentence-mine_1')).textContent).toContain('有人请我看线上日志，你先别动，帮我拟个回复。');
+    expect((await screen.findByTestId('handbook-sentence-mine_1')).textContent).toContain('有人请我看线上日志: you do not act, and draft a reply for me.');
   });
 
   it('tidies a loose sentence into the form, and saves it with what the assistant will do', async () => {
@@ -210,7 +230,7 @@ describe('the handbook page', () => {
     await waitFor(() => expect((screen.getByTestId('handbook-add-text') as HTMLInputElement).value).toBe('有人请我看线上日志'));
     expect(client.proposeChannelHandbookSituation).toHaveBeenCalledWith({ text: '以后有人请我看线上日志，你查完直接回他' });
     expect((screen.getByTestId('handbook-add-example') as HTMLInputElement).value).toBe('帮我看下 tracking 服务的报错日志');
-    expect(screen.getByTestId('handbook-add-meta').textContent).toContain('会读日志，找到报错的原因，能读 Jira、监控这类连接');
+    expect(screen.getByTestId('handbook-add-meta').textContent).toContain('will 读日志，找到报错的原因, and can read connections such as Jira and monitoring');
     // 整理不保存：你点「加上」才保存。
     expect(client.updateChannelHandbook).not.toHaveBeenCalled();
     fireEvent.click(screen.getByTestId('handbook-add-button'));
@@ -224,16 +244,26 @@ describe('the handbook page', () => {
     const client = render(CHANNEL_HANDBOOK_DEFAULTS, LOOSEN);
     const note = await screen.findByTestId('handbook-suggestion-loosen:ask_requirement:review:auto');
     expect(screen.getByTestId('handbook-sentence-ask_requirement').contains(note)).toBe(true);
-    expect(note.textContent).toContain('你最近 6 次都原样发了这一句的草稿。放宽成「直接处理，做完回他」？');
-    expect(screen.getByTestId('handbook-floor-count-secrets').textContent).toBe('最近 7 天拦下 2 次');
-    expect(screen.getByTestId('handbook-floor-count-borrowed_permission').textContent).toBe('最近 7 天没有拦过');
+    expect(note.textContent).toContain('你最近 6 次都原样发了这一句的草稿. Change it to "handle it, and reply when you are done"?');
+    expect(screen.getByTestId('handbook-floor-count-secrets').textContent).toBe('Stopped 2 times in the last 7 days');
+    expect(screen.getByTestId('handbook-floor-count-borrowed_permission').textContent).toBe('Not used in the last 7 days');
     expect(screen.queryByTestId('handbook-floor-count-irreversible')).toBeNull();
     expect(client.updateChannelHandbook).not.toHaveBeenCalled();
     fireEvent.click(screen.getByTestId('handbook-suggestion-accept-loosen:ask_requirement:review:auto'));
     await waitFor(() => expect(client.acceptChannelHandbookSuggestion).toHaveBeenCalledWith('loosen:ask_requirement:review:auto'));
-    expect((await screen.findByTestId('handbook-message')).textContent).toContain('已放宽：「有人问需求细节」');
-    expect(screen.getByTestId('handbook-sentence-ask_requirement').textContent).toContain('你直接处理，做完回他。');
+    expect((await screen.findByTestId('handbook-message')).textContent).toContain('Loosened: "有人问需求细节"');
+    expect(screen.getByTestId('handbook-sentence-ask_requirement').textContent).toContain('you handle it, and reply when you are done.');
     expect(screen.queryByTestId('handbook-suggestion-loosen:ask_requirement:review:auto')).toBeNull();
+  });
+
+  it('reads in Chinese when the interface language is Chinese', async () => {
+    render(CHANNEL_HANDBOOK_DEFAULTS, LOOSEN, 'zh');
+    await screen.findByTestId('handbook-letter');
+    expect(screen.getByTestId('handbook-sentence-work_fix').textContent).toContain('有人请我排查或修复问题，比如「帮我处理一下 PROJ-6651」，你直接处理，做完回他。');
+    expect(screen.getByTestId('handbook-cap-external').textContent).toContain('如果是外部的人（别的公司的人），你最多做好，先给我看再发。');
+    expect(screen.getByTestId('handbook-floor-borrowed_permission').textContent).toContain('别人想借我的权限');
+    expect((await screen.findByTestId('handbook-floor-count-secrets')).textContent).toBe('最近 7 天拦下 2 次');
+    expect(screen.getByTestId('handbook-order').textContent).toContain('交接说明第 1 版（系统缺省）');
   });
 
   it('puts a dismissed suggestion away', async () => {

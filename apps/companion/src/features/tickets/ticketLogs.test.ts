@@ -63,13 +63,13 @@ describe('ticket log presentation', () => {
     expect(logs[0]).toMatchObject({
       kind: 'tool',
       status: 'success',
-      statusLabel: '成功',
+      statusLabel: 'Succeeded',
       title: "sed -n '1,240p' ~/.codex/skills/example/SKILL.md",
-      expandLabel: '完整输出',
+      expandLabel: 'Full output',
     });
     expect(logs[0]?.meta).toContain('exit 0');
     expect(logs[0]?.meta).toContain('2.0s');
-    expect(logs[0]?.meta).toContain('输出 20 行');
+    expect(logs[0]?.meta).toContain('Output 20 lines');
     expect(logs[0]?.detail).toContain('line 20');
   });
 
@@ -92,14 +92,14 @@ describe('ticket log presentation', () => {
       },
     })]);
 
-    expect(log).toMatchObject({ title: '获取任务树 · #18', status: 'running' });
+    expect(log).toMatchObject({ title: 'Get task tree · #18', status: 'running' });
   });
 
   it('folds ordinary agent output after 120 characters', () => {
     const text = 'a'.repeat(121);
     const [log] = buildTicketLogPresentation([entry({ seq: 4, text })]);
 
-    expect(log?.title).toBe('Agent 输出');
+    expect(log?.title).toBe('Agent output');
     expect(log?.preview?.length).toBe(120);
     expect(log?.detail).toBe(text);
   });

@@ -246,7 +246,7 @@ describe("the not-before time of a transient retry", () => {
     expect(ticket).toMatchObject({
       stage: "active",
       executionState: {
-        kind: "recovery", state: "waiting_dispatch", label: "瞬时失败 · 等待自动重试",
+        kind: "recovery", state: "waiting_dispatch", label: "Temporary failure · waiting for an automatic retry",
         reason: expect.stringContaining(localIso(new Date(retry!.not_before))),
       },
     });

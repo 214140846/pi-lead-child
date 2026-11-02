@@ -3,9 +3,10 @@
 // （engine 的 ticket-actions/，spec 5.11），和 POST /v1/tickets/:id/actions/(merge|open_pr|abandon) 同一份实现。
 // 这里只做认证、校验和错误映射。
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { Scope } from "@pi-lead-child/protocol";
+import type { Locale, Scope } from "@pi-lead-child/protocol";
 import type { Db } from "@pi-lead-child/store";
-import { getItem } from "@pi-lead-child/store";
+import { getItem, getLocale } from "@pi-lead-child/store";
+import { routeMessages } from "./routes.messages.js";
 import { DeliveryError, ticketDelivery, ticketDeliveryFile } from "@pi-lead-child/engine";
 
 export interface DeliveryRouteContext {
@@ -41,15 +42,16 @@ const STATUS: Record<DeliveryError["code"], [number, string]> = {
 const COMMIT_SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const MAX_BRANCH_NAME = 255;
 
-function deliveryExpectation(body: Record<string, unknown>): Record<string, unknown> {
+function deliveryExpectation(body: Record<string, unknown>, locale: Locale): Record<string, unknown> {
+  const m = routeMessages(locale);
   const { expectedHead, expectedTarget } = body;
   if (expectedHead !== undefined && expectedHead !== null
     && (typeof expectedHead !== "string" || !COMMIT_SHA.test(expectedHead))) {
-    throw new DeliveryError("invalid_request", "expectedHead 要是一个完整的提交 SHA。");
+    throw new DeliveryError("invalid_request", m.expectedHead);
   }
   if (expectedTarget !== undefined && expectedTarget !== null
     && (typeof expectedTarget !== "string" || expectedTarget.length === 0 || expectedTarget.length > MAX_BRANCH_NAME)) {
-    throw new DeliveryError("invalid_request", `expectedTarget 要是一个 1 到 ${MAX_BRANCH_NAME} 个字符的分支名。`);
+    throw new DeliveryError("invalid_request", m.expectedTarget(MAX_BRANCH_NAME));
   }
   return {
     ...(expectedHead !== undefined ? { expectedHead } : {}),
@@ -70,6 +72,8 @@ export async function handleDeliveryRoute(ctx: DeliveryRouteContext): Promise<bo
     ctx.json(status, { error: { code, message: error.message, details: { reason: error.code } } });
   };
   const ticketId = Number((itemMatch ?? fileMatch ?? actionMatch)![1]);
+  const locale = getLocale(ctx.db);
+  const m = routeMessages(locale);
   try {
     if (req.method === "GET" && itemMatch) {
       ctx.requireAuth("tickets:view");
@@ -79,7 +83,7 @@ export async function handleDeliveryRoute(ctx: DeliveryRouteContext): Promise<bo
     if (req.method === "GET" && fileMatch) {
       ctx.requireAuth("tickets:view");
       const view = url.searchParams.get("view") ?? "full";
-      if (view !== "full" && view !== "diff") throw new DeliveryError("invalid_request", "view 只能是 full 或 diff。");
+      if (view !== "full" && view !== "diff") throw new DeliveryError("invalid_request", m.deliveryView);
       ctx.json(200, { file: await ticketDeliveryFile(ctx.db, ticketId, url.searchParams.get("path"), view) });
       return true;
     }
@@ -87,8 +91,8 @@ export async function handleDeliveryRoute(ctx: DeliveryRouteContext): Promise<bo
     ctx.requireAuth("tickets:create");
     const body = req.headers["content-length"] === "0" ? {} : await ctx.readBody();
     ctx.assertUserActor(body);
-    const input = deliveryExpectation(body);
-    if (!getItem(ctx.db, ticketId)) throw new DeliveryError("not_found", `工单 #${ticketId} 不存在`);
+    const input = deliveryExpectation(body, locale);
+    if (!getItem(ctx.db, ticketId)) throw new DeliveryError("not_found", m.ticketNotFound(ticketId));
     const action = actionMatch[2] as "merge" | "open-pr" | "abandon";
     const result = await ctx.perform(ticketId, action === "open-pr" ? "open_pr" : action, input) as {
       delivery: unknown; pullRequestUrl?: string;

@@ -5,7 +5,9 @@
 // 漏了"独立核查未派发"的 #66；底栏和收件箱都只看根工单，漏了父工单已完成、自己还阻塞着的子工单 #75。
 //
 // 范围是所有工单：子工单和后台工单需要你时也算。列表照样只列根工单，外加需要你的那些。
+import type { Locale } from "./i18n.ts";
 import type { TicketSummary } from "./index.ts";
+import { needsUserMessages } from "./needs-user.messages.ts";
 
 export type TicketNeedsUserReason =
   // 有待你批准的审批。
@@ -25,16 +27,7 @@ export type TicketNeedsUserReason =
   // Lead 建的草稿，等你确认才会开始。
   | "confirmation";
 
-const LABELS: Record<TicketNeedsUserReason, string> = {
-  approval: "待审批",
-  blocked: "需介入",
-  decision: "待你决定",
-  review_dispatch: "核查未派发",
-  acceptance: "待验收",
-  stalled: "停滞",
-  capability: "等待能力",
-  confirmation: "待确认",
-};
+// 名字按界面语言（needs-user.messages.ts）。
 
 const TERMINAL: ReadonlySet<TicketSummary["stage"]> = new Set(["done", "cancelled", "acked"]);
 
@@ -85,8 +78,9 @@ export function ticketNeedsUser(ticket: TicketSummary): TicketNeedsUserReason | 
   return null;
 }
 
-export function ticketNeedsUserLabel(reason: TicketNeedsUserReason): string {
-  return LABELS[reason];
+// locale 暂时缺省 zh：Lead 的工具和输入（给模型看的）照旧是中文，还没迁的界面也照旧。都迁完以后去掉缺省值。
+export function ticketNeedsUserLabel(reason: TicketNeedsUserReason, locale: Locale = "zh"): string {
+  return needsUserMessages(locale)[reason];
 }
 
 /** 需要用户的工单，保持传入的顺序。 */

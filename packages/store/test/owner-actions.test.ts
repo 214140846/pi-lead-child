@@ -2,12 +2,14 @@
 import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 import { tempDir } from "@pi-lead-child/core/testing";
-import { OWNER_ACTION_NOTIFICATION_KIND, ownerActionNotificationDedupKey, type OwnerActionSource } from "@pi-lead-child/protocol";
 import {
-  appendEvent, createCliBinding, createLoopbackBinding, createPairing, getBinding, getEvent, getNotification, getOwnerAction,
-  listInterruptEvents,
+  designPreferencesFields, OWNER_ACTION_NOTIFICATION_KIND, ownerActionNotificationDedupKey, type Locale, type OwnerActionSource,
+} from "@pi-lead-child/protocol";
+import {
+  appendEvent, createCliBinding, createItem, createLoopbackBinding, createPairing, getBinding, getDesignPreferences, getEvent, getItem,
+  getNotification, getOwnerAction, itemOwnerAction, listInterruptEvents,
   listEvents, listNotifications, markNotificationDelivered, openDb, ownerActionView, recordOwnerAction,
-  recordOwnerActionDisowned, redeemPairing, redeemPairingById, type Binding, type Db,
+  recordOwnerActionDisowned, redeemPairing, redeemPairingById, writeDesignPreferences, type Binding, type Db,
 } from "../src/index.js";
 
 let db: Db;
@@ -22,6 +24,11 @@ const fromPhone: OwnerActionSource = { client: "phone", deviceName: "我的手�
 function phone(): Binding {
   const { pairingId } = createPairing(db, { name: "我的手机", kind: "companion", origin: "web_invitation" });
   return redeemPairingById(db, pairingId, { peerIsThisMachine: false }).binding;
+}
+
+// 用户在设置 → 外观里选的界面语言。测试的数据库缺省是英文。
+function chooseLocale(locale: Locale): void {
+  writeDesignPreferences(db, { ...designPreferencesFields(getDesignPreferences(db)), locale }, { by: "user", at: new Date() });
 }
 
 function complete(credential: Binding, source: OwnerActionSource = fromCli) {
@@ -75,6 +82,7 @@ describe("where a binding came from", () => {
 
 describe("recording an owner action", () => {
   it("pushes an action from the CLI credential: an immediate notification and an interrupt event that points at it", () => {
+    chooseLocale("zh");
     const cli = createCliBinding(db, { name: "plc" }).binding;
     const recorded = complete(cli);
     expect(recorded.delivery).toBe("push");
@@ -97,6 +105,31 @@ describe("recording an owner action", () => {
     // daemon 推送以后通知记成已送达，事件的处置随之是「告诉了用户」。
     markNotificationDelivered(db, notification.id, "fallback");
     expect(getEvent(db, recorded.event.seq)!.disposition).toBe("told_user");
+  });
+
+  it("writes the alert and the action name in the language the user chose, and the view in the language of now", () => {
+    const cli = createCliBinding(db, { name: "plc" }).binding;
+    const recorded = complete(cli);
+    const notification = getNotification(db, recorded.notificationId!)!;
+    expect(notification.body).toContain(`Credential: plc (the plc CLI credential, #${cli.id}) · CLI · From this computer`);
+    expect(recorded.event.payload).toMatchObject({ label: "Accept a ticket" });
+    expect(ownerActionView(db, recorded.event.eventId)).toMatchObject({ label: "Accept a ticket", undo: { note: expect.stringContaining("goes back to review") } });
+    // 换成中文以后，旧记录不重写；DTO 里由定义推出来的名字和撤销说明按现在的语言算。
+    chooseLocale("zh");
+    expect(getEvent(db, recorded.event.seq)!.payload).toMatchObject({ label: "Accept a ticket" });
+    expect(ownerActionView(db, recorded.event.eventId)).toMatchObject({ label: "验收工单", undo: { note: expect.stringContaining("回到待验收") } });
+  });
+
+  it("builds the summary of a ticket action in the language the user chose", () => {
+    const itemId = createItem(db, { title: "Login page", brief: "b", createdBy: "user" });
+    const item = getItem(db, itemId)!;
+    expect(itemOwnerAction(db, "confirm", item, "ready")).toMatchObject({
+      target: { label: `Ticket #${itemId} "Login page"` }, summary: `Confirmed Ticket #${itemId} "Login page"`,
+    });
+    chooseLocale("zh");
+    expect(itemOwnerAction(db, "confirm", item, "ready")).toMatchObject({
+      target: { label: `工单 #${itemId}「Login page」` }, summary: `确认了工单 #${itemId}「Login page」`,
+    });
   });
 
   it("only records an action from the scanned phone: no notification, a record-level event", () => {

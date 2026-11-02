@@ -7,6 +7,7 @@ import { openDb, createLoopbackBinding, type Db } from "@pi-lead-child/store";
 import { tempDir } from "@pi-lead-child/core/testing";
 import { FakeVendor } from "@pi-lead-child/connections/testing";
 import { startDaemon } from "../src/server.js";
+import { updateDesignPreferences } from "@pi-lead-child/engine";
 
 let dir: string;
 let dbPath: string;
@@ -18,6 +19,8 @@ beforeEach(() => {
   dbPath = join(dir, "plc.db");
   process.env.PLC_DATA_DIR = dir;
   db = openDb(dbPath);
+  // 这个文件的断言是中文：先把界面语言设成中文（缺省是英文）。
+  updateDesignPreferences(db, { request: { locale: "zh" }, caller: { kind: "user" } });
 });
 
 afterEach(async () => {

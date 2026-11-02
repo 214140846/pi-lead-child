@@ -16,6 +16,8 @@
 // 这个文件不 import index.ts（index.ts 从这里 re-export，反过来会循环）。
 import { Type, type Static, type TProperties, type TSchema } from "typebox";
 import { registerEventKind, type EventKindDefinition } from "./events.ts";
+import type { Locale } from "./i18n.ts";
+import { timerOriginMessages } from "./timer-origins.messages.ts";
 
 const StrictObject = <T extends TProperties>(properties: T) =>
   Type.Object(properties, { additionalProperties: false });
@@ -80,9 +82,11 @@ export function timerOriginOf(value: unknown): TimerOrigin | null {
 }
 
 /** 给人看的「谁要求的」：「Ethan（Slack）」；说不出是谁时「Slack 的外部内容」。 */
-export function timerRequesterLabel(origin: ExternalTimerOrigin): string {
+// 文字按界面语言（timer-origins.messages.ts）。locale 暂时缺省 zh：engine 拼进中文句子里写进数据库，都迁完以后去掉缺省值。
+export function timerRequesterLabel(origin: ExternalTimerOrigin, locale: Locale = "zh"): string {
+  const m = timerOriginMessages(locale);
   const where = origin.sourceLabel || origin.source;
-  return origin.sender ? `${origin.sender.name}（${where}）` : `${where} 的外部内容`;
+  return origin.sender ? m.requester(origin.sender.name, where) : m.externalContent(where);
 }
 
 /**
@@ -90,10 +94,11 @@ export function timerRequesterLabel(origin: ExternalTimerOrigin): string {
  * 没有时是「读了「Ethan 的私信」里的消息以后设的」。只有 Lead 指明了是哪条消息要的，来源里才有发信人（2026-10-28：
  * 以前系统拿这一轮的第一条外部消息当要求人，Aurum 的消息叫醒的一轮里 Lead 接着做用户本人的跟进，卡上写成 Aurum 要求的）。
  */
-export function timerAskedBy(origin: ExternalTimerOrigin): string {
-  if (origin.sender) return `${timerRequesterLabel(origin)}要求的`;
-  const where = origin.conversation?.label ? `「${origin.conversation.label}」里的消息` : `${origin.sourceLabel || origin.source} 的外部内容`;
-  return `读了${where}以后设的`;
+export function timerAskedBy(origin: ExternalTimerOrigin, locale: Locale = "zh"): string {
+  const m = timerOriginMessages(locale);
+  if (origin.sender) return m.askedBy(timerRequesterLabel(origin, locale));
+  const where = origin.conversation?.label ? m.messageIn(origin.conversation.label) : m.externalContent(origin.sourceLabel || origin.source);
+  return m.setAfterReading(where);
 }
 
 /** 到点后要对外做事时，在哪种对话里（和信心模型的受众一样）。 */

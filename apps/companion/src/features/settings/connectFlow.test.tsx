@@ -55,11 +55,11 @@ describe('the browser flow', () => {
 
     fireEvent.click(screen.getByTestId('connection-action-notion'));
     const consent = screen.getByTestId('connect-consent');
-    expect(consent.textContent).toContain('连接 Notion');
-    expect(consent.textContent).toContain('会打开 Notion 的授权页');
-    expect(consent.textContent).toContain('连接以后，Paimon 可以');
-    expect(consent.textContent).toContain('会写入的操作每次先问你。');
-    expect(consent.textContent).toContain('授权只保存在这台 Mac 上。你随时可以在设置里断开。');
+    expect(consent.textContent).toContain('Connect Notion');
+    expect(consent.textContent).toContain('Opens the Notion authorization page');
+    expect(consent.textContent).toContain('After you connect, Paimon can');
+    expect(consent.textContent).toContain('Each write asks you first.');
+    expect(consent.textContent).toContain('The authorization stays on this Mac only. You can disconnect at any time in settings.');
 
     fireEvent.click(screen.getByTestId('connect-continue'));
     // 请求还没回来，窗口已经开了：等完请求再开，浏览器会当作弹窗拦下。
@@ -74,11 +74,11 @@ describe('the browser flow', () => {
     expect(popup!.location.href).toBe('https://mcp.notion.com/authorize?state=x');
     expect(popup!.opener).toBeNull();
     const waiting = screen.getByTestId('connect-browser');
-    expect(waiting.textContent).toContain('在新窗口里完成授权');
-    expect(waiting.textContent).toContain('完成后这里会自动更新');
-    expect(waiting.textContent).toContain('窗口没有打开？');
-    expect(screen.getByTestId('connect-open-link').textContent).toBe('打开授权页');
-    expect(screen.getByTestId('connect-copy-link').textContent).toBe('复制授权链接');
+    expect(waiting.textContent).toContain('Finish the authorization in the new window');
+    expect(waiting.textContent).toContain('This page updates when you finish');
+    expect(waiting.textContent).toContain('The window did not open?');
+    expect(screen.getByTestId('connect-open-link').textContent).toBe('Open the authorization page');
+    expect(screen.getByTestId('connect-copy-link').textContent).toBe('Copy the authorization link');
   });
 
   it('checks the flow at once when the gateway says connections changed, then shows done', async () => {
@@ -97,9 +97,9 @@ describe('the browser flow', () => {
     });
     expect(client.connectionFlow).toHaveBeenCalledWith('flow_abcdefgh12', undefined);
     const done = await screen.findByTestId('connect-done');
-    expect(done.textContent).toContain('Notion 已连接');
+    expect(done.textContent).toContain('Notion is connected');
     expect(done.textContent).toContain('Acme 工作区');
-    expect(done.textContent).toContain('试一下：帮我找一下上周的会议记录');
+    expect(done.textContent).toContain('Try it: Find the meeting notes from last week.');
   });
 
   it('shows the link buttons when the browser blocked the window', async () => {
@@ -109,7 +109,7 @@ describe('the browser flow', () => {
     });
     renderWithRuntime(<ConnectionsSection connectionId={null} />, runtime);
     await startFrom('notion');
-    expect(screen.getByTestId('connect-browser').textContent).toContain('浏览器没有打开新窗口');
+    expect(screen.getByTestId('connect-browser').textContent).toContain('The browser did not open a new window');
     expect(screen.getByTestId('connect-open-link')).toBeTruthy();
     expect(screen.getByTestId('connect-copy-link')).toBeTruthy();
   });
@@ -147,7 +147,7 @@ describe('the GitHub device flow', () => {
     // GitHub 不用浏览器授权，不开空白窗口。
     expect(open).not.toHaveBeenCalled();
     expect(screen.getByTestId('connect-device-code').textContent).toBe('ABCD-1234');
-    expect(screen.getByTestId('connect-device').textContent).toContain('github.com/login/device · 15 分钟内有效');
+    expect(screen.getByTestId('connect-device').textContent).toContain('github.com/login/device · valid for 15 minutes');
 
     await act(async () => { fireEvent.click(screen.getByTestId('connect-device-open')); });
     expect(writeText).toHaveBeenCalledWith('ABCD-1234');
@@ -163,9 +163,9 @@ describe('the GitHub device flow', () => {
     });
     await act(async () => { await vi.advanceTimersByTimeAsync(FLOW_POLL_MS); });
     const done = screen.getByTestId('connect-done');
-    expect(done.textContent).toContain('GitHub 已连接');
+    expect(done.textContent).toContain('GitHub is connected');
     expect(done.textContent).toContain('@octo-dev');
-    expect(done.textContent).toContain('我有哪些待 review 的 PR？');
+    expect(done.textContent).toContain('Which PRs wait for my review?');
   });
 
   it('offers a pasted token when GitHub needs setup, and never shows the token again', async () => {
@@ -175,7 +175,7 @@ describe('the GitHub device flow', () => {
     renderWithRuntime(<ConnectionsSection connectionId={null} />, runtime);
 
     fireEvent.click(screen.getByTestId('connection-action-github'));
-    expect(screen.getByTestId('connect-setup').textContent).toContain('粘贴一个 GitHub 令牌');
+    expect(screen.getByTestId('connect-setup').textContent).toContain('Paste a GitHub token');
     const field = screen.getByTestId('connect-github-token') as HTMLInputElement;
     expect(field.getAttribute('type')).toBe('password');
     const token = 'ghp_0123456789abcdefghijABCDEFGHIJ';
@@ -233,7 +233,7 @@ describe('a custom MCP server', () => {
 
     fireEvent.change(screen.getByTestId('connections-custom-url'), { target: { value: 'http://mcp.example.com/mcp' } });
     fireEvent.click(screen.getByTestId('connections-custom-connect'));
-    expect(screen.getByTestId('connections-custom-problem').textContent).toBe('地址要以 https:// 开头。');
+    expect(screen.getByTestId('connections-custom-problem').textContent).toBe('The address must start with https://.');
     expect(client.addCustomConnection).not.toHaveBeenCalled();
     expect(open).not.toHaveBeenCalled();
 

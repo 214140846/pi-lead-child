@@ -17,8 +17,8 @@ import { reduceGatewayEvent } from '../../state/control-plane/eventReducer';
 import { adaptGatewayEvent } from '../../state/control-plane/protocolAdapter';
 import { createCompanionStateRuntime, type CompanionRuntimeDependencies } from '../../state/runtime';
 import type { MessageEntity } from '../../state/types';
-import { channelCardView, channelDraftDisclosure } from './channelCard';
-import { ChannelMessageCard } from './ChannelMessageCard';
+import { channelCardView, channelDraftDisclosure, clockWords } from './channelCard';
+import { ChannelMessageCard, ChannelNewsLine } from './ChannelMessageCard';
 import { buildLeadTimeline, groupChannelCardRuns, LeadConversation } from './LeadConversation';
 
 vi.mock('expo-crypto', () => ({ getRandomBytesAsync: vi.fn(), digest: vi.fn(), CryptoDigestAlgorithm: {} }));
@@ -29,6 +29,9 @@ vi.hoisted(() => {
 });
 
 afterEach(cleanup);
+
+// 卡状态 → 字的纯函数测试按中文写（原来的说法），英文的说法在下面的组件测试和「in English」里。
+const zhView = (value: ChannelCardDto, now?: Date) => channelCardView(value, now, 'zh');
 
 function card(overrides: Partial<ChannelCardDto> = {}): ChannelCardDto {
   return {
@@ -46,7 +49,7 @@ function card(overrides: Partial<ChannelCardDto> = {}): ChannelCardDto {
 
 describe('what a channel card says in each state', () => {
   it('shows the sender, the excerpt, the draft and four actions while it waits for the user', () => {
-    const view = channelCardView(card());
+    const view = zhView(card());
     expect(view).toMatchObject({
       context: 'Slack · 张三的私信', sender: '张三（同事）', excerpt: '周五评审的材料收到了吗？谢谢', draft: '收到，谢谢！',
       badge: { label: '等你处理' }, compact: false, closed: false,
@@ -58,35 +61,35 @@ describe('what a channel card says in each state', () => {
   // 用户 2026-10-21：草稿按对话内容写（drafter model）。助手写的草稿发出时加「confirmed by」的署名，没有代查的卡也要说一声；
   // 模板的草稿原样发，不说。
   it('says the byline will be added for a model draft even without a lookup, and not for a template draft', () => {
-    const modelDraft = channelCardView(card({ draft: { text: '在 docs/api.md，我晚点把链接发你。', drafter: 'model' } }));
+    const modelDraft = zhView(card({ draft: { text: '在 docs/api.md，我晚点把链接发你。', drafter: 'model' } }));
     expect(modelDraft.disclosure).toBe('直接回复时，开头会加一行助手的署名，写明是你确认发出的');
-    expect(channelCardView(card()).disclosure).toBeNull();
+    expect(zhView(card()).disclosure).toBeNull();
   });
 
   // 用户 2026-10-26：你让 Lead 去做卡上的事，Lead 做完了，卡自己结束，不再等你点；页面上也不多一个按钮。
   it('closes as a receipt when Lead did what the card asked, and never shows a handled button', () => {
-    expect(channelCardView(card({ actions: ['send_draft', 'dismiss', 'handled'] })).buttons.map((button) => button.label))
+    expect(zhView(card({ actions: ['send_draft', 'dismiss', 'handled'] })).buttons.map((button) => button.label))
       .toEqual(['用草稿回复', '不回']);
-    const handled = channelCardView(card({
+    const handled = zhView(card({
       state: 'handled', actions: [], resolvedAt: '2026-10-17T02:10:00.000Z',
       outcome: { by: 'lead', action: 'handled', note: '私信 Nina、Lucas 更新状态' },
     }));
     expect(handled).toMatchObject({ badge: { label: '已处理' }, note: '已照你的话处理：私信 Nina、Lucas 更新状态', closed: true, buttons: [] });
     expect(handled.folded?.outcome).toContain('已处理');
-    const replied = channelCardView(card({
+    const replied = zhView(card({
       state: 'replied', actions: [], sentText: '能来', outcome: { by: 'lead', action: 'send_message', note: null },
     }));
     expect(replied.note).toBe('已代你回复：「能来」');
   });
 
   it('names the lookup actions (Slack 代查 spec D9) in a fixed order when the daemon offers them', () => {
-    const view = channelCardView(card({ actions: ['cancel_lookup', 'send_draft', 'send_edited'] }));
+    const view = zhView(card({ actions: ['cancel_lookup', 'send_draft', 'send_edited'] }));
     expect(view.buttons.map((button) => button.label)).toEqual(['用草稿回复', '改一下再发', '停掉工单']);
     expect(view.buttons.filter((button) => button.primary).map((button) => button.action)).toEqual(['send_draft']);
   });
 
   it('ends quietly when the user replied in the source, and has no buttons', () => {
-    const view = channelCardView(card({ state: 'resolved_elsewhere', actions: [], resolvedAt: '2026-10-17T02:05:00.000Z' }));
+    const view = zhView(card({ state: 'resolved_elsewhere', actions: [], resolvedAt: '2026-10-17T02:05:00.000Z' }));
     expect(view).toMatchObject({ badge: { label: '已在别处处理' }, draft: null, buttons: [], closed: true });
     expect(view.note).toBe('你已在 Slack 里自己回复，不再提醒');
   });
@@ -94,29 +97,29 @@ describe('what a channel card says in each state', () => {
   it('offers undo only inside the revoke window of an automatic reply', () => {
     const revokeUntil = new Date(Date.now() + 5 * 60_000).toISOString();
     const auto = card({ state: 'auto_replied', sentText: '收到，谢谢！', revokeUntil, actions: ['undo_auto_reply'] });
-    const view = channelCardView(auto);
+    const view = zhView(auto);
     expect(view.note).toMatch(/^已按常设指令代你回复「收到，谢谢！」，\d\d:\d\d 前可以撤回$/);
     expect(view.buttons.map((button) => button.label)).toEqual(['撤回']);
-    expect(channelCardView({ ...auto, actions: [] }, new Date(Date.now() + 10 * 60_000)).note).toBe('已按常设指令代你回复「收到，谢谢！」');
+    expect(zhView({ ...auto, actions: [] }, new Date(Date.now() + 10 * 60_000)).note).toBe('已按常设指令代你回复「收到，谢谢！」');
   });
 
   // 统一消息事件 spec D11：点了「我自己回」，卡马上结束，写明结局，不再说等你在来源里回复。
   it('shows a card you said you would reply to yourself as ended', () => {
-    const view = channelCardView(card({ state: 'left_to_user', actions: [], resolvedAt: '2026-10-17T02:10:00.000Z' }));
+    const view = zhView(card({ state: 'left_to_user', actions: [], resolvedAt: '2026-10-17T02:10:00.000Z' }));
     expect(view).toMatchObject({ closed: true, note: '你说会自己回复', badge: { label: '你自己回', tone: 'muted' }, buttons: [], draft: null });
     expect(view.note).not.toContain('等你在');
     expect(view.folded?.outcome).toMatch(/你自己回$/);
   });
 
   it('describes the other states and keeps digest cards to one line', () => {
-    expect(channelCardView(card({ state: 'replied', sentText: '收到，谢谢！', actions: [] })).note).toBe('你用草稿回复了：「收到，谢谢！」');
-    expect(channelCardView(card({ state: 'dismissed', actions: [] })).badge.label).toBe('不回');
-    expect(channelCardView(card({ state: 'replying_self', actions: ['snooze', 'dismiss'] })).note).toBe('你在 Slack 里回过一句，还没回答对方');
-    expect(channelCardView(card({ state: 'snoozed', snoozedUntil: new Date(2026, 9, 17, 11, 0).toISOString() })).note).toBe('11:00 再提醒你');
-    expect(channelCardView(card({ gate: { decision: 'denied', category: null, reasons: ['发信人的信任级别不允许代回'] } })).note)
+    expect(zhView(card({ state: 'replied', sentText: '收到，谢谢！', actions: [] })).note).toBe('你用草稿回复了：「收到，谢谢！」');
+    expect(zhView(card({ state: 'dismissed', actions: [] })).badge.label).toBe('不回');
+    expect(zhView(card({ state: 'replying_self', actions: ['snooze', 'dismiss'] })).note).toBe('你在 Slack 里回过一句，还没回答对方');
+    expect(zhView(card({ state: 'snoozed', snoozedUntil: new Date(2026, 9, 17, 11, 0).toISOString() })).note).toBe('11:00 再提醒你');
+    expect(zhView(card({ gate: { decision: 'denied', category: null, reasons: ['发信人的信任级别不允许代回'] } })).note)
       .toBe('没有代你回复：发信人的信任级别不允许代回');
-    expect(channelCardView(card({ delivery: 'digest' })).compact).toBe(true);
-    expect(channelCardView(card({ sender: { id: 'x', name: '王五', trust: 'customer' } })).sender).toBe('王五（外部客户）');
+    expect(zhView(card({ delivery: 'digest' })).compact).toBe(true);
+    expect(zhView(card({ sender: { id: 'x', name: '王五', trust: 'customer' } })).sender).toBe('王五（外部客户）');
   });
 });
 
@@ -125,6 +128,20 @@ async function openCard(id: number) {
   fireEvent.click(screen.getByTestId(`surface-disclosure-channel-card-${id}-summary`));
   return screen.findByTestId(`channel-card-${id}-panel`);
 }
+
+// 缺省语言是英文（2026-11-01）：卡上同一份状态的英文说法。
+describe('what a channel card says in English', () => {
+  it('uses English for the default locale', () => {
+    const view = channelCardView(card());
+    expect(view).toMatchObject({ sender: '张三 (colleague)', badge: { label: 'Waits for you' } });
+    expect(view.note).toContain('Shadow mode');
+    expect(view.buttons.map((button) => button.label)).toEqual(['Reply with draft', 'I will reply', 'Later', 'Do not reply']);
+    expect(channelCardView(card({ state: 'replied', sentText: 'OK', actions: [] })).note).toBe('You replied with the draft: "OK"');
+    const old = lookupCard({}, { finishedAt: localAt(13, 50), newerMessages: 1 });
+    expect(channelCardView(old, LOOKUP_NOW).lookup!.stale).toBe('1 new message came after it, the result is from 45 minutes ago');
+    expect(channelCardView(notFoundCard(), LOOKUP_NOW).lookup!.track.text).toBe('✗ Not found · Ticket #484 · checked at 14:32 · checked 3 places');
+  });
+});
 
 describe('the channel card component', () => {
   it('sends the chosen action and shows the error when it fails', async () => {
@@ -155,8 +172,8 @@ describe('the channel card component', () => {
     });
     renderUI(<ChannelMessageCard card={waiting} onAction={vi.fn()} now={LOOKUP_NOW} />);
     const fairy = screen.getByTestId('channel-card-7-fairy').textContent ?? '';
-    expect(fairy).toContain('排队中');
-    expect(fairy).toContain('代码 review');
+    expect(fairy).toContain('Queued');
+    expect(fairy).toContain('Looks like: Code review');
     expect(fairy).not.toContain('兜底');
   });
 
@@ -176,14 +193,14 @@ describe('the channel card component', () => {
       detail: 'Context overflow recovery failed: Summarization failed: generation hit the token cap and the summary is incomplete',
       nextAttemptAt: null, lastSuccessAt: null, lastPatrolAt: null,
     };
-    renderUI(<ChannelMessageCard card={waiting} onAction={vi.fn()} now={LOOKUP_NOW} lead={stuck} />);
+    renderUI(<ChannelMessageCard card={waiting} onAction={vi.fn()} now={LOOKUP_NOW} lead={stuck} leadName="Fairy" />);
     const fairy = screen.getByTestId('channel-card-7-fairy').textContent ?? '';
-    expect(fairy).toContain('Fairy 卡住了');
-    expect(fairy).toContain('上下文满了');
-    expect(fairy).not.toContain('排队中');
+    expect(fairy).toContain('Fairy is stuck');
+    expect(fairy).toContain('Context full');
+    expect(fairy).not.toContain('Queued');
     cleanup();
-    renderUI(<ChannelMessageCard card={waiting} onAction={vi.fn()} now={LOOKUP_NOW} lead={{ ...stuck, failures: 0 }} />);
-    expect(screen.getByTestId('channel-card-7-fairy').textContent).toContain('排队中');
+    renderUI(<ChannelMessageCard card={waiting} onAction={vi.fn()} now={LOOKUP_NOW} lead={{ ...stuck, failures: 0 }} leadName="Fairy" />);
+    expect(screen.getByTestId('channel-card-7-fairy').textContent).toContain('Queued. Waits for Fairy');
   });
 
   it('keeps a digest card without buttons until the user opens it', async () => {
@@ -198,11 +215,11 @@ describe('the channel card component', () => {
     const closed = card({ state: 'resolved_elsewhere', actions: [], resolvedAt: new Date(2026, 9, 17, 10, 5).toISOString() });
     renderUI(<ChannelMessageCard card={closed} onAction={vi.fn()} />);
     expect(screen.getByTestId('channel-card-7-line').textContent).toBe('周五评审的材料收到了吗？谢谢');
-    expect(screen.getByTestId('channel-card-7-outcome').textContent).toBe('10:05 已在别处处理');
+    expect(screen.getByTestId('channel-card-7-outcome').textContent).toBe('10:05 Handled elsewhere');
     expect(screen.queryByTestId('channel-card-7-dismiss')).toBeNull();
     await openCard(7);
     // 结束的卡：Fairy 那一行已经写了结果，浮层里不再重复一句结束说明（2026-10-28 用户报的重复尾巴）。
-    expect(screen.getByTestId('channel-card-7-panel').textContent).toContain('你在 Slack 里自己回了');
+    expect(screen.getByTestId('channel-card-7-panel').textContent).toContain('You replied in Slack yourself');
     expect(screen.queryByTestId('channel-card-7-note')).toBeNull();
     expect(screen.queryByTestId('channel-card-7-dismiss-p')).toBeNull();
     fireEvent.click(screen.getByTestId('channel-card-7-collapse'));
@@ -294,7 +311,7 @@ describe('channel cards in the client state', () => {
 
 describe('the two tracks on a card with a lookup (spec D9)', () => {
   it('asks the user like the agreed sample: lookup line, reply line, checks, draft and four buttons', () => {
-    const view = channelCardView(askYouCard(), LOOKUP_NOW);
+    const view = zhView(askYouCard(), LOOKUP_NOW);
     expect(view).toMatchObject({ badge: { label: '等你处理' }, note: null, closed: false, folded: null });
     expect(view.lookup!.track).toMatchObject({ text: '✓ 工单 #482 · 完成于 14:32 · 2 处出处已核实', ticketId: 482, status: null });
     expect(view.reply!.text).toBe('问你 · 信心 0.71（自动门槛 0.85）');
@@ -306,35 +323,35 @@ describe('the two tracks on a card with a lookup (spec D9)', () => {
     expect(view.lookup!.stale).toBeNull();
     // 草稿不带署名；旁边一行小字说明直接回复时加什么。
     expect(view.draft).toBe('订单 123 在 14:02 被标成了测试单，测试单不触发 webhook（见 src/dispatch/filter.ts）。');
-    expect(view.disclosure).toBe(channelDraftDisclosure('Leo'));
+    expect(view.disclosure).toBe(channelDraftDisclosure('Leo', 'zh'));
     expect(view.disclosure).toBe('直接回复时，开头会加一行助手的署名：confirmed by Leo');
     expect(view.buttons.map((button) => button.label)).toEqual(['直接回复', '改一下再发', '我自己回', '不用回']);
     expect(view.buttons.filter((button) => button.primary).map((button) => button.action)).toEqual(['send_draft']);
   });
 
   it('shows an automatic reply with its confidence and the revoke window, then folds after the window', () => {
-    const view = channelCardView(autoRepliedCard(), LOOKUP_NOW);
+    const view = zhView(autoRepliedCard(), LOOKUP_NOW);
     expect(view.badge.label).toBe('已代你回复');
     expect(view.reply!.text).toBe('已自动回复 · 信心 0.93（自动门槛 0.90） · 14:43 前可以撤回');
     expect(view.reply!.history).toBe('这一段历史 4/20');
     expect(view.note).toBe('已代你回复「Fairy (Assistant) · auto-reply for Leo\n订单 123 在 14:02 被标成了测试单，测试单不触发 webhook（见 src/dispatch/filter.ts）。」，14:43 前可以撤回');
     expect(view.buttons.map((button) => button.label)).toEqual(['撤回']);
     expect(view.folded).toBeNull();
-    const later = channelCardView({ ...autoRepliedCard(), actions: [] }, new Date(2026, 9, 20, 14, 50));
+    const later = zhView({ ...autoRepliedCard(), actions: [] }, new Date(2026, 9, 20, 14, 50));
     expect(later.reply!.text).toBe('已自动回复 · 信心 0.93（自动门槛 0.90）');
     expect(later.folded).toEqual({ who: '张三：订单 123 的 webhook 为什么没触发？', outcome: '14:33 已代你回复' });
   });
 
   it('says a prefix will be added only for drafts the lookup or Lead wrote', () => {
     // 模板草稿（「收到，谢谢！」）hub 原样发出，卡上不能说会加「已确认」前缀。
-    const template = channelCardView(lookupCard({ draft: { text: '收到，谢谢！', drafter: 'template' } }), LOOKUP_NOW);
+    const template = zhView(lookupCard({ draft: { text: '收到，谢谢！', drafter: 'template' } }), LOOKUP_NOW);
     expect(template.disclosure).toBeNull();
-    const byLead = channelCardView(lookupCard({ draft: { text: '收到，谢谢，我晚点看。', drafter: 'lead' } }), LOOKUP_NOW);
-    expect(byLead.disclosure).toBe(channelDraftDisclosure('Leo'));
+    const byLead = zhView(lookupCard({ draft: { text: '收到，谢谢，我晚点看。', drafter: 'lead' } }), LOOKUP_NOW);
+    expect(byLead.disclosure).toBe(channelDraftDisclosure('Leo', 'zh'));
   });
 
   it('says where it looked when nothing was found, and hands the card over', () => {
-    const view = channelCardView(notFoundCard(), LOOKUP_NOW);
+    const view = zhView(notFoundCard(), LOOKUP_NOW);
     expect(view.lookup!.track.text).toBe('✗ 没查到 · 工单 #484 · 14:32 查完 · 查过 3 处');
     expect(view.lookup!.checkedVisible).toBe(true);
     expect(view.lookup!.checked).toEqual(['acme/webhooks src/signing/', 'acme/webhooks docs/', 'GitHub 代码搜索 rotate signing key']);
@@ -348,14 +365,14 @@ describe('the two tracks on a card with a lookup (spec D9)', () => {
   // 画布 Slack 状态 2（2026-10-27 核对）：派了工单还在查时，Fairy 那一行写派了哪张工单，后面一根细进度条。
   it('shows which ticket Fairy sent and a thin progress bar while it runs', () => {
     const running = lookupCard({ draft: null, actions: ['cancel_lookup', 'dismiss'] }, { state: 'running', finishedAt: null, result: null, confidence: null, reply: null });
-    renderUI(<ChannelMessageCard card={running} onAction={vi.fn()} now={LOOKUP_NOW} />);
-    expect(screen.getByTestId(`channel-card-${running.id}-fairy`).textContent).toContain('Fairy 派了 #482 去查');
+    renderUI(<ChannelMessageCard card={running} onAction={vi.fn()} now={LOOKUP_NOW} leadName="Fairy" />);
+    expect(screen.getByTestId(`channel-card-${running.id}-fairy`).textContent).toContain('Fairy dispatched #482 to look it up');
     expect(screen.getByRole('progressbar')).toBeTruthy();
   });
 
   it('describes every state of the lookup track', () => {
     const track = (lookup: Parameters<typeof lookupCard>[1], overrides: Partial<ChannelCardDto> = {}) =>
-      channelCardView(lookupCard({ draft: null, actions: [], ...overrides }, lookup), LOOKUP_NOW);
+      zhView(lookupCard({ draft: null, actions: [], ...overrides }, lookup), LOOKUP_NOW);
     const queued = track({ state: 'queued', ticketId: null, finishedAt: null, result: null, confidence: null, reply: null });
     expect(queued.lookup!.track.text).toBe('… 排队中 · 同时进行的代查满了，空出来就开始');
     expect(queued.reply!.text).toBe('等工单结束再定');
@@ -388,42 +405,42 @@ describe('the two tracks on a card with a lookup (spec D9)', () => {
   });
 
   it('breaks the reply decision down: vetoes, missing confidence, calibrated history, an auto reply that did not happen', () => {
-    const vetoed = channelCardView(lookupCard({}, {
+    const vetoed = zhView(lookupCard({}, {
       confidence: { ...lookupDto().confidence!, value: 0.91, vetoes: ['这条消息以后又来了新消息'] },
       reply: { decision: 'ask_user', reasons: ['这条消息以后又来了新消息', '草稿可能替你做了承诺'], at: localAt(14, 32) },
       newerMessages: 1,
     }), LOOKUP_NOW);
     expect(vetoed.reply).toMatchObject({ vetoes: ['这条消息以后又来了新消息'], reasons: ['草稿可能替你做了承诺'] });
     expect(vetoed.lookup!.stale).toBe('之后又来了 1 条消息');
-    const noScore = channelCardView(lookupCard({}, { confidence: { ...lookupDto().confidence!, value: null, threshold: null, calibration: null } }), LOOKUP_NOW);
+    const noScore = zhView(lookupCard({}, { confidence: { ...lookupDto().confidence!, value: null, threshold: null, calibration: null } }), LOOKUP_NOW);
     expect(noScore.reply).toMatchObject({ text: '问你 · 信心算不出', history: null });
-    const calibrated = channelCardView(lookupCard({}, {
+    const calibrated = zhView(lookupCard({}, {
       confidence: { ...lookupDto().confidence!, calibration: { bucket: 0.8, samples: 25, agreed: 23, minSamples: 20 } },
     }), LOOKUP_NOW);
     expect(calibrated.reply!.history).toBe('这一段历史 照发 23/25');
     // 决定了自动回复，但卡还是等你处理（撤回了，或者出站在重试）。
-    const undone = channelCardView(lookupCard({}, { reply: { decision: 'auto_send', reasons: [], at: localAt(14, 33) } }), LOOKUP_NOW);
+    const undone = zhView(lookupCard({}, { reply: { decision: 'auto_send', reasons: [], at: localAt(14, 33) } }), LOOKUP_NOW);
     expect(undone.reply).toMatchObject({ status: '自动回复没有生效', text: '自动回复没有生效 · 信心 0.71（自动门槛 0.85）' });
     // 不过的检查把原因写出来。
-    expect(channelCardView(askYouCard(), LOOKUP_NOW).reply!.checks.find((check) => check.status === 'weak')!.detail)
+    expect(zhView(askYouCard(), LOOKUP_NOW).reply!.checks.find((check) => check.status === 'weak')!.detail)
       .toBe('出处说明了跳过测试单，没有说明订单为什么被标成测试单');
   });
 
   it('warns when the result is old or newer messages came, but not on a closed card', () => {
     const old = lookupCard({}, { finishedAt: localAt(13, 50), newerMessages: 2 });
-    expect(channelCardView(old, LOOKUP_NOW).lookup!.stale).toBe('之后又来了 2 条消息，结果是 45 分钟前的');
-    expect(channelCardView(old, new Date(2026, 9, 20, 16, 0)).lookup!.stale).toBe('之后又来了 2 条消息，结果是 2 小时前的');
-    expect(channelCardView(lookupCard({}, { finishedAt: localAt(14, 10) }), LOOKUP_NOW).lookup!.stale).toBeNull();
-    expect(channelCardView({ ...old, state: 'dismissed', actions: [] }, LOOKUP_NOW).lookup!.stale).toBeNull();
+    expect(zhView(old, LOOKUP_NOW).lookup!.stale).toBe('之后又来了 2 条消息，结果是 45 分钟前的');
+    expect(zhView(old, new Date(2026, 9, 20, 16, 0)).lookup!.stale).toBe('之后又来了 2 条消息，结果是 2 小时前的');
+    expect(zhView(lookupCard({}, { finishedAt: localAt(14, 10) }), LOOKUP_NOW).lookup!.stale).toBeNull();
+    expect(zhView({ ...old, state: 'dismissed', actions: [] }, LOOKUP_NOW).lookup!.stale).toBeNull();
   });
 
   it('says who will see the reply, and flags a conversation shared with another organization', () => {
-    const shared = channelCardView(lookupCard({}, { audience: { label: '#acme-partners', externalShared: true } }), LOOKUP_NOW);
+    const shared = zhView(lookupCard({}, { audience: { label: '#acme-partners', externalShared: true } }), LOOKUP_NOW);
     expect(shared.lookup!.audience).toEqual({ text: '谁能看到回复：#acme-partners · 和外部组织共享的对话', external: true });
   });
 
   it('shows a PR review with its summary, comment count and comments, and the review buttons', () => {
-    const review = channelCardView(lookupCard({ actions: ['send_draft', 'reply_myself', 'dismiss'] }, {
+    const review = zhView(lookupCard({ actions: ['send_draft', 'reply_myself', 'dismiss'] }, {
       playbook: 'review',
       review: {
         summary: '改动整体没问题，有两处边界条件要确认。', commentCount: 2,
@@ -445,16 +462,16 @@ describe('the two tracks on a card with a lookup (spec D9)', () => {
   });
 
   it('lists what the lookup read, including refused reads, and says when the list is partial', () => {
-    expect(channelCardView(askYouCard(), LOOKUP_NOW).lookup!.reads).toEqual({
+    expect(zhView(askYouCard(), LOOKUP_NOW).lookup!.reads).toEqual({
       count: 3, partial: false,
       items: ['search acme/webhooks', 'read_file acme/webhooks src/dispatch/filter.ts:1-80', 'read_file acme/webhooks .env · 被拒：禁止名单里的文件'],
     });
-    expect(channelCardView(notFoundCard(), LOOKUP_NOW).lookup!.reads).toEqual({ count: 5, partial: true, items: [] });
+    expect(zhView(notFoundCard(), LOOKUP_NOW).lookup!.reads).toEqual({ count: 5, partial: true, items: [] });
   });
 
   it('adds the disclosure note only to a lookup draft the user can send as is', () => {
-    expect(channelCardView(card(), LOOKUP_NOW).disclosure).toBeNull();
-    expect(channelCardView(lookupCard({ actions: ['send_edited', 'dismiss'] }), LOOKUP_NOW).disclosure).toBeNull();
+    expect(zhView(card(), LOOKUP_NOW).disclosure).toBeNull();
+    expect(zhView(lookupCard({ actions: ['send_edited', 'dismiss'] }), LOOKUP_NOW).disclosure).toBeNull();
   });
 });
 
@@ -474,32 +491,32 @@ describe('the handling and the score panel on a card (landing plan D3)', () => {
 
   // 统一消息事件工单 06：没有期限，系统不替 Lead 定。Lead 还没处理的卡写「排队中」，没有草稿。
   it('says what the authority decided, and that the card is queued for Lead, with no deadline', () => {
-    const view = channelCardView(handled({}), LOOKUP_NOW);
+    const view = zhView(handled({}), LOOKUP_NOW);
     expect(view.handling).toEqual({
       text: '代码 review · 要干活 · 排队中，等 Lead 处理', tone: 'accent', note: null, reason: null, ruleChange: null,
     });
     expect(view).toMatchObject({ badge: { label: '排队中', tone: 'accent' }, draft: null });
     // 过了以前的期限也一样：系统不兜底。旧 daemon 还给 deadlineAt 时不读它。
     const old = { ...waiting!, deadlineAt: localAt(14, 36) };
-    expect(channelCardView(handled({ lead: old }), new Date(2026, 9, 20, 15, 37)).handling!.text).toBe('代码 review · 要干活 · 排队中，等 Lead 处理');
+    expect(zhView(handled({ lead: old }), new Date(2026, 9, 20, 15, 37)).handling!.text).toBe('代码 review · 要干活 · 排队中，等 Lead 处理');
     // 子 agent 答完、信心模型问你：交回 Lead，排队等它决定怎么告诉你。
-    expect(channelCardView(handled({ lead: { ...waiting!, stage: 'reply' } }), LOOKUP_NOW).handling!.text)
+    expect(zhView(handled({ lead: { ...waiting!, stage: 'reply' } }), LOOKUP_NOW).handling!.text)
       .toBe('代码 review · 要干活 · 交回 Lead，排队等它决定怎么告诉你');
     // Lead 处理过的卡不再写排队中。
-    expect(channelCardView(handled({ lead: { ...waiting!, decision: 'told', by: 'lead' } }), LOOKUP_NOW).badge.label).toBe('等你处理');
+    expect(zhView(handled({ lead: { ...waiting!, decision: 'told', by: 'lead' } }), LOOKUP_NOW).badge.label).toBe('等你处理');
     // 通道没有判断过的旧卡没有处理轨，照旧写模板闸门的话。
-    expect(channelCardView(card(), LOOKUP_NOW)).toMatchObject({ handling: null, reply: null });
+    expect(zhView(card(), LOOKUP_NOW)).toMatchObject({ handling: null, reply: null });
   });
 
   it("shows Lead's words when Lead pushes the card to you, and the reason the system notes", () => {
-    const pushed = channelCardView(handled({
+    const pushed = zhView(handled({
       lead: { stage: 'reply', decision: 'push', by: 'lead', note: '王小明的 PR 看完了，有两处要改，草稿在卡上' },
     }), LOOKUP_NOW);
     expect(pushed.handling).toEqual({
       text: '代码 review · 要干活 · Lead 推送给你', tone: 'neutral', note: 'Lead：王小明的 PR 看完了，有两处要改，草稿在卡上', reason: null,
       ruleChange: null,
     });
-    const merged = channelCardView(handled({
+    const merged = zhView(handled({
       authority: { intent: 'other', action: 'ask', reason: '问你' },
       lead: { stage: 'intake', decision: 'superseded', by: 'system', note: '同一张卡又来了新消息（事件 #9），并进新的请求' },
     }), LOOKUP_NOW);
@@ -507,14 +524,14 @@ describe('the handling and the score panel on a card (landing plan D3)', () => {
       text: '别的 · 问你 · 并进了新消息的请求', note: null, reason: '同一张卡又来了新消息（事件 #9），并进新的请求',
     });
     // Lead 用固定的话拒绝（回复到来源的固定拒绝）。
-    expect(channelCardView(handled({
+    expect(zhView(handled({
       authority: { intent: 'secret', action: 'refuse', reason: '问的是涉密信息，用固定的话拒绝' },
       lead: { stage: 'intake', decision: 'refuse', by: 'lead', note: 'Lead 用固定的话拒绝了涉密的请求' },
     }), LOOKUP_NOW).handling!.text).toBe('涉密 · 代你拒绝 · Lead 用固定的话拒绝了');
   });
 
   it('shows the score panel of the draft on the card, without a task: the audit, the score before calibration and the history', () => {
-    const view = channelCardView(handled(
+    const view = zhView(handled(
       { lead: { ...waiting!, decision: 'answer', by: 'lead' }, reply: score },
       { draft: { text: '可以，三点以后都行。', drafter: 'lead' } },
     ), LOOKUP_NOW);
@@ -525,7 +542,7 @@ describe('the handling and the score panel on a card (landing plan D3)', () => {
       history: '这一段历史 3.5/20', vetoes: [], reasons: score.reasons,
     });
     // 样本够了：写照发的比例。最高档：不写门槛。
-    const warm = channelCardView(handled({ reply: {
+    const warm = zhView(handled({ reply: {
       ...score, audit: false, decision: 'ask_user', raw: 0.5, confidence: 0.5, threshold: null,
       calibration: { bucket: 0.5, samples: 24.5, agreed: 20, minSamples: 20 },
     } }, { draft: { text: '好的', drafter: 'lead' } }), LOOKUP_NOW);
@@ -538,19 +555,21 @@ describe('the handling and the score panel on a card (landing plan D3)', () => {
       authority: { intent: 'approve', action: 'ask', reason: '问你' },
       ruleChange: { probability: 0.95, kinds: ['permissions', 'auto_reply'] },
     } as Partial<Handling>);
-    expect(channelCardView(asked, LOOKUP_NOW).handling).toMatchObject({
+    expect(zhView(asked, LOOKUP_NOW).handling).toMatchObject({
       ruleChange: '对方要求修改助手的权限、自动回复和通知的名单，没有照做',
     });
     // 没有这一项、判断不是改规则的卡：不写。
-    expect(channelCardView(handled({}), LOOKUP_NOW).handling!.ruleChange).toBeNull();
+    expect(zhView(handled({}), LOOKUP_NOW).handling!.ruleChange).toBeNull();
     // 只有这一项（授权表还没定）也有处理轨。
-    expect(channelCardView(handled({ authority: null, lead: null, ruleChange: { probability: 0.8, kinds: [] } } as Partial<Handling>), LOOKUP_NOW)
+    expect(zhView(handled({ authority: null, lead: null, ruleChange: { probability: 0.8, kinds: [] } } as Partial<Handling>), LOOKUP_NOW)
       .handling).toMatchObject({ ruleChange: '对方要求修改助手或系统的规则，没有照做' });
 
     // genui v3 的卡收起态只有两三行（主题 A-4），这一行在点开以后的浮层里。
     renderUI(<ChannelMessageCard card={asked} onAction={vi.fn()} now={LOOKUP_NOW} />);
     await openCard(7);
-    expect(screen.getByTestId('channel-card-7-rule-change').textContent).toBe('对方要求修改助手的权限、自动回复和通知的名单，没有照做');
+    expect(screen.getByTestId('channel-card-7-rule-change').textContent)
+      .toBe(channelCardView(asked, LOOKUP_NOW).handling!.ruleChange);
+    expect(screen.getByTestId('channel-card-7-rule-change').textContent).toMatch(/^The sender asked to change/);
   });
 
   it('renders the handling track, the score panel and the actions the sub-agent took, with links', async () => {
@@ -569,7 +588,7 @@ describe('the handling and the score panel on a card (landing plan D3)', () => {
         connectionSources: [{ via: 'connection', connection: 'cdp', tool: 'get_customer', quote: 'plan: enterprise', verified: true }],
       },
     });
-    const view = channelCardView(withTask, LOOKUP_NOW);
+    const view = zhView(withTask, LOOKUP_NOW);
     expect(view.lookup!.actions).toEqual([
       { text: '在 acme/webhooks#12 提交了 COMMENT review（1 条评论）', url: 'https://github.com/acme/webhooks/pull/12#pullrequestreview-1' },
     ]);
@@ -580,11 +599,11 @@ describe('the handling and the score panel on a card (landing plan D3)', () => {
     await openCard(12);
     fireEvent.click(screen.getByTestId('channel-card-12-more'));
     const shown = screen;
-    expect(shown.getByTestId('channel-card-12-handling').textContent).toContain('代码 review · 要干活 · Lead 已经告诉你');
-    expect(shown.getByTestId('channel-card-12-lead-note').textContent).toBe('Lead：在回复里说了 PR 看完了');
+    expect(shown.getByTestId('channel-card-12-handling').textContent).toContain('Code review · needs work · Lead told you');
+    expect(shown.getByTestId('channel-card-12-lead-note').textContent).toBe('Lead: 在回复里说了 PR 看完了');
     expect(shown.getByRole('link', { name: '在 acme/webhooks#12 提交了 COMMENT review（1 条评论）' })).toBeTruthy();
     expect(shown.queryByText('开了一个 pending review')).toBeNull();
-    expect(shown.getByTestId('channel-card-12-reply-track').textContent).toContain('问你 · 信心 0.62（校准前 0.80，自动门槛 0.60）');
+    expect(shown.getByTestId('channel-card-12-reply-track').textContent).toContain('Ask you · Confidence 0.62 (before calibration 0.80, auto threshold 0.60)');
   });
 });
 
@@ -598,26 +617,26 @@ describe('the channel card component with a lookup', () => {
       </>,
     );
     // 收起态：状态、信心胶囊、主操作（「稍后」「不回」只在浮层里）。
-    expect(screen.getByTestId('channel-card-12-state').textContent).toBe('等你确认');
-    expect(screen.getByTestId('channel-card-12-confidence').textContent).toBe('信心 0.71');
+    expect(screen.getByTestId('channel-card-12-state').textContent).toBe('Needs your confirmation');
+    expect(screen.getByTestId('channel-card-12-confidence').textContent).toBe('Confidence 0.71');
     expect(['send_draft', 'send_edited', 'reply_myself'].map((action) => screen.getByTestId(`channel-card-12-${action}`).textContent))
-      .toEqual(['发出', '改一下再发', '我自己回']);
+      .toEqual(['Send', 'Edit and send', 'I will reply']);
     expect(screen.queryByTestId('channel-card-12-dismiss')).toBeNull();
-    expect(screen.getByTestId('channel-card-13-state').textContent).toBe('已代回');
-    expect(screen.getByTestId('channel-card-13-undo_auto_reply').textContent).toMatch(/^撤回( 还剩 \d+:\d\d)?$/);
+    expect(screen.getByTestId('channel-card-13-state').textContent).toBe('Replied for you');
+    expect(screen.getByTestId('channel-card-13-undo_auto_reply').textContent).toMatch(/^Undo(, \d+:\d\d left)?$/);
 
     await openCard(12);
     expect(screen.getByTestId('channel-card-12-draft').textContent).toContain('订单 123 在 14:02 被标成了测试单');
     expect(screen.getByTestId('channel-card-12-disclosure').textContent).toBe(channelDraftDisclosure('Leo'));
-    expect(screen.getByTestId('channel-card-12-score').textContent).toContain('3/4 · 差在「有依据」');
-    expect(screen.getByTestId('channel-card-12-dismiss-p').textContent).toBe('不用回');
+    expect(screen.getByTestId('channel-card-12-score').textContent).toContain('3/4 · Weak on "有依据"');
+    expect(screen.getByTestId('channel-card-12-dismiss-p').textContent).toBe('No reply needed');
     fireEvent.click(screen.getByTestId('channel-card-12-more'));
-    expect(screen.getByTestId('channel-card-12-lookup-track').textContent).toBe('干活✓工单 #482·完成于 14:32·2 处出处已核实');
-    expect(screen.getByLabelText('✓ 工单 #482 · 完成于 14:32 · 2 处出处已核实')).toBeTruthy();
-    expect(screen.getByTestId('channel-card-12-reply-track').textContent).toContain('问你 · 信心 0.71（自动门槛 0.85）');
+    expect(screen.getByTestId('channel-card-12-lookup-track').textContent).toBe('Work✓Ticket #482·done at 14:32·2 sources verified');
+    expect(screen.getByLabelText('✓ Ticket #482 · done at 14:32 · 2 sources verified')).toBeTruthy();
+    expect(screen.getByTestId('channel-card-12-reply-track').textContent).toContain('Ask you · Confidence 0.71 (auto threshold 0.85)');
     expect(screen.getByTestId('channel-card-12-checks').textContent).toContain('!有依据');
-    expect(screen.getByTestId('channel-card-12-checks').textContent).toContain('这一段历史 15/20');
-    expect(screen.getByTestId('channel-card-12-audience').textContent).toBe('谁能看到回复：#proj-x');
+    expect(screen.getByTestId('channel-card-12-checks').textContent).toContain('History in this range 15/20');
+    expect(screen.getByTestId('channel-card-12-audience').textContent).toBe('Who can see the reply: #proj-x');
     fireEvent.click(screen.getByTestId('channel-card-12-collapse'));
 
     await openCard(13);
@@ -626,15 +645,15 @@ describe('the channel card component with a lookup', () => {
     expect(screen.queryByTestId('channel-card-13-note')).toBeNull();
     expect(screen.queryByTestId('channel-card-13-draft')).toBeNull();
     fireEvent.click(screen.getByTestId('channel-card-13-more'));
-    expect(screen.getByTestId('channel-card-13-reply-track').textContent).toContain('已自动回复 · 信心 0.93（自动门槛 0.90） · 14:43 前可以撤回');
+    expect(screen.getByTestId('channel-card-13-reply-track').textContent).toContain('Auto-replied · Confidence 0.93 (auto threshold 0.90) · You can undo before 14:43');
     fireEvent.click(screen.getByTestId('channel-card-13-collapse'));
 
     await openCard(14);
     fireEvent.click(screen.getByTestId('channel-card-14-more'));
-    expect(screen.getByTestId('channel-card-14-lookup-track').textContent).toContain('没查到');
+    expect(screen.getByTestId('channel-card-14-lookup-track').textContent).toContain('Not found');
     expect(screen.getByTestId('channel-card-14-checked').textContent)
-      .toBe('查过：acme/webhooks src/signing/查过：acme/webhooks docs/查过：GitHub 代码搜索 rotate signing key');
-    expect(screen.getByTestId('channel-card-14-reply-track').textContent).toContain('交给你');
+      .toBe('Checked: acme/webhooks src/signing/Checked: acme/webhooks docs/Checked: GitHub 代码搜索 rotate signing key');
+    expect(screen.getByTestId('channel-card-14-reply-track').textContent).toContain('Hand over to you');
     expect(screen.queryByTestId('channel-card-14-rerun_lookup')).toBeNull();
   });
 
@@ -660,13 +679,13 @@ describe('the channel card component with a lookup', () => {
     expect(details).toContain('订单 123 的 webhook 没有触发');
     expect(details).toContain('✓ acme/webhooks · src/dispatch/filter.ts:12-18');
     expect(details).toContain('if (order.isTest) return skip("test order");');
-    expect(details).toContain('查过：acme/webhooks docs/');
-    expect(details).toContain('不确定：没有查生产日志，只看了代码和文档');
+    expect(details).toContain('Checked: acme/webhooks docs/');
+    expect(details).toContain('Not sure: 没有查生产日志，只看了代码和文档');
     fireEvent.click(screen.getByTestId('channel-card-12-comments-toggle'));
     expect(screen.queryByTestId('channel-card-12-details')).toBeNull();
     expect(screen.getByTestId('channel-card-12-comments').textContent).toBe('src/a.ts:3这里会空指针。');
     fireEvent.click(screen.getByTestId('channel-card-12-reads-toggle'));
-    expect(screen.getByTestId('channel-card-12-reads').textContent).toContain('read_file acme/webhooks .env · 被拒：禁止名单里的文件');
+    expect(screen.getByTestId('channel-card-12-reads').textContent).toContain('read_file acme/webhooks .env · refused: 禁止名单里的文件');
   });
 
   it('edits the draft and sends the edited text with send_edited', async () => {
@@ -678,14 +697,14 @@ describe('the channel card component with a lookup', () => {
     expect(onAction).not.toHaveBeenCalled();
     const input = await screen.findByTestId('channel-card-12-edit-input') as HTMLTextAreaElement;
     expect(input.value).toBe('订单 123 在 14:02 被标成了测试单，测试单不触发 webhook（见 src/dispatch/filter.ts）。');
-    expect(screen.getByTestId('channel-card-12-panel').textContent).toContain('改过的文字按你写的原样发出，不加助手的署名');
+    expect(screen.getByTestId('channel-card-12-panel').textContent).toContain('The system sends your edited text as you wrote it, without the assistant signature.');
     expect(screen.queryByTestId('channel-card-12-send_draft-p')).toBeNull();
     fireEvent.change(input, { target: { value: '  是测试单，所以没触发，谢谢！  ' } });
     fireEvent.click(screen.getByTestId('channel-card-12-edit-send'));
     expect(onAction).toHaveBeenCalledWith('send_edited', '是测试单，所以没触发，谢谢！');
     // 发送中：按钮和输入框都不能用。
     expect(screen.getByTestId('channel-card-12-edit-send').getAttribute('aria-disabled')).toBe('true');
-    expect(screen.getByTestId('channel-card-12-edit-send').textContent).toBe('发出…');
+    expect(screen.getByTestId('channel-card-12-edit-send').textContent).toBe('Send…');
     expect(screen.getByTestId('channel-card-12-edit-cancel').getAttribute('aria-disabled')).toBe('true');
     await act(async () => finish());
     // 发出以后浮层收起。
@@ -716,7 +735,7 @@ describe('the channel card component with a lookup', () => {
     renderUI(<ChannelMessageCard card={askYouCard()} onAction={onAction} now={LOOKUP_NOW} />);
     fireEvent.click(screen.getByTestId('channel-card-12-send_draft'));
     expect(onAction).toHaveBeenCalledWith('send_draft');
-    expect(screen.getByTestId('channel-card-12-send_draft').textContent).toBe('发出…');
+    expect(screen.getByTestId('channel-card-12-send_draft').textContent).toBe('Send…');
     for (const action of ['send_draft', 'send_edited', 'reply_myself']) {
       expect(screen.getByTestId(`channel-card-12-${action}`).getAttribute('aria-disabled')).toBe('true');
     }
@@ -796,5 +815,69 @@ describe('channel cards that follow each other', () => {
     expect(within(run).getByTestId('channel-card-2')).toBeTruthy();
     expect(getComputedStyle(run).gap).toBe('var(--t-space-list-row)');
     expect(getComputedStyle(screen.getByTestId('conversation-column')).gap).toBe('var(--t-space-conversation-block)');
+  });
+});
+
+// 2026-10-30 用户：一个对话一张卡，卡固定在开出来的位置；对方隔了一会儿又发的消息只更新上面那张卡，底部看不到。
+// 底部写一行「Ethan 来了新消息」，背后就是那张卡，不写卡的编号这类系统的词。
+describe('new messages on a card opened earlier', () => {
+  const message = (id: string, at: string): MessageEntity => ({
+    id, sessionId: 's', turnId: `turn-${id}`, role: 'assistant', state: 'completed', createdAt: at, updatedAt: at,
+  } as unknown as MessageEntity);
+  const ethan = (recent: string[], overrides: Partial<ChannelCardDto> = {}) => card({
+    id: 113, sender: { id: 'U0ETHAN', name: 'Ethan', trust: 'colleague' }, createdAt: '2026-10-30T08:44:32.000Z',
+    messageCount: recent.length, recent: recent.map((at, index) => ({ at, text: `第 ${index + 1} 条` })), ...overrides,
+  });
+
+  it('writes one line where the later messages came, and none while nothing came between', () => {
+    const later = ethan([
+      '2026-10-30T08:44:29.000Z', '2026-10-30T09:02:09.000Z', '2026-10-30T09:02:13.000Z', '2026-10-30T09:02:29.000Z', '2026-10-30T09:02:31.000Z',
+    ]);
+    const messages = [message('a', '2026-10-30T08:40:00.000Z'), message('b', '2026-10-30T08:50:00.000Z'), message('c', '2026-10-30T09:02:48.000Z')];
+    const timeline = buildLeadTimeline(messages, [], [], { channelCards: [later] });
+    const first = Date.parse('2026-10-30T09:02:09.000Z');
+    expect(timeline.map((item) => item.key)).toEqual(['message:a', 'channel-card:113', 'message:b', `channel-news:113:${first}`, 'message:c']);
+    expect(timeline[3]).toMatchObject({ kind: 'channel-news', cardId: 113, count: 4, at: Date.parse('2026-10-30T09:02:31.000Z') });
+    // 对方接着说、中间没有别的内容：卡就是最新的东西，不写这一行。
+    const together = buildLeadTimeline(messages.slice(0, 2), [], [], {
+      channelCards: [ethan(['2026-10-30T08:44:29.000Z', '2026-10-30T08:45:10.000Z'])],
+    });
+    expect(together.map((item) => item.key)).toEqual(['message:a', 'channel-card:113', 'message:b']);
+    // 隔着别的内容又来了一次：另起一行，前面那一行不动。
+    const twice = buildLeadTimeline([...messages, message('d', '2026-10-30T09:20:00.000Z')], [], [], {
+      channelCards: [ethan(['2026-10-30T08:44:29.000Z', '2026-10-30T09:02:09.000Z', '2026-10-30T09:10:00.000Z'])],
+    });
+    expect(twice.map((item) => item.key)).toEqual([
+      'message:a', 'channel-card:113', 'message:b', `channel-news:113:${first}`, 'message:c',
+      `channel-news:113:${Date.parse('2026-10-30T09:10:00.000Z')}`, 'message:d',
+    ]);
+    // 摘要投递的卡不在对话里，也不写这一行。
+    expect(buildLeadTimeline(messages, [], [], { channelCards: [{ ...later, delivery: 'digest' }] }).map((item) => item.kind))
+      .not.toContain('channel-news');
+  });
+
+  it('says who wrote without system words, and opens that card in place with its actions', async () => {
+    const actOnChannelCard = vi.fn(async () => ({ ...ethan(['2026-10-30T09:02:31.000Z']), version: 4, state: 'dismissed' as const, actions: [] }));
+    const runtime = createCompanionStateRuntime({
+      client: { actOnChannelCard } as unknown as CompanionRuntimeDependencies['client'],
+      credentials: {} as CompanionRuntimeDependencies['credentials'],
+      scheduler: { schedule: () => 0, cancel: () => {}, now: () => 0 },
+    });
+    runtime.control.getState().replaceChannelCards([ethan(['2026-10-30T08:44:29.000Z', '2026-10-30T09:02:31.000Z'])]);
+    const at = Date.parse('2026-10-30T09:02:31.000Z');
+    renderUI(<CompanionRuntimeProvider runtime={runtime}><ChannelNewsLine cardId={113} at={at} /></CompanionRuntimeProvider>);
+    const line = screen.getByTestId('channel-news-113');
+    expect(screen.getByTestId('channel-news-113-text').textContent).toBe('Ethan sent a new message');
+    expect(screen.getByTestId('channel-news-113-time').textContent).toBe(`· ${clockWords(new Date(at).toISOString())}`);
+    expect(line.textContent).not.toMatch(/#|card|113/iu);
+    expect(screen.getByTestId('channel-news-113-expand').getAttribute('aria-label')).toBe('Show message');
+    fireEvent.click(screen.getByTestId('channel-news-113-expand'));
+    const panel = await screen.findByTestId('channel-card-113-panel');
+    expect(within(panel).getByText('第 2 条')).toBeTruthy();
+    // 浮层由这一行管收起，卡自己不再画一个收起按钮。
+    expect(within(panel).queryByTestId('channel-card-113-collapse')).toBeNull();
+    fireEvent.click(within(panel).getByTestId('channel-card-113-dismiss-p'));
+    await waitFor(() => expect(actOnChannelCard).toHaveBeenCalledWith(113, 'dismiss', 3, undefined));
+    await waitFor(() => expect(screen.queryByTestId('channel-card-113-panel')).toBeNull());
   });
 });

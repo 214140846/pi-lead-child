@@ -21,7 +21,7 @@ describe('Popover', () => {
     expect(screen.getByText('#1 成果快照与登记机制')).toBeTruthy();
     expect(screen.getByRole('button', { name: '依据：等你处理的工单，查看来源' }).getAttribute('aria-expanded')).toBe('true');
 
-    fireEvent.click(screen.getAllByRole('button', { name: '关闭' }).at(-1)!);
+    fireEvent.click(screen.getAllByRole('button', { name: 'Close' }).at(-1)!);
     await waitFor(() => expect(screen.queryByText('#1 成果快照与登记机制')).toBeNull());
   });
 

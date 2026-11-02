@@ -2,7 +2,19 @@
 import { LEAD_RESTART_INTERRUPTED_ERROR, type ConversationToolCall, type KernelCheckpoint } from '@pi-lead-child/protocol';
 import { describe, expect, it } from 'vitest';
 
-import { presentRunFailureCheckpoint, presentSystemCheckpoint, presentTurnFailure, turnFailureGroupKey } from './failurePresentation';
+import {
+  presentRunFailureCheckpoint as presentRunFailureCheckpointIn, presentSystemCheckpoint as presentSystemCheckpointIn,
+  presentTurnFailure as presentTurnFailureIn, turnFailureGroupKey,
+} from './failurePresentation';
+
+// 这些说法的测试按中文写（原文对照）；英文的说法在文件末尾单独测。
+type TurnInput = Parameters<typeof presentTurnFailureIn>[0];
+type CheckpointContext = Parameters<typeof presentSystemCheckpointIn>[1];
+const presentTurnFailure = (input: TurnInput) => presentTurnFailureIn({ ...input, locale: 'zh' });
+const presentRunFailureCheckpoint = (checkpoint: KernelCheckpoint, context: CheckpointContext = {}) =>
+  presentRunFailureCheckpointIn(checkpoint, context, 'zh');
+const presentSystemCheckpoint = (checkpoint: KernelCheckpoint, context: CheckpointContext = {}) =>
+  presentSystemCheckpointIn(checkpoint, context, 'zh');
 
 const clock = () => '22:08';
 
@@ -100,13 +112,13 @@ describe('presentRunFailureCheckpoint', () => {
 });
 
 describe('presentTurnFailure', () => {
-  const base = { originKind: 'paired:companion', ticketId: null, userText: '在吗', lead: undefined, clock };
+  const base = { originKind: 'paired:companion', ticketId: null, userText: '在吗', lead: undefined, clock, locale: 'zh' as const };
 
   // 2026-10-27 画布「没有回答」：每种失败画成哪个模式、一行里写什么、点开以后有哪几行。
   it('picks the pattern and the one-line words for each kind of failure', () => {
     const empty = presentTurnFailure({ ...base, failure: { kind: 'turn-error', code: null, message: 'Lead 未生成回复，请重试。' } });
     expect(empty).toMatchObject({ form: 'absence', label: '没有回答', quote: '在吗', summary: null });
-    expect(empty.facts).toEqual([{ label: '原因', value: 'Paimon 这次没有给出回答' }]);
+    expect(empty.facts).toEqual([{ key: 'reason', label: '原因', value: 'Paimon 这次没有给出回答' }]);
 
     // 认证失败直接重发也一样失败：一行里先说要检查什么。
     const auth = presentTurnFailure({ ...base, failure: { kind: 'turn-error', code: null, message: '401 Unauthorized' } });
@@ -159,7 +171,7 @@ describe('presentTurnFailure', () => {
 // 2026-10-16 07:57：Lead 建好提醒 #83 以后，部署打断了这一轮。失败行说「Lead 这次没有给出回答」，还给「重发」：
 // 点了会再建一个提醒。现在失败行先说已经做完的事；做过事的一轮不给「重发」；被重启打断有自己的说法。
 describe('a failed turn whose tools already did something', () => {
-  const base = { originKind: 'paired:companion', ticketId: null, userText: '提醒我下周一早上关注 aish', lead: undefined, clock };
+  const base = { originKind: 'paired:companion', ticketId: null, userText: '提醒我下周一早上关注 aish', lead: undefined, clock, locale: 'zh' as const };
   const tool = (name: string, state: ConversationToolCall['state'], result: string | null, args: string | null = null) => ({
     name, state,
     args: args === null ? null : { preview: args, truncated: false, redacted: false, artifactRefs: [] },
@@ -256,5 +268,28 @@ describe('presentSystemCheckpoint', () => {
     expect(presentSystemCheckpoint(recovered)).toMatchObject({ ok: true, needsUser: false, text: '工单 #51 的 Run 被收回以后，系统接着派发了' });
     expect(presentSystemCheckpoint(runFailure({ source: 'agent_reported' }, {}))).toBeNull();
     expect(presentSystemCheckpoint(runFailure({ actionRef: { type: 'approval', id: 1 } }, {}))).toBeNull();
+  });
+});
+
+// 缺省语言是英文（2026-11-01）：同样的分支，英文的说法。
+describe('the failure words in English', () => {
+  const base = { originKind: null, ticketId: null, userText: '你好', lead: undefined, clock, locale: 'en' } as const;
+  it('says an empty reply and offers a resend', () => {
+    const empty = presentTurnFailureIn({ ...base, failure: { kind: 'turn-error', code: null, message: 'Lead 未生成回复，请重试。' } });
+    expect(empty.label).toBe('No answer');
+    expect(empty.headline).toBe('Paimon gave no answer this time. You can select "Resend" to ask again.');
+    expect(empty.facts).toEqual([{ key: 'reason', label: 'Reason', value: 'Paimon gave no answer this time' }]);
+  });
+
+  it('says a restart stopped the reply', () => {
+    const restart = presentTurnFailureIn({ ...base, failure: { kind: 'turn-error', code: null, message: LEAD_RESTART_INTERRUPTED_ERROR } });
+    expect(restart.headline).toBe('A restart stopped the reply. Paimon will continue the reply.');
+    expect(restart.label).toBe('Restart stopped it · reply will continue');
+  });
+
+  it('says what a run failure needs', () => {
+    const presented = presentRunFailureCheckpointIn(runFailure({}, { 'Failure category': 'authentication', Needs: 'login' }));
+    expect(presented?.headline).toBe('The Codex of ticket #51 failed authentication. The system paused dispatch. Sign in to Codex again.');
+    expect(presented?.label).toBe('Needs you');
   });
 });

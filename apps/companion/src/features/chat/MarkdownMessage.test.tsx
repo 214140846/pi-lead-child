@@ -143,7 +143,7 @@ describe('MarkdownMessage', () => {
 
     it('renders fenced code with a copy button, and tables that were dropped before', () => {
       renderUI(<MarkdownMessage markdown={'```ts\nconst a = 1;\n```\n\n| 用例 | 结果 |\n| --- | --- |\n| 正常交接 | **通过** |\n| 撤回声明 | 失败 |'} />);
-      expect(screen.getByRole('button', { name: '复制代码' })).toBeTruthy();
+      expect(screen.getByRole('button', { name: 'Copy code' })).toBeTruthy();
       expect(screen.getByTestId('markdown-table')).toBeTruthy();
       expect(screen.getByText('正常交接')).toBeTruthy();
       expect(screen.getByText('通过')).toBeTruthy();

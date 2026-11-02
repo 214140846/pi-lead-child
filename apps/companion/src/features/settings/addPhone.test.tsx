@@ -92,24 +92,24 @@ describe('adding a phone from the web settings', () => {
     setup();
     await flush();
     expect(screen.getByTestId('devices-list')).toBeTruthy();
-    expect(screen.getByTestId('add-phone').textContent).toBe('添加手机');
+    expect(screen.getByTestId('add-phone').textContent).toBe('Add phone');
     expect(screen.queryByTestId('add-phone-panel')).toBeNull();
 
     fireEvent.click(screen.getByTestId('add-phone'));
-    expect((screen.getByTestId('add-phone-name') as HTMLInputElement).value).toBe('手机');
-    expect(screen.getByTestId('add-phone-panel').textContent).toContain('扫描局域网配对码');
+    expect((screen.getByTestId('add-phone-name') as HTMLInputElement).value).toBe('Phone');
+    expect(screen.getByTestId('add-phone-panel').textContent).toContain('Scan local pairing code');
   });
 
   it('creates an invitation and shows its QR code, countdown and address, but never the URI', async () => {
     const fake = setup();
     await openAndCreate();
 
-    expect(createdWith(fake)).toEqual([{ name: '手机' }]);
+    expect(createdWith(fake)).toEqual([{ name: 'Phone' }]);
     const qr = screen.getByTestId('add-phone-qr');
-    expect(qr.getAttribute('aria-label')).toBe('配对「手机」的二维码');
+    expect(qr.getAttribute('aria-label')).toBe('QR code to pair "Phone"');
     expect(qr.children.length).toBeGreaterThan(0);
-    expect(screen.getByTestId('add-phone-countdown').textContent).toBe('15:00 后过期');
-    expect(screen.getByTestId('add-phone-endpoint').textContent).toBe('地址 192.168.1.20:47130');
+    expect(screen.getByTestId('add-phone-countdown').textContent).toBe('Expires in 15:00');
+    expect(screen.getByTestId('add-phone-endpoint').textContent).toBe('Address 192.168.1.20:47130');
     expect(document.body.textContent).not.toContain('plc-pair://');
     expect(document.body.innerHTML).not.toContain(FAKE_URI);
   });
@@ -118,9 +118,9 @@ describe('adding a phone from the web settings', () => {
     setup();
     await openAndCreate();
     await flush(1_000);
-    expect(screen.getByTestId('add-phone-countdown').textContent).toBe('14:59 后过期');
+    expect(screen.getByTestId('add-phone-countdown').textContent).toBe('Expires in 14:59');
     await flush(60_000);
-    expect(screen.getByTestId('add-phone-countdown').textContent).toBe('13:59 后过期');
+    expect(screen.getByTestId('add-phone-countdown').textContent).toBe('Expires in 13:59');
   });
 
   it('expires after 15 minutes, stops polling, and regenerates with one click', async () => {
@@ -129,7 +129,7 @@ describe('adding a phone from the web settings', () => {
     await flush(15 * 60_000);
 
     expect(screen.queryByTestId('add-phone-qr')).toBeNull();
-    expect(screen.getByTestId('add-phone-expired').textContent).toContain('二维码已过期');
+    expect(screen.getByTestId('add-phone-expired').textContent).toContain('The QR code expired');
     const polls = fake.getLoopbackInvitationStatus.mock.calls.length;
     await flush(INVITATION_POLL_MS * 3);
     expect(fake.getLoopbackInvitationStatus.mock.calls.length).toBe(polls);
@@ -139,9 +139,9 @@ describe('adding a phone from the web settings', () => {
     }));
     fireEvent.click(screen.getByTestId('add-phone-regenerate'));
     await flush();
-    expect(createdWith(fake).at(-1)).toEqual({ name: '手机', endpoint: 'ws://192.168.1.20:47130' });
+    expect(createdWith(fake).at(-1)).toEqual({ name: 'Phone', endpoint: 'ws://192.168.1.20:47130' });
     expect(screen.getByTestId('add-phone-qr')).toBeTruthy();
-    expect(screen.getByTestId('add-phone-countdown').textContent).toBe('15:00 后过期');
+    expect(screen.getByTestId('add-phone-countdown').textContent).toBe('Expires in 15:00');
   });
 
   it('treats an expired or unknown invitation reported by the gateway as expired', async () => {
@@ -165,7 +165,7 @@ describe('adding a phone from the web settings', () => {
     await flush(INVITATION_POLL_MS);
     expect(screen.getByTestId('add-phone-qr')).toBeTruthy();
     await flush(INVITATION_POLL_MS);
-    expect(screen.getByTestId('add-phone-paired').textContent).toContain('「手机」已配对。');
+    expect(screen.getByTestId('add-phone-paired').textContent).toContain('"Phone" is paired.');
     expect(screen.queryByTestId('add-phone-qr')).toBeNull();
     expect(fake.listBindings).toHaveBeenCalledTimes(2);
 
@@ -192,7 +192,7 @@ describe('adding a phone from the web settings', () => {
     fireEvent.click(screen.getByTestId('add-phone'));
     const field = screen.getByTestId('add-phone-name');
     fireEvent.change(field, { target: { value: '   ' } });
-    expect(screen.getByTestId('add-phone-name-error').textContent).toBe('请填写设备名');
+    expect(screen.getByTestId('add-phone-name-error').textContent).toBe('Enter a device name.');
     expect(screen.getByTestId('add-phone-create').getAttribute('aria-disabled')).toBe('true');
 
     fireEvent.change(field, { target: { value: '  Pixel 9  ' } });
@@ -200,7 +200,7 @@ describe('adding a phone from the web settings', () => {
     fireEvent.click(screen.getByTestId('add-phone-create'));
     await flush();
     expect(createdWith(fake)).toEqual([{ name: 'Pixel 9' }]);
-    expect(screen.getByTestId('add-phone-qr').getAttribute('aria-label')).toBe('配对「Pixel 9」的二维码');
+    expect(screen.getByTestId('add-phone-qr').getAttribute('aria-label')).toBe('QR code to pair "Pixel 9"');
   });
 
   it('lets the user pick another LAN address, which regenerates the invitation', async () => {
@@ -212,7 +212,7 @@ describe('adding a phone from the web settings', () => {
     fake.createLoopbackInvitation.mockResolvedValueOnce(invitation({ pairingId: 13, endpoint: endpoints[1], endpoints }));
     fireEvent.click(screen.getByTestId('add-phone-endpoint-100.101.102.103:47130'));
     await flush();
-    expect(createdWith(fake).at(-1)).toEqual({ name: '手机', endpoint: 'ws://100.101.102.103:47130' });
+    expect(createdWith(fake).at(-1)).toEqual({ name: 'Phone', endpoint: 'ws://100.101.102.103:47130' });
     expect(screen.getByTestId('add-phone-endpoint-100.101.102.103:47130').getAttribute('aria-pressed')).toBe('true');
   });
 
@@ -224,7 +224,7 @@ describe('adding a phone from the web settings', () => {
     fireEvent.click(screen.getByTestId('add-phone-copy'));
     await flush();
     expect(writeText).toHaveBeenCalledWith(FAKE_URI);
-    expect(screen.getByTestId('add-phone-copy').textContent).toBe('已复制');
+    expect(screen.getByTestId('add-phone-copy').textContent).toBe('Copied');
     expect(document.body.textContent).not.toContain('plc-pair://');
   });
 
@@ -235,7 +235,7 @@ describe('adding a phone from the web settings', () => {
       }),
     });
     await openAndCreate();
-    expect(screen.getByTestId('add-phone-error').textContent).toContain('PLC_GATEWAY_HOST 和 PLC_GATEWAY_PORT');
+    expect(screen.getByTestId('add-phone-error').textContent).toContain('PLC_GATEWAY_HOST and PLC_GATEWAY_PORT');
     // 表单还在，可以再试。
     expect(screen.getByTestId('add-phone-create')).toBeTruthy();
     expect(document.body.textContent).not.toContain('plc-pair://');
@@ -355,10 +355,12 @@ describe('phone pairing model', () => {
   });
 
   it('checks the name the way the gateway does', () => {
-    expect(phoneNameError('手机')).toBeNull();
-    expect(phoneNameError(' ')).toBe('请填写设备名');
-    expect(phoneNameError('手机\n伪造')).toBe('设备名不能包含换行等控制字符');
-    expect(phoneNameError('长'.repeat(80))).toBeNull();
-    expect(phoneNameError('长'.repeat(81))).toBe('设备名最多 80 个字符');
+    expect(phoneNameError('手机', 'zh')).toBeNull();
+    expect(phoneNameError(' ', 'zh')).toBe('请填写设备名');
+    expect(phoneNameError('手机\n伪造', 'zh')).toBe('设备名不能包含换行等控制字符');
+    expect(phoneNameError('长'.repeat(80), 'zh')).toBeNull();
+    expect(phoneNameError('长'.repeat(81), 'zh')).toBe('设备名最多 80 个字符');
+    expect(phoneNameError(' ', 'en')).toBe('Enter a device name.');
+    expect(phoneNameError('长'.repeat(81), 'en')).toBe('The device name can be at most 80 characters.');
   });
 });

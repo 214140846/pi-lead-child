@@ -12,21 +12,21 @@ const run = (purpose: 'execution' | 'review' | 'conversation') => ({
 describe('where a ticket message goes', () => {
   it('queues for a running Codex or Claude Code run and says so', () => {
     expect(ticketChatDestination({ ticketDisplayId: '66', liveRun: run('review'), runtimeName: 'codex' })).toEqual({
-      hint: '核查 agent 正在跑 · Codex 不能中途插话，消息排队，结束后转交',
-      placeholder: '问核查 agent，或者补充要求',
+      hint: 'The reviewer agent is running · Codex cannot take messages during a run. Your message waits and goes to the agent after the run.',
+      placeholder: 'Ask the reviewer agent, or add requirements',
       cost: null,
     });
   });
 
   it('goes straight into a running Pi run', () => {
     expect(ticketChatDestination({ ticketDisplayId: '66', liveRun: run('execution'), runtimeName: 'pi' }).hint)
-      .toBe('执行 agent 正在跑 · 消息会插进它当前的工作');
+      .toBe('The executor agent is running · Your message goes into its current work');
   });
 
   it('opens a conversation run when nothing runs', () => {
     expect(ticketChatDestination({ ticketDisplayId: '66', liveRun: null, runtimeName: 'codex' })).toEqual({
-      hint: '发给 #66 的 agent · 开一次对话 Run，不改变工单状态',
-      placeholder: '问这张工单的 agent，或者补充要求',
+      hint: 'To the agent of #66 · Starts a conversation Run. The ticket state does not change.',
+      placeholder: 'Ask the agent of this ticket, or add requirements',
       cost: null,
     });
   });
@@ -40,31 +40,38 @@ describe('resuming an ended session', () => {
 
   it('says which session it resumes and what it may cost', () => {
     expect(ticketChatDestination(base)).toEqual({
-      hint: '发给 #77 的核查 agent · 续接 Run #73 的会话，不改变工单状态',
-      placeholder: '问核查 agent，或者补充要求',
-      cost: '预估成本：约 45.6 万 token（按这个会话上次的用量）',
+      hint: 'To the reviewer agent of #77 · Continues the session of Run #73. The ticket state does not change.',
+      placeholder: 'Ask the reviewer agent, or add requirements',
+      cost: 'Estimated cost: about 456K tokens (from the last usage of this session)',
     });
   });
 
   it('says it cannot estimate the cost when the last run reported no usage', () => {
-    expect(ticketChatDestination({ ...base, resume: { ...resume, lastTokens: null } }).cost).toBe('预估成本：无法估算');
+    expect(ticketChatDestination({ ...base, resume: { ...resume, lastTokens: null } }).cost).toBe('Estimated cost: unknown');
   });
 
   it('goes to a running agent without a cost', () => {
     expect(ticketChatDestination({ ...base, liveRun: run('execution'), runtimeName: 'pi' })).toEqual({
-      hint: '执行 agent 正在跑 · 消息会插进它当前的工作', placeholder: '问执行 agent，或者补充要求', cost: null,
+      hint: 'The executor agent is running · Your message goes into its current work', placeholder: 'Ask the executor agent, or add requirements', cost: null,
     });
   });
 
   it('opens a new conversation run when there is no session to resume', () => {
     expect(ticketChatDestination({ ...base, resume: null })).toMatchObject({
-      hint: '发给 #77 的 agent · 开一次对话 Run，不改变工单状态', cost: null,
+      hint: 'To the agent of #77 · Starts a conversation Run. The ticket state does not change.', cost: null,
     });
   });
 
-  it('writes token estimates in 万 above ten thousand', () => {
-    expect(tokenEstimateText(456_000)).toBe('约 45.6 万 token');
-    expect(tokenEstimateText(5_860_000)).toBe('约 586 万 token');
-    expect(tokenEstimateText(8_200)).toBe('约 8,200 token');
+  it('writes token estimates in K and M above ten thousand', () => {
+    expect(tokenEstimateText(456_000)).toBe('about 456K tokens');
+    expect(tokenEstimateText(5_860_000)).toBe('about 5.9M tokens');
+    expect(tokenEstimateText(8_200)).toBe('about 8,200 tokens');
+  });
+
+  it('writes token estimates in 万 above ten thousand in Chinese', () => {
+    expect(tokenEstimateText(456_000, 'zh')).toBe('约 45.6 万 token');
+    expect(tokenEstimateText(5_860_000, 'zh')).toBe('约 586 万 token');
+    expect(tokenEstimateText(8_200, 'zh')).toBe('约 8,200 token');
+    expect(ticketChatDestination({ ...base, locale: 'zh' }).hint).toBe('发给 #77 的核查 agent · 续接 Run #73 的会话，不改变工单状态');
   });
 });

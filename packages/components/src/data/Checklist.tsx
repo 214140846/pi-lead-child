@@ -3,6 +3,8 @@ import { Icon } from '../display/Icon';
 import { Pressable } from '../primitives/Pressable';
 import { Box, Column, Row } from '../primitives/layout';
 import { Text } from '../primitives/Text';
+import { useMessages } from '../i18n';
+import { dataMessages } from './data.messages';
 
 // 一列判定的表头，例如「核查员」。还没有结论的格子显示一条短横，无障碍名称用 emptyLabel。
 export type ChecklistColumn = { label: string; emptyLabel?: string };
@@ -45,6 +47,7 @@ const CHECK_WIDTH = 36;
 export function Checklist({
   items, columns = [], checkColumn, onToggle, checkLabel, numbered = true, testID,
 }: ChecklistProps) {
+  const m = useMessages(dataMessages);
   const hasCheck = checkColumn !== undefined;
   return (
     <Column testID={testID}>
@@ -80,7 +83,7 @@ export function Checklist({
               <Box w={CHECK_WIDTH} shrink={0} items="center">
                 <CheckBox
                   checked={item.checked === true}
-                  label={checkLabel ? checkLabel(item, index) : `确认：${item.label}`}
+                  label={checkLabel ? checkLabel(item, index) : m.confirmItem(item.label)}
                   onPress={onToggle ? () => onToggle(item.id, item.checked !== true) : undefined}
                   testID={testID ? `${testID}-check-${item.id}` : undefined}
                 />
@@ -97,10 +100,11 @@ export function Checklist({
 }
 
 function VerdictCell({ column, verdict }: { column: ChecklistColumn; verdict: ChecklistVerdict }) {
+  const m = useMessages(dataMessages);
   if (!verdict) {
     return (
       // spacing-exempt: 文字当图标用
-      <Text w={VERDICT_WIDTH} shrink={0} align="center" size="13" leading={20} tone="muted" role="img" aria-label={column.emptyLabel ?? `${column.label}还没有结论`}>
+      <Text w={VERDICT_WIDTH} shrink={0} align="center" size="13" leading={20} tone="muted" role="img" aria-label={column.emptyLabel ?? m.noVerdict(column.label)}>
         —
       </Text>
     );

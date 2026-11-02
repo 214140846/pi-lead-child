@@ -6,6 +6,8 @@ import { Text } from '../primitives/Text';
 import { FairyMark } from './FairyMark';
 import { Icon } from './Icon';
 import type { IconName } from './icons';
+import { useMessages } from '../i18n';
+import { displayMessages } from './display.messages';
 
 export type RecordBlockProps = {
   /** 「Fairy 在后台处理了 8 件事 · 10:02–11:39」。 */
@@ -21,6 +23,7 @@ export type RecordBlockProps = {
 // 模式「记录块」（patterns P9.8，主题 11.8）：Fairy 没对你说、自己处理掉的事。像页边的批注：
 // 左边一条 1px 的竖线，竖线顶上是安静版的 Fairy 标记，没有底色，没有外框。头部一行 meta 600，下面一行一件事（RecordLine）。
 export function RecordBlock({ title, meta, toggle, children, testID }: RecordBlockProps) {
+  const m = useMessages(displayMessages);
   return (
     <Row testID={testID} w="100%" gap="inline-item">
       <Column items="center" shrink={0} self="stretch">
@@ -33,9 +36,9 @@ export function RecordBlock({ title, meta, toggle, children, testID }: RecordBlo
           {meta ? <Text flex={1} minW={0} size="meta" tone="muted" numberOfLines={1}>{meta}</Text> : <Box flex={1} />}
           {toggle ? (
             // 浮层的背景也叫「收起」：这个按钮说清收起的是记录。
-            <Pressable onPress={toggle.onPress} feedback="none" aria-label={toggle.expanded ? '收起记录' : '展开'} aria-expanded={toggle.expanded}>
+            <Pressable onPress={toggle.onPress} feedback="none" aria-label={toggle.expanded ? m.collapseRecord : m.expand} aria-expanded={toggle.expanded}>
               <Row items="center" gap="text-stack">
-                <Text size="meta" weight="semibold" tone="strong">{toggle.expanded ? '收起' : '展开'}</Text>
+                <Text size="meta" weight="semibold" tone="strong">{toggle.expanded ? m.collapse : m.expand}</Text>
                 <Icon name={toggle.expanded ? 'chevron-up' : 'chevron-down'} size={11} color="text" weight="semibold" />
               </Row>
             </Pressable>

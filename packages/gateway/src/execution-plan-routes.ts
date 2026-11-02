@@ -4,7 +4,8 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Scope, TicketExecutionPlanResponse } from "@pi-lead-child/protocol";
 import type { Db } from "@pi-lead-child/store";
-import { getItem } from "@pi-lead-child/store";
+import { getItem, getLocale } from "@pi-lead-child/store";
+import { routeMessages } from "./routes.messages.js";
 import { ticketExecutionPlan } from "@pi-lead-child/engine";
 
 export interface ExecutionPlanRouteContext {
@@ -25,7 +26,7 @@ export function handleExecutionPlanRoute(ctx: ExecutionPlanRouteContext): boolea
   ctx.requireAuth("tickets:view");
   const ticketId = Number(match[1]);
   if (!getItem(ctx.db, ticketId)) {
-    ctx.json(404, { error: { code: "not_found", message: `工单 #${ticketId} 不存在` } });
+    ctx.json(404, { error: { code: "not_found", message: routeMessages(getLocale(ctx.db)).ticketNotFound(ticketId) } });
     return true;
   }
   const body: TicketExecutionPlanResponse = { plan: ticketExecutionPlan(ctx.db, ticketId) };

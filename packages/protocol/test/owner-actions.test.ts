@@ -6,7 +6,7 @@ import {
   bindingOriginOf, canDisownOwnerAction, ITEM_ACTION_RISK, isOwnerActionEventId, listEventKinds,
   OWNER_ACTION_DISOWNED_KIND, OWNER_ACTION_IDS, OWNER_ACTION_NOTIFICATION_KIND, OWNER_ACTION_PERFORMED_KIND, OWNER_ACTIONS,
   ownerActionAlertText, ownerActionDefinition, ownerActionDelivery, ownerActionEventIdOfNotification, ownerActionEventIdOfTurn,
-  ownerActionLevel, ownerActionNotificationDedupKey, ownerActionRefOfNotification, ownerActionRefOfTurn, ownerActionTurnId,
+  ownerActionLabel, ownerActionLevel, ownerActionNotificationDedupKey, ownerActionRefOfNotification, ownerActionRefOfTurn, ownerActionTurnId, ownerActionUndoNote,
   originMayDecide, pairedBindingOrigin, USER_ITEM_ACTION_IDS,
   validateEventEnvelope, type BindingOrigin,
 } from "../src/index.ts";
@@ -22,8 +22,10 @@ describe("the owner action table", () => {
       if (definition.byAgent) expect(definition.routes).toEqual([]);
       else expect(definition.routes.length).toBeGreaterThan(0);
       for (const route of definition.routes) expect(route).toMatch(/^(POST|PUT|DELETE) \/v1\//);
-      expect(definition.label).not.toBe("");
-      expect(definition.undoNote).not.toBe("");
+      for (const locale of ["en", "zh"] as const) {
+        expect(ownerActionLabel(definition.id, locale)).not.toBe("");
+        expect(ownerActionUndoNote(definition.id, locale)).not.toBe("");
+      }
       expect(ownerActionDefinition(definition.id)).toBe(definition);
     }
     expect(ownerActionDefinition("ticket.create")).toBeUndefined();
@@ -144,10 +146,22 @@ describe("the alert and the conversation card carry the event id", () => {
       summary: "验收了工单 #5「登录页」",
       credential: { bindingId: 12, name: "plc", origin: "cli" },
       source: { client: "cli", fromThisMachine: true },
+      locale: "zh",
     });
     expect(text.title).toBe("验收了工单 #5「登录页」");
     expect(text.body).toContain("凭证：plc（plc 的 CLI 凭证，#12）· CLI · 来自这台电脑");
     expect(text.body).toContain("不是我");
+  });
+
+  // 2026-11-01：界面语言缺省是英文。不传 locale 时是英文。
+  it("writes the alert in English when no locale is given", () => {
+    const text = ownerActionAlertText({
+      summary: "Accepted ticket #5",
+      credential: { bindingId: 12, name: "plc", origin: "cli" },
+      source: { client: "cli", fromThisMachine: false },
+    });
+    expect(text.body).toContain("Credential: plc (the plc CLI credential, #12) · CLI · From another device");
+    expect(text.body).toContain("\"Not me\"");
   });
 });
 
@@ -184,6 +198,7 @@ describe("an owner action Lead did for the user", () => {
       summary: "Lead 代你确认了工单 #5「登录页」",
       credential: { bindingId: 30, name: "我的电脑", origin: "loopback_web" },
       source: { client: "lead", fromThisMachine: true },
+      locale: "zh",
     });
     expect(text.body).toContain("Paimon 在对话里代你做的");
     expect(text.body).toContain("点「撤销」：撤销这次操作，不作废凭证");
@@ -198,6 +213,7 @@ describe("an owner action Lead did for the user", () => {
       summary: "Jarvis 派的子 agent 代你在 Acme/x#101 上提交了 review（COMMENT）",
       credential: { bindingId: 0, name: "工单 #12「slack 代码 review」", origin: "unknown" },
       source: { client: "agent", fromThisMachine: true },
+      locale: "zh",
       note: "链接：https://github.com/Acme/x/pull/101",
       leadName: "Jarvis",
     });
@@ -209,20 +225,22 @@ describe("an owner action Lead did for the user", () => {
 
   // 2026-10-22：称呼 Lead 用用户起的名字（设置 → 身份与风格），不写死 Lead 或 Paimon。
   it("calls Lead by the name the user gave it", async () => {
-    const { ownerActionAlertText, ownerActionClientLabel, ownerActionDefinition, ownerActionText } = await import("../src/owner-actions.ts");
+    const { ownerActionAlertText, ownerActionClientLabel, ownerActionLabel } = await import("../src/owner-actions.ts");
     const text = ownerActionAlertText({
       summary: "Jarvis 代你确认了工单 #5「登录页」",
       credential: { bindingId: 30, name: "我的电脑", origin: "loopback_web" },
       source: { client: "lead", fromThisMachine: true },
+      locale: "zh",
       leadName: "Jarvis",
     });
     expect(text.body).toContain("Jarvis 在对话里代你做的");
     expect(text.body).toContain("Jarvis 理解错了？");
     expect(text.body).not.toMatch(/Lead|Paimon/);
-    expect(ownerActionClientLabel("lead", "Jarvis")).toBe("Jarvis 在对话里代你做");
-    expect(ownerActionClientLabel("agent", "Jarvis")).toBe("Jarvis 派的子 agent 按权限清单做");
-    expect(ownerActionText(ownerActionDefinition("lead.trust")!.label, "Jarvis")).toBe("改 Jarvis 的授权");
-    expect(ownerActionText(ownerActionDefinition("lead.trust")!.label)).toBe("改 Paimon 的授权");
+    expect(ownerActionClientLabel("lead", "Jarvis", "zh")).toBe("Jarvis 在对话里代你做");
+    expect(ownerActionClientLabel("agent", "Jarvis", "zh")).toBe("Jarvis 派的子 agent 按权限清单做");
+    expect(ownerActionLabel("lead.trust", "zh", "Jarvis")).toBe("改 Jarvis 的授权");
+    expect(ownerActionLabel("lead.trust", "zh")).toBe("改 Paimon 的授权");
+    expect(ownerActionLabel("lead.trust", "en", "Jarvis")).toBe("Change the authority of Jarvis");
   });
 
   it("is a notification of its own kind that still names the event and the credential", async () => {

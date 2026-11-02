@@ -12,7 +12,8 @@ import {
   LEAD_AVATAR_IMAGE_ID_PATTERN, LEAD_AVATAR_UPLOAD_MAX_BODY_BYTES, LeadAvatarSlackEmojiRequestSchema, SLACK_BYLINE_EMOJI_MAX_LENGTH,
   type Scope, type SlackEmojiPreview,
 } from "@pi-lead-child/protocol";
-import { getLeadAvatarImage, leadDisplayName, type Db } from "@pi-lead-child/store";
+import { getLeadAvatarImage, getLocale, leadDisplayName, type Db } from "@pi-lead-child/store";
+import { routeMessages } from "./routes.messages.js";
 import {
   autoReplyDisclosure, clearLeadAvatarSlot, decodeLeadAvatarUpload, disclosureAssistantName, disclosureOwnerName, getLeadAvatar,
   LeadAvatarError, setLeadAvatarSlackEmoji, setLeadAvatarSlot, slackEmojiPreview, type LeadAvatarOutcome,
@@ -67,6 +68,7 @@ export async function handleLeadAvatarRoute(ctx: LeadAvatarRouteContext): Promis
   const { req, url } = ctx;
   if (url.pathname !== ROOT && !url.pathname.startsWith(`${ROOT}/`)) return false;
   const configSlackEmoji = () => ctx.service?.configSlackEmoji?.();
+  const m = routeMessages(getLocale(ctx.db));
 
   if (req.method === "GET" && url.pathname === ROOT) {
     ctx.requireAuth("tickets:view");
@@ -79,12 +81,12 @@ export async function handleLeadAvatarRoute(ctx: LeadAvatarRouteContext): Promis
     ctx.requireAuth("tickets:view");
     const id = decodeSegment(image[1]!);
     if (id === null || !LEAD_AVATAR_IMAGE_ID_PATTERN.test(id)) {
-      badRequest(ctx, "图的 id 不对", "invalid_input");
+      badRequest(ctx, m.avatarImageId, "invalid_input");
       return true;
     }
     const found = getLeadAvatarImage(ctx.db, id);
     if (!found) {
-      ctx.json(404, { error: { code: "not_found", message: "没有这张图" } });
+      ctx.json(404, { error: { code: "not_found", message: m.avatarImageNotFound } });
       return true;
     }
     // id 是内容的哈希：同一个 id 永远是同一张图。
@@ -98,13 +100,13 @@ export async function handleLeadAvatarRoute(ctx: LeadAvatarRouteContext): Promis
     ctx.requireAuth("tickets:view");
     const code = url.searchParams.get("code") ?? "";
     if (code.length > SLACK_BYLINE_EMOJI_MAX_LENGTH + 8) {
-      badRequest(ctx, "code 太长：Slack 的短代码最多 100 个字符", "invalid_input");
+      badRequest(ctx, m.avatarCodeTooLong, "invalid_input");
       return true;
     }
     const preview = ctx.service?.previewSlackEmoji
       ? await ctx.service.previewSlackEmoji(code)
       : await slackEmojiPreview({
-        code, lookup: null, unavailableReason: "这个 daemon 查不了 Slack 的 emoji。",
+        code, lookup: null, unavailableReason: m.avatarSlackUnavailable,
         byline: () => autoReplyDisclosure(disclosureAssistantName(leadDisplayName(ctx.db)), disclosureOwnerName(), "").parts.byline,
       });
     ctx.json(200, preview);
@@ -154,7 +156,7 @@ export async function handleLeadAvatarRoute(ctx: LeadAvatarRouteContext): Promis
     ctx.requireAuth("tickets:create");
     const body = await ctx.readBody();
     if (!Value.Check(LeadAvatarSlackEmojiRequestSchema, body)) {
-      badRequest(ctx, "请求只能有 emoji（文字）和 reset（true 或 false）", "invalid_input");
+      badRequest(ctx, m.avatarEmojiBody, "invalid_input");
       return true;
     }
     return change(() => setLeadAvatarSlackEmoji(ctx.db, { ...common(), emoji: body.emoji, ...(body.reset !== undefined ? { reset: body.reset } : {}) }));

@@ -16,6 +16,9 @@ import {
 } from '@pi-lead-child/protocol';
 import { useEffect, useMemo, useState } from 'react';
 
+import { useLocale, type Locale } from '@/i18n';
+
+import { conversationMessages } from './conversation.messages';
 import { placementCopyFor, steeredNoticeFor } from './steeredNotice';
 import { assistantMessageHasContent } from './assistantContent';
 import { leadSenderLabel, systemNoticeLabel } from './senderLabel';
@@ -51,7 +54,7 @@ import { CheckpointCard } from './CheckpointCard';
 import { ConversationDateDivider } from './ConversationDateDivider';
 import { FailureCard } from './FailureCard';
 import { presentOutage } from './outagePresentation';
-import { FAILURE_ACTION_LABELS, presentTurnFailure, turnFailureGroupKey, type FailureAction } from './failurePresentation';
+import { failureActionLabels, presentTurnFailure, turnFailureGroupKey, type FailureAction } from './failurePresentation';
 import { InterventionCard } from './InterventionCard';
 import { LeadModelPicker, LeadModelResendLink } from './LeadModelPicker';
 import { MessageComposer } from './MessageComposer';
@@ -69,7 +72,7 @@ import { leadActivityCards, reminderCards, reminderTurnCards, setupChecklistCard
 import { ReminderFireCard } from './ReminderFireCard';
 import { SetupChecklistCardItem, SetupHintCardItem } from './SetupCards';
 import { OwnerActionCard, OwnerActionGroupCard, OwnOwnerActionGroup, OwnOwnerActionNote } from './OwnerActionCard';
-import { ChannelCardSlot } from './ChannelMessageCard';
+import { ChannelCardSlot, ChannelNewsLine } from './ChannelMessageCard';
 import { useOpenTicket } from './useOpenTicket';
 
 type LeadConversationProps = {
@@ -90,6 +93,8 @@ export function LeadConversation({ compact = false, railOpen = true, onOpenRail,
   const { items: workItems } = useWorkItems();
   const sessionId = useLeadSessionId();
   const leadName = useLeadName();
+  const locale = useLocale();
+  const m = conversationMessages(locale);
   // 「当前工单」是桌面上开着详情的那一张。详情关上以后选中还留着，但它不再是当前工单：顶栏不写，
   // 会话里的卡片也不按它写「其他工单」（2026-10-16）。手机上会话和工单详情不同时出现。
   const threadOpen = useWorkspaceStore((state) => state.threadOpen);
@@ -164,6 +169,7 @@ export function LeadConversation({ compact = false, railOpen = true, onOpenRail,
     () => buildLeadTimeline(messages, leadCards, directTicketTurns, {
       // 只有失败、没有内容的 Lead 主动回合才合并（例如每次心跳巡检一个 503）。
       now: new Date(),
+      locale,
       leadActivity,
       channelCards: timelineChannelCards,
       reminders,
@@ -204,7 +210,7 @@ export function LeadConversation({ compact = false, railOpen = true, onOpenRail,
       isOutageNotice: (message) => message.role === 'assistant' && message.turnId !== null
         && turnsById[message.turnId]?.originKind === SYSTEM_TURN_ORIGINS.fallbackNotice,
     }),
-    [carriedOwnerActionIds, currentBindingId, directTicketTurns, leadActivity, leadCards, messagePartsById, messages, partIdsByMessage, reminderTurnIds, reminders, setupChecklist, setupHints, timelineChannelCards, turnsById],
+    [carriedOwnerActionIds, currentBindingId, directTicketTurns, leadActivity, leadCards, locale, messagePartsById, messages, partIdsByMessage, reminderTurnIds, reminders, setupChecklist, setupHints, timelineChannelCards, turnsById],
   );
   const cardsById = useMemo(
     () => Object.fromEntries(leadCards.map((card) => [card.id, card])) as Record<string, ConversationCardEntity>,
@@ -231,7 +237,7 @@ export function LeadConversation({ compact = false, railOpen = true, onOpenRail,
   ), [rows, messagesById, turnsById]);
   const hydrated = phase === 'ready';
   const connected = connectionState === 'connected';
-  const footerItems = useMemo(() => buildLeadFooterItems(tickets, workItems), [tickets, workItems]);
+  const footerItems = useMemo(() => buildLeadFooterItems(tickets, workItems, locale), [locale, tickets, workItems]);
   const runningFooterCount = hydrated ? footerItems.filter((item) => item.tone === 'running').length : 0;
 
   // Lead 正忙时，这条消息插话还是排队（工单 04，spec D6）。daemon 支持时才给选：旧 daemon 只会插话。
@@ -260,7 +266,7 @@ export function LeadConversation({ compact = false, railOpen = true, onOpenRail,
     } catch (error) {
       setHistoryRequest({
         loading: false,
-        error: error instanceof Error ? error.message : '暂时无法读取更早的会话卡片。',
+        error: error instanceof Error ? error.message : m.history.unavailable,
       });
     }
   };
@@ -290,34 +296,34 @@ export function LeadConversation({ compact = false, railOpen = true, onOpenRail,
             borderLeftWidth={1}
             borderLeftColor="border-soft"
           >
-            <Text size="eyebrow" weight="bold" tone="secondary">当前工单</Text>
+            <Text size="eyebrow" weight="bold" tone="secondary">{m.header.currentTicket}</Text>
             <Box aria-label={selectedTicket.title}>
-              <Text size="card-title" weight="extrabold" numberOfLines={1}>{`#${selectedTicket.id} · 当前工单`}</Text>
+              <Text size="card-title" weight="extrabold" numberOfLines={1}>{m.header.currentTicketTitle(selectedTicket.id)}</Text>
             </Box>
-            <Text size="secondary" weight="semibold" tone="secondary">{ticketSummaryToTicket(selectedTicket).statusLabel}</Text>
+            <Text size="secondary" weight="semibold" tone="secondary">{ticketSummaryToTicket(selectedTicket, undefined, locale).statusLabel}</Text>
           </Column>
         ) : null}
         <Spacer />
         {/* 执行中 N：原来在输入框上方那一行，和左栏的「在执行」是同一个数（ticketTurn）。不带图标：split 图标和旁边的侧栏按钮像。 */}
         {hydrated ? (
-          <Row testID="lead-running-count" items="center" gap="icon-label" shrink={0} aria-label={`执行中 ${runningFooterCount}`}>
-            <Text size="label" weight="semibold" tone="strong">执行中</Text>
+          <Row testID="lead-running-count" items="center" gap="icon-label" shrink={0} aria-label={m.header.runningCount(runningFooterCount)}>
+            <Text size="label" weight="semibold" tone="strong">{m.header.running}</Text>
             <Text size="label" weight="semibold" tone="strong" mono>{String(runningFooterCount)}</Text>
           </Row>
         ) : null}
         <WebUpdateNotice compact={compact} />
         {!railOpen && onOpenRail ? (
-          <IconButton icon="sidebar" label="打开工作列表" onPress={onOpenRail} size="lg" />
+          <IconButton icon="sidebar" label={m.header.openWorkList} onPress={onOpenRail} size="lg" />
         ) : null}
         {compact && onOpenAll ? (
-          <IconButton icon="sidebar" label="打开工作区" onPress={onOpenAll} size="lg" iconSize={19} badge />
+          <IconButton icon="sidebar" label={m.header.openWorkspace} onPress={onOpenAll} size="lg" iconSize={19} badge />
         ) : null}
         {/* 视图（主题 11.14 第 7 项）：最右边。面板开着时是选中态（I-6：图标变成强调色）。 */}
         {onToggleViews ? (
           <IconButton
             testID="views-toggle"
             icon="views"
-            label={viewsOpen ? '收起自定义视图' : '打开自定义视图'}
+            label={viewsOpen ? m.header.hideViews : m.header.showViews}
             onPress={onToggleViews}
             size="lg"
             iconColor={viewsOpen ? 'accent' : undefined}
@@ -345,19 +351,19 @@ export function LeadConversation({ compact = false, railOpen = true, onOpenRail,
             >
               <Dot color="text-muted" size={6} />
               {/* spacing-exempt: 标签字号 */}
-              <Text size="11" weight="semibold" tone="secondary">显示已缓存会话 · 等待重新连接</Text>
+              <Text size="11" weight="semibold" tone="secondary">{m.cached}</Text>
             </Row>
           ) : null}
           {hydrated && (conversationCardPage?.hasMore || historyRequest.loading || historyRequest.error) ? (
             <Column items="center" gap="card-row">
               {historyRequest.error ? (
-                <Text size="secondary" tone="danger-dark" align="center">{`更早的会话卡片加载失败：${historyRequest.error}`}</Text>
+                <Text size="secondary" tone="danger-dark" align="center">{m.history.failed(historyRequest.error)}</Text>
               ) : null}
               <Button
                 disabled={!connected || historyRequest.loading || !conversationCardPage?.hasMore}
-                label={historyRequest.loading ? '正在加载更早的会话卡片…' : historyRequest.error ? '重试加载更早的会话卡片' : '加载更早的会话卡片'}
+                label={historyRequest.loading ? m.history.loading : historyRequest.error ? m.history.retry : m.history.load}
                 onPress={() => void loadOlderConversationCards()}
-                testID={historyRequest.loading ? '正在加载更早的会话卡片' : '加载更早的会话卡片'}
+                testID={historyRequest.loading ? 'conversation-history-loading' : 'conversation-history-load'}
                 variant="outline"
                 tone="neutral"
                 shape="pill"
@@ -405,6 +411,8 @@ export function LeadConversation({ compact = false, railOpen = true, onOpenRail,
             <ConversationDateDivider key={item.key} label={item.label} />
           ) : item.kind === 'lead-activity' ? (
             <LeadActivityBlock key={item.key} ids={item.ids} defaultExpanded={false} />
+          ) : item.kind === 'channel-news' ? (
+            <ChannelNewsLine key={item.key} cardId={item.cardId} at={item.at} />
           ) : item.kind === 'reminder' ? (
             <ReminderFireCard key={item.key} cardKey={item.reminderKey} />
           ) : item.kind === 'setup-checklist' ? (
@@ -424,9 +432,9 @@ export function LeadConversation({ compact = false, railOpen = true, onOpenRail,
           ) : null)}
             </ConversationColumn>
           ) : (
-            <EmptyConversation title="还没有来自 App 的会话" body={`这里已连接真实的 ${leadName}。发送第一条消息后，会话和工具事件会从 daemon 实时写入。`} />
+            <EmptyConversation title={m.empty.title} body={m.empty.body(leadName)} />
           )) : (
-            <EmptyConversation title={`尚未连接 ${leadName}`} body={`点击顶部的 ${leadName} 配置控制面。未连接时不会展示或写入任何模拟会话。`} />
+            <EmptyConversation title={m.empty.notConnectedTitle(leadName)} body={m.empty.notConnectedBody(leadName)} />
           )}
         </Column>
       </ChatScroll>
@@ -449,7 +457,7 @@ export function LeadConversation({ compact = false, railOpen = true, onOpenRail,
           contextKey="lead"
           // 提示只写一句话，不解释输入框能做什么（2026-10-15 方案 A：不要冗余的文字提示）。
           // 断线时也能写：消息存在本机，连接恢复后发送。
-          placeholder={connected ? `给 ${leadName} 发消息` : '连接恢复后发送'}
+          placeholder={connected ? m.composer.placeholder(leadName) : m.composer.offline}
           onSend={send}
           attachImages={canSendImages}
           modelControl={<LeadModelPicker current={leadModel} />}
@@ -516,6 +524,8 @@ function ConversationMessage({
   // Lead 现在用的模型：没有回答的那一轮点开以后写它，后面是「换个模型重发」。
   const leadModel = overview?.model;
   const leadName = useLeadName();
+  const locale = useLocale();
+  const m = conversationMessages(locale);
   const connected = useConnectionState() === 'connected';
   // 这一轮被重启打断以后，Lead 已经在自己发起的一轮里接着回复了：失败行改说「Lead 已接着回复」。
   const continued = useControlPlaneStore((state) => Boolean(turn && isLeadRestartInterruption(turn.error)
@@ -536,7 +546,7 @@ function ConversationMessage({
   // daemon 把这一轮停在 steered（和「一起回答」同一个终态），所以要在插话的提示之前判断，不然会写成「已插话」。
   // 还排着的追问也没有助手这一侧：Lead 还没开始答它，排着的事在输入框上的状态栏里，你的话下面写「排队中」。
   if (!user && turn && isWithoutLeadSide(turn)) return null;
-  const steeredNotice = steeredNoticeFor(message, hasContent, turn?.placement ?? null, leadName);
+  const steeredNotice = steeredNoticeFor(message, hasContent, turn?.placement ?? null, leadName, locale);
   if (steeredNotice) {
     return (
       <Box items="center" py="banner-y">
@@ -547,22 +557,22 @@ function ConversationMessage({
 
   // daemon 自己写的 blocker 一行（没有通知、也没有卡片的 blocker）：一行提示，给「打开工单」。
   if (!user && turn?.originKind === SYSTEM_TURN_ORIGINS.blockerNotice && rawText.trim()) {
-    return <BlockerNotice text={rawText.trim()} time={formatConversationTime(message.updatedAt)} />;
+    return <BlockerNotice text={rawText.trim()} time={formatConversationTime(message.updatedAt, undefined, locale)} />;
   }
   // 高风险的主人操作（工单 15）：daemon 写的卡，带「不是我」。轮次编号里带着事件编号和发出操作的凭证编号。
   // 是这个客户端自己的凭证做的（用户刚在这里点的）：只显示一行记录。
   const ownerAction = !user && turn?.originKind === SYSTEM_TURN_ORIGINS.ownerAction ? ownerActionRefOfTurn(message.turnId) : null;
   if (ownerAction && rawText.trim()) {
-    const time = formatConversationTime(message.updatedAt);
+    const time = formatConversationTime(message.updatedAt, undefined, locale);
     return ownerAction.bindingId === runtime.currentBinding()?.id
       ? <OwnOwnerActionNote text={rawText.trim()} time={time} />
       : <OwnerActionCard eventId={ownerAction.eventId} text={rawText.trim()} time={time} />;
   }
   // Lead 自己发起的回合也只写 Lead 的名字（方案 A）。紧凑布局里，Lead 发起的回合和系统通知仍然显示发送者和时间。
   // 是不是系统通知看这一轮的来源，不比较标签文字：Lead 的名字可以改成任何字。
-  const noticeLabel = user ? null : systemNoticeLabel(turn?.originKind);
+  const noticeLabel = user ? null : systemNoticeLabel(turn?.originKind, locale);
   const systemNotice = noticeLabel !== null;
-  const sender = user ? '你' : noticeLabel ?? leadName;
+  const sender = user ? m.you : noticeLabel ?? leadName;
   const showHeader = !compact || (!user && isSystemTurnOrigin(turn?.originKind));
   // 消息头前面的形象（主题 F-5）：只在桌面、只给 Lead 自己说的话，daemon 写的系统通知不加。
   // 最新一条用默认的图，回复时用思考中的图（代替摘要前的小转圈）。更早的用淡彩、静止（P12.4）。
@@ -570,18 +580,18 @@ function ConversationMessage({
   const fairyMark = !user && !systemNotice && !compact
     ? <MessageLeadAvatar name={leadName} latest={latest} replying={replying} />
     : null;
-  const time = formatConversationTime(message.updatedAt);
+  const time = formatConversationTime(message.updatedAt, undefined, locale);
   // 发件箱里的消息：头上写时间，状态写在气泡下面（待发送、发送中、已送达）。
   // 送到以后，Lead 忙时它怎么放的写在这里（工单 04，spec D10）：排队中、已插入、下一轮回答。
-  const placementCopy = user && !message.delivery ? placementCopyFor(turn, leadName) : null;
+  const placementCopy = user && !message.delivery ? placementCopyFor(turn, leadName, locale) : null;
   const deliveryCopy = !user ? null
-    : message.delivery === 'pending' ? (connected ? '待发送' : '待发送 · 连接恢复后发送')
-      : message.delivery === 'sending' ? '发送中'
-        : delivered && !placementCopy ? '已送达' : null;
+    : message.delivery === 'pending' ? (connected ? m.delivery.pending : m.delivery.pendingOffline)
+      : message.delivery === 'sending' ? m.delivery.sending
+        : delivered && !placementCopy ? m.delivery.delivered : null;
   const stateCopy = message.delivery ? time : message.state === 'queued'
-    ? '发送中'
+    ? m.delivery.sending
     : message.state === 'streaming'
-      ? '正在回复'
+      ? m.delivery.replying
       : time;
   const failure = message.failure;
   const failurePresentation = failure ? presentTurnFailure({
@@ -589,16 +599,17 @@ function ConversationMessage({
     originKind: turn?.originKind,
     ticketId: null,
     // 只发了图片的消息也能「重发」。
-    userText: (turnUserPart?.kind === 'text' ? turnUserPart.text : '') || (turnUserImages.length ? '[图片]' : null),
+    userText: (turnUserPart?.kind === 'text' ? turnUserPart.text : '') || (turnUserImages.length ? m.imageOnly : null),
     lead,
-    clock: (value) => formatConversationTime(value),
+    clock: (value) => formatConversationTime(value, undefined, locale),
     tools: parts.flatMap((part) => part.kind === 'tool' ? [part] : []),
     continued,
+    locale,
   }) : null;
   const failureActions = (failurePresentation?.actions ?? []).flatMap((action) => {
     // 只有还在本地、没有送达的消息能「重试」或「移除」。
     if ((action === 'retry' || action === 'remove') && message.source !== 'optimistic') return [];
-    return [{ label: FAILURE_ACTION_LABELS[action], onPress: () => runFailureAction(action) }];
+    return [{ label: failureActionLabels(locale)[action], onPress: () => runFailureAction(action) }];
   });
   const runFailureAction = (action: FailureAction) => {
     if (action === 'refresh') void runtime.refresh();
@@ -741,12 +752,13 @@ function UserMessageImage({ image, index }: { image: ImagePart; index: number })
     return () => { live = false; };
   }, [imageId, runtime]);
   const remote = loaded && loaded.imageId === imageId ? loaded : null;
+  const m = conversationMessages(useLocale());
   return (
     <ImageThumbnail
       testID={`user-message-image-${index}`}
       uri={local ?? remote?.uri ?? null}
       failed={remote !== null && remote.uri === null}
-      label={`你发的图片 ${index + 1}`}
+      label={m.yourImage(index + 1)}
     />
   );
 }
@@ -767,15 +779,16 @@ function LeadReply({ reply }: { reply: string }) {
 
 function BlockerNotice({ text, time }: { text: string; time: string }) {
   const openTicket = useOpenTicket();
+  const locale = useLocale();
   const ticketId = blockerNoticeTicketId(text);
   return (
     <Column testID="blocker-notice" w="100%" gap="reply-block">
-      <Text size="meta" weight="semibold" tone="secondary">{`${leadSenderLabel(SYSTEM_TURN_ORIGINS.blockerNotice)} · ${time}`}</Text>
+      <Text size="meta" weight="semibold" tone="secondary">{`${leadSenderLabel(SYSTEM_TURN_ORIGINS.blockerNotice, undefined, locale)} · ${time}`}</Text>
       <FailureCard
         headline={text}
         tone="danger"
         details={null}
-        actions={ticketId === null ? [] : [{ label: `打开工单 #${ticketId}`, onPress: () => openTicket(ticketId) }]}
+        actions={ticketId === null ? [] : [{ label: conversationMessages(locale).openTicket(ticketId), onPress: () => openTicket(ticketId) }]}
       />
     </Column>
   );
@@ -806,14 +819,16 @@ function IncidentCard({ noticeMessageIds, failureMessageIds, recoveredAt }: {
     const message = messagesById[id];
     return message?.failure ? [{ raw: message.failure.message, at: message.updatedAt }] : [];
   });
-  const presentation = presentOutage({ notices, failures, recoveredAt, clock: formatConversationTime });
+  const locale = useLocale();
+  const clock = (value: string) => formatConversationTime(value, undefined, locale);
+  const presentation = presentOutage({ notices, failures, recoveredAt, clock, locale });
   const latest = [...notices, ...failures].map((entry) => entry.at).sort().at(-1) ?? '';
   // 和会话里别的警告一样是一行可以展开的条目（packages/components 的 NoticeRow）：收起时只有一句，
   // 点整行展开看积压的事和 Lead 那几次没完成的处理。
   return (
     <Column testID="incident-card" w="100%" gap="reply-block">
       <Text size="meta" weight="semibold" tone="secondary">
-        {`${leadSenderLabel(SYSTEM_TURN_ORIGINS.fallbackNotice)} · ${formatConversationTime(latest)}`}
+        {`${leadSenderLabel(SYSTEM_TURN_ORIGINS.fallbackNotice, undefined, locale)} · ${clock(latest)}`}
       </Text>
       <NoticeRow
         tone="warning"
@@ -828,12 +843,13 @@ function IncidentCard({ noticeMessageIds, failureMessageIds, recoveredAt }: {
 function OwnerActionGroup({ messageIds, own }: { messageIds: readonly string[]; own: boolean }) {
   const messagesById = useControlPlaneStore((state) => state.messagesById);
   const partsById = useControlPlaneStore((state) => state.messagePartsById);
+  const locale = useLocale();
   const items = messageIds.flatMap((id) => {
     const message = messagesById[id];
     const ref = ownerActionRefOfTurn(message?.turnId);
     const part = partsById[`${id}:text`];
     const text = part?.kind === 'text' ? part.text.trim() : '';
-    return message && ref && text ? [{ eventId: ref.eventId, text, time: formatConversationTime(message.updatedAt) }] : [];
+    return message && ref && text ? [{ eventId: ref.eventId, text, time: formatConversationTime(message.updatedAt, undefined, locale) }] : [];
   });
   return own ? <OwnOwnerActionGroup items={items} /> : <OwnerActionGroupCard items={items} />;
 }
@@ -844,14 +860,18 @@ function FailureGroup({ messageIds }: { messageIds: readonly string[] }) {
   const turn = useTurn(latest?.turnId ?? '');
   const lead = useOverview()?.lead;
   const leadName = useLeadName();
+  const locale = useLocale();
+  const m = conversationMessages(locale);
   if (!latest?.failure) return null;
+  const clock = (value: string) => formatConversationTime(value, undefined, locale);
   const presentation = presentTurnFailure({
     failure: latest.failure,
     originKind: turn?.originKind,
     ticketId: null,
     userText: null,
     lead,
-    clock: (value) => formatConversationTime(value),
+    clock,
+    locale,
   });
   // 系统自己发起的那几轮没完成：居中的系统信息行，不写发件人（画布「没有回答」状态 4）。
   if (presentation.form === 'system') {
@@ -860,7 +880,7 @@ function FailureGroup({ messageIds }: { messageIds: readonly string[] }) {
         headline={presentation.headline}
         tone={presentation.tone}
         details={presentation.details}
-        meta={`连续 ${messageIds.length} 次 · 最近 ${formatConversationTime(latest.updatedAt)}`}
+        meta={m.repeatedInRow(messageIds.length, clock(latest.updatedAt))}
         presentation={presentation}
         repeated={messageIds.length}
       />
@@ -868,12 +888,12 @@ function FailureGroup({ messageIds }: { messageIds: readonly string[] }) {
   }
   return (
     <Column w="100%" gap="reply-block">
-      <Text size="meta" weight="semibold" tone="secondary">{leadSenderLabel(turn?.originKind, leadName)}</Text>
+      <Text size="meta" weight="semibold" tone="secondary">{leadSenderLabel(turn?.originKind, leadName, locale)}</Text>
       <FailureCard
         headline={presentation.headline}
         tone={presentation.tone}
         details={presentation.details}
-        meta={`共 ${messageIds.length} 次 · 最近 ${formatConversationTime(latest.updatedAt)}`}
+        meta={m.repeatedTotal(messageIds.length, clock(latest.updatedAt))}
         presentation={presentation}
       />
     </Column>
@@ -883,21 +903,23 @@ function FailureGroup({ messageIds }: { messageIds: readonly string[] }) {
 // 发往工单的消息在主会话里只留一行灰色的「消息尾巴」（2026-10-15 方案 A）：说清这条消息现在在哪。
 // 不画红框，不给「重发」：在跑的 Run 不能中途接收消息时，消息排队，Run 结束后转交；
 // 送不到时系统交给 Lead 接手（daemon 的 handTicketMessageToLead）。点这一行打开工单对话。
-export function ticketMessageTail({ ticketId, preview, state, updatedAt, leadName }: {
+export function ticketMessageTail({ ticketId, preview, state, updatedAt, leadName, locale = 'en' }: {
   ticketId: number;
   preview: string;
   state: LeadTurnEntity['state'];
   updatedAt: string;
   // 送不到时交给谁：Lead 的名字（useLeadName）。
   leadName: string;
+  locale?: Locale;
 }): string {
+  const m = conversationMessages(locale).tail;
   const quoted = preview.length > 24 ? `${preview.slice(0, 24)}…` : preview;
-  const head = quoted ? `你在 #${ticketId} 问了「${quoted}」` : `你在 #${ticketId} 发了一条消息`;
-  if (state === 'queued') return `${head} · Run 不能中途插话 · 已排队，结束后转交`;
-  if (state === 'streaming') return `${head} · 已送达 · 正在回答`;
-  if (state === 'failed') return `${head} · 没送到 · 已交给 ${leadName}`;
-  if (state === 'steered') return `${head} · 和下一条一起回答`;
-  return `${head} · 已送达 · ${formatConversationTime(updatedAt)} 已回答`;
+  const head = quoted ? m.asked(ticketId, quoted) : m.sent(ticketId);
+  if (state === 'queued') return m.queued(head);
+  if (state === 'streaming') return m.streaming(head);
+  if (state === 'failed') return m.failed(head, leadName);
+  if (state === 'steered') return m.steered(head);
+  return m.answered(head, formatConversationTime(updatedAt, undefined, locale));
 }
 
 function TicketDirectNotice({ turnId }: { turnId: string; compact: boolean }) {
@@ -905,15 +927,16 @@ function TicketDirectNotice({ turnId }: { turnId: string; compact: boolean }) {
   const userPart = useMessagePart(turn ? `${turn.userMessageId}:text` : '');
   const openTicket = useOpenTicket();
   const leadName = useLeadName();
+  const locale = useLocale();
   if (!turn || turn.ticketId === null) return null;
   const ticketId = turn.ticketId;
   const preview = userPart?.kind === 'text' ? userPart.text.trim() : '';
-  const tail = ticketMessageTail({ ticketId, preview, state: turn.state, updatedAt: turn.updatedAt, leadName });
+  const tail = ticketMessageTail({ ticketId, preview, state: turn.state, updatedAt: turn.updatedAt, leadName, locale });
   return (
     <Box testID={`ticket-direct-notice-${ticketId}`} w="100%">
       <Pressable
         role="button"
-        aria-label={`发给 #${ticketId} 的工单消息`}
+        aria-label={conversationMessages(locale).tail.label(ticketId)}
         onPress={() => openTicket(ticketId, { chat: true })}
         feedback="highlight"
         rounded="md"
@@ -938,10 +961,11 @@ function ConversationCardView({ card, collapsed = false, compact, dispatchScope,
   dispatchScope?: DispatchWindow;
   selectedTicketId: number | null;
 }) {
+  const locale = useLocale();
   if (card.kind === 'ticket_execution' && dispatchScope) return <DispatchTicketCard card={card} scope={dispatchScope} />;
   const context = card.kind === 'checkpoint' || card.kind === 'intervention' || collapsed
     ? null
-    : ticketContextLabel(selectedTicketId, card.ticketId);
+    : ticketContextLabel(selectedTicketId, card.ticketId, locale);
   // 事项卡自己决定写不写这一行：提醒不是工单，不写「其他工单 · #3」。
   if (card.kind === 'ticket_execution') {
     return <TicketExecutionConversationCard card={card} collapsed={collapsed} compact={compact} contextLabel={context} />;
@@ -1001,7 +1025,7 @@ function CardSyncPlaceholder({ label }: { label: string }) {
   return (
     <Card gap="text-stack" p="card" rounded="xl">
       <Text size="card-title" weight="bold">{label}</Text>
-      <Text size="secondary" tone="secondary">正在同步卡片详情。</Text>
+      <Text size="secondary" tone="secondary">{conversationMessages(useLocale()).syncing}</Text>
     </Card>
   );
 }
@@ -1081,6 +1105,9 @@ export type LeadTimelineItem =
   | { kind: 'lead-activity'; key: string; ids: string[]; at: number }
   // 外部来源的一条消息（工单 11）：一个对话一张卡，按卡开出来的时间插进对话。
   | { kind: 'channel-card'; key: string; cardId: number; at: number }
+  // 卡开出来以后，对方隔着别的内容又发来的消息（2026-10-30 用户）：卡固定在开出来的位置，这里在后来的位置写一行
+  // 「张三 来了新消息」。中间没有别的内容的几条合成一行，at 是最后一条的时间，count 是条数。
+  | { kind: 'channel-news'; key: string; cardId: number; at: number; count: number }
   // 一次提醒到点（工单 07）：一张到点卡，位置是到点的时间。reminderKey 是提醒卡的 key。
   | { kind: 'reminder'; key: string; reminderKey: string; at: number }
   // 首次启动引导（.scratch/onboarding）：准备清单卡（Lead 第一次上线时）和建议卡（用户自己的一轮结束时）。
@@ -1100,6 +1127,8 @@ export type LeadTimelineOptions = {
   isOutageNotice?: (message: MessageEntity) => boolean;
   // 给出时，每天的第一项前面插一条日期分隔线（「今天」「昨天」按它算）。
   now?: Date;
+  // 日期分隔线的语言，缺省英文。
+  locale?: Locale;
   // Lead 处理了、但没有对用户说的事，和只显示的写入（摘要、自动处理、常设指令的修改）。
   // 按卡片的位置插进对话，连着的合成一块（方案 A「Lead 动态」，工单 06）。
   leadActivity?: readonly LeadActivityCard[];
@@ -1244,6 +1273,8 @@ export function buildLeadTimeline(
     const at = Date.parse(hint.at);
     if (Number.isFinite(at)) insertAtTime({ kind: 'setup-hint', key: hint.key, hintKey: hint.key, at });
   }
+  const itemTime = (item: LeadTimelineItem) => timelineItemTime(item, messagesById, turnsById, cardsById);
+  for (const card of options.channelCards ?? []) placeChannelNews(result, card, itemTime);
   const coalesced = coalesceLeadActivity(result);
   const grouped = options.failureGroupKey ? groupRepeatedFailures(coalesced, messagesById, options.failureGroupKey) : coalesced;
   const owned = groupOwnerActions(grouped, messagesById, (message) => (options.isOnBehalfOwnerAction?.(message) ? 'on_behalf'
@@ -1251,7 +1282,33 @@ export function buildLeadTimeline(
   const merged = options.isOutageNotice
     ? mergeOutageIncidents(owned, messagesById, options.isOutageNotice, options.failureGroupKey ?? (() => null))
     : owned;
-  return options.now ? withDateDividers(merged, messagesById, turnsById, cardsById, options.now) : merged;
+  return options.now ? withDateDividers(merged, messagesById, turnsById, cardsById, options.now, options.locale ?? 'en') : merged;
+}
+
+// 卡开出来以后对方又发的消息（2026-10-30 用户：「Ethan 来了新消息」，背后是那张卡；不在会话里写系统的词，例如卡的编号）。
+// 一个对话一张卡，卡固定在开出来的位置（P4.1），后来的消息只更新那张卡，用户在底部看不到。所以每条后来的消息按时间找位置：
+// 紧跟在这张卡、或者这张卡已有的一行后面时并进去；中间隔着别的内容时另起一行。行只追加、原地更新，不移动（P1）。
+// 卡带着最近几条消息（recent），更早的不在里面，所以只看得到最近几条。
+function placeChannelNews(result: LeadTimelineItem[], card: ChannelCardDto, timeOf: (item: LeadTimelineItem) => number): void {
+  if (card.delivery === 'digest') return;
+  const opened = Date.parse(card.createdAt);
+  const later = (card.recent ?? []).map((message) => Date.parse(message.at))
+    .filter((at) => Number.isFinite(at) && at > opened).sort((left, right) => left - right);
+  for (const at of later) {
+    let index = result.findIndex((item) => {
+      const time = timeOf(item);
+      return Number.isFinite(time) && time > at;
+    });
+    if (index < 0) index = result.length;
+    const before = result[index - 1];
+    if (before?.kind === 'channel-card' && before.cardId === card.id) continue;
+    if (before?.kind === 'channel-news' && before.cardId === card.id) {
+      before.at = at;
+      before.count += 1;
+      continue;
+    }
+    result.splice(index, 0, { kind: 'channel-news', key: `channel-news:${card.id}:${at}`, cardId: card.id, at, count: 1 });
+  }
 }
 
 // 说过的事不进「Lead 动态」（2026-10-24）。线上 21:44 那一轮 Lead 对你说了 #117 的事，同一轮里记的 4 条处置
@@ -1395,6 +1452,7 @@ function withDateDividers(
   turnsById: ReadonlyMap<string, LeadTurnEntity>,
   cardsById: ReadonlyMap<string, ConversationCardEntity>,
   now: Date,
+  locale: Locale,
 ): LeadTimelineItem[] {
   const withDividers: LeadTimelineItem[] = [];
   let previousDay: string | null = null;
@@ -1404,7 +1462,7 @@ function withDateDividers(
       const date = new Date(time);
       const day = `${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()}`;
       if (day !== previousDay) {
-        withDividers.push({ kind: 'date', key: `date:${day}`, label: formatConversationDate(date.toISOString(), now) });
+        withDividers.push({ kind: 'date', key: `date:${day}`, label: formatConversationDate(date.toISOString(), now, locale) });
         previousDay = day;
       }
     }
@@ -1512,7 +1570,7 @@ function timelineItemTime(
       .map((id) => Date.parse(messagesById.get(id)?.updatedAt ?? '')).filter(Number.isFinite));
   }
   if (item.kind === 'card') return Date.parse(cardsById?.get(item.cardId)?.createdAt ?? '');
-  if (item.kind === 'lead-activity' || item.kind === 'channel-card') return item.at;
+  if (item.kind === 'lead-activity' || item.kind === 'channel-card' || item.kind === 'channel-news') return item.at;
   if (item.kind === 'reminder' || item.kind === 'setup-checklist' || item.kind === 'setup-hint') return item.at;
   return Number.NaN;
 }
@@ -1528,7 +1586,9 @@ export type LeadFooterItem = {
 export function buildLeadFooterItems(
   tickets: readonly TicketSummary[],
   workItems: readonly KernelTicketWorkItemV2[],
+  locale: Locale = 'en',
 ): LeadFooterItem[] {
+  const m = conversationMessages(locale).footer;
   const workItemsByTicket = new Map(workItems.map((item) => [item.ticketId, item]));
   return tickets.flatMap((ticket): LeadFooterItem[] => {
     // 「需要处理」和「执行中」都用共用规则（protocol 的 ticketNeedsUser、ticketTurn），
@@ -1538,7 +1598,7 @@ export function buildLeadFooterItems(
     const needsUser = ticketNeedsUser(ticket);
     if (turn === 'user' && needsUser) {
       return [{
-        ticketId: ticket.id, stateLabel: ticketNeedsUserLabel(needsUser), tone: 'attention', progressPercent: null,
+        ticketId: ticket.id, stateLabel: ticketNeedsUserLabel(needsUser, locale), tone: 'attention', progressPercent: null,
       } satisfies LeadFooterItem];
     }
     // 在跑的子工单不列：工单 tab 也只列根工单。
@@ -1546,7 +1606,7 @@ export function buildLeadFooterItems(
     const workItem = workItemsByTicket.get(ticket.id);
     return [{
       ticketId: ticket.id,
-      stateLabel: ticket.runtime.state === 'starting' ? '启动中' : '运行中',
+      stateLabel: ticket.runtime.state === 'starting' ? m.starting : m.running,
       tone: 'running',
       progressPercent: workItem?.progress?.percent ?? null,
     } satisfies LeadFooterItem];

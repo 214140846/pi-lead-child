@@ -5,18 +5,22 @@
 //   · 配了不止一个 provider 时，组名前面写 provider。
 import { parseLeadModelSpec, type LeadModelOption } from '@pi-lead-child/protocol';
 
+import type { Locale } from '@/i18n';
+
+import { leadModelMessages } from './leadModel.messages';
+
 export interface LeadModelGroup {
   key: string;
   title: string;
   models: LeadModelOption[];
 }
 
-function sourceLabel(source: string | null): string {
-  if (!source) return '其他';
+function sourceLabel(source: string | null, locale: Locale): string {
+  if (!source) return leadModelMessages(locale).otherSource;
   return source.charAt(0).toUpperCase() + source.slice(1);
 }
 
-export function groupLeadModels(models: readonly LeadModelOption[]): LeadModelGroup[] {
+export function groupLeadModels(models: readonly LeadModelOption[], locale: Locale): LeadModelGroup[] {
   const providers = new Set(models.map((model) => model.provider));
   const groups = new Map<string, { prefix: string | null; provider: string; sources: Set<string | null>; models: LeadModelOption[] }>();
   for (const model of models) {
@@ -34,8 +38,8 @@ export function groupLeadModels(models: readonly LeadModelOption[]): LeadModelGr
     const parts = [
       providers.size > 1 ? group.provider : null,
       group.prefix,
-      group.prefix ? (source ? sourceLabel(source) : null) : sourceLabel(source),
-      !group.prefix && prefixedSources.has(`${group.provider}\u0000${source}`) ? '不指定账号' : null,
+      group.prefix ? (source ? sourceLabel(source, locale) : null) : sourceLabel(source, locale),
+      !group.prefix && prefixedSources.has(`${group.provider}\u0000${source}`) ? leadModelMessages(locale).anyAccount : null,
     ].filter((part): part is string => Boolean(part));
     return { key, prefix: group.prefix, group: { key, title: parts.join(' · '), models: group.models } };
   });

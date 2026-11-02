@@ -143,13 +143,13 @@ describe('the ticket panel on desktop', () => {
     await mount();
     await openFromRail(66);
     expect(screen.queryByTestId('ticket-thread')).toBeTruthy();
-    expect(within(screen.getByTestId('lead-selected-ticket-context')).getByText('#66 · 当前工单')).toBeTruthy();
+    expect(within(screen.getByTestId('lead-selected-ticket-context')).getByText('#66 · Current ticket')).toBeTruthy();
 
     fireEvent.click(screen.getAllByTestId('ticket-thread-header-close')[0]!);
     await act(async () => {});
     expect(screen.queryByTestId('ticket-thread')).toBeNull();
     expect(screen.queryByTestId('lead-selected-ticket-context')).toBeNull();
-    expect(screen.queryByText('#66 · 当前工单')).toBeNull();
+    expect(screen.queryByText('#66 · Current ticket')).toBeNull();
   });
 });
 

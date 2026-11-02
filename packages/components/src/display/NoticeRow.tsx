@@ -5,6 +5,8 @@ import { Pressable } from '../primitives/Pressable';
 import { Box, Column, Row } from '../primitives/layout';
 import { Text } from '../primitives/Text';
 import { Icon } from './Icon';
+import { useMessages } from '../i18n';
+import { displayMessages } from './display.messages';
 
 export type NoticeTone = 'danger' | 'warning';
 
@@ -26,6 +28,7 @@ export type NoticeRowProps = {
 // 收起时一两行：图标和一句话；下面是次数、时间和能做的事。展开以后显示详情。
 // 白底、细描边，严重程度只用左边 3px 的色条和图标表示，不铺浅红、浅黄的底：在那上面红字和蓝色按钮都到不了 WCAG AA。
 export function NoticeRow({ tone, title, meta, actions = [], details, defaultExpanded = false, testID }: NoticeRowProps) {
+  const m = useMessages(displayMessages);
   const [expanded, setExpanded] = useState(defaultExpanded);
   const expandable = Boolean(details);
   const head = (
@@ -57,7 +60,7 @@ export function NoticeRow({ tone, title, meta, actions = [], details, defaultExp
     >
       {expandable ? (
         <Pressable
-          aria-label={`${title}，${expanded ? '收起详情' : '展开详情'}`}
+          aria-label={m.detailsToggle(title, expanded)}
           aria-expanded={expanded}
           onPress={() => setExpanded((value) => !value)}
           feedback="highlight"

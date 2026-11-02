@@ -194,7 +194,7 @@ describe("a blocker whose card is already in the conversation", () => {
     raiseBlockerFromCheckpoint(db, checkpoint);
 
     // Lead 不能工作：系统发兜底汇总。这件事在会话里已经有卡片，汇总不再往会话里贴，只推桌面。
-    await vi.waitFor(() => expect(desktop.some((text) => text.startsWith("Paimon 离线 "))).toBe(true));
+    await vi.waitFor(() => expect(desktop.some((text) => text.startsWith("Paimon offline "))).toBe(true));
     await settle();
     const turns = db.prepare("SELECT origin_kind FROM channel_turns").all() as Array<{ origin_kind: string }>;
     expect(turns.map((turn) => turn.origin_kind)).not.toContain("system:fallback-notice");

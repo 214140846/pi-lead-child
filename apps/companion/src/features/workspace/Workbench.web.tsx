@@ -5,6 +5,7 @@ import { LeadConversation } from '@/features/chat/LeadConversation';
 import { ConnectedTicketRecords } from '@/features/tickets/ConnectedTicketRecords';
 import { ConnectedTicketThread } from '@/features/tickets/ConnectedTicketThread';
 import { ViewsPanel } from '@/features/views/ViewsPanel';
+import { useLocale } from '@/i18n';
 import { useWorkspaceStore } from '@/state/CompanionStateProvider';
 import { useConnectionPhase, useTickets, useWorkItems } from '@/state/hooks';
 
@@ -48,9 +49,10 @@ export default function Workbench() {
   const setTicketReturnDestination = useWorkspaceStore((state) => state.setTicketReturnDestination);
   const setRailView = useWorkspaceStore((state) => state.setRailView);
   const handleBreakpointChange = useWorkspaceStore((state) => state.handleBreakpointChange);
-  const items = resolveWorkspaceTickets(phase === 'ready', tickets, workItems);
+  const locale = useLocale();
+  const items = resolveWorkspaceTickets(phase === 'ready', tickets, workItems, locale);
   const todoCount = items.filter((ticket) => ticket.needsUser != null).length;
-  const selectedTicket = resolveWorkspaceTicket(phase === 'ready', tickets, selectedTicketId, workItems);
+  const selectedTicket = resolveWorkspaceTicket(phase === 'ready', tickets, selectedTicketId, workItems, locale);
   const selectedTicketSummary = tickets.find((ticket) => ticket.id === selectedTicketId);
   const railSelectedTicketId = selectedTicketSummary?.parentTicketId ?? selectedTicketId;
 

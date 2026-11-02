@@ -73,10 +73,10 @@ describe('the failure row in the Lead conversation', () => {
     renderUI(<CompanionRuntimeProvider runtime={runtime}><LeadConversation /></CompanionRuntimeProvider>);
     // 2026-10-27 画布「没有回答」：一行写「没有回答完」，做过的事在点开的浮层里第一行。
     const card = screen.getByTestId('failure-card');
-    expect(card.textContent).toContain('没有回答完 · 你问的「提醒我下周一早上关注 aish」');
-    expect(within(card).queryByRole('button', { name: '重发' })).toBeNull();
-    fireEvent.click(within(card).getByRole('button', { name: '没有回答完，展开' }));
-    expect((await screen.findByTestId('failure-card-details')).textContent).toContain('做过提醒 #83 已创建');
+    expect(card.textContent).toContain('Answer not complete · You asked "提醒我下周一早上关注 aish"');
+    expect(within(card).queryByRole('button', { name: 'Resend' })).toBeNull();
+    fireEvent.click(within(card).getByRole('button', { name: 'Answer not complete, expand' }));
+    expect((await screen.findByTestId('failure-card-details')).textContent).toContain('DoneReminder #83 created');
   });
 });
 
@@ -96,7 +96,7 @@ describe('a turn that a restart interrupted', () => {
     renderUI(<CompanionRuntimeProvider runtime={runtime}><LeadConversation /></CompanionRuntimeProvider>);
     // 2026-10-27 画布「没有回答」状态 3：接在后面的琥珀虚线胶囊，一句短话。
     const card = screen.getByTestId('failure-card');
-    expect(card.textContent).toBe('重启打断，已接着回复');
+    expect(card.textContent).toBe('Restart stopped it · reply continued');
   });
 });
 
@@ -123,7 +123,7 @@ describe('a reminder mentioned elsewhere in the conversation', () => {
     renderUI(<CompanionRuntimeProvider runtime={runtime}><SurfaceView surface={surface} /></CompanionRuntimeProvider>);
     const head = await screen.findByTestId('surface-ticket-83');
     expect(await within(head).findByText('关注 aish PR86 是否合并')).toBeTruthy();
-    expect(head.getAttribute('aria-label')).toBe('在日程里查看提醒 #83');
+    expect(head.getAttribute('aria-label')).toBe('Show reminder #83 in the agenda');
     fireEvent.click(head);
     expect(runtime.workspace.getState()).toMatchObject({ railView: 'agenda', selectedTicketId: null });
     setViewportWidth(0);

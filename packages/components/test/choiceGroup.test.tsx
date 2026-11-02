@@ -15,8 +15,8 @@ describe('ChoiceGroup as cards', () => {
   it('highlights the recommended choice and reports the one pressed', () => {
     const onSelect = vi.fn();
     renderUI(<ChoiceGroup options={options} recommended="merge" onSelect={onSelect} optionTestID={(id) => `choice-${id}`} />);
-    expect(screen.getByRole('button', { name: '合并到原分支' }).textContent).toContain('推荐');
-    expect(screen.getByRole('button', { name: '开草稿 PR' }).textContent).not.toContain('推荐');
+    expect(screen.getByRole('button', { name: '合并到原分支' }).textContent).toContain('Recommended');
+    expect(screen.getByRole('button', { name: '开草稿 PR' }).textContent).not.toContain('Recommended');
     expect(screen.getByText('推到 GitHub，先不合并。')).toBeTruthy();
     fireEvent.click(screen.getByTestId('choice-pr'));
     expect(onSelect).toHaveBeenCalledWith('pr');

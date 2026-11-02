@@ -43,7 +43,7 @@ export const WIDGET_BOARD_TARGET: UiActionTargetKind<WidgetBoard> = {
   name: () => "自定义视图面板",
   // 给 Lead 看：有哪些视图（tab 的顺序）、每个控件的编号、标题和所在的视图。要改某一个时，用 list_actions 读那个控件的模板。
   describe: (board) => ({
-    views: widgetViews(board.widgets).map((view) => ({ view, label: viewLabel(view) })),
+    views: widgetViews(board.widgets).map((view) => ({ view, label: viewLabel(view, "zh") })),
     widgets: board.widgets.map((widget) => ({ id: widget.id, title: widget.title, view: widget.view })),
     max: { widgets: WIDGET_LIMITS.widgets, views: WIDGET_LIMITS.views },
   }),

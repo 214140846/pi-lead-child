@@ -6,6 +6,7 @@
 //   调同一个函数（engine 的 lead-profile.ts）；Lead 只能在用户这一轮明确要求时代他改。每次修改记一次主人操作（lead.profile）。
 // - 变化时网关发 snapshot.required，payload 是 {resource: "lead-profile"}，客户端重新 GET。
 import { Type, type Static, type TProperties } from "typebox";
+import { DEFAULT_LOCALE, defineMessages, type Locale } from "./i18n.ts";
 
 const StrictObject = <T extends TProperties>(properties: T) =>
   Type.Object(properties, { additionalProperties: false });
@@ -69,20 +70,39 @@ export function normalizeLeadProfileRequest(request: LeadProfileRequest): Partia
   };
 }
 
-/** 整理以后的修改有什么问题，用户能看懂的一句话。没有问题时返回 null。 */
-export function leadProfileProblem(patch: Partial<LeadProfileFields>): string | null {
+// 修改有问题时给用户看的话。界面按用户的语言取；daemon 现在传 zh。
+const leadProfileProblemMessages = defineMessages({
+  en: {
+    nothingToChange: "Nothing to change.",
+    nameEmpty: "The name cannot be empty.",
+    nameTooLong: (max: number) => `The name can be at most ${max} characters.`,
+    personaTooLong: (max: number) => `The persona can be at most ${max} characters.`,
+    interactionStyleTooLong: (max: number) => `The interaction style can be at most ${max} characters.`,
+  },
+  zh: {
+    nothingToChange: "没有要改的内容",
+    nameEmpty: "名字不能是空的",
+    nameTooLong: (max) => `名字最多 ${max} 个字`,
+    personaTooLong: (max) => `人格最多 ${max} 个字`,
+    interactionStyleTooLong: (max) => `互动风格最多 ${max} 个字`,
+  },
+});
+
+/** 整理以后的修改有什么问题，用户能看懂的一句话（按 locale 的语言）。没有问题时返回 null。 */
+export function leadProfileProblem(patch: Partial<LeadProfileFields>, locale: Locale = DEFAULT_LOCALE): string | null {
+  const m = leadProfileProblemMessages(locale);
   if (patch.name === undefined && patch.persona === undefined && patch.interactionStyle === undefined) {
-    return "没有要改的内容";
+    return m.nothingToChange;
   }
   if (patch.name !== undefined) {
-    if (!patch.name) return "名字不能是空的";
-    if ([...patch.name].length > LEAD_NAME_MAX_LENGTH) return `名字最多 ${LEAD_NAME_MAX_LENGTH} 个字`;
+    if (!patch.name) return m.nameEmpty;
+    if ([...patch.name].length > LEAD_NAME_MAX_LENGTH) return m.nameTooLong(LEAD_NAME_MAX_LENGTH);
   }
   if (patch.persona !== undefined && [...patch.persona].length > LEAD_PROFILE_TEXT_MAX_LENGTH) {
-    return `人格最多 ${LEAD_PROFILE_TEXT_MAX_LENGTH} 个字`;
+    return m.personaTooLong(LEAD_PROFILE_TEXT_MAX_LENGTH);
   }
   if (patch.interactionStyle !== undefined && [...patch.interactionStyle].length > LEAD_PROFILE_TEXT_MAX_LENGTH) {
-    return `互动风格最多 ${LEAD_PROFILE_TEXT_MAX_LENGTH} 个字`;
+    return m.interactionStyleTooLong(LEAD_PROFILE_TEXT_MAX_LENGTH);
   }
   return null;
 }

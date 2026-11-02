@@ -17,6 +17,7 @@ import {
   getEvent, openDb, proposeStandingOrderChange, recordInboxDisposition, recordOwnerAction, type Db, type PublishGatewayEventInput,
 } from "@pi-lead-child/store";
 import { tempDir } from "@pi-lead-child/core/testing";
+import { updateDesignPreferences } from "@pi-lead-child/engine";
 import { createControlPlaneService } from "../src/control-plane.js";
 import { buildLeadActivityView, createLeadActivityPublisher, EPISODE_GAP_MS } from "../src/lead-activity.js";
 import { startPairedServer } from "../src/paired-server.js";
@@ -76,12 +77,14 @@ describe("what goes into Lead activity", () => {
     expect(view.cards.every((card) => card.entries.every((entry) => entry.level !== "record" && entry.level !== "interrupt"))).toBe(true);
     expect(view.interrupts.map((item) => item.seq)).toEqual([alarm.seq]);
     expect(view.interrupts[0]).toMatchObject({
-      kind: "timer.fired", summary: "提醒「交房租」到点", ticketId: 5, acknowledgedAt: null, resolvedElsewhere: false,
+      kind: "timer.fired", summary: 'Reminder "交房租" is due', ticketId: 5, acknowledgedAt: null, resolvedElsewhere: false,
       basis: [{ kind: "order", id: "reminder.fire", version: 1 }],
     });
   });
 
   it("shows a standing-order change Lead made on its own, with the hard rule that reports it", () => {
+    // 这一句按用户选的界面语言写（缺省英文）。这条用中文。
+    updateDesignPreferences(db, { request: { locale: "zh" }, caller: { kind: "user" } });
     const result = proposeStandingOrderChange(db, {
       op: "update", id: "inbox.no_wake", reason: "这些进展用户想马上知道", patch: { action: { type: "level", level: "tell" }, escalateTo: null },
     });

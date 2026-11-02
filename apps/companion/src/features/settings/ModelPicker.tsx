@@ -1,7 +1,10 @@
 import { AnchoredPanel, Button, Column, Dot, Icon, Pressable, Row, Text, TextField, useBreakpoint } from '@pi-lead-child/components';
-import type { ModelSettingsDto } from '@pi-lead-child/protocol';
+import { DEFAULT_LOCALE, type Locale, type ModelSettingsDto } from '@pi-lead-child/protocol';
 import { useState, type ReactNode } from 'react';
 
+import { useMessages } from '@/i18n';
+
+import { modelMessages } from './model.messages';
 import {
   brainIndex, brainInUse, brainModelName, PICKER_VISIBLE, providerGroup, releaseLabel, slotLabel,
 } from './modelSettingsModel';
@@ -18,6 +21,7 @@ export function SlotFace({ title, sub, subTone = 'secondary', live, focused, tes
   focused?: boolean;
   testID?: string;
 }) {
+  const m = useMessages(modelMessages);
   return (
     <Row
       testID={testID}
@@ -37,7 +41,7 @@ export function SlotFace({ title, sub, subTone = 'secondary', live, focused, tes
       {live ? (
         <Row items="center" gap="icon-label" shrink={0}>
           <Dot color="accent" size={7} />
-          <Text size="label" weight="semibold" tone="accent">在用</Text>
+          <Text size="label" weight="semibold" tone="accent">{m.inUse}</Text>
         </Row>
       ) : null}
       <Icon name="chevron-down" size={14} color="text-muted" />
@@ -79,19 +83,20 @@ export function Slot({ label, face, open, onOpen, onClose, groups, footer, below
   onShowAll?: (group: string) => void;
   testID: string;
 }) {
+  const m = useMessages(modelMessages);
   const body = (
     <Column gap="nav-item" px="row-x" pb="card-row">
       <TextField
         testID={`${testID}-search`}
         value={search}
         onChangeText={onSearch}
-        placeholder="搜索模型"
+        placeholder={m.searchModels}
         variant="filled"
         size="sm"
         autoCapitalize="none"
         autoCorrect={false}
       />
-      {groups.length === 0 ? <Text size="note" tone="muted" py="row-y">没有匹配的模型。</Text> : null}
+      {groups.length === 0 ? <Text size="note" tone="muted" py="row-y">{m.noMatch}</Text> : null}
       {groups.map((group) => (
         <Column key={group.key} testID={`${testID}-group-${group.key}`}>
           <Row items="center" gap="inline-item" pt="section-label-top" pb="section-label-bottom">
@@ -126,7 +131,7 @@ export function Slot({ label, face, open, onOpen, onClose, groups, footer, below
           ))}
           {group.hidden > 0 && onShowAll ? (
             <Row px="row-x" py="nav-item">
-              <Button testID={`${testID}-more-${group.key}`} label={`显示 ${group.title} 的其余 ${group.hidden} 个`} variant="link" size="xs" onPress={() => onShowAll(group.key)} />
+              <Button testID={`${testID}-more-${group.key}`} label={m.showGroupRest(group.title, group.hidden)} variant="link" size="xs" onPress={() => onShowAll(group.key)} />
             </Row>
           ) : null}
         </Column>
@@ -139,11 +144,11 @@ export function Slot({ label, face, open, onOpen, onClose, groups, footer, below
         testID={testID}
         open={open}
         onClose={onClose}
-        label={`选择${label}`}
-        header={<Pressable aria-label={`收起${label}`} onPress={onClose} feedback="none">{face}</Pressable>}
+        label={m.choose(label)}
+        header={<Pressable aria-label={m.close(label)} onPress={onClose} feedback="none">{face}</Pressable>}
         body={body}
       >
-        <Pressable testID={`${testID}-open`} aria-label={`选择${label}`} aria-haspopup="listbox" onPress={onOpen} feedback="none">
+        <Pressable testID={`${testID}-open`} aria-label={m.choose(label)} aria-haspopup="listbox" onPress={onOpen} feedback="none">
           {face}
         </Pressable>
       </AnchoredPanel>
@@ -180,6 +185,7 @@ export function SlotGrid({ children }: { children: ReactNode[] }) {
 
 // 「再加一个备用」：虚线的空格子。
 export function AddSlot({ label, left, onPress, testID }: { label: string; left: string; onPress: () => void; testID: string }) {
+  const m = useMessages(modelMessages);
   return (
     <Column flex={1} minW={0} gap="field">
       <Text size="label" weight="semibold" tone="muted">{label}</Text>
@@ -198,7 +204,7 @@ export function AddSlot({ label, left, onPress, testID }: { label: string; left:
         bg={{ default: 'surface', hover: 'surface-subtle', press: 'surface-muted' }}
       >
         <Icon name="plus" size={14} color="accent-strong" />
-        <Text flex={1} size="label" weight="semibold" tone="accent">再加一个备用</Text>
+        <Text flex={1} size="label" weight="semibold" tone="accent">{m.addBackup}</Text>
         <Text size="meta" tone="muted">{left}</Text>
       </Pressable>
     </Column>
@@ -214,7 +220,10 @@ export function brainPickerGroups(dto: ModelSettingsDto, options: {
   slot: number;
   selected: string | null;
   onPick: (model: string) => void;
+  // 界面语言。设置 → 记忆也调这个函数，没传时按缺省语言。
+  locale?: Locale;
 }): PickerGroup[] {
+  const locale = options.locale ?? DEFAULT_LOCALE;
   const used = brainInUse(dto);
   if (options.selected) used.add(options.selected);
   const index = brainIndex(dto);
@@ -235,9 +244,9 @@ export function brainPickerGroups(dto: ModelSettingsDto, options: {
           key: model.model,
           title: brainModelName(model.model, index.get(model.model)),
           sub: model.id,
-          date: releaseLabel(model.released),
+          date: releaseLabel(model.released, locale),
           selected: model.model === options.selected,
-          disabledReason: elsewhere >= 0 ? `已是${slotLabel(elsewhere)}` : null,
+          disabledReason: elsewhere >= 0 ? modelMessages(locale).alreadySlot(slotLabel(elsewhere, locale)) : null,
           onPick: () => options.onPick(model.model),
         };
       }),

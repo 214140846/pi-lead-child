@@ -2,8 +2,11 @@ import { Button, Card, Column, Row, ServiceMark, Text } from '@pi-lead-child/com
 import type { ConnectionDto } from '@pi-lead-child/protocol';
 import { useState } from 'react';
 
+import { useLocale, useMessages } from '@/i18n';
+
 import { ConnectFlowPanel } from './ConnectFlow';
 import { attentionConnections, attentionMessage, connectionNeedsUser } from './connectionModel';
+import { connectionsMessages } from './connections.messages';
 
 // 健康条（方案 B）：只在有连接要你处理时出现（要重新授权，或者授权快到期）。设置首页和连接页的最上面都有它。
 // 每个要处理的连接一条。点「重新授权」在这一条下面走连接流程。
@@ -36,17 +39,19 @@ function HealthItem({ connection, open, onOpen, onClose }: {
   onOpen: () => void;
   onClose: () => void;
 }) {
+  const locale = useLocale();
+  const m = useMessages(connectionsMessages);
   return (
     <Card testID={`connection-health-${connection.key}`} tone="warning" rounded="xl" px="banner-x" py="banner-y" gap="card-section">
       <Row items="center" gap="side-item">
         <ServiceMark service={connection.provider} label={connection.label} size={24} />
         <Text flex={1} minW={0} size="body" weight="semibold">
-          {connectionNeedsUser(connection) ? attentionMessage(connection) : connection.label}
+          {connectionNeedsUser(connection) ? attentionMessage(connection, locale) : connection.label}
         </Text>
         {!open ? (
           <Button
             testID={`connection-health-reauth-${connection.key}`}
-            label="重新授权"
+            label={m.reauthorize}
             variant="outline"
             tone="neutral"
             size="sm"

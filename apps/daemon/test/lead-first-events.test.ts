@@ -200,9 +200,9 @@ describe("when Lead cannot work", () => {
     addInbox(db, { itemId, severity: "blocker", source: "structural", summary: "交接失败", payload: { needsUser: false } });
     const reminder = addNotification(db, { kind: "reminder", urgency: "immediate", title: "提醒：交周报", createdAt: new Date().toISOString() });
 
-    await vi.waitFor(() => expect(desktop.some((text) => text.startsWith("Paimon 离线 "))).toBe(true));
+    await vi.waitFor(() => expect(desktop.some((text) => text.startsWith("Paimon offline "))).toBe(true));
     await settle();
-    expect(desktop.filter((text) => text.startsWith("Paimon 离线 "))).toHaveLength(1);
+    expect(desktop.filter((text) => text.startsWith("Paimon offline "))).toHaveLength(1);
     const [summary] = fallbackNotices();
     expect(summary!.assistant_text).toContain("交接失败");
     expect(summary!.assistant_text).toContain("提醒：交周报");
@@ -219,8 +219,8 @@ describe("when Lead cannot work", () => {
     const itemId = blockedTicket();
     addInbox(db, { itemId, severity: "blocker", source: "structural", summary: "交接失败", payload: { needsUser: false } });
 
-    await vi.waitFor(() => expect(desktop.some((text) => text.startsWith("Paimon 离线 "))).toBe(true), { timeout: 3_000 });
-    expect(fallbackNotices()[0]!.assistant_text.split("\n")[0]).toContain("（没有响应）");
+    await vi.waitFor(() => expect(desktop.some((text) => text.startsWith("Paimon offline "))).toBe(true), { timeout: 3_000 });
+    expect(fallbackNotices()[0]!.assistant_text.split("\n")[0]).toContain("(no response)");
   });
 
   it("does not call a long turn stuck while it keeps working", async () => {

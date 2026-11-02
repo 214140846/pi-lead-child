@@ -7,6 +7,8 @@ import { Text } from '../primitives/Text';
 import { AnchoredPanel } from './AnchoredPanel';
 import { Icon } from './Icon';
 import type { IconName } from './icons';
+import { useMessages } from '../i18n';
+import { displayMessages } from './display.messages';
 
 export type AbsenceDetail = {
   label: string;
@@ -89,6 +91,7 @@ function AbsenceRow({ tone, label, text, actions, expandable, expanded, onToggle
   tone: 'danger' | 'warning'; label: string; text?: string | null; actions: readonly AbsenceAction[];
   expandable: boolean; expanded: boolean; onToggle: () => void; testID?: string;
 }) {
+  const m = useMessages(displayMessages);
   const words = (
     <Row flex={1} minW={0} items="center" gap="icon-label">
       <Icon name="no-reply" size={14} color={tone === 'danger' ? 'danger-dark' : 'warning-dark'} />
@@ -101,7 +104,7 @@ function AbsenceRow({ tone, label, text, actions, expandable, expanded, onToggle
   return (
     <Row minH={38} items="center" gap="inline-item" px="banner-x"> {/* 和一行字一样高：40 减去上下两道 1.5 的虚线（组件规格） */}
       {expandable ? (
-        <Pressable flex={1} minW={0} aria-label={`${label}，${expanded ? '收起' : '展开'}`} aria-expanded={expanded} onPress={onToggle} feedback="none"
+        <Pressable flex={1} minW={0} aria-label={m.toggle(label, expanded)} aria-expanded={expanded} onPress={onToggle} feedback="none"
           testID={testID ? `${testID}-${expanded ? 'collapse' : 'expand'}` : undefined}>
           {words}
         </Pressable>

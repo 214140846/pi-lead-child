@@ -1,24 +1,35 @@
 // 设置 → 连接的纯函数：分组、状态的写法、时间的写法、角色、错误原因。界面组件只调这里，不自己拼文字。
-import type {
-  ConnectionDto, ConnectionProblem, ConnectionProvider, ConnectionRole,
+import {
+  intlLocale,
+  type ConnectionDto, type ConnectionProblem, type ConnectionProvider, type ConnectionRole, type Locale,
 } from '@pi-lead-child/protocol';
 
 import { clockTimeLabel, timeLabel } from '@/features/tickets/timeLabels';
 
+import { connectionsMessages } from './connections.messages';
+
 // leadName 是 Lead 的名字（useLeadName）。
-export function connectionsDescription(leadName: string): string {
-  return `${leadName} 用这些账号替你查资料、做事。授权只保存在这台 Mac 上，到期前自动续期。`;
+export function connectionsDescription(leadName: string, locale: Locale): string {
+  return connectionsMessages(locale).description(leadName);
+}
+
+// 一个时间点。中文沿用工单详情的写法（timeLabels）；英文用 Intl，24 小时制：今天只写时分，今年更早的带月日，更早的再带年。
+export function connectionTimeLabel(value: string, now: Date, locale: Locale): string {
+  if (locale === 'zh') return timeLabel(value, now, locale);
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  const time = clockTimeLabel(value);
+  const sameDay = date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth() && date.getDate() === now.getDate();
+  if (sameDay) return time;
+  const day = new Intl.DateTimeFormat(intlLocale(locale), {
+    month: 'short', day: 'numeric', ...(date.getFullYear() === now.getFullYear() ? {} : { year: 'numeric' }),
+  }).format(date);
+  return `${day}, ${time}`;
 }
 
 export type ConnectionGroupId = 'connected' | 'available' | 'setup';
 
 export type ConnectionGroup = { id: ConnectionGroupId; label: string; items: ConnectionDto[] };
-
-const GROUP_LABELS: Record<ConnectionGroupId, string> = {
-  connected: '已连接',
-  available: '可以连接',
-  setup: '需要额外设置',
-};
 
 export function connectionGroupOf(connection: ConnectionDto): ConnectionGroupId {
   if (connection.state === 'connected' || connection.state === 'degraded' || connection.state === 'needs_reauth') return 'connected';
@@ -31,11 +42,13 @@ export function connectionGroupOf(connection: ConnectionDto): ConnectionGroupId 
 // 行下面的连接流程会重新开始，看不到「已连接」那一步。
 export function groupConnections(
   items: readonly ConnectionDto[],
-  pinned: { key: string; group: ConnectionGroupId } | null = null,
+  pinned: { key: string; group: ConnectionGroupId } | null,
+  locale: Locale,
 ): ConnectionGroup[] {
+  const labels = connectionsMessages(locale).groups;
   const groupOf = (item: ConnectionDto) => (pinned && item.key === pinned.key ? pinned.group : connectionGroupOf(item));
   const groups: ConnectionGroup[] = (['connected', 'available', 'setup'] as const).map((id) => ({
-    id, label: GROUP_LABELS[id], items: items.filter((item) => groupOf(item) === id),
+    id, label: labels[id], items: items.filter((item) => groupOf(item) === id),
   }));
   const setup = groups[2]!;
   setup.items = [...setup.items.filter((item) => item.state !== 'unavailable'), ...setup.items.filter((item) => item.state === 'unavailable')];
@@ -51,30 +64,33 @@ export function attentionConnections(items: readonly ConnectionDto[]): Connectio
   return items.filter(connectionNeedsUser);
 }
 
-export function attentionMessage(connection: ConnectionDto): string {
-  return connection.problem?.message ?? `${connection.label} 需要重新授权`;
+export function attentionMessage(connection: ConnectionDto, locale: Locale): string {
+  return connection.problem?.message ?? connectionsMessages(locale).needsReauth(connection.label);
 }
 
 export type ConnectionStatus = { label: string; tone: 'success' | 'warning' | 'danger' | 'muted' };
 
 // 行右边的状态。可以连接的服务没有状态，右边是「连接」按钮。
-export function connectionStatus(connection: ConnectionDto): ConnectionStatus | null {
+export function connectionStatus(connection: ConnectionDto, locale: Locale): ConnectionStatus | null {
+  const m = connectionsMessages(locale).status;
   switch (connection.state) {
-    case 'connected': return { label: '已连接', tone: 'success' };
-    case 'degraded': return { label: '暂时连不上', tone: 'warning' };
-    case 'needs_reauth': return { label: '需要重新授权', tone: 'danger' };
-    case 'unavailable': return { label: '即将支持', tone: 'muted' };
+    case 'connected': return { label: m.connected, tone: 'success' };
+    case 'degraded': return { label: m.degraded, tone: 'warning' };
+    case 'needs_reauth': return { label: m.needsReauth, tone: 'danger' };
+    case 'unavailable': return { label: m.unavailable, tone: 'muted' };
     default: return null;
   }
 }
 
 // 行的第二行字和它的颜色。
-export function connectionSecondLine(connection: ConnectionDto, now: Date = new Date()): { text: string; tone: 'secondary' | 'warning-dark' | 'danger-dark' } {
-  if (connection.state === 'needs_reauth') return { text: attentionMessage(connection), tone: 'danger-dark' };
-  if (connection.state === 'degraded') return { text: connection.problem?.message ?? '暂时连不上，daemon 会自动重试', tone: 'warning-dark' };
+export function connectionSecondLine(
+  connection: ConnectionDto, locale: Locale, now: Date = new Date(),
+): { text: string; tone: 'secondary' | 'warning-dark' | 'danger-dark' } {
+  if (connection.state === 'needs_reauth') return { text: attentionMessage(connection, locale), tone: 'danger-dark' };
+  if (connection.state === 'degraded') return { text: connection.problem?.message ?? connectionsMessages(locale).degradedLine, tone: 'warning-dark' };
   if (connection.problem?.kind === 'expiring') return { text: connection.problem.message, tone: 'warning-dark' };
   if (connection.state === 'connected') {
-    const used = lastUsedLabel(connection.lastUsedAt, now);
+    const used = lastUsedLabel(connection.lastUsedAt, locale, now);
     return { text: connection.account ? `${connection.account} · ${used}` : used, tone: 'secondary' };
   }
   if (connection.state === 'not_connected') return { text: connection.capability, tone: 'secondary' };
@@ -82,57 +98,62 @@ export function connectionSecondLine(connection: ConnectionDto, now: Date = new 
 }
 
 // 上次用的时间：一小时以内写几分钟前，更早的写时间点（timeLabels 的写法）。
-export function lastUsedLabel(lastUsedAt: string | null, now: Date = new Date()): string {
-  if (!lastUsedAt) return '还没用过';
+export function lastUsedLabel(lastUsedAt: string | null, locale: Locale, now: Date = new Date()): string {
+  const m = connectionsMessages(locale).lastUsed;
+  if (!lastUsedAt) return m.never;
   const at = Date.parse(lastUsedAt);
-  if (Number.isNaN(at)) return '还没用过';
+  if (Number.isNaN(at)) return m.never;
   const minutes = Math.floor((now.getTime() - at) / 60_000);
-  if (minutes < 1) return '刚刚用过';
-  if (minutes < 60) return `${minutes} 分钟前用过`;
-  return `${timeLabel(lastUsedAt, now)} 用过`;
+  if (minutes < 1) return m.justNow;
+  if (minutes < 60) return m.minutesAgo(minutes);
+  return m.at(connectionTimeLabel(lastUsedAt, now, locale));
 }
 
 // 授权一节的「续期」。
-export function renewalLabel(connection: ConnectionDto, now: Date = new Date()): string | null {
+export function renewalLabel(connection: ConnectionDto, locale: Locale, now: Date = new Date()): string | null {
+  const m = connectionsMessages(locale).renewal;
   switch (connection.tokenSource) {
     case 'oauth': {
       const last = connection.lastRefreshAt ?? connection.connectedAt;
-      return last ? `自动 · 上次 ${timeLabel(last, now)}` : '自动';
+      return last ? m.autoLast(connectionTimeLabel(last, now, locale)) : m.auto;
     }
-    case 'gh_cli': return '用这台 Mac 上 gh 的登录';
-    case 'device': return '设备码登录，令牌不过期';
-    case 'pat': return '个人令牌';
+    case 'gh_cli': return m.ghCli;
+    case 'device': return m.device;
+    case 'pat': return m.pat;
     default: return null;
   }
 }
 
 // 访问令牌还有多久到期。两小时以内写分钟，更久的写小时。
-export function accessExpiryLabel(accessExpiresAt: string, now: Date = new Date()): string {
+export function accessExpiryLabel(accessExpiresAt: string, locale: Locale, now: Date = new Date()): string {
+  const m = connectionsMessages(locale).accessExpiry;
   const minutes = Math.ceil((Date.parse(accessExpiresAt) - now.getTime()) / 60_000);
   if (Number.isNaN(minutes)) return '';
-  if (minutes <= 0) return '已到期，下次使用前会续期';
-  if (minutes < 120) return `${minutes} 分钟后到期，会提前续期`;
-  return `${Math.floor(minutes / 60)} 小时后到期，会提前续期`;
+  if (minutes <= 0) return m.expired;
+  if (minutes < 120) return m.minutes(minutes);
+  return m.hours(Math.floor(minutes / 60));
 }
 
 // 暂时连不上时的一句话。
-export function retryLabel(problem: ConnectionProblem | null): string {
+export function retryLabel(problem: ConnectionProblem | null, locale: Locale): string {
+  const m = connectionsMessages(locale);
   const at = problem?.nextAttemptAt ? clockTimeLabel(problem.nextAttemptAt) : '';
-  return at ? `暂时连不上，daemon 会在 ${at} 自动重试` : '暂时连不上，daemon 会自动重试';
+  return at ? m.retryAt(at) : m.degradedLine;
 }
 
-export function toolCountLabel(tools: NonNullable<ConnectionDto['tools']>): string {
-  return `${tools.total} 个工具 · 只读 ${tools.readOnly} · 会写入 ${tools.write}`;
+export function toolCountLabel(tools: NonNullable<ConnectionDto['tools']>, locale: Locale): string {
+  return connectionsMessages(locale).toolCount(tools.total, tools.readOnly, tools.write);
 }
 
 const CONNECTION_ROLE_ORDER: readonly ConnectionRole[] = ['lead', 'executor', 'reviewer'];
 
 // 谁可以用这个连接：每个角色和它的说法。lead 那一行写 Lead 的名字（leadName）。
-export function connectionRoles(leadName: string): readonly { role: ConnectionRole; label: string }[] {
+export function connectionRoles(leadName: string, locale: Locale): readonly { role: ConnectionRole; label: string }[] {
+  const m = connectionsMessages(locale).roles;
   const labels: Record<ConnectionRole, string> = {
     lead: leadName,
-    executor: '执行工单的 agent',
-    reviewer: '评审 agent（只给只读工具）',
+    executor: m.executor,
+    reviewer: m.reviewer,
   };
   return CONNECTION_ROLE_ORDER.map((role) => ({ role, label: labels[role] }));
 }
@@ -146,13 +167,14 @@ export function toggleRole(roles: readonly ConnectionRole[], role: ConnectionRol
 }
 
 // 连上以后「试一下」的一句话。
-export function tryPrompt(provider: ConnectionProvider, label: string): string {
+export function tryPrompt(provider: ConnectionProvider, label: string, locale: Locale): string {
+  const m = connectionsMessages(locale).tryPrompt;
   switch (provider) {
-    case 'atlassian': return '我名下还没关的 issue 有哪些？';
-    case 'notion': return '帮我找一下上周的会议记录';
-    case 'github': return '我有哪些待 review 的 PR？';
-    case 'slack': return '今天 #general 有什么新消息？';
-    default: return `看看你能用 ${label} 做什么`;
+    case 'atlassian': return m.atlassian;
+    case 'notion': return m.notion;
+    case 'github': return m.github;
+    case 'slack': return m.slack;
+    default: return m.other(label);
   }
 }
 
@@ -176,23 +198,25 @@ export function connectionErrorReason(reason: unknown): string | null {
   return typeof details?.reason === 'string' ? details.reason : null;
 }
 
-// 给你看的错误。网关的 message 已经是中文。
-export function connectionErrorText(reason: unknown): string {
+// 给你看的错误。网关的 message 原样显示。
+// locale 可选：会话里的连接卡（features/genui）还没迁到多语言，不传时按原来的中文写；迁完以后去掉缺省值。
+export function connectionErrorText(reason: unknown, locale: Locale): string {
   const message = reason instanceof Error ? reason.message : typeof reason === 'string' ? reason : '';
-  return message || '请求没有完成，请再试一次。';
+  return message || connectionsMessages(locale).requestFailed;
 }
 
 // 自定义 MCP 服务器的地址：先在这里挡住明显不对的，别的由 daemon 检查。
-export function serverUrlProblem(input: string): string | null {
+export function serverUrlProblem(input: string, locale: Locale): string | null {
+  const m = connectionsMessages(locale).urlProblem;
   const value = input.trim();
-  if (!value) return '请填写服务器地址。';
+  if (!value) return m.empty;
   let url: URL;
   try {
     url = new URL(value);
   } catch {
-    return '这不是一个网址。';
+    return m.notUrl;
   }
-  if (url.protocol !== 'https:') return '地址要以 https:// 开头。';
+  if (url.protocol !== 'https:') return m.notHttps;
   return null;
 }
 

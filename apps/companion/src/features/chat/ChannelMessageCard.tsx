@@ -1,20 +1,25 @@
 import {
-  Box, Button, Card, Column, FairyMark, Icon, IconButton, Link, Pressable, ProgressBar, Row, Text, TextField,
+  Box, Button, Card, Column, FairyMark, Icon, IconButton, Link, Pressable, ProgressBar, Row, SystemLine, Text, TextField,
   type ColorToken, type SegmentItem, type TextTone,
 } from '@pi-lead-child/components';
 import {
-  CHANNEL_CARD_TEXT_MAX, CHANNEL_INTENT_LABELS, classifyLeadModelError, leadModelFailureShortLabel, type ChannelCardAction, type ChannelCardDto,
+  CHANNEL_CARD_TEXT_MAX, channelPolicyLabels, classifyLeadModelError, leadModelFailureShortLabel, type ChannelCardAction, type ChannelCardDto,
   type LeadStatus,
 } from '@pi-lead-child/protocol';
 import { Fragment, useEffect, useState, type ReactNode } from 'react';
 
+import { useLocale, useMessages, type Locale } from '@/i18n';
+
 import { DisclosureView } from '../genui/SurfaceControls';
 
 import { useCompanionRuntime, useControlPlaneStore } from '../../state/CompanionStateProvider';
+import { useLeadName } from '../../state/hooks';
+import { leadNameNow } from '../../state/leadName';
 import {
-  CHANNEL_EDITED_DISCLOSURE, channelCardView, clockWords, type ChannelCardTone, type ChannelCheckMark,
+  channelCardView, clockWords, type ChannelCardTone, type ChannelCheckMark,
   type ChannelLookupView, type ChannelReplyTrackView,
 } from './channelCard';
+import { channelCardMessages } from './channelCard.messages';
 import { MarkdownMessage } from './MarkdownMessage';
 import { slackPlainText, slackToMarkdown } from './slackMarkdown';
 import { useOpenTicket } from './useOpenTicket';
@@ -50,6 +55,7 @@ function Track({ label, children, testID }: { label: string; children: ReactNode
 }
 
 function Toggle({ label, open, onPress, testID }: { label: string; open: boolean; onPress: () => void; testID: string }) {
+  const m = useMessages(channelCardMessages).card;
   return (
     <Button
       label={label}
@@ -59,7 +65,7 @@ function Toggle({ label, open, onPress, testID }: { label: string; open: boolean
       icon={open ? 'chevron-up' : 'chevron-down'}
       iconPosition="end"
       testID={testID}
-      accessibilityLabel={`${label}，${open ? '收起' : '展开'}`}
+      accessibilityLabel={m.toggle(label, open)}
     />
   );
 }
@@ -78,6 +84,7 @@ function SmallLines({ lines, tone = 'secondary', prefix = '', testID }: {
 // 为什么可以这样回（画布状态 4 的右栏）：每项检查一行，过了是绿勾，不够强是琥珀叹号，没过是红叉，后面写这一项的说明。
 // 下面一行是决定、信心和门槛，再下面是否决项和原因。
 function ReplyTrack({ id, reply }: { id: number; reply: ChannelReplyTrackView }) {
+  const m = useMessages(channelCardMessages).card;
   return (
     <Column gap="text-stack" testID={`channel-card-${id}-reply-track`}>
       {reply.checks.length ? (
@@ -93,7 +100,7 @@ function ReplyTrack({ id, reply }: { id: number; reply: ChannelReplyTrackView })
         </Column>
       ) : null}
       <Text size="meta" weight="semibold" tone={TONE_TEXT[reply.tone]}>{reply.text}</Text>
-      <SmallLines lines={reply.vetoes} tone="warning-dark" prefix="否决：" testID={`channel-card-${id}-vetoes`} />
+      <SmallLines lines={reply.vetoes} tone="warning-dark" prefix={m.vetoPrefix} testID={`channel-card-${id}-vetoes`} />
       <SmallLines lines={reply.reasons} testID={`channel-card-${id}-reply-reasons`} />
     </Column>
   );
@@ -107,6 +114,8 @@ function LookupSection({ id, lookup, reply, onOpenTicket }: {
   reply: ReactNode;
   onOpenTicket?: (ticketId: number) => void;
 }) {
+  const messages = useMessages(channelCardMessages);
+  const m = messages.card;
   const [open, setOpen] = useState<'details' | 'comments' | 'reads' | null>(null);
   const toggle = (part: 'details' | 'comments' | 'reads') => setOpen((current) => (current === part ? null : part));
   const { track } = lookup;
@@ -122,18 +131,18 @@ function LookupSection({ id, lookup, reply, onOpenTicket }: {
         <Pressable
           key="ticket"
           onPress={() => onOpenTicket(ticketId)}
-          aria-label={`打开工单 #${ticketId}`}
+          aria-label={m.openTicket(ticketId)}
           testID={`channel-card-${id}-ticket`}
         >
-          <Text size="label" weight="semibold" tone="accent">{`工单 #${ticketId}`}</Text>
+          <Text size="label" weight="semibold" tone="accent">{messages.ticket(ticketId)}</Text>
         </Pressable>
       )
-      : <Text key="ticket" size="label">{`工单 #${ticketId}`}</Text>] : []),
+      : <Text key="ticket" size="label">{messages.ticket(ticketId)}</Text>] : []),
     ...track.details.map((detail) => <Text key={detail} size="meta" tone="secondary">{detail}</Text>),
   ];
   return (
     <Column gap="card-row" testID={`channel-card-${id}-lookup`}>
-      <Track label="干活" testID={`channel-card-${id}-lookup-track`}>
+      <Track label={m.workTrack} testID={`channel-card-${id}-lookup-track`}>
         <Row items="center" gap="inline-item" flexWrap="wrap" aria-label={track.text}>
           <Text size="label" weight="semibold" tone={trackTone}>{[track.mark, track.status].filter(Boolean).join(' ')}</Text>
           {segments.map((segment, index) => (
@@ -154,7 +163,7 @@ function LookupSection({ id, lookup, reply, onOpenTicket }: {
         ) : null}
         {lookup.reviewSummary ? <Text size="body">{lookup.reviewSummary}</Text> : null}
         {lookup.checkedVisible && lookup.checked.length ? (
-          <SmallLines lines={lookup.checked} prefix="查过：" testID={`channel-card-${id}-checked`} />
+          <SmallLines lines={lookup.checked} prefix={m.checkedPrefix} testID={`channel-card-${id}-checked`} />
         ) : null}
       </Track>
       {reply}
@@ -171,7 +180,7 @@ function LookupSection({ id, lookup, reply, onOpenTicket }: {
         <Row gap="inline-item" flexWrap="wrap">
           {hasDetails ? (
             <Toggle
-              label={lookup.sources.length ? `答案和出处（${lookup.sources.length}）` : '答案'}
+              label={lookup.sources.length ? m.answerAndSources(lookup.sources.length) : m.answer}
               open={open === 'details'}
               onPress={() => toggle('details')}
               testID={`channel-card-${id}-details-toggle`}
@@ -179,7 +188,7 @@ function LookupSection({ id, lookup, reply, onOpenTicket }: {
           ) : null}
           {lookup.comments ? (
             <Toggle
-              label={`${lookup.comments.count} 条评论`}
+              label={m.comments(lookup.comments.count)}
               open={open === 'comments'}
               onPress={() => toggle('comments')}
               testID={`channel-card-${id}-comments-toggle`}
@@ -187,7 +196,7 @@ function LookupSection({ id, lookup, reply, onOpenTicket }: {
           ) : null}
           {lookup.reads ? (
             <Toggle
-              label={`读过 ${lookup.reads.count} 处`}
+              label={m.reads(lookup.reads.count)}
               open={open === 'reads'}
               onPress={() => toggle('reads')}
               testID={`channel-card-${id}-reads-toggle`}
@@ -201,13 +210,13 @@ function LookupSection({ id, lookup, reply, onOpenTicket }: {
           {lookup.sources.map((source, index) => (
             <Column key={`${index}:${source.where}`} gap="text-stack">
               <Text size="note" tone={source.verified ? 'secondary' : 'danger-dark'}>
-                {`${source.verified ? '✓' : '✗ 没核实'} ${source.where}`}
+                {`${source.verified ? '✓' : `✗ ${m.notVerified}`} ${source.where}`}
               </Text>
               <Text size="code" mono tone="muted" numberOfLines={4}>{source.quote}</Text>
             </Column>
           ))}
-          {!lookup.checkedVisible ? <SmallLines lines={lookup.checked} prefix="查过：" /> : null}
-          <SmallLines lines={lookup.caveats} prefix="不确定：" />
+          {!lookup.checkedVisible ? <SmallLines lines={lookup.checked} prefix={m.checkedPrefix} /> : null}
+          <SmallLines lines={lookup.caveats} prefix={m.uncertainPrefix} />
         </Column>
       ) : null}
       {open === 'comments' && lookup.comments ? (
@@ -227,7 +236,7 @@ function LookupSection({ id, lookup, reply, onOpenTicket }: {
           ))}
           {lookup.reads.partial ? (
             <Text size="note" tone="muted">
-              {lookup.reads.items.length ? `只列出其中 ${lookup.reads.items.length} 处` : '没有逐条的明细'}
+              {lookup.reads.items.length ? m.readsPartial(lookup.reads.items.length) : m.noReadDetails}
             </Text>
           ) : null}
         </Column>
@@ -244,7 +253,7 @@ function LookupSection({ id, lookup, reply, onOpenTicket }: {
 //   改一下再发：草稿框原地变成输入框。已发出：框里是发出的原文，加「已发出」。撤回窗口里只剩「撤回 还剩 4:32」。
 //   结束、也没有按钮的卡收成一行（模式「结束行」），点开看全部。
 // 不再用卡片左边的色条（主题 C-18）。数据和按钮的判断还是 channelCard.ts。
-export function ChannelMessageCard({ card, onAction, onOpenTicket, now, lead }: {
+export function ChannelMessageCard({ card, onAction, onOpenTicket, now, lead, leadName: leadNameProp, inPanel }: {
   card: ChannelCardDto;
   // text：「改一下再发」时用户写的文字（send_edited）。别的动作不带。
   onAction: (action: ChannelCardAction, text?: string) => Promise<void>;
@@ -253,8 +262,16 @@ export function ChannelMessageCard({ card, onAction, onOpenTicket, now, lead }: 
   now?: Date;
   // Lead 的健康状态（概览里的 lead，顶栏的状态点读同一份）。Lead 不能工作时，排着的卡写它卡住了。
   lead?: LeadStatus;
+  // Lead 的名字（useLeadName）。不给时读最近一次取到的名字（leadNameNow）。
+  leadName?: string;
+  // 卡画在别人的锚定浮层里（「张三 来了新消息」那一行点开）：只画撑开的样子，收起由浮层管；操作做完调 onDone 收起浮层。
+  inPanel?: { onDone: () => void };
 }) {
-  const view = channelCardView(card, now);
+  const locale = useLocale();
+  const leadName = leadNameProp ?? leadNameNow();
+  const messages = channelCardMessages(locale);
+  const m = messages.card;
+  const view = channelCardView(card, now, locale);
   const [busy, setBusy] = useState<ChannelCardAction | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
@@ -276,6 +293,7 @@ export function ChannelMessageCard({ card, onAction, onOpenTicket, now, lead }: 
       .then(() => {
         if (action === 'send_edited') setEdit(null);
         setOpen(false);
+        inPanel?.onDone();
       })
       .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))
       .finally(() => setBusy(null));
@@ -289,16 +307,16 @@ export function ChannelMessageCard({ card, onAction, onOpenTicket, now, lead }: 
     }
     act(action);
   };
-  const status = statusOf(card, view);
-  const fairy = fairyLine(card, view, lead);
-  const score = scoreOf(card, view);
+  const status = statusOf(card, view, m);
+  const fairy = fairyLine(card, view, m, leadName, locale, lead);
+  const score = scoreOf(card, view, m);
   const header = (
     <Row items="center" gap="inline-item" minW={0}>
       {card.objectKey.includes(':C') || card.objectKey.includes('#')
         ? <Text size="label" weight="bold" tone="secondary">#</Text>
         : <Icon name="chat" size={13} color="text-secondary" />}
       <Text size="label" weight="bold" numberOfLines={1} shrink={0}>{card.sender.name}</Text>
-      <Text flex={1} minW={0} size="meta" tone="secondary" numberOfLines={1}>{metaWords(card)}</Text>
+      <Text flex={1} minW={0} size="meta" tone="secondary" numberOfLines={1}>{metaWords(card, m)}</Text>
       <Row items="center" gap="icon-label" shrink={0} testID={`channel-card-${card.id}-state`}>
         <Dot tone={status.tone} />
         <Text size="meta" weight="semibold" tone={DOT_TEXT[status.tone]}>{status.label}</Text>
@@ -314,7 +332,7 @@ export function ChannelMessageCard({ card, onAction, onOpenTicket, now, lead }: 
           key={button.action}
           card={card}
           action={button.action}
-          label={labelOf(button.action, button.label, card, now)}
+          label={labelOf(button.action, button.label, card, m, now)}
           primary={button.primary}
           busy={busy}
           onPress={press}
@@ -325,7 +343,7 @@ export function ChannelMessageCard({ card, onAction, onOpenTicket, now, lead }: 
       {expanded ? sideButtons.map((button) => (
         <CardButton key={button.action} card={card} action={button.action} label={button.label} primary={false} busy={busy} onPress={press} suffix="-p" />
       )) : null}
-      {score && !expanded ? <ConfidencePill score={score} testID={`channel-card-${card.id}-confidence`} /> : null}
+      {score && !expanded ? <ConfidencePill score={score} m={m} testID={`channel-card-${card.id}-confidence`} /> : null}
     </Row>
   ) : null);
 
@@ -341,7 +359,7 @@ export function ChannelMessageCard({ card, onAction, onOpenTicket, now, lead }: 
   ) : (
     <Column p="card" gap="card-row">
       {header}
-      <LatestMessage card={card} />
+      <LatestMessage card={card} m={m} />
       <FairyRow line={fairy} oneLine testID={`channel-card-${card.id}-fairy`} />
       {/* 对方要求改规则（spec D10 的 Jev 标记）：收起时也写，「没有照做」不该点开才看到。 */}
       {view.handling?.ruleChange ? (
@@ -354,7 +372,7 @@ export function ChannelMessageCard({ card, onAction, onOpenTicket, now, lead }: 
 
   // 浮层里草稿全文在下面的框里：这一行不再重复草稿，改写做了的事（工单、读了什么、留了什么）。
   const panelFairy: FairyLineView = edit !== null
-    ? { lead: '你在改 Fairy 的草稿', rest: CHANNEL_EDITED_DISCLOSURE, progress: null }
+    ? { lead: m.editing(leadName), rest: messages.editedDisclosure, progress: null }
     : card.draft ? { ...fairy, rest: view.lookup?.track.details.join(' · ') || null } : fairy;
   // 结束的卡：Fairy 那一行已经写了结果，不再写一句同样意思的结束说明（2026-10-28 用户报的重复尾巴）。
   const panelNote = view.note && !view.closed && panelFairy.rest !== view.note ? view.note : null;
@@ -362,16 +380,18 @@ export function ChannelMessageCard({ card, onAction, onOpenTicket, now, lead }: 
     <Column p="card" gap="card-row" testID={`channel-card-${card.id}-panel`}>
       <Row items="center" gap="inline-item">
         <Box flex={1} minW={0}>{header}</Box>
-        <IconButton icon="chevron-up" label="收起" size="xs" variant="ghost" onPress={() => setOpen(false)} testID={`channel-card-${card.id}-collapse`} />
+        {inPanel ? null : (
+          <IconButton icon="chevron-up" label={m.collapse} size="xs" variant="ghost" onPress={() => setOpen(false)} testID={`channel-card-${card.id}-collapse`} />
+        )}
       </Row>
-      <MessageStack card={card} />
+      <MessageStack card={card} m={m} />
       <Row items="center" gap="inline-item">
         <Box flex={1} minW={0}>
           <FairyRow line={panelFairy} />
         </Box>
         {view.lookup || view.reply ? (
           <Button
-            label={details ? '收起' : '详情'}
+            label={details ? m.collapse : m.details}
             onPress={() => setDetails((value) => !value)}
             variant="link"
             size="xs"
@@ -397,8 +417,8 @@ export function ChannelMessageCard({ card, onAction, onOpenTicket, now, lead }: 
             disabled={busy !== null}
             autoFocus
             emphasis="accent"
-            placeholder="写给对方的回复"
-            accessibilityLabel="改一下再发的文字"
+            placeholder={m.replyPlaceholder}
+            accessibilityLabel={m.editA11y}
             testID={`channel-card-${card.id}-edit-input`}
           />
         </Column>
@@ -412,23 +432,23 @@ export function ChannelMessageCard({ card, onAction, onOpenTicket, now, lead }: 
           <Text flex={1} minW={0} size="message-body">{card.sentText}</Text>
           <Row items="center" gap="text-stack" shrink={0}>
             <Icon name="check" size={11} color="success" weight="bold" />
-            <Text size="meta" weight="semibold" tone="success-dark">已发出</Text>
+            <Text size="meta" weight="semibold" tone="success-dark">{m.sent}</Text>
           </Row>
         </Row>
       ) : null}
-      {score ? <ScoreLine score={score} testID={`channel-card-${card.id}-score`} /> : null}
+      {score ? <ScoreLine score={score} m={m} testID={`channel-card-${card.id}-score`} /> : null}
       {panelNote ? <Text size="note" tone="secondary" testID={`channel-card-${card.id}-note`}>{panelNote}</Text> : null}
       {details ? (
         <Row gap="card-section" items="flex-start" flexWrap="wrap" pt="card-row" borderTopWidth={1} borderTopColor="border-soft">
           {view.handling || view.lookup ? <Column flex={1} minW={220} gap="card-row">
-            <Text size="label" weight="semibold" tone="secondary">Fairy 做了什么</Text>
+            <Text size="label" weight="semibold" tone="secondary">{m.whatLeadDid(leadName)}</Text>
             {view.handling ? <Text size="note" tone={TONE_TEXT[view.handling.tone]} testID={`channel-card-${card.id}-handling`}>{view.handling.text}</Text> : null}
             {view.handling?.reason ? <Text size="note" tone="muted">{view.handling.reason}</Text> : null}
             {view.lookup ? <LookupSection id={card.id} lookup={view.lookup} reply={null} onOpenTicket={onOpenTicket} /> : null}
           </Column> : null}
           {view.reply ? (
             <Column flex={1} minW={220} gap="card-row">
-              <Text size="label" weight="semibold" tone="secondary">{score ? `为什么可以这样回 · ${score.passed}/${score.total}${score.threshold ? `，自动发要 ${score.threshold}` : ''}` : '为什么可以这样回'}</Text>
+              <Text size="label" weight="semibold" tone="secondary">{score ? m.whyReplyScore(score.passed, score.total, score.threshold) : m.whyReply}</Text>
               <ReplyTrack id={card.id} reply={view.reply} />
             </Column>
           ) : null}
@@ -437,7 +457,7 @@ export function ChannelMessageCard({ card, onAction, onOpenTicket, now, lead }: 
       {edit !== null ? (
         <Row items="center" gap="actions" pt="card-row" borderTopWidth={1} borderTopColor="border-soft">
           <Button
-            label={busy === 'send_edited' ? '发出…' : '发出'}
+            label={busy === 'send_edited' ? m.sending : m.send}
             icon="arrow-up"
             onPress={() => act('send_edited', edit.trim())}
             disabled={busy !== null || !edit.trim()}
@@ -446,7 +466,7 @@ export function ChannelMessageCard({ card, onAction, onOpenTicket, now, lead }: 
             testID={`channel-card-${card.id}-edit-send`}
           />
           <Button
-            label="取消"
+            label={m.cancel}
             onPress={() => setEdit(null)}
             disabled={busy !== null}
             size="sm"
@@ -460,11 +480,12 @@ export function ChannelMessageCard({ card, onAction, onOpenTicket, now, lead }: 
     </Column>
   );
 
+  if (inPanel) return panel;
   return (
     <Card w="100%" rounded="xl" overflow="hidden" borderWidth={view.folded ? 0 : 1} borderColor="border" bg={view.folded ? 'transparent' : 'surface'} testID={`channel-card-${card.id}`}>
       <DisclosureView
         id={`channel-card-${card.id}`}
-        label={`${card.sender.name}的消息`}
+        label={m.messagesOf(card.sender.name)}
         partial={false}
         open={open}
         onOpenChange={(next) => { setOpen(next); if (!next) { setEdit(null); setDetails(false); } }}
@@ -488,47 +509,53 @@ function Dot({ tone }: { tone: DotTone }) {
 }
 
 // 头部右边的状态：等你的是琥珀（C-11），在干活是蓝，完成是绿，已结束是灰。
-function statusOf(card: ChannelCardDto, view: ReturnType<typeof channelCardView>): { label: string; tone: DotTone } {
-  if (card.state === 'auto_replied') return { label: '已代回', tone: 'success' };
-  if (card.state === 'replied' || card.state === 'handled') return { label: card.state === 'handled' ? '已处理' : '已回复', tone: 'success' };
+type CardMessages = ReturnType<typeof channelCardMessages>['card'];
+
+function statusOf(card: ChannelCardDto, view: ReturnType<typeof channelCardView>, m: CardMessages): { label: string; tone: DotTone } {
+  const words = m.status;
+  if (card.state === 'auto_replied') return { label: words.autoReplied, tone: 'success' };
+  if (card.state === 'replied' || card.state === 'handled') return { label: card.state === 'handled' ? words.handled : words.replied, tone: 'success' };
   if (view.closed) return { label: view.badge.label, tone: 'muted' };
-  if (card.lookup && (card.lookup.state === 'queued' || card.lookup.state === 'running')) return { label: '进行中', tone: 'accent' };
-  if (card.state === 'open') return { label: card.draft ? '等你确认' : '等你处理', tone: 'warning' };
+  if (card.lookup && (card.lookup.state === 'queued' || card.lookup.state === 'running')) return { label: words.running, tone: 'accent' };
+  if (card.state === 'open') return { label: card.draft ? words.confirm : words.waiting, tone: 'warning' };
   return { label: view.badge.label, tone: 'muted' };
 }
 
 // 头部的灰字：对话、条数和时间（「ENG-FE · 私信 · 5 条 · 15:24–15:31」）。
-function metaWords(card: ChannelCardDto): string {
+function metaWords(card: ChannelCardDto, m: CardMessages): string {
   const first = card.recent?.[0]?.at ?? card.createdAt;
   const last = card.recent?.at(-1)?.at ?? card.updatedAt;
   const span = card.messageCount > 1 && clockWords(first) !== clockWords(last) ? `${clockWords(first)}–${clockWords(last)}` : clockWords(last);
-  return [card.laneLabel, card.messageCount > 1 ? `${card.messageCount} 条` : null, span].filter(Boolean).join(' · ');
+  return [card.laneLabel, card.messageCount > 1 ? m.messageCount(card.messageCount) : null, span].filter(Boolean).join(' · ');
 }
 
 type FairyLineView = { lead: string; rest: string | null; progress: number | null | 'unknown' };
 
 // Fairy 的那一行：600 的一句结论，后面是草稿、进度或者一句说明（主题 11.2 第 3 条）。
-function fairyLine(card: ChannelCardDto, view: ReturnType<typeof channelCardView>, lead?: LeadStatus): FairyLineView {
+function fairyLine(
+  card: ChannelCardDto, view: ReturnType<typeof channelCardView>, m: CardMessages, name: string, locale: Locale, lead?: LeadStatus,
+): FairyLineView {
+  const words = m.line;
   const lookup = card.lookup;
   const active = lookup && (lookup.state === 'queued' || lookup.state === 'running');
   const at = (value: string | null) => clockWords(value) ?? '';
-  if (card.state === 'auto_replied') return { lead: `Fairy ${at(card.resolvedAt)} 替你回了`, rest: view.lookup?.track.details.join(' · ') || null, progress: null };
+  if (card.state === 'auto_replied') return { lead: words.autoReplied(name, at(card.resolvedAt)), rest: view.lookup?.track.details.join(' · ') || null, progress: null };
   if (card.state === 'replied') {
     return card.outcome?.by === 'lead'
-      ? { lead: `Fairy ${at(card.resolvedAt)} 照你的话回了`, rest: null, progress: null }
-      : { lead: `你 ${at(card.resolvedAt)} 发出了 Fairy 的草稿`, rest: view.disclosure ? '开头带助手署名' : null, progress: null };
+      ? { lead: words.repliedAsYouSaid(name, at(card.resolvedAt)), rest: null, progress: null }
+      : { lead: words.youSentDraft(name, at(card.resolvedAt)), rest: view.disclosure ? words.signed : null, progress: null };
   }
-  if (card.state === 'resolved_elsewhere') return { lead: `你在 ${card.sourceLabel} 里自己回了`, rest: `${at(card.resolvedAt)} · Fairy 的草稿已作废`, progress: null };
-  if (card.state === 'replying_self') return { lead: `等你在 ${card.sourceLabel} 里回复`, rest: '回了以后这张卡自动结束', progress: null };
-  if (card.state === 'dismissed') return { lead: '你选了不回', rest: null, progress: null };
-  if (card.state === 'handled') return { lead: '已照你的话处理', rest: card.outcome?.note ?? null, progress: null };
+  if (card.state === 'resolved_elsewhere') return { lead: words.repliedElsewhere(card.sourceLabel), rest: words.draftVoid(name, at(card.resolvedAt)), progress: null };
+  if (card.state === 'replying_self') return { lead: words.waitReplyIn(card.sourceLabel), rest: words.autoEnd, progress: null };
+  if (card.state === 'dismissed') return { lead: words.dismissed, rest: null, progress: null };
+  if (card.state === 'handled') return { lead: words.handled, rest: card.outcome?.note ?? null, progress: null };
   if (active) {
-    const what = lookup.playbook === 'review' ? `去 review ${lookup.repos.join('、')}`.trim() : '去查';
-    return { lead: lookup.ticketId ? `Fairy 派了 #${lookup.ticketId} ${what}` : 'Fairy 在安排工单', rest: view.lookup?.track.details.join(' · ') || null, progress: 'unknown' };
+    const what = lookup.playbook === 'review' ? words.reviewWhat(lookup.repos.join(words.repoSeparator)) : words.lookWhat;
+    return { lead: lookup.ticketId ? words.dispatched(name, lookup.ticketId, what) : words.arranging(name), rest: view.lookup?.track.details.join(' · ') || null, progress: 'unknown' };
   }
   if (card.draft) {
     const review = lookup?.playbook === 'review' && lookup.state === 'finished';
-    const lead = review ? 'Fairy review 完了，建议这样回' : card.messageCount > 1 ? `Fairy 把 ${card.messageCount} 条当成一件事，建议这样回` : 'Fairy 建议这样回';
+    const lead = review ? words.reviewDone(name) : card.messageCount > 1 ? words.merged(name, card.messageCount) : words.suggests(name);
     return { lead, rest: oneLine(card.draft.text), progress: null };
   }
   const handling = card.handling?.lead;
@@ -537,12 +564,12 @@ function fairyLine(card: ChannelCardDto, view: ReturnType<typeof channelCardView
     // Lead 的模型调用在失败（顶栏是降级，失败次数大于 0）：卡不是在排队，是 Lead 卡住了，写原因（2026-10-28：上下文满了的
     // 40 分钟里卡上一直写「排队中」，用户以为 Lead 在忙别的）。只是压缩失败、模型调用还好时 Lead 照常工作，照旧写排队中。
     if (lead?.state === 'degraded' && lead.failures > 0) {
-      return { lead: 'Fairy 卡住了，恢复后处理', rest: leadModelFailureShortLabel(classifyLeadModelError(lead.detail ?? '')), progress: null };
+      return { lead: words.stuck(name), rest: leadModelFailureShortLabel(classifyLeadModelError(lead.detail ?? ''), locale), progress: null };
     }
     const intent = card.handling?.authority?.intent;
-    return { lead: '排队中，等 Fairy 处理', rest: intent ? `看出是${CHANNEL_INTENT_LABELS[intent]}` : null, progress: null };
+    return { lead: words.queued(name), rest: intent ? words.intentSeen(channelPolicyLabels(locale).intent[intent]) : null, progress: null };
   }
-  return { lead: view.handling?.text ?? 'Fairy 看过了', rest: view.note, progress: null };
+  return { lead: view.handling?.text ?? words.seen(name), rest: view.note, progress: null };
 }
 
 // 结论和后半句连成一段（2026-10-28 改版稿第 3 组）：第二行从 Fairy 标记右边的起点接着排，不缩在结论右边。
@@ -563,12 +590,12 @@ function FairyRow({ line, oneLine: single = false, testID }: { line: FairyLineVi
 }
 
 // 对方的话，一行（收起态）：最新那条放在别人说话的气泡里，多条时前面一个「N 条」小标签。
-function LatestMessage({ card }: { card: ChannelCardDto }) {
+function LatestMessage({ card, m }: { card: ChannelCardDto; m: CardMessages }) {
   return (
     <Row items="center" gap="inline-item" minW={0} testID={`channel-card-${card.id}-latest`}>
       {card.messageCount > 1 ? (
         <Box shrink={0} bg="surface-muted" rounded="full" px="inline-item" testID={`channel-card-${card.id}-count`}>
-          <Text size="meta" weight="semibold" tone="strong">{`${card.messageCount} 条`}</Text>
+          <Text size="meta" weight="semibold" tone="strong">{m.messageCount(card.messageCount)}</Text>
         </Box>
       ) : null}
       <Bubble><Text size="message-lead" numberOfLines={1}>{plainLine(card, card.recent?.at(-1)?.text ?? card.excerpt)}</Text></Bubble>
@@ -577,12 +604,12 @@ function LatestMessage({ card }: { card: ChannelCardDto }) {
 }
 
 // 撑开以后：对方连发的几条叠在同一个气泡里，每条一个淡时间，更早的写「更早的 N 条」（画布状态 7）。
-function MessageStack({ card }: { card: ChannelCardDto }) {
+function MessageStack({ card, m }: { card: ChannelCardDto; m: CardMessages }) {
   const recent = card.recent?.length ? card.recent.slice(-3) : [{ at: card.updatedAt, text: card.excerpt }];
   const earlier = Math.max(0, card.messageCount - recent.length);
   return (
     <Bubble wide testID={`channel-card-${card.id}-messages`}>
-      {earlier > 0 ? <Text size="meta" tone="secondary">{`更早的 ${earlier} 条`}</Text> : null}
+      {earlier > 0 ? <Text size="meta" tone="secondary">{m.earlier(earlier)}</Text> : null}
       {recent.map((message, index) => (
         <Row key={`${index}:${message.at}`} items="flex-end" gap="side-item">
           <Box flex={1} minW={0}><MarkdownMessage markdown={sourceMarkdown(card, message.text)} size="message-lead" breaks /></Box>
@@ -616,7 +643,7 @@ function Bubble({ children, wide = false, testID }: { children: ReactNode; wide?
 type ScoreView = { value: string; threshold: string | null; squares: SegmentItem[]; passed: number; total: number; weakest: string | null };
 
 // 信心：五项检查各一格（过了绿、不够强琥珀、没过红），和信心的数值、自动发的门槛。
-function scoreOf(card: ChannelCardDto, view: ReturnType<typeof channelCardView>): ScoreView | null {
+function scoreOf(card: ChannelCardDto, view: ReturnType<typeof channelCardView>, m: CardMessages): ScoreView | null {
   const reply = view.reply;
   if (!reply || !reply.checks.length) return null;
   const confidence = card.handling?.reply?.confidence ?? card.lookup?.confidence?.value ?? null;
@@ -629,7 +656,7 @@ function scoreOf(card: ChannelCardDto, view: ReturnType<typeof channelCardView>)
     squares,
     passed: reply.checks.filter((check) => check.mark === '✓').length,
     total: reply.checks.length,
-    weakest: weakest ? `差在「${weakest.label}」${weakest.detail ? `：${weakest.detail}` : ''}` : null,
+    weakest: weakest ? m.weakest(weakest.label, weakest.detail) : null,
   };
 }
 
@@ -644,18 +671,18 @@ function Squares({ score }: { score: ScoreView }) {
 }
 
 // 信心胶囊（收起态操作栏的最右边）：五格加「信心 0.71」。
-function ConfidencePill({ score, testID }: { score: ScoreView; testID?: string }) {
+function ConfidencePill({ score, m, testID }: { score: ScoreView; m: CardMessages; testID?: string }) {
   return (
     <Row testID={testID} items="center" gap="icon-label" rounded="full" borderWidth={1} borderColor="border" px="inline-item" py="text-stack">
       <Squares score={score} />
-      <Text size="meta" weight="semibold" tone="strong">{`信心 ${score.value}`}</Text>
+      <Text size="meta" weight="semibold" tone="strong">{m.confidence(score.value)}</Text>
     </Row>
   );
 }
 
 // 撑开以后的一行：五格、几项过了、差在哪里、自动发要多少（画布 B）。
-function ScoreLine({ score, testID }: { score: ScoreView; testID?: string }) {
-  const words = [`${score.passed}/${score.total}`, score.weakest, score.threshold ? `自动发要 ${score.threshold}` : null].filter(Boolean).join(' · ');
+function ScoreLine({ score, m, testID }: { score: ScoreView; m: CardMessages; testID?: string }) {
+  const words = [`${score.passed}/${score.total}`, score.weakest, score.threshold ? m.autoNeeds(score.threshold) : null].filter(Boolean).join(' · ');
   return (
     <Row testID={testID} items="center" gap="icon-label">
       <Squares score={score} />
@@ -665,11 +692,11 @@ function ScoreLine({ score, testID }: { score: ScoreView; testID?: string }) {
 }
 
 // 撤回按钮写还剩多久（画布状态 6）：每秒更新。
-function labelOf(action: ChannelCardAction, label: string, card: ChannelCardDto, now?: Date): string {
-  if (action === 'send_draft') return '发出';
+function labelOf(action: ChannelCardAction, label: string, card: ChannelCardDto, m: CardMessages, now?: Date): string {
+  if (action === 'send_draft') return m.send;
   if (action === 'undo_auto_reply' && card.revokeUntil) {
     const left = Math.max(0, Date.parse(card.revokeUntil) - (now ?? new Date()).getTime());
-    return `撤回 还剩 ${Math.floor(left / 60_000)}:${String(Math.floor((left % 60_000) / 1000)).padStart(2, '0')}`;
+    return m.undoLeft(`${Math.floor(left / 60_000)}:${String(Math.floor((left % 60_000) / 1000)).padStart(2, '0')}`);
   }
   return label;
 }
@@ -707,17 +734,53 @@ function oneLine(text: string): string {
 
 // 会话里的一张外部来源的卡（工单 11）。卡的内容从 store 取（服务端改卡时整份重取），动作经 runtime 发到网关；
 // 点工单号打开代查工单。
+// 卡开出来以后，对方隔着别的内容又发来的消息（2026-10-30 用户：「Ethan 来了新消息」，背后是那张卡）：模式「系统信息行」
+// （P9.9，主题 11.9），作者是系统（P8.1）。只写人和「来了新消息」，不写卡的编号这类系统的词。点开在原位置撑开成浮层，
+// 浮层里就是那张卡撑开的样子（同一个对象，P4.1），按钮照常能点，做完浮层收起。卡在会话上面原来的位置不动（P1）。
+export function ChannelNewsLine({ cardId, at }: { cardId: number; at: number }) {
+  const runtime = useCompanionRuntime();
+  const openTicket = useOpenTicket();
+  const card = useControlPlaneStore((state) => state.channelCards.find((candidate) => candidate.id === cardId));
+  const lead = useControlPlaneStore((state) => state.overview?.lead);
+  const leadName = useLeadName();
+  const m = useMessages(channelCardMessages).card;
+  if (!card) return null;
+  return (
+    <SystemLine
+      testID={`channel-news-${cardId}`}
+      icon="chat"
+      lead={card.sender.name}
+      text={m.newMessage}
+      separator=" "
+      time={clockWords(new Date(at).toISOString())}
+      detailsLabel={m.newMessageDetails}
+      details={(close) => (
+        <ChannelMessageCard
+          card={card}
+          lead={lead}
+          leadName={leadName}
+          onAction={(action, text) => runtime.actOnChannelCard(card.id, action, text)}
+          onOpenTicket={openTicket}
+          inPanel={{ onDone: close }}
+        />
+      )}
+    />
+  );
+}
+
 export function ChannelCardSlot({ cardId }: { cardId: number }) {
   const runtime = useCompanionRuntime();
   const openTicket = useOpenTicket();
   const card = useControlPlaneStore((state) => state.channelCards.find((candidate) => candidate.id === cardId));
   const lead = useControlPlaneStore((state) => state.overview?.lead);
+  const leadName = useLeadName();
   if (!card) return null;
   return (
     <Box w="100%">
       <ChannelMessageCard
         card={card}
         lead={lead}
+        leadName={leadName}
         onAction={(action, text) => runtime.actOnChannelCard(card.id, action, text)}
         onOpenTicket={openTicket}
       />

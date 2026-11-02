@@ -4,7 +4,10 @@ import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
 import { tempDir } from "@pi-lead-child/core/testing";
-import { getConnection, getConnectionByServer, listConnectionEvents, openDb, type Db } from "@pi-lead-child/store";
+import { designPreferencesFields, type Locale } from "@pi-lead-child/protocol";
+import {
+  getConnection, getConnectionByServer, getDesignPreferences, listConnectionEvents, openDb, writeDesignPreferences, type Db,
+} from "@pi-lead-child/store";
 import { ConnectionError, ConnectionHub, KEEP_ALIVE_MS, type ConnectionAttention, type ConnectionHubOptions } from "../src/hub.js";
 import { Vault } from "../src/vault.js";
 import { FakeVendor, combinedFetch, owns } from "../testing/fake-vendor.js";
@@ -96,7 +99,7 @@ describe("connecting with one click", () => {
     if (started.flow !== "browser") throw new Error("expected a browser flow");
     const { state } = vendor.approve(started.authorizeUrl);
     await expect(h.completeCallback({ state, code: null, iss: null, error: "access_denied", errorDescription: null })).rejects.toBeInstanceOf(ConnectionError);
-    expect(h.flowStatus(started.flowId)).toMatchObject({ state: "failed", message: "你在授权页上拒绝了授权" });
+    expect(h.flowStatus(started.flowId)).toMatchObject({ state: "failed", message: "You refused the authorization on the authorization page" });
   });
 
   it("asks for a pre-registered client when the provider requires one", async () => {
@@ -106,7 +109,36 @@ describe("connecting with one click", () => {
   });
 
   it("lists Google as coming soon", () => {
-    expect(hub().get("google")).toMatchObject({ state: "unavailable", setupHint: expect.stringContaining("预览") });
+    expect(hub().get("google")).toMatchObject({ state: "unavailable", setupHint: expect.stringContaining("preview") });
+  });
+});
+
+// 用户在设置 → 外观里选的界面语言。测试的数据库缺省是英文。
+function chooseLocale(locale: Locale): void {
+  writeDesignPreferences(db, { ...designPreferencesFields(getDesignPreferences(db)), locale }, { by: "user", at: new Date() });
+}
+
+describe("the language of the settings page", () => {
+  it("writes the catalog, the setup hints and the errors in the language the user chose, when it reads them", async () => {
+    const h = hub();
+    expect(h.get("atlassian")).toMatchObject({ capability: "Find, create and change Jira issues. Search and read Confluence pages" });
+    expect(h.get("slack").setupHint).toBe("First, configure the Slack app of your workspace on the daemon (client ID)");
+    await expect(h.addCustom("http://mcp.example.com/mcp")).rejects.toMatchObject({ code: "invalid_request", message: expect.stringContaining("https://") });
+
+    chooseLocale("zh");
+    expect(h.get("atlassian")).toMatchObject({ capability: "查、建、改 Jira issue，搜索和读 Confluence 页面" });
+    expect(h.get("google")).toMatchObject({ state: "unavailable", setupHint: "Google 的 MCP 还在预览期，暂时不能一键连接" });
+    expect(h.get("github").setupHint).toBe("需要先安装并登录 gh，或者粘贴一个 PAT");
+    await expect(h.addCustom("http://mcp.example.com/mcp")).rejects.toMatchObject({ message: "远程 MCP 的地址必须以 https:// 开头" });
+    await expect(h.start("google")).rejects.toMatchObject({ code: "unavailable", message: expect.stringContaining("预览期") });
+    const started = await h.addCustom(vendor.mcpUrl);
+    if (started.flow !== "browser") throw new Error("expected a browser flow");
+    const { state } = vendor.approve(started.authorizeUrl);
+    await expect(h.completeCallback({ state, code: null, iss: null, error: "access_denied", errorDescription: null })).rejects.toBeInstanceOf(ConnectionError);
+    expect(h.flowStatus(started.flowId)).toMatchObject({ state: "failed", message: "你在授权页上拒绝了授权" });
+    const k = await connectCustom(h);
+    expect(h.get(k).capability).toBe("这个远程 MCP 服务器提供的工具");
+    expect(await h.test(k)).toMatchObject({ ok: true, message: expect.stringMatching(/^能用，\d+ 个工具$/) });
   });
 });
 
@@ -232,7 +264,7 @@ describe("a grant with a fixed lifetime", () => {
     await h.tick();
     await h.tick();
     expect(attention.map((event) => event.kind)).toEqual(["expiring"]);
-    expect(h.get("notion").problem).toMatchObject({ kind: "expiring", message: expect.stringContaining("6 天后到期") });
+    expect(h.get("notion").problem).toMatchObject({ kind: "expiring", message: expect.stringContaining("expires in 6 days") });
     expect(h.attentionCount()).toBe(1);
     clock += 5.5 * DAY;
     await h.tick();
@@ -299,7 +331,7 @@ describe("GitHub", () => {
       fetch: async () => new Response(JSON.stringify({ login: "octo-dev" }), { status: 200, headers: { "content-type": "application/json" } }),
     };
     const h = hub({ fetch: combinedFetch({ owns: owns(github), fetch: github.fetch }, apiGithub), gh: { token: async () => ghToken }, ghInstalled: () => true });
-    expect(h.get("github")).toMatchObject({ state: "not_connected", setupHint: "会使用这台 Mac 上 gh 的登录" });
+    expect(h.get("github")).toMatchObject({ state: "not_connected", setupHint: "Uses the gh login on this Mac" });
     const started = await h.start("github");
     expect(started).toMatchObject({ flow: "connected", connection: { state: "connected", account: "@octo-dev", tokenSource: "gh_cli" } });
     expect(getConnectionByServer(db, "https://api.githubcopilot.com/mcp/")!.secret_cipher).toBeNull();

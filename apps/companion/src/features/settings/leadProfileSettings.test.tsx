@@ -59,11 +59,11 @@ describe('the identity and style section', () => {
     await act(async () => { fireEvent.click(screen.getByTestId('lead-profile-save')); });
 
     expect(client.updateLeadProfile).toHaveBeenCalledWith({ name: 'Jarvis', interactionStyle: '先给结论，最多三句' });
-    expect(screen.getByTestId('lead-profile-message').textContent).toBe('已保存。Jarvis 从下一轮对话起按新的设置说话。');
+    expect(screen.getByTestId('lead-profile-message').textContent).toBe('Saved. Jarvis talks in the new way from the next conversation turn.');
     expect(screen.getByTestId('name-probe').textContent).toBe('Jarvis');
     expect(leadNameNow()).toBe('Jarvis');
-    expect(screen.getByTestId('lead-profile-boundary').textContent).toContain('改不了 Jarvis 的权限和安全规则');
-    expect(screen.getByTestId('lead-profile-updated').textContent).toContain('你改的');
+    expect(screen.getByTestId('lead-profile-boundary').textContent).toContain("do not change Jarvis's permissions or safety rules");
+    expect(screen.getByTestId('lead-profile-updated').textContent).toContain('by you');
   });
 
   it('says what is wrong instead of sending an empty name', async () => {
@@ -72,14 +72,16 @@ describe('the identity and style section', () => {
     fireEvent.change(screen.getByTestId('lead-profile-name'), { target: { value: '   ' } });
     await act(async () => { fireEvent.click(screen.getByTestId('lead-profile-save')); });
     expect(client.updateLeadProfile).not.toHaveBeenCalled();
-    expect(screen.getByTestId('lead-profile-message').textContent).toBe('名字不能是空的');
+    expect(screen.getByTestId('lead-profile-message').textContent).toBe('The name cannot be empty.');
   });
 
   it('says when Lead changed it in the conversation', () => {
     const now = new Date('2026-10-22T09:00:00.000Z');
-    expect(leadProfileUpdatedLine({ ...DEFAULT, name: 'Jarvis', updatedAt: '2026-10-22T08:30:00.000Z', updatedBy: 'lead' }, now))
+    expect(leadProfileUpdatedLine({ ...DEFAULT, name: 'Jarvis', updatedAt: '2026-10-22T08:30:00.000Z', updatedBy: 'lead' }, now, 'zh'))
       .toMatch(/^最近一次修改：今天 \d\d:\d\d，Jarvis 在对话里按你的要求改的。$/);
-    expect(leadProfileUpdatedLine(DEFAULT, now)).toBeNull();
+    expect(leadProfileUpdatedLine({ ...DEFAULT, name: 'Jarvis', updatedAt: '2026-10-22T08:30:00.000Z', updatedBy: 'lead' }, now, 'en'))
+      .toMatch(/^Last changed: .*\d\d:\d\d, by Jarvis at your request in the conversation\.$/);
+    expect(leadProfileUpdatedLine(DEFAULT, now, 'en')).toBeNull();
     expect(leadProfileChanges({ name: 'Paimon ', persona: '', interactionStyle: '' }, DEFAULT)).toBeNull();
   });
 });

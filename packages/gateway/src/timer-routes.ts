@@ -12,7 +12,8 @@ import {
   ResolveTimerRequestSchema, TIMER_REQUEST_ID, parseTimerRef,
   type Scope, type TimerRequestDecision, type TimerRequestDto,
 } from "@pi-lead-child/protocol";
-import type { Db } from "@pi-lead-child/store";
+import { getLocale, type Db } from "@pi-lead-child/store";
+import { routeMessages } from "./routes.messages.js";
 import { getTimerRequest, listExternalTimers, listWatchTimers } from "@pi-lead-child/engine";
 
 export interface TimerRouteContext {
@@ -71,7 +72,7 @@ export async function handleTimerRoute(ctx: TimerRouteContext): Promise<boolean>
     }
     const found = getTimerRequest(ctx.db, id);
     if (!found) {
-      fail(ctx, 404, "not_found", `没有定时器的确认卡 ${id}`);
+      fail(ctx, 404, "not_found", routeMessages(getLocale(ctx.db)).timerRequestNotFound(id));
       return true;
     }
     ctx.json(200, { request: found });

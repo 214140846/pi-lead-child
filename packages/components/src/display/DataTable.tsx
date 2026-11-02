@@ -4,6 +4,8 @@ import type { LayoutChangeEvent } from 'react-native';
 import { IconButton } from '../controls/Button';
 import { Box, Column, Row } from '../primitives/layout';
 import { ScrollArea, type ScrollAreaHandle, type ScrollEvent } from '../primitives/ScrollArea';
+import { useMessages } from '../i18n';
+import { displayMessages } from './display.messages';
 
 export type DataTableProps = {
   header: ReactNode[];
@@ -94,6 +96,7 @@ export function DataTable({ header, rows, columnWidths, align = [], testID }: Da
 
 // 一边的提示：渐隐盖在表格边上，不挡点击；箭头按钮在渐隐里竖直居中。
 function EdgeCue({ side, testID, onPress }: { side: 'left' | 'right'; testID?: string; onPress: () => void }) {
+  const m = useMessages(displayMessages);
   const steps = side === 'right' ? FADE_STEPS : [...FADE_STEPS].reverse();
   return (
     <Box
@@ -113,7 +116,7 @@ function EdgeCue({ side, testID, onPress }: { side: 'left' | 'right'; testID?: s
       </Row>
       <IconButton
         icon={side === 'right' ? 'chevron-right' : 'chevron-left'}
-        label={side === 'right' ? '向右看更多列' : '向左看前面的列'}
+        label={side === 'right' ? m.scrollRight : m.scrollLeft}
         onPress={onPress}
         variant="outline"
         size="xs"

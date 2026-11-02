@@ -24,6 +24,8 @@ export default defineConfig({
       { find: /^react-native$/, replacement: 'react-native-web' },
       // 它的 main 是 CJS，里面的 require('react-native') 绕过上面的别名。指向它的 ESM 构建。
       { find: /^react-native-safe-area-context$/, replacement: 'react-native-safe-area-context/lib/module/index.js' },
+      // react-native-svg 也一样（折线图，2026-10-30）：main 是 CJS，指向 ESM 构建，web 实现按 .web.js 取到。
+      { find: /^react-native-svg$/, replacement: 'react-native-svg/lib/module/index.js' },
     ],
     extensions: ['.web.tsx', '.web.ts', '.web.mjs', '.web.js', '.tsx', '.ts', '.mjs', '.js', '.json'],
   },
@@ -37,6 +39,6 @@ export default defineConfig({
     exclude: [...configDefaults.exclude],
     setupFiles: ['./test/setup.ts'],
     // react-native 系的包要经过 Vite 转换，react-native 别名才对它们生效。
-    server: { deps: { inline: [/@tamagui\//, /react-native-web/, /react-native-safe-area-context/, /react-native-reanimated/, /react-native-worklets/, /expo-/, /@expo\//] } },
+    server: { deps: { inline: [/@tamagui\//, /react-native-web/, /react-native-safe-area-context/, /react-native-svg/, /react-native-reanimated/, /react-native-worklets/, /expo-/, /@expo\//] } },
   },
 });

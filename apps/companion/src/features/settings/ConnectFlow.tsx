@@ -5,12 +5,14 @@ import {
 import type { ConnectionDto, StartConnectionResponse } from '@pi-lead-child/protocol';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+import { useLocale, useMessages } from '@/i18n';
 import { useCompanionRuntime, useControlPlaneStore } from '@/state/CompanionStateProvider';
 import { useLeadName } from '@/state/hooks';
 
 import {
   connectionErrorReason, connectionErrorText, displayUrl, minutesUntil, opensBrowser, tryPrompt,
 } from './connectionModel';
+import { connectionsMessages } from './connections.messages';
 
 // 连接流程（设置的连接列表、详情、健康条、会话里的连接卡都用这一份）：
 //   1. 预览：会打开哪个授权页，连上以后 Lead 能做什么。
@@ -45,6 +47,7 @@ export function initialFlowState(target: Pick<FlowTarget, 'state' | 'setupHint'>
 
 export function useConnectFlow(initial: ConnectFlowState = { step: 'consent' }): ConnectFlow {
   const runtime = useCompanionRuntime();
+  const locale = useLocale();
   const [state, setState] = useState<ConnectFlowState>(initial);
   const alive = useRef(true);
   const pendingFlowId = useRef<string | null>(null);
@@ -87,10 +90,10 @@ export function useConnectFlow(initial: ConnectFlowState = { step: 'consent' }):
       popup?.close();
       if (!alive.current) return;
       setState(connectionErrorReason(reason) === 'needs_setup'
-        ? { step: 'setup', message: connectionErrorText(reason) }
-        : { step: 'failed', message: connectionErrorText(reason) });
+        ? { step: 'setup', message: connectionErrorText(reason, locale) }
+        : { step: 'failed', message: connectionErrorText(reason, locale) });
     });
-  }, []);
+  }, [locale]);
 
   const reset = useCallback(() => {
     pendingFlowId.current = null;
@@ -103,9 +106,12 @@ export function useConnectFlow(initial: ConnectFlowState = { step: 'consent' }):
     if (!alive.current || pendingFlowId.current !== result.flowId || result.state === 'pending') return false;
     pendingFlowId.current = null;
     if (result.state === 'connected') setState({ step: 'done', connection: result.connection });
-    else setState({ step: 'failed', message: result.message ?? (result.state === 'expired' ? '授权已过期，请重新连接。' : '授权没有完成。') });
+    else {
+      const m = connectionsMessages(locale);
+      setState({ step: 'failed', message: result.message ?? (result.state === 'expired' ? m.flowExpired : m.flowIncomplete) });
+    }
     return true;
-  }, []);
+  }, [locale]);
 
   useEffect(() => {
     if (!flowId) return undefined;
@@ -174,30 +180,31 @@ export function ConnectFlowPanel({ target, onClose }: { target: FlowTarget; onCl
 // 第 1 步：连上以后会怎样。
 export function ConsentStep({ target, onContinue, onCancel }: { target: FlowTarget; onContinue: () => void; onCancel?: () => void }) {
   const leadName = useLeadName();
+  const m = useMessages(connectionsMessages);
   const reauth = target.state === 'needs_reauth' || target.problem?.kind === 'expiring';
   const how = target.provider === 'github'
-    ? target.setupHint ?? '会用这台 Mac 上 gh 的登录，或者显示一个设备码'
-    : `会打开 ${target.label} 的授权页`;
+    ? target.setupHint ?? m.githubHow
+    : m.browserHow(target.label);
   return (
     <Column testID="connect-consent" gap="card-section">
       <Row items="center" gap="side-item">
         <ServiceMark service={target.provider} label={target.label} size={40} />
         <Column flex={1} minW={0} gap="text-stack">
-          <Text size="card-title" weight="extrabold">{`${reauth ? '重新授权' : '连接'} ${target.label}`}</Text>
+          <Text size="card-title" weight="extrabold">{m.consentTitle(reauth, target.label)}</Text>
           <Text size="secondary" tone="secondary">{how}</Text>
         </Column>
       </Row>
       <Column gap="text-stack">
-        <Text size="body" weight="semibold">{`连接以后，${leadName} 可以`}</Text>
+        <Text size="body" weight="semibold">{m.afterConnect(leadName)}</Text>
         <Text size="body" tone="secondary">{target.capability}</Text>
       </Column>
       <Column gap="text-stack">
-        {target.writePolicy !== 'direct' ? <Text size="note" tone="secondary">会写入的操作每次先问你。</Text> : null}
-        <Text size="note" tone="secondary">授权只保存在这台 Mac 上。你随时可以在设置里断开。</Text>
+        {target.writePolicy !== 'direct' ? <Text size="note" tone="secondary">{m.writesAsk}</Text> : null}
+        <Text size="note" tone="secondary">{m.storedHere}</Text>
       </Column>
       <Row gap="actions" flexWrap="wrap">
-        <Button testID="connect-continue" label={`继续到 ${target.label}`} onPress={onContinue} />
-        {onCancel ? <Button label="取消" variant="ghost" tone="neutral" onPress={onCancel} /> : null}
+        <Button testID="connect-continue" label={m.continueTo(target.label)} onPress={onContinue} />
+        {onCancel ? <Button label={m.cancel} variant="ghost" tone="neutral" onPress={onCancel} /> : null}
       </Row>
     </Column>
   );
@@ -211,6 +218,7 @@ export function ConnectFlowSteps({ target, flow, onClose, onRetry }: {
   onRetry?: () => void;
 }) {
   const runtime = useCompanionRuntime();
+  const m = useMessages(connectionsMessages);
   const { state } = flow;
   const cancel = () => {
     flow.reset();
@@ -220,7 +228,7 @@ export function ConnectFlowSteps({ target, flow, onClose, onRetry }: {
     return (
       <Row testID="connect-starting" items="center" gap="icon-label">
         <Spinner size={16} />
-        <Text size="secondary" tone="secondary">{`正在连接 ${target.label}…`}</Text>
+        <Text size="secondary" tone="secondary">{m.connecting(target.label)}</Text>
       </Row>
     );
   }
@@ -247,64 +255,68 @@ export function ConnectFlowSteps({ target, flow, onClose, onRetry }: {
     <Column testID="connect-failed" gap="card-row">
       <Text size="note" weight="semibold" tone="danger-dark">{state.message}</Text>
       <Row gap="actions">
-        {onRetry ? <Button label="重试" variant="outline" tone="neutral" size="sm" onPress={onRetry} /> : null}
-        {onClose ? <Button label="关闭" variant="ghost" tone="neutral" size="sm" onPress={onClose} /> : null}
+        {onRetry ? <Button label={m.retry} variant="outline" tone="neutral" size="sm" onPress={onRetry} /> : null}
+        {onClose ? <Button label={m.close} variant="ghost" tone="neutral" size="sm" onPress={onClose} /> : null}
       </Row>
     </Column>
   );
 }
 
 function BrowserWaiting({ url, opened, onCancel }: { url: string; opened: boolean; onCancel: () => void }) {
+  const m = useMessages(connectionsMessages);
   return (
     <Column testID="connect-browser" gap="card-section">
       <Row items="center" gap="side-item">
         <Spinner size={18} />
         <Column flex={1} minW={0} gap="text-stack">
-          <Text size="card-title" weight="bold">{opened ? '在新窗口里完成授权' : '浏览器没有打开新窗口'}</Text>
-          <Text size="secondary" tone="secondary">完成后这里会自动更新</Text>
+          <Text size="card-title" weight="bold">{opened ? m.browserOpened : m.browserBlocked}</Text>
+          <Text size="secondary" tone="secondary">{m.autoUpdate}</Text>
         </Column>
       </Row>
       <Column gap="card-row">
-        <Text size="secondary" tone="secondary">窗口没有打开？</Text>
+        <Text size="secondary" tone="secondary">{m.windowMissing}</Text>
         <AuthorizeLinkButtons url={url} />
       </Column>
-      <Row><Button label="取消" variant="ghost" tone="neutral" size="sm" onPress={onCancel} /></Row>
+      <Row><Button label={m.cancel} variant="ghost" tone="neutral" size="sm" onPress={onCancel} /></Row>
     </Column>
   );
 }
 
 function PhoneBrowserStep({ url, onCancel }: { url: string; onCancel: () => void }) {
   const leadName = useLeadName();
+  const m = useMessages(connectionsMessages);
   return (
     <Column testID="connect-browser-phone" gap="card-row">
-      <Text size="body">{`授权页只能跳回运行 ${leadName} 的 Mac。复制链接，在 Mac 的浏览器里打开。`}</Text>
+      <Text size="body">{m.phoneBrowser(leadName)}</Text>
       <Box px="inset-x" py="inset-y" rounded="md" bg="surface-muted">
         <Text size="code" mono numberOfLines={3}>{url}</Text>
       </Box>
       <Row gap="actions" items="center">
-        {canCopyText ? <CopyButton text={url} label="复制授权链接" /> : null}
-        <Button label="取消" variant="ghost" tone="neutral" size="sm" onPress={onCancel} />
+        {canCopyText ? <CopyButton text={url} label={m.copyLink} /> : null}
+        <Button label={m.cancel} variant="ghost" tone="neutral" size="sm" onPress={onCancel} />
       </Row>
     </Column>
   );
 }
 
 function AuthorizeLinkButtons({ url }: { url: string }) {
+  const m = useMessages(connectionsMessages);
   return (
     <Row gap="actions" items="center" flexWrap="wrap">
       {/* spacing-exempt: 链接字号 */}
-      <Link testID="connect-open-link" href={url} size="13" weight="bold">打开授权页</Link>
-      {canCopyText ? <CopyButton text={url} label="复制授权链接" /> : null}
+      <Link testID="connect-open-link" href={url} size="13" weight="bold">{m.openPage}</Link>
+      {canCopyText ? <CopyButton text={url} label={m.copyLink} /> : null}
     </Row>
   );
 }
 
 function CopyButton({ text, label }: { text: string; label: string }) {
+  const m = useMessages(connectionsMessages);
   const [copied, setCopied] = useState(false);
   return (
     <Button
       testID="connect-copy-link"
-      label={copied ? '已复制' : label}
+      label={copied ? m.copied : label}
       variant="outline"
       tone="neutral"
       size="sm"
@@ -318,21 +330,22 @@ function DeviceCodeStep({ state, onCancel }: {
   onCancel: () => void;
 }) {
   const minutes = minutesUntil(state.expiresAt);
+  const m = useMessages(connectionsMessages);
   const openGithub = () => {
     void copyText(state.userCode).finally(() => openURL(state.verificationUri));
   };
   return (
     <Column testID="connect-device" gap="card-row">
-      <Text size="body">在 GitHub 上输入这个设备码：</Text>
+      <Text size="body">{m.deviceCodeIntro}</Text>
       <Box py="inset-y" rounded="lg" bg="surface-muted" items="center">
         <Text testID="connect-device-code" size="numeric" mono weight="bold" letterSpacing={2}>{state.userCode}</Text>
       </Box>
-      <Row><Button testID="connect-device-open" label="复制并打开 GitHub" onPress={openGithub} /></Row>
-      <Text size="meta" tone="secondary">{`${displayUrl(state.verificationUri)}${minutes ? ` · ${minutes} 分钟内有效` : ''}`}</Text>
+      <Row><Button testID="connect-device-open" label={m.copyAndOpenGithub} onPress={openGithub} /></Row>
+      <Text size="meta" tone="secondary">{`${displayUrl(state.verificationUri)}${minutes ? ` · ${m.validFor(minutes)}` : ''}`}</Text>
       <Row items="center" gap="icon-label">
         <Spinner size={14} />
-        <Text flex={1} size="secondary" tone="secondary">输入设备码以后，这里会自动更新</Text>
-        <Button label="取消" variant="ghost" tone="neutral" size="sm" onPress={onCancel} />
+        <Text flex={1} size="secondary" tone="secondary">{m.deviceAutoUpdate}</Text>
+        <Button label={m.cancel} variant="ghost" tone="neutral" size="sm" onPress={onCancel} />
       </Row>
     </Column>
   );
@@ -340,18 +353,20 @@ function DeviceCodeStep({ state, onCancel }: {
 
 function DoneStep({ target, connection, onDone }: { target: FlowTarget; connection: ConnectionDto | null; onDone: () => void }) {
   const label = connection?.label ?? target.label;
+  const locale = useLocale();
+  const m = useMessages(connectionsMessages);
   return (
     <Column testID="connect-done" gap="card-row" items="center">
       <Box w={40} h={40} rounded="full" bg="success-soft" items="center" justify="center">
         <Icon name="check" size={20} color="success-dark" weight="bold" />
       </Box>
-      <Text size="card-title" weight="extrabold" align="center">{`${label} 已连接`}</Text>
+      <Text size="card-title" weight="extrabold" align="center">{m.connectedTitle(label)}</Text>
       {connection?.account ? <Text size="secondary" tone="secondary" align="center">{connection.account}</Text> : null}
       <Text size="secondary" tone="secondary" align="center">
-        {'试一下：'}
-        <Code size="code">{tryPrompt(connection?.provider ?? target.provider, label)}</Code>
+        {m.tryIt}
+        <Code size="code">{tryPrompt(connection?.provider ?? target.provider, label, locale)}</Code>
       </Text>
-      <Button testID="connect-finish" label="完成" variant="outline" tone="neutral" size="sm" onPress={onDone} />
+      <Button testID="connect-finish" label={m.done} variant="outline" tone="neutral" size="sm" onPress={onDone} />
     </Column>
   );
 }
@@ -363,6 +378,7 @@ function SetupStep({ target, message, onToken, onCancel }: {
   onCancel?: () => void;
 }) {
   const [token, setToken] = useState('');
+  const m = useMessages(connectionsMessages);
   if (target.provider === 'github') {
     const submit = () => {
       const value = token.trim();
@@ -374,7 +390,7 @@ function SetupStep({ target, message, onToken, onCancel }: {
     return (
       <Column testID="connect-setup" gap="card-row">
         {message ? <Text size="secondary" tone="secondary">{message}</Text> : null}
-        <Text size="label" weight="semibold">粘贴一个 GitHub 令牌</Text>
+        <Text size="label" weight="semibold">{m.pasteGithubToken}</Text>
         <TextField
           testID="connect-github-token"
           value={token}
@@ -384,13 +400,13 @@ function SetupStep({ target, message, onToken, onCancel }: {
           mono
           autoCapitalize="none"
           autoCorrect={false}
-          accessibilityLabel="GitHub 令牌"
+          accessibilityLabel={m.githubToken}
           onSubmit={submit}
         />
-        <Text size="note" tone="secondary">令牌只保存在这台 Mac 上，加密存放。</Text>
+        <Text size="note" tone="secondary">{m.tokenStored}</Text>
         <Row gap="actions">
-          <Button testID="connect-github-token-submit" label="连接" disabled={!token.trim()} onPress={submit} />
-          {onCancel ? <Button label="取消" variant="ghost" tone="neutral" onPress={onCancel} /> : null}
+          <Button testID="connect-github-token-submit" label={m.connect} disabled={!token.trim()} onPress={submit} />
+          {onCancel ? <Button label={m.cancel} variant="ghost" tone="neutral" onPress={onCancel} /> : null}
         </Row>
       </Column>
     );
@@ -398,13 +414,11 @@ function SetupStep({ target, message, onToken, onCancel }: {
   return (
     <Column testID="connect-setup" gap="card-row">
       {target.provider === 'slack' ? (
-        <Text size="body">
-          {'Slack 要求用你们工作区里的一个 Slack app 连接。先在 daemon 的 config.json 里填上这个 app 的 client ID（connections.slack.clientId），再重启 daemon。'}
-        </Text>
+        <Text size="body">{m.slackSetup}</Text>
       ) : (
-        <Text size="body">{message ?? target.setupHint ?? `${target.label} 需要先在 daemon 上配置。`}</Text>
+        <Text size="body">{message ?? target.setupHint ?? m.needsDaemonSetup(target.label)}</Text>
       )}
-      {onCancel ? <Row><Button label="关闭" variant="ghost" tone="neutral" size="sm" onPress={onCancel} /></Row> : null}
+      {onCancel ? <Row><Button label={m.close} variant="ghost" tone="neutral" size="sm" onPress={onCancel} /></Row> : null}
     </Column>
   );
 }

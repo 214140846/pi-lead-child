@@ -65,9 +65,9 @@ describe('one card for one dispatch', () => {
     render();
     const card = screen.getByTestId('dispatch-card-77');
     expect(within(card).getByText('#77')).toBeTruthy();
-    expect(within(card).getByText('完成')).toBeTruthy();
+    expect(within(card).getByText('Done')).toBeTruthy();
     // 两条：child 的完成汇报、工单完成。
-    expect(within(card).getByText('2 条')).toBeTruthy();
+    expect(within(card).getByText('2 updates')).toBeTruthy();
     expect(screen.queryByTestId('checkpoint-card-186')).toBeNull();
     expect(screen.queryByTestId('open-ticket-77')).toBeNull();
     expect(screen.queryByTestId('ticket-chip-77')).toBeNull();
@@ -77,22 +77,22 @@ describe('one card for one dispatch', () => {
   it('opens a panel with the child report and the ending, and closes it again', async () => {
     render();
     expect(screen.queryByTestId('dispatch-card-77-panel')).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: '展开 #77 的进展' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Show the progress of #77' }));
     // react-native-web 的 measureInWindow 是异步的：量完卡片的位置才打开浮层。
     const panel = await screen.findByTestId('dispatch-card-77-panel');
     expect(within(panel).getByText('目标技能已核查，提交 review')).toBeTruthy();
     expect(within(panel).getByText('四项目标技能均已存在，且均有 SKILL.md。本次没有安装或覆盖。')).toBeTruthy();
-    expect(within(panel).getByText('工单已完成')).toBeTruthy();
+    expect(within(panel).getByText('Ticket done')).toBeTruthy();
     // 那一刻的说法，不是现在的状态；过时的「下一步」不再出现。
-    expect(within(panel).getByText('已提交复核')).toBeTruthy();
+    expect(within(panel).getByText('Sent for review')).toBeTruthy();
     expect(within(panel).queryByText('等待独立 review')).toBeNull();
-    fireEvent.click(within(panel).getByRole('button', { name: '收起 #77 的进展' }));
+    fireEvent.click(within(panel).getByRole('button', { name: 'Hide the progress of #77' }));
     expect(screen.queryByTestId('dispatch-card-77-panel')).toBeNull();
   });
 
   it('opens the ticket from the ticket number, not the panel', () => {
     const runtime = render();
-    fireEvent.click(screen.getByRole('button', { name: '打开工单 #77 详情' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Open the details of ticket #77' }));
     expect(runtime.workspace.getState().selectedTicketId).toBe(77);
     expect(screen.queryByTestId('dispatch-card-77-panel')).toBeNull();
   });

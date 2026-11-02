@@ -9,6 +9,7 @@ import {
   useTimeline, useWorkItems,
 } from '@/state/hooks';
 import { useLeadPresence } from '@/components/LeadIdentity';
+import { useLocale } from '@/i18n';
 import { useLeadAvatarSource } from '@/components/useLeadAvatarSource';
 import { leadFairy } from '@/components/leadPresence';
 
@@ -68,9 +69,10 @@ export function ConnectedWorkRail({
   const setTicketFilter = useWorkspaceStore((state) => state.setTicketFilter);
   const setComposerDraft = useWorkspaceStore((state) => state.setComposerDraft);
   const setCompactDestination = useWorkspaceStore((state) => state.setCompactDestination);
+  const locale = useLocale();
   const items = useMemo<Ticket[]>(
-    () => resolveWorkspaceTickets(connected, ticketSummaries, workItems),
-    [connected, ticketSummaries, workItems],
+    () => resolveWorkspaceTickets(connected, ticketSummaries, workItems, locale),
+    [connected, ticketSummaries, workItems, locale],
   );
   // 提醒不在工单列表里；日程带来它们的当前状态，已经确认的提醒就不再出现在收件箱。
   const notices = useMemo(() => {

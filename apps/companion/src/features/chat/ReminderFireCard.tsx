@@ -2,10 +2,13 @@ import { Badge, Box, Button, Card, Column, Icon, Row, Text } from '@pi-lead-chil
 import type { ReminderCard } from '@pi-lead-child/protocol';
 import { useState } from 'react';
 
+import { intlLocale, useLocale, type Locale } from '@/i18n';
+
 import { useCompanionRuntime, useControlPlaneStore } from '../../state/CompanionStateProvider';
 import { useLeadName } from '../../state/hooks';
 import { MarkdownMessage } from './MarkdownMessage';
 import { ReminderCard as ReminderObjectCard } from './ReminderCard';
+import { reminderMessages } from './reminder.messages';
 
 // 会话里的到点卡（工单 07，spec D10、D11）：一次到点一张，从到点到确认都在原地更新，位置是到点的时间。
 //   · 到点了、还没确认：时间、事情、「重要」标记、推送的情况，「知道了」「10 分钟后再提醒」；
@@ -13,30 +16,33 @@ import { ReminderCard as ReminderObjectCard } from './ReminderCard';
 //   · Lead 为它单独回的那一轮（leadTurnId），和 Lead 写到卡上的话（record_disposition 的理由），挂在卡下面，不另起气泡。
 // 数据是服务端按事件日志算好的提醒卡（「Lead 动态」的投影，按版本应用），这里不自己推断状态。
 
-function clock(value: string | null): string {
+// 两种语言都是 24 小时制的「09:00」。h23 而不是 hour12: false：en-US 的 hour12: false 在零点会写成「24:05」。
+function clock(value: string | null, locale: Locale): string {
   if (!value) return '';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '';
-  return new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }).format(date);
+  return new Intl.DateTimeFormat(intlLocale(locale), { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(date);
 }
 
 /** 到点卡上推送的情况：「08:55 提前推过 · 已推送 2 次 · 没确认 09:04 再推」。不在到点状态时是 null。 */
-export function reminderFireMeta(card: ReminderCard): string | null {
+export function reminderFireMeta(card: ReminderCard, locale: Locale): string | null {
   if (card.state !== 'fired') return null;
+  const m = reminderMessages(locale);
   const parts: string[] = [];
-  if (card.pushes.earlyAt) parts.push(`${clock(card.pushes.earlyAt)} 提前推过`);
-  if (card.pushes.count > 0) parts.push(`已推送 ${card.pushes.count} 次`);
-  if (card.pushes.exhausted) parts.push('还没确认，留在「待你」里');
-  else if (card.pushes.nextAt) parts.push(`没确认 ${clock(card.pushes.nextAt)} 再推`);
+  if (card.pushes.earlyAt) parts.push(m.pushedEarly(clock(card.pushes.earlyAt, locale)));
+  if (card.pushes.count > 0) parts.push(m.pushedCount(card.pushes.count));
+  if (card.pushes.exhausted) parts.push(m.exhausted);
+  else if (card.pushes.nextAt) parts.push(m.nextPush(clock(card.pushes.nextAt, locale)));
   return parts.length ? parts.join(' · ') : null;
 }
 
 /** 结束以后的一行：「09:00 抢票 · 09:01 已确认」「09:00 抢票 · 改到 09:10」「09:00 抢票 · 已取消」。 */
-export function reminderClosedLine(card: ReminderCard): string {
-  const head = `${clock(card.remindAt)} ${card.title}`;
-  if (card.state === 'acked') return `${head} · ${clock(card.closedAt)} 已确认`;
-  if (card.state === 'snoozed') return card.nextAt ? `${head} · 改到 ${clock(card.nextAt)}` : `${head} · 改了时间`;
-  if (card.state === 'cancelled') return `${head} · 已取消`;
+export function reminderClosedLine(card: ReminderCard, locale: Locale): string {
+  const m = reminderMessages(locale);
+  const head = `${clock(card.remindAt, locale)} ${card.title}`;
+  if (card.state === 'acked') return m.closedAcked(head, clock(card.closedAt, locale));
+  if (card.state === 'snoozed') return card.nextAt ? m.closedMoved(head, clock(card.nextAt, locale)) : m.closedRescheduled(head);
+  if (card.state === 'cancelled') return m.closedCancelled(head);
   return head;
 }
 
@@ -70,6 +76,8 @@ export function ReminderFireCardView({
 }) {
   // Lead 的话：它单独回的那一轮；插在别的回合里时，它写到卡上的那一句。
   const leadWords = leadText?.trim() || card.lead?.reason.trim() || null;
+  const locale = useLocale();
+  const m = reminderMessages(locale);
   if (card.state !== 'fired') {
     return (
       <Column testID={`reminder-fire-${card.reminderId}`} w="100%" gap="card-row">
@@ -77,7 +85,7 @@ export function ReminderFireCardView({
         <Row items="center" gap="icon-label" px={4}>
           <Icon name={card.state === 'acked' ? 'check' : 'clock'} size={13} color="text-muted" />
           <Text testID="reminder-fire-line" flex={1} minW={0} size="secondary" tone="secondary" numberOfLines={1}>
-            {reminderClosedLine(card)}
+            {reminderClosedLine(card, locale)}
           </Text>
         </Row>
         {leadWords ? <LeadWords text={leadWords} leadName={leadName} /> : null}
@@ -85,7 +93,7 @@ export function ReminderFireCardView({
     );
   }
   const important = card.level === 'interrupt';
-  const meta = reminderFireMeta(card);
+  const meta = reminderFireMeta(card, locale);
   return (
     <Card
       testID={`reminder-fire-${card.reminderId}`}
@@ -103,8 +111,8 @@ export function ReminderFireCardView({
         </Box>
         <Column flex={1} minW={0} gap="text-stack">
           <Row items="center" gap="inline-item">
-            <Text size="meta" tone="secondary" numberOfLines={1}>{`提醒 · ${clock(card.remindAt)} 到点`}</Text>
-            {important ? <Badge testID="reminder-fire-important" label="重要" tone="warning" size="sm" /> : null}
+            <Text size="meta" tone="secondary" numberOfLines={1}>{m.fireHead(clock(card.remindAt, locale))}</Text>
+            {important ? <Badge testID="reminder-fire-important" label={m.important} tone="warning" size="sm" /> : null}
           </Row>
           <Text testID="reminder-fire-title" size="card-title" weight="bold" numberOfLines={2}>{card.title}</Text>
           {meta ? <Text testID="reminder-fire-meta" size="meta" tone="muted">{meta}</Text> : null}
@@ -112,10 +120,10 @@ export function ReminderFireCardView({
       </Row>
       {/* spacing-exempt: 图标宽 30 加间距 12 */}
       <Row gap="actions" pl={42} flexWrap="wrap">
-        <Button testID={`reminder-fire-${card.reminderId}-ack`} label="知道了" size="xs" tone="accent" disabled={busy} onPress={onAck} />
+        <Button testID={`reminder-fire-${card.reminderId}-ack`} label={m.gotIt} size="xs" tone="accent" disabled={busy} onPress={onAck} />
         <Button
           testID={`reminder-fire-${card.reminderId}-snooze`}
-          label="10 分钟后再提醒"
+          label={m.snooze10}
           size="xs"
           variant="outline"
           tone="neutral"
@@ -164,6 +172,8 @@ export function ReminderFireCard({ cardKey }: { cardKey: string }) {
   const leadText = useTurnText(card?.leadTurnId ?? null);
   const actions = useReminderActions(card?.reminderId ?? 0);
   const leadName = useLeadName();
+  const locale = useLocale();
+  const m = reminderMessages(locale);
   if (!card) return null;
   // 到点了还没确认：就是那条提醒本身（对象组件 Reminder 的到点态，2026-10-27 用户：到点卡还是改版以前的样子）。
   // 「知道了」在卡的右边，改时间在点开的浮层里；Lead 为这次到点说的话挂在下面。结束以后照旧收成一行。
@@ -173,7 +183,7 @@ export function ReminderFireCard({ cardKey }: { cardKey: string }) {
       <Column testID={`reminder-fire-${card.reminderId}`} w="100%" gap="card-row">
         <ReminderObjectCard view={{
           reminderId: card.reminderId, title: card.title, remindAt: card.remindAt, stage: 'fired', event: null, fallback: null,
-          level: card.level === 'interrupt' ? 'interrupt' : null, note: reminderFireMeta(card),
+          level: card.level === 'interrupt' ? 'interrupt' : null, note: reminderFireMeta(card, locale),
         }} />
         {leadWords ? <LeadWords text={leadWords} leadName={leadName} /> : null}
       </Column>
@@ -185,7 +195,7 @@ export function ReminderFireCard({ cardKey }: { cardKey: string }) {
       leadName={leadName}
       leadText={leadText}
       busy={actions.busy}
-      error={actions.error ? `没有做成：${actions.error}` : null}
+      error={actions.error ? m.failed(actions.error) : null}
       onAck={actions.ack}
       onSnooze={actions.snooze}
     />

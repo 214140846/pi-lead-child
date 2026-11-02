@@ -1,24 +1,28 @@
 import { Button, Card, Column, Row, ServiceMark, Text, TextField } from '@pi-lead-child/components';
 import { useState } from 'react';
 
+import { useLocale, useMessages } from '@/i18n';
 import { useCompanionRuntime } from '@/state/CompanionStateProvider';
 
 import { ConnectFlowSteps, useConnectFlow, type FlowTarget } from './ConnectFlow';
 import { serverUrlProblem } from './connectionModel';
+import { connectionsMessages } from './connections.messages';
 
 // 添加一个远程 MCP 服务器：填 HTTPS 地址，点「连接」，后面和别的服务走同一个连接流程。
 // 地址明显不对时这里先说；别的检查（能不能发现授权服务器等）由 daemon 做，它的说明原样显示。
 export function AddCustomConnection({ onClose }: { onClose: () => void }) {
   const runtime = useCompanionRuntime();
+  const locale = useLocale();
+  const m = useMessages(connectionsMessages);
   const flow = useConnectFlow();
   const [url, setUrl] = useState('');
   const [problem, setProblem] = useState<string | null>(null);
   const host = hostOf(url);
   const target: FlowTarget = {
     key: 'custom',
-    label: host ?? 'MCP 服务器',
+    label: host ?? m.customServer,
     provider: 'custom',
-    capability: '这个远程 MCP 服务器提供的工具',
+    capability: m.customCapability,
     state: 'not_connected',
     setupHint: null,
     writePolicy: 'confirm',
@@ -26,7 +30,7 @@ export function AddCustomConnection({ onClose }: { onClose: () => void }) {
   };
 
   const connect = () => {
-    const found = serverUrlProblem(url);
+    const found = serverUrlProblem(url, locale);
     setProblem(found);
     if (found) return;
     flow.run(() => runtime.addCustomConnection(url.trim()), { browser: true });
@@ -49,8 +53,8 @@ export function AddCustomConnection({ onClose }: { onClose: () => void }) {
       <Row items="center" gap="side-item">
         <ServiceMark service="custom" label={host ?? undefined} size={32} />
         <Column flex={1} minW={0} gap="text-stack">
-          <Text size="card-title" weight="bold">添加 MCP 服务器</Text>
-          <Text size="secondary" tone="secondary">任何支持 OAuth 的远程 MCP 服务器</Text>
+          <Text size="card-title" weight="bold">{m.addCustom}</Text>
+          <Text size="secondary" tone="secondary">{m.addCustomHint}</Text>
         </Column>
       </Row>
       <TextField
@@ -65,13 +69,13 @@ export function AddCustomConnection({ onClose }: { onClose: () => void }) {
         keyboardType="url"
         autoCapitalize="none"
         autoCorrect={false}
-        accessibilityLabel="MCP 服务器地址"
+        accessibilityLabel={m.customUrlLabel}
         onSubmit={connect}
       />
       {shown ? <Text testID="connections-custom-problem" size="note" weight="semibold" tone="danger-dark">{shown}</Text> : null}
       <Row gap="actions">
-        <Button testID="connections-custom-connect" label="连接" disabled={!url.trim()} onPress={connect} />
-        <Button label="取消" variant="ghost" tone="neutral" onPress={onClose} />
+        <Button testID="connections-custom-connect" label={m.connect} disabled={!url.trim()} onPress={connect} />
+        <Button label={m.cancel} variant="ghost" tone="neutral" onPress={onClose} />
       </Row>
     </Card>
   );

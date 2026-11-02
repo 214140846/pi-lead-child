@@ -7,7 +7,7 @@
 import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 import { tempDir } from "@pi-lead-child/core/testing";
-import { createCoordinator, liveChildren, NotesMemory } from "@pi-lead-child/engine";
+import { createCoordinator, liveChildren, NotesMemory, updateDesignPreferences } from "@pi-lead-child/engine";
 import {
   computeRunGrant, DEFAULT_INTENT_GRANT_BOUNDS,
   OWNER_ACTIONS, OWNER_ACTION_NOTIFICATION_KIND, OwnerActionResponseSchema, ownerActionNotificationDedupKey,
@@ -302,7 +302,7 @@ describe("every owner action records an event", () => {
       expect(alerts.every((row) => row.urgency === "immediate" && row.item_id === null)).toBe(true);
       expect(events.find((event) => event.payload.action === "ticket.complete")).toMatchObject({
         entityKey: `ticket:${review}`,
-        payload: { summary: `验收了工单 #${review}「登录页」`, target: { ticketId: review }, undo: { kind: "item", from: "review", to: "done" } },
+        payload: { summary: `Accepted Ticket #${review} "登录页"`, target: { ticketId: review }, undo: { kind: "item", from: "review", to: "done" } },
       });
     } finally {
       await server.close();
@@ -342,6 +342,11 @@ describe("record or push", () => {
   });
 });
 
+// 主人操作的摘要和撤销结果按用户选的界面语言写（缺省英文）。用中文断言的测试先选中文。
+function chinese(): void {
+  updateDesignPreferences(db, { request: { locale: "zh" }, caller: { kind: "user" } });
+}
+
 describe("「不是我」", () => {
   it("puts an accepted ticket back in review, revokes the CLI credential, and every later request with it gets 401", async () => {
     const server = await start();
@@ -368,7 +373,7 @@ describe("「不是我」", () => {
         credential: { bindingId: child.binding.id, active: false },
         disowned: {
           byName: "本机网页",
-          revert: { status: "reverted", message: expect.stringContaining("回到待验收") },
+          revert: { status: "reverted", message: expect.stringContaining("went back to review") },
           credential: { bindingId: child.binding.id, revoked: true },
         },
       });
@@ -397,6 +402,7 @@ describe("「不是我」", () => {
 
   it("restores what a connection settings change loosened, and keeps it when the settings changed again", async () => {
     const server = await start();
+    chinese();
     try {
       const child = cli();
       const owner = web();
@@ -436,6 +442,7 @@ describe("「不是我」", () => {
 
   it("restores the Lead profile a child rewrote, and keeps it when it changed again", async () => {
     const server = await start();
+    chinese();
     try {
       const child = cli();
       const owner = web();
@@ -473,6 +480,7 @@ describe("「不是我」", () => {
   // 代回复风格（2026-10-28）：它进 Lead 和子 agent 写回复的提示词。child 用 CLI 凭证改它，你点「不是我」就恢复。
   it("restores the reply style a child rewrote, and keeps it when it changed again", async () => {
     const server = await start();
+    chinese();
     try {
       const child = cli();
       const owner = web();
@@ -509,6 +517,7 @@ describe("「不是我」", () => {
   // 常驻偏好（2026-10-29）：它进 Lead 的系统提示词。child 用 CLI 凭证改它，你收到推送，点「不是我」就恢复。
   it("restores a preference a child rewrote, and keeps it when it changed again", async () => {
     const server = await start();
+    chinese();
     try {
       const child = cli();
       const owner = web();
@@ -557,7 +566,7 @@ describe("「不是我」", () => {
       expect(event).toMatchObject({
         level: "interrupt", entityKey: "channel_settings:chat",
         payload: {
-          action: "channel.credentials", delivery: "push", summary: expect.stringContaining("保存了 Chat 通道的凭据（PLC_CHAT_TOKEN）"),
+          action: "channel.credentials", delivery: "push", summary: expect.stringContaining("Saved the credentials of the Chat channel in settings (PLC_CHAT_TOKEN)"),
           detail: { op: "save", source: "chat", names: ["PLC_CHAT_TOKEN"] },
           undo: { kind: "channel_credentials", op: "save", source: "chat", revision: "r1" },
         },
@@ -565,7 +574,7 @@ describe("「不是我」", () => {
       expect(JSON.stringify(event)).not.toContain("chat-sentinel-value-7c1e");
       const disowned = await server.call(owner.token, "POST", `/v1/owner-actions/${event.eventId}/disown`);
       expect(disowned.body.ownerAction.disowned).toMatchObject({
-        revert: { status: "reverted", message: expect.stringContaining("已经断开") }, credential: { revoked: true },
+        revert: { status: "reverted", message: expect.stringContaining("The channel is disconnected.") }, credential: { revoked: true },
       });
       expect(channelVault.names).toEqual([]);
 
@@ -576,7 +585,7 @@ describe("「不是我」", () => {
       const third = cli();
       expect((await put(third.token)).status).toBe(200);
       expect((await server.call(owner.token, "POST", `/v1/owner-actions/${first.eventId}/disown`)).body.ownerAction.disowned)
-        .toMatchObject({ revert: { status: "not_revertible", message: expect.stringContaining("又改过") } });
+        .toMatchObject({ revert: { status: "not_revertible", message: expect.stringContaining("changed again after this") } });
       expect(channelVault.names).toEqual(["PLC_CHAT_TOKEN"]);
       const fourth = cli();
       expect((await server.call(fourth.token, "DELETE", "/v1/channels/settings/chat", undefined, LOCAL_PAGE)).status).toBe(200);
@@ -616,6 +625,7 @@ describe("「不是我」", () => {
 
   it("undoes what can be undone, and says why when it cannot", async () => {
     const server = await start();
+    chinese();
     try {
       const page = web();
       // 用户的决定（approvals:respond）CLI 凭证做不了：child 要伪造本机网页去配对，拿那个凭证做。

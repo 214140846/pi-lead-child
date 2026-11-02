@@ -107,8 +107,8 @@ describe('notices in the work rail', () => {
     // 已完成的 #46 不再报「交接失败」；#51 的通知收进它那一行。
     expect(screen.queryByText('工单 #46 运行结束，但交接失败')).toBeNull();
     expect(within(outbox).queryByText(/工单 #51/)).toBeNull();
-    expect(within(screen.getByTestId('inbox-card-51')).getByText(/2 条通知/)).toBeTruthy();
+    expect(within(screen.getByTestId('inbox-card-51')).getByText(/2 notices/)).toBeTruthy();
     // 已触发的提醒合成一行。7 月 28 日的这条已经超过 30 天，收起来（决定 3），在日程的「已过期」里。
-    expect(within(screen.getByTestId('reminder-notices')).getByText('1 条提醒超过 30 天没有确认，收在日程的「已过期」里')).toBeTruthy();
+    expect(within(screen.getByTestId('reminder-notices')).getByText('1 reminder is older than 30 days and not acknowledged. It is in Overdue in the agenda.')).toBeTruthy();
   });
 });

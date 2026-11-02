@@ -2,6 +2,10 @@ import { Box, Button, Column, Icon, Pressable, Row, Screen, Text } from '@pi-lea
 import { CameraView, useCameraPermissions, type BarcodeScanningResult } from 'expo-camera';
 import { useState } from 'react';
 
+import { useMessages } from '@/i18n';
+
+import { pairingMessages } from './pairing.messages';
+
 interface PairingScannerProps {
   onClose(): void;
   onScanned(uri: string): void;
@@ -11,6 +15,7 @@ interface PairingScannerProps {
 export function PairingScanner({ onClose, onScanned }: PairingScannerProps) {
   const [permission, requestPermission] = useCameraPermissions();
   const [locked, setLocked] = useState(false);
+  const m = useMessages(pairingMessages);
 
   const handleBarcode = (result: BarcodeScanningResult) => {
     if (locked) return;
@@ -24,7 +29,7 @@ export function PairingScanner({ onClose, onScanned }: PairingScannerProps) {
         <Row h={82} items="center" justify="space-between">
           <Pressable
             testID="pairing-scanner-close"
-            aria-label="关闭扫码"
+            aria-label={m.scannerClose}
             onPress={onClose}
             w={38}
             h={38}
@@ -37,14 +42,14 @@ export function PairingScanner({ onClose, onScanned }: PairingScannerProps) {
           </Pressable>
           <Column items="center" gap="text-stack">
             <Text size="eyebrow" weight="extrabold" color="ink-muted" letterSpacing={1.2}>LOCAL PAIRING</Text>
-            <Text size="section-title" weight="extrabold" color="surface-subtle">扫描 daemon 配对码</Text>
+            <Text size="section-title" weight="extrabold" color="surface-subtle">{m.scannerTitle}</Text>
           </Column>
           <Box w={38} />
         </Row>
 
         {!permission ? (
           <Column flex={1} minH={360} items="center" justify="center" p="empty-state" rounded={28} bg="surface-subtle">
-            <Text size="body" tone="muted" align="center">正在读取相机权限…</Text>
+            <Text size="body" tone="muted" align="center">{m.scannerPermissionLoading}</Text>
           </Column>
         ) : !permission.granted ? (
           <Column flex={1} minH={360} items="center" justify="center" p="empty-state" rounded={28} bg="surface-subtle">
@@ -52,9 +57,9 @@ export function PairingScanner({ onClose, onScanned }: PairingScannerProps) {
               <Box w={56} h={56} mb="card-row" rounded="xl" bg="icon-well" items="center" justify="center">
                 <Icon name="camera" color="text" size={25} />
               </Box>
-              <Text size="section-title" weight="extrabold">需要相机权限</Text>
-              <Text size="secondary" tone="muted" align="center">相机只用于读取本机终端生成的局域网配对二维码。</Text>
-              <Button testID="pairing-scanner-permission" label="允许使用相机" size="xl" onPress={() => void requestPermission()} />
+              <Text size="section-title" weight="extrabold">{m.scannerPermissionTitle}</Text>
+              <Text size="secondary" tone="muted" align="center">{m.scannerPermissionHelp}</Text>
+              <Button testID="pairing-scanner-permission" label={m.scannerPermissionAllow} size="xl" onPress={() => void requestPermission()} />
             </Column>
           </Column>
         ) : (
@@ -76,7 +81,7 @@ export function PairingScanner({ onClose, onScanned }: PairingScannerProps) {
         )}
 
         <Text mt="page-section" size="note" color="ink-muted" align="center">
-          在 daemon 机器运行 `plc pair new --name phone --endpoint ws://局域网IP:47130`
+          {m.scannerCommand}
         </Text>
       </Column>
     </Screen>

@@ -2,10 +2,14 @@ import { Box, Button, Card, Column, Dot, Row, Text, TextField } from '@pi-lead-c
 import type { TicketRelationKind } from '@pi-lead-child/protocol';
 import { useState } from 'react';
 
+import { useLocale, useMessages } from '@/i18n';
 import type { ResourceLoadState } from '@/state/types';
 
 import type { AttemptPresentation, LifecyclePresentation, RelationPresentation } from './ticketHistory';
+import { ticketRecordsMessages } from './ticketRecords.messages';
 import { timeLabel, timeRangeLabel } from './timeLabels';
+
+type HistoryMessages = ReturnType<typeof ticketRecordsMessages>['history'];
 
 export type TicketHistorySection = 'lifecycle' | 'attempts' | 'relations';
 
@@ -43,41 +47,20 @@ export type TicketRelationActionState = {
   message?: string | null;
 };
 
-const CREATE_RELATION_OPTIONS: {
-  type: TicketRelationCreateType;
-  label: string;
-  description: string;
-  highImpact?: boolean;
-}[] = [
-  {
-    type: 'depends_on',
-    label: '依赖',
-    description: '当前工单等目标工单完成后才能自动派发。',
-    highImpact: true,
-  },
-  {
-    type: 'implements',
-    label: '实施自',
-    description: '当前工单以目标工单为实施依据，默认不阻塞。',
-  },
-  {
-    type: 'duplicates',
-    label: '重复',
-    description: '目标工单成为 canonical，历史不会静默合并。',
-    highImpact: true,
-  },
-  {
-    type: 'supersedes',
-    label: '替代',
-    description: '当前工单正式替代目标工单，旧工单不会删除。',
-    highImpact: true,
-  },
-  {
-    type: 'relates_to',
-    label: '相关',
-    description: '仅用于导航，不影响调度、完成或恢复范围。',
-  },
+// 建立关系的选项：名字和说明在文案的 history.relationOptions 里。
+const CREATE_RELATION_TYPES: { type: TicketRelationCreateType; highImpact?: boolean }[] = [
+  { type: 'depends_on', highImpact: true },
+  { type: 'implements' },
+  { type: 'duplicates', highImpact: true },
+  { type: 'supersedes', highImpact: true },
+  { type: 'relates_to' },
 ];
+
+type RelationOption = { type: TicketRelationCreateType; label: string; description: string; highImpact?: boolean };
+
+function relationOptions(m: HistoryMessages): RelationOption[] {
+  return CREATE_RELATION_TYPES.map((option) => ({ ...option, ...m.relationOptions[option.type] }));
+}
 
 // 工单详情的"日志"页签里的历史：生命周期、执行尝试和工单关系（可以建立和撤销关系）。
 export function TicketHistorySections({
@@ -94,6 +77,10 @@ export function TicketHistorySections({
   onRevokeRelation,
   onRetry,
 }: Props) {
+  const locale = useLocale();
+  const messages = useMessages(ticketRecordsMessages);
+  const m = messages.history;
+  const options = relationOptions(m);
   const [expandedFailures, setExpandedFailures] = useState<Record<number, boolean>>({});
   const [createOpen, setCreateOpen] = useState(false);
   const [targetTicketText, setTargetTicketText] = useState('');
@@ -105,8 +92,7 @@ export function TicketHistorySections({
   const executionError = executionResource?.state === 'error' ? executionResource.error : null;
   const show = (section: TicketHistorySection) => sections.includes(section);
   const relationTicketGroups = groupRelationsByTicket(relations);
-  const selectedRelation = CREATE_RELATION_OPTIONS.find((option) => option.type === relationType)
-    ?? CREATE_RELATION_OPTIONS[0]!;
+  const selectedRelation = options.find((option) => option.type === relationType) ?? options[0]!;
   const targetTicketId = Number(targetTicketText.trim().replace(/^#/, ''));
   const createDisabled = !onLinkRelation || relationActionState?.pending
     || !Number.isSafeInteger(targetTicketId) || targetTicketId <= 0
@@ -155,6 +141,8 @@ export function TicketHistorySections({
       actionState={relationActionState}
       submitDisabled={createDisabled}
       onSubmit={submitRelation}
+      options={options}
+      m={m}
     />
   ) : null;
 
@@ -162,16 +150,16 @@ export function TicketHistorySections({
     <Column testID="ticket-history" mx={flush ? 0 : 20} mt={flush ? 0 : 14} gap="card-section">
       {executionError ? (
         <Column role="alert" gap="card-row" px="banner-x" py="banner-y" borderWidth={1} borderColor="danger" rounded="md" bg="danger-soft">
-          <Text size="card-title" weight="bold" tone="danger-dark">历史读取失败</Text>
+          <Text size="card-title" weight="bold" tone="danger-dark">{m.readFailed}</Text>
           <FailureText>{executionError}</FailureText>
           <Box self="flex-start">
-            <Button disabled={!onRetry} label="重试读取" onPress={onRetry} testID="ticket-history-retry" variant="outline" tone="neutral" size="sm" />
+            <Button disabled={!onRetry} label={m.retryRead} onPress={onRetry} testID="ticket-history-retry" variant="outline" tone="neutral" size="sm" />
           </Box>
         </Column>
       ) : null}
       {show('lifecycle') ? (
         <>
-      <SectionTitle title="生命周期" />
+      <SectionTitle title={m.lifecycle} />
       <Column gap="stacked-card">
         {lifecycle.length > 0 ? lifecycle.map((entry) => (
           <Row key={entry.id} testID={`lifecycle-${entry.id}`} gap="timeline">
@@ -179,23 +167,23 @@ export function TicketHistorySections({
             <Box mt={5}><Dot color="accent" size={7} /></Box>
             <Column minW={0} flex={1} pb="timeline-event" borderBottomWidth={1} borderBottomColor="border-soft">
               <EntryTitle>{entry.title}</EntryTitle>
-              <MetaText>{`${timeLabel(entry.createdAt)} · ${entry.actor} · 来源 #${entry.sourceTicketId}${entry.attemptId ? ` / Run #${entry.attemptId}` : ''}`}</MetaText>
+              <MetaText>{m.lifecycleMeta(timeLabel(entry.createdAt, undefined, locale), entry.actor, String(entry.sourceTicketId), entry.attemptId)}</MetaText>
               {entry.reason ? <DetailText>{entry.reason}</DetailText> : null}
             </Column>
           </Row>
-        )) : <EmptyText>{executionError ? '生命周期暂不可用' : '正在读取生命周期…'}</EmptyText>}
+        )) : <EmptyText>{executionError ? m.lifecycleUnavailable : m.lifecycleLoading}</EmptyText>}
       </Column>
         </>
       ) : null}
 
       {show('attempts') ? (
         <>
-      <SectionTitle title="执行尝试" />
+      <SectionTitle title={m.attempts} />
       {executionResource?.state === 'loading' && attempts.length === 0 ? (
-        <EmptyText>正在读取执行记录…</EmptyText>
+        <EmptyText>{m.attemptsLoading}</EmptyText>
       ) : attempts.length === 0 ? (
         <Card testID="attempts-empty" p="card" borderColor="border-soft" rounded="md">
-          <Text size="secondary" weight="bold" tone="secondary">尚未执行</Text>
+          <Text size="secondary" weight="bold" tone="secondary">{m.notRun}</Text>
         </Card>
       ) : (
         <Column gap="stacked-card">
@@ -208,12 +196,12 @@ export function TicketHistorySections({
                   <EntryTitle>{`Run #${attempt.id} · ${attempt.purposeLabel} · ${attempt.result}`}</EntryTitle>
                   <Text size="meta" mono tone="accent">{attempt.choice}</Text>
                 </Row>
-                <MetaText>{`${timeRangeLabel(attempt.startedAt, attempt.endedAt)}${attempt.durationMs === null ? '' : ` · ${formatDuration(attempt.durationMs)}`}`}</MetaText>
+                <MetaText>{`${timeRangeLabel(attempt.startedAt, attempt.endedAt, undefined, locale)}${attempt.durationMs === null ? '' : ` · ${formatDuration(attempt.durationMs)}`}`}</MetaText>
                 {failure ? <FailureText>{failure}</FailureText> : null}
                 {attempt.failureTruncated ? (
                   <Box self="flex-start">
                     <Button
-                      label={expanded ? '收起失败详情' : '展开失败详情'}
+                      label={expanded ? m.hideFailure : m.showFailure}
                       onPress={() => setExpandedFailures((current) => ({ ...current, [attempt.id]: !expanded }))}
                       testID={`attempt-failure-toggle-${attempt.id}`}
                       variant="link"
@@ -231,11 +219,11 @@ export function TicketHistorySections({
 
       {show('relations') && (relations.length > 0 || onLinkRelation) ? (
         <>
-          <SectionTitle title="工单关系" />
+          <SectionTitle title={m.relations} />
           <Row justify="flex-start" mb="text-stack">
             <Button
               disabled={!onLinkRelation}
-              label={createOpen && relations.length > 0 ? '收起建立关系' : '建立关系'}
+              label={createOpen && relations.length > 0 ? m.hideCreate : m.create}
               onPress={() => {
                 setCreateOpen((open) => (relations.length > 0 ? !open : true));
                 setConfirmingHighImpact(false);
@@ -264,9 +252,9 @@ export function TicketHistorySections({
                   <Row items="center" gap="side-item">
                     <Column minW={0} flex={1}>
                       <EntryTitle>{`#${group.ticketId}${group.title ? ` · ${group.title}` : ''}`}</EntryTitle>
-                      <StateTag active={group.active}>{group.active ? '存在有效关系' : '仅历史记录'}</StateTag>
+                      <StateTag active={group.active}>{group.active ? m.activeRelation : m.historyOnly}</StateTag>
                     </Column>
-                    <Button label="打开" onPress={() => onOpenTicket?.(String(group.ticketId))} variant="outline" tone="neutral" size="sm" />
+                    <Button label={m.open} onPress={() => onOpenTicket?.(String(group.ticketId))} variant="outline" tone="neutral" size="sm" />
                   </Row>
                   <Column gap="stacked-card" pt="card-section" borderTopWidth={1} borderTopColor="border-soft">
                     {group.items.map((relation, index) => (
@@ -278,7 +266,7 @@ export function TicketHistorySections({
                       >
                         <Column minW={0} flex={1}>
                           <Row items="center" flexWrap="wrap" gap="inline-item">
-                            <EntryTitle>{relation.active === false ? `历史：${relation.label}` : relation.label}</EntryTitle>
+                            <EntryTitle>{relation.active === false ? m.historical(relation.label) : relation.label}</EntryTitle>
                             <StateTag active={relation.active !== false}>{relation.stateLabel}</StateTag>
                           </Row>
                           <MetaText>{relation.meta}</MetaText>
@@ -287,7 +275,7 @@ export function TicketHistorySections({
                         {relation.relationId !== undefined && relation.relationId !== null
                           && relation.source === 'ticket_relations' && relation.active !== false ? (
                           <Button
-                            label="撤销"
+                            label={m.revoke}
                             onPress={() => {
                               setRevokingRelationId(relation.relationId ?? null);
                               setRevokeReason('');
@@ -307,12 +295,12 @@ export function TicketHistorySections({
           ) : null}
           {revokingRelationId !== null ? (
             <Card testID="ticket-relation-revoke-panel" gap="card-row" p="card" borderColor="border-soft" rounded="md" bg="surface-subtle">
-              <RiskText>{`撤销关系 #${revokingRelationId} 会保留账本记录。`}</RiskText>
+              <RiskText>{m.revokeNote(revokingRelationId)}</RiskText>
               <TextField
                 testID="ticket-relation-revoke-reason"
                 value={revokeReason}
                 onChangeText={setRevokeReason}
-                placeholder="撤销原因"
+                placeholder={m.revokeReason}
                 multiline
                 height={78}
                 size="sm"
@@ -321,7 +309,7 @@ export function TicketHistorySections({
               {relationActionState?.error ? <ErrorText>{relationActionState.error}</ErrorText> : null}
               <Row justify="flex-end" gap="actions">
                 <Button
-                  label="取消"
+                  label={messages.cancel}
                   onPress={() => {
                     setRevokingRelationId(null);
                     setRevokeReason('');
@@ -332,7 +320,7 @@ export function TicketHistorySections({
                 />
                 <Button
                   disabled={revokeDisabled}
-                  label={relationActionState?.pending ? '正在撤销…' : '确认撤销'}
+                  label={relationActionState?.pending ? m.revoking : m.confirmRevoke}
                   onPress={submitRevoke}
                   testID="ticket-relation-revoke-submit"
                   tone="danger"
@@ -361,6 +349,8 @@ function RelationCreatePanel({
   actionState,
   submitDisabled,
   onSubmit,
+  options,
+  m,
 }: {
   showEmptyNote: boolean;
   relationType: TicketRelationCreateType;
@@ -374,13 +364,15 @@ function RelationCreatePanel({
   actionState?: TicketRelationActionState;
   submitDisabled: boolean | undefined;
   onSubmit: () => void;
+  options: RelationOption[];
+  m: HistoryMessages;
 }) {
-  const selected = CREATE_RELATION_OPTIONS.find((option) => option.type === relationType) ?? CREATE_RELATION_OPTIONS[0]!;
+  const selected = options.find((option) => option.type === relationType) ?? options[0]!;
   return (
     <Card testID="ticket-relation-create-panel" gap="card-row" p="card" borderColor="border-soft" rounded="md" bg="surface-subtle">
-      {showEmptyNote ? <EmptyText>当前没有已记录关系。</EmptyText> : null}
+      {showEmptyNote ? <EmptyText>{m.noRelations}</EmptyText> : null}
       <Row flexWrap="wrap" gap="actions">
-        {CREATE_RELATION_OPTIONS.map((option) => (
+        {options.map((option) => (
           <Button
             key={option.type}
             label={option.label}
@@ -397,7 +389,7 @@ function RelationCreatePanel({
         testID="ticket-relation-target"
         value={targetTicketText}
         onChangeText={onTargetTicketText}
-        placeholder="目标工单 ID"
+        placeholder={m.targetId}
         size="sm"
         fontSize="12"
       />
@@ -405,20 +397,20 @@ function RelationCreatePanel({
         testID="ticket-relation-reason"
         value={relationReason}
         onChangeText={onRelationReason}
-        placeholder="建立原因"
+        placeholder={m.createReason}
         multiline
         height={78}
         size="sm"
         fontSize="12"
       />
-      {selfReference ? <ErrorText>不能把工单关联到自身。</ErrorText> : null}
-      {confirmingHighImpact ? <RiskText>高影响关系会改变调度、canonical 或有效事项判断；再次确认后写入审计账本。</RiskText> : null}
+      {selfReference ? <ErrorText>{m.selfReference}</ErrorText> : null}
+      {confirmingHighImpact ? <RiskText>{m.highImpact}</RiskText> : null}
       {actionState?.error ? <ErrorText>{actionState.error}</ErrorText> : null}
       {actionState?.message ? <Text size="note" weight="medium" tone="success-dark">{actionState.message}</Text> : null}
       <Row justify="flex-end" gap="actions">
         <Button
           disabled={submitDisabled}
-          label={actionState?.pending ? '正在建立…' : selected.highImpact && !confirmingHighImpact ? '检查高影响' : '确认建立'}
+          label={actionState?.pending ? m.creating : selected.highImpact && !confirmingHighImpact ? m.checkHighImpact : m.confirmCreate}
           onPress={onSubmit}
           testID="ticket-relation-create-submit"
           size="sm"

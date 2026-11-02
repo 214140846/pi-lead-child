@@ -6,13 +6,15 @@ import type { ChannelSecretSetting, ChannelSecretsTestResult, ChannelSourceSetti
 import { ChannelSecretsRejectedError } from '@pi-lead-child/client';
 import { useEffect, useRef, useState } from 'react';
 
+import { useLocale, useMessages } from '@/i18n';
 import { useCompanionRuntime } from '@/state/CompanionStateProvider';
 import { useChannelSettings, useConnectionPhase, useLeadName } from '@/state/hooks';
 import { RESOURCE_KEYS } from '@/state/types';
 
+import { channelsMessages } from './channels.messages';
 import {
-  canDisconnect, channelErrorText, channelStatusView, checkRows, DISCONNECT_CONFIRM_NOTE, DISCONNECTED_NOTE, emptySecretForm,
-  externalSecretNotes, readOnlyNote, SAVE_REJECTED_NOTE, SAVED_NOTE, secretPlaceholder, secretRequest, secretStateText, testSummary,
+  canDisconnect, channelErrorText, channelStatusView, checkRows, emptySecretForm,
+  externalSecretNotes, readOnlyNote, secretPlaceholder, secretRequest, secretStateText, testSummary,
   type ChannelStatusTone, type SecretForm,
 } from './channelSettingsModel';
 import { HandbookSection } from './HandbookSection';
@@ -32,23 +34,25 @@ export function ChannelSettingsSection() {
   const paired = isDevicePaired(useConnectionPhase());
   const { channelSettings, resource } = useChannelSettings();
   const leadName = useLeadName();
+  const locale = useLocale();
+  const m = channelsMessages(locale);
   if (!paired) return <UnpairedNotice />;
   if (!channelSettings) {
-    if (resource?.state === 'unsupported') return <Text testID="channels-unsupported" size="body" tone="muted">这台 daemon 还不支持消息通道。</Text>;
+    if (resource?.state === 'unsupported') return <Text testID="channels-unsupported" size="body" tone="muted">{m.unsupported}</Text>;
     if (resource?.state === 'error') {
       return (
         <Card testID="channels-error" p="page-card" rounded="xl" gap="card-row">
-          <Text size="secondary" tone="danger-dark">{`读不到消息通道的设置：${channelErrorText(resource.error ?? '', leadName)}`}</Text>
+          <Text size="secondary" tone="danger-dark">{m.loadFailed(channelErrorText(resource.error ?? '', leadName, locale))}</Text>
           <Row>
-            <Button label="重试" variant="outline" tone="neutral" size="sm" onPress={() => void runtime.ensureResource(RESOURCE_KEYS.channelSettings, true).catch(() => {})} />
+            <Button label={m.retry} variant="outline" tone="neutral" size="sm" onPress={() => void runtime.ensureResource(RESOURCE_KEYS.channelSettings, true).catch(() => {})} />
           </Row>
         </Card>
       );
     }
-    return <Text testID="channels-loading" size="body" tone="muted">正在读取消息通道…</Text>;
+    return <Text testID="channels-loading" size="body" tone="muted">{m.loading}</Text>;
   }
   if (!channelSettings.sources.length) {
-    return <Text testID="channels-empty" size="body" tone="muted">这台 daemon 没有可以设置的消息通道。</Text>;
+    return <Text testID="channels-empty" size="body" tone="muted">{m.empty}</Text>;
   }
   return (
     <Column testID="channels-section" gap="page-section">
@@ -62,7 +66,7 @@ export function ChannelSettingsSection() {
 
 function ChannelSourceCard({ source }: { source: ChannelSourceSettingsDto }) {
   const id = source.source;
-  const status = channelStatusView(source);
+  const status = channelStatusView(source, useLocale());
   return (
     <Card testID={`channel-${id}`} rounded="xl" p="page-card" gap="card-section">
       <Row items="center" gap="side-item">
@@ -80,13 +84,14 @@ function ChannelSourceCard({ source }: { source: ChannelSourceSettingsDto }) {
 }
 
 function MissingScopes({ id, scopes }: { id: string; scopes: readonly string[] }) {
+  const m = useMessages(channelsMessages);
   return (
     <Card testID={`channel-${id}-missing-scopes`} tone="warning" rounded="lg" px="inset-x" py="inset-y" gap="card-row">
-      <Text size="label" weight="semibold">令牌缺这些权限：</Text>
+      <Text size="label" weight="semibold">{m.missingScopesTitle}</Text>
       <Column gap="stacked-card">
         {scopes.map((scope) => <Text key={scope} size="code" mono>{`· ${scope}`}</Text>)}
       </Column>
-      <Text size="secondary" tone="secondary">给应用加上这些权限并重新安装，再保存新的令牌。</Text>
+      <Text size="secondary" tone="secondary">{m.missingScopesHelp}</Text>
     </Card>
   );
 }
@@ -94,15 +99,16 @@ function MissingScopes({ id, scopes }: { id: string; scopes: readonly string[] }
 // 不是这台 Mac 的网页：只显示状态，不给输入框和按钮。
 function ReadOnlySecrets({ source }: { source: ChannelSourceSettingsDto }) {
   const leadName = useLeadName();
+  const locale = useLocale();
   return (
     <Column gap="card-row">
       {source.secrets.map((secret) => (
         <Row key={secret.name} testID={`channel-${source.source}-secret-${secret.name}`} items="center" gap="inline-item">
           <Text flex={1} minW={0} size="label" weight="semibold" numberOfLines={1}>{secret.label}</Text>
-          <Text size="label" tone={secret.present ? 'success-dark' : 'muted'}>{secretStateText(secret)}</Text>
+          <Text size="label" tone={secret.present ? 'success-dark' : 'muted'}>{secretStateText(secret, locale)}</Text>
         </Row>
       ))}
-      <Text testID={`channel-${source.source}-read-only`} size="secondary" tone="secondary">{readOnlyNote(leadName)}</Text>
+      <Text testID={`channel-${source.source}-read-only`} size="secondary" tone="secondary">{readOnlyNote(leadName, locale)}</Text>
     </Column>
   );
 }
@@ -113,17 +119,19 @@ type Message = { text: string; error: boolean };
 function SecretsForm({ source }: { source: ChannelSourceSettingsDto }) {
   const runtime = useCompanionRuntime();
   const leadName = useLeadName();
+  const locale = useLocale();
+  const m = channelsMessages(locale);
   const id = source.source;
   const { form, setForm, field } = useServerForm<SecretForm>(emptySecretForm(source));
   const [pending, setPending] = useState<Pending>(null);
   const [message, setMessage] = useState<Message | null>(null);
   const [checks, setChecks] = useState<ChannelSecretsTestResult | null>(null);
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
-  const notes = externalSecretNotes(source);
+  const notes = externalSecretNotes(source, locale);
 
   // 填好的密钥，或者要先改的地方（不发请求）。
   const prepare = (): Record<string, string> | null => {
-    const request = secretRequest(source, form);
+    const request = secretRequest(source, form, locale);
     if ('problem' in request) {
       setChecks(null);
       setMessage({ text: request.problem, error: true });
@@ -140,9 +148,9 @@ function SecretsForm({ source }: { source: ChannelSourceSettingsDto }) {
     runtime.testChannelSecrets(id, secrets)
       .then((result) => {
         setChecks(result);
-        setMessage({ text: testSummary(result), error: !result.ok });
+        setMessage({ text: testSummary(result, locale), error: !result.ok });
       })
-      .catch((reason: unknown) => setMessage({ text: channelErrorText(reason, leadName), error: true }))
+      .catch((reason: unknown) => setMessage({ text: channelErrorText(reason, leadName, locale), error: true }))
       .finally(() => setPending(null));
   };
   // daemon 先试，全部检查通过才保存并重连。没通过时显示每项检查，输入框留着，改了再存。
@@ -155,15 +163,15 @@ function SecretsForm({ source }: { source: ChannelSourceSettingsDto }) {
     runtime.saveChannelSecrets(id, secrets)
       .then(() => {
         setForm((current) => Object.fromEntries(Object.keys(current).map((name) => [name, ''])));
-        setMessage({ text: SAVED_NOTE, error: false });
+        setMessage({ text: m.saved, error: false });
       })
       .catch((reason: unknown) => {
         if (reason instanceof ChannelSecretsRejectedError) {
           setChecks(reason.result);
-          setMessage({ text: SAVE_REJECTED_NOTE, error: true });
+          setMessage({ text: m.saveRejected, error: true });
           return;
         }
-        setMessage({ text: channelErrorText(reason, leadName), error: true });
+        setMessage({ text: channelErrorText(reason, leadName, locale), error: true });
       })
       .finally(() => setPending(null));
   };
@@ -173,8 +181,8 @@ function SecretsForm({ source }: { source: ChannelSourceSettingsDto }) {
     setMessage(null);
     setChecks(null);
     runtime.clearChannelSecrets(id)
-      .then(() => setMessage({ text: DISCONNECTED_NOTE, error: false }))
-      .catch((reason: unknown) => setMessage({ text: channelErrorText(reason, leadName), error: true }))
+      .then(() => setMessage({ text: m.disconnected, error: false }))
+      .catch((reason: unknown) => setMessage({ text: channelErrorText(reason, leadName, locale), error: true }))
       .finally(() => setPending(null));
   };
 
@@ -184,17 +192,17 @@ function SecretsForm({ source }: { source: ChannelSourceSettingsDto }) {
         <SecretField key={secret.name} sourceId={id} secret={secret} value={form[secret.name] ?? ''} onChange={field(secret.name)} />
       ))}
       <Row items="center" gap="actions" flexWrap="wrap">
-        <Button testID={`channel-${id}-test`} label="测试" variant="outline" tone="neutral" size="sm" disabled={pending !== null} onPress={test} />
-        <Button testID={`channel-${id}-save`} label="保存" size="sm" disabled={pending !== null} onPress={save} />
+        <Button testID={`channel-${id}-test`} label={m.test} variant="outline" tone="neutral" size="sm" disabled={pending !== null} onPress={test} />
+        <Button testID={`channel-${id}-save`} label={m.save} size="sm" disabled={pending !== null} onPress={save} />
         {canDisconnect(source) && !confirmDisconnect ? (
-          <Button testID={`channel-${id}-disconnect-start`} label="断开" variant="ghost" tone="danger" size="sm" disabled={pending !== null} onPress={() => setConfirmDisconnect(true)} />
+          <Button testID={`channel-${id}-disconnect-start`} label={m.disconnect} variant="ghost" tone="danger" size="sm" disabled={pending !== null} onPress={() => setConfirmDisconnect(true)} />
         ) : null}
       </Row>
       {canDisconnect(source) && confirmDisconnect ? (
         <Row testID={`channel-${id}-disconnect-confirm`} items="center" gap="actions" flexWrap="wrap">
-          <Text size="body" tone="secondary">{DISCONNECT_CONFIRM_NOTE}</Text>
-          <Button testID={`channel-${id}-disconnect`} label="断开" variant="outline" tone="danger" size="sm" disabled={pending !== null} onPress={disconnect} />
-          <Button label="取消" variant="ghost" tone="neutral" size="sm" onPress={() => setConfirmDisconnect(false)} />
+          <Text size="body" tone="secondary">{m.disconnectConfirm}</Text>
+          <Button testID={`channel-${id}-disconnect`} label={m.disconnect} variant="outline" tone="danger" size="sm" disabled={pending !== null} onPress={disconnect} />
+          <Button label={m.cancel} variant="ghost" tone="neutral" size="sm" onPress={() => setConfirmDisconnect(false)} />
         </Row>
       ) : null}
       {message ? <Text testID={`channel-${id}-message`} size="note" tone={message.error ? 'danger-dark' : 'secondary'}>{message.text}</Text> : null}
@@ -220,12 +228,13 @@ function SecretField({ sourceId, secret, value, onChange }: {
   value: string;
   onChange: (value: string) => void;
 }) {
+  const locale = useLocale();
   return (
     <Column testID={`channel-${sourceId}-secret-${secret.name}`} gap="field">
       <Row items="center" gap="inline-item" flexWrap="wrap">
         <Text size="label" weight="semibold">{secret.label}</Text>
         <Text size="code" mono tone="muted">{secret.name}</Text>
-        <Text flex={1} minW={0} size="label" align="right" tone={secret.present ? 'success-dark' : 'muted'}>{secretStateText(secret)}</Text>
+        <Text flex={1} minW={0} size="label" align="right" tone={secret.present ? 'success-dark' : 'muted'}>{secretStateText(secret, locale)}</Text>
       </Row>
       {secret.hint ? <Text size="note" tone="secondary">{secret.hint}</Text> : null}
       <TextField
@@ -233,7 +242,7 @@ function SecretField({ sourceId, secret, value, onChange }: {
         accessibilityLabel={secret.label}
         value={value}
         onChangeText={onChange}
-        placeholder={secretPlaceholder(secret)}
+        placeholder={secretPlaceholder(secret, locale)}
         variant="filled"
         size="sm"
         mono
@@ -248,6 +257,7 @@ function SecretField({ sourceId, secret, value, onChange }: {
 }
 
 function CheckList({ id, result }: { id: string; result: ChannelSecretsTestResult }) {
+  const m = useMessages(channelsMessages);
   return (
     <Column testID={`channel-${id}-checks`} gap="stacked-card">
       {checkRows(result).map((row) => (
@@ -262,7 +272,7 @@ function CheckList({ id, result }: { id: string; result: ChannelSecretsTestResul
       ))}
       {result.missingScopes.length ? (
         <Text testID={`channel-${id}-check-missing-scopes`} size="note" tone="danger-dark">
-          {`缺的权限：${result.missingScopes.join('、')}`}
+          {m.missingScopes(result.missingScopes)}
         </Text>
       ) : null}
     </Column>
@@ -271,6 +281,7 @@ function CheckList({ id, result }: { id: string; result: ChannelSecretsTestResul
 
 // 建应用：建应用的网页，和可以展开、复制的应用清单。
 function AppSetup({ source }: { source: ChannelSourceSettingsDto }) {
+  const m = useMessages(channelsMessages);
   const id = source.source;
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -288,19 +299,19 @@ function AppSetup({ source }: { source: ChannelSourceSettingsDto }) {
   };
   return (
     <Column testID={`channel-${id}-app`} gap="card-row" pt="page-card" borderTopWidth={1} borderTopColor="border-soft">
-      <Text size="eyebrow" weight="bold" tone="secondary">建应用</Text>
+      <Text size="eyebrow" weight="bold" tone="secondary">{m.appSetup}</Text>
       {source.setupUrl ? (
         <Text size="secondary" tone="secondary">
-          {'在 '}
+          {m.setupBefore}
           <Link testID={`channel-${id}-setup-url`} href={source.setupUrl} size="secondary">{source.setupUrl}</Link>
-          {manifest ? ' 用下面的清单建应用，再把生成的令牌填在上面。' : ' 建应用，再把生成的令牌填在上面。'}
+          {manifest ? m.setupAfterManifest : m.setupAfter}
         </Text>
       ) : null}
       {manifest ? (
         <Row items="center" gap="actions" flexWrap="wrap">
           <Button
             testID={`channel-${id}-manifest-toggle`}
-            label={open ? '收起清单' : '查看清单'}
+            label={open ? m.hideManifest : m.showManifest}
             icon={open ? 'chevron-up' : 'chevron-down'}
             variant="outline"
             tone="neutral"
@@ -308,7 +319,7 @@ function AppSetup({ source }: { source: ChannelSourceSettingsDto }) {
             onPress={() => setOpen((value) => !value)}
           />
           {canCopyText ? (
-            <Button testID={`channel-${id}-manifest-copy`} label={copied ? '已复制' : '复制'} icon={copied ? 'check' : 'copy'} variant="ghost" tone="neutral" size="sm" onPress={() => void copy()} />
+            <Button testID={`channel-${id}-manifest-copy`} label={copied ? m.copied : m.copy} icon={copied ? 'check' : 'copy'} variant="ghost" tone="neutral" size="sm" onPress={() => void copy()} />
           ) : null}
         </Row>
       ) : null}

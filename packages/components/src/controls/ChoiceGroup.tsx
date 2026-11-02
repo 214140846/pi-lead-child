@@ -2,6 +2,8 @@ import { Badge } from '../display/Badge';
 import { Pressable } from '../primitives/Pressable';
 import { Box, Column, Row } from '../primitives/layout';
 import { Text } from '../primitives/Text';
+import { useMessages } from '../i18n';
+import { controlsMessages } from './controls.messages';
 
 export type ChoiceOption = {
   id: string;
@@ -35,9 +37,11 @@ export type ChoiceGroupProps = {
 
 // 一组互斥的选项。组件不存选中状态：value 和 onSelect 由调用方管。
 export function ChoiceGroup({
-  options, variant = 'cards', value = null, recommended, recommendedLabel = '推荐', onSelect, disabled = false,
+  options, variant = 'cards', value = null, recommended, recommendedLabel: recommendedLabelProp, onSelect, disabled = false,
   accessibilityLabel, testID, optionTestID,
 }: ChoiceGroupProps) {
+  const m = useMessages(controlsMessages);
+  const recommendedLabel = recommendedLabelProp ?? m.recommended;
   if (variant === 'radio') {
     return (
       <Column testID={testID} role="radiogroup" aria-label={accessibilityLabel} gap="stacked-card">

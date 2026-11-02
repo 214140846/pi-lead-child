@@ -9,7 +9,9 @@ import { DetailEmpty, SectionHeader } from './TicketDetailLayout';
 import { TicketHistorySections } from './TicketHistorySections';
 import type { TicketThreadProps } from './TicketThread';
 import { buildEvidencePresentation } from './ticketEvidence';
+import { ticketRecordsMessages } from './ticketRecords.messages';
 import { buildTicketDetailPresentation } from '@/features/workspace/model';
+import { useLocale, useMessages } from '@/i18n';
 
 export type TicketRecordsTab = 'evidence' | 'progress' | 'runs' | 'lifecycle' | 'artifacts';
 
@@ -54,35 +56,38 @@ export function TicketRecords({
   onClose,
   variant,
 }: TicketRecordsProps) {
+  const locale = useLocale();
+  const m = useMessages(ticketRecordsMessages);
   const [tab, setTab] = useState<TicketRecordsTab>('evidence');
-  const evidence = buildEvidencePresentation(pow, outcome);
+  const evidence = buildEvidencePresentation(pow, outcome, locale);
   // 产物的空状态（还在读、不支持、没有）和以前的产物页签同一个说法。
   const artifactState = buildTicketDetailPresentation(ticket, {
     timing: { elapsedMs: ticket.elapsedMs },
     artifactCapability,
     artifactCount: artifacts.length,
+    locale,
   }).artifactState;
   const ticketDisplayId = ticket.displayId ?? ticket.id;
   const options: { value: TicketRecordsTab; label: string }[] = [
-    { value: 'evidence', label: evidence.needsAttention ? '验收 !' : '验收' },
-    { value: 'progress', label: checkpoints.length > 0 ? `进展 ${checkpoints.length}` : '进展' },
+    { value: 'evidence', label: m.tabs.evidence(evidence.needsAttention) },
+    { value: 'progress', label: m.tabs.progress(checkpoints.length) },
     { value: 'runs', label: attempts.length > 0 ? `Run ${attempts.length}` : 'Run' },
-    { value: 'lifecycle', label: '生命周期' },
-    { value: 'artifacts', label: artifacts.length > 0 ? `产物 ${artifacts.length}` : '产物' },
+    { value: 'lifecycle', label: m.tabs.lifecycle },
+    { value: 'artifacts', label: m.tabs.artifacts(artifacts.length) },
   ];
   return (
     <Column testID="ticket-records" flex={1} minW={0} minH={0} bg="surface">
       <Column px="page-x" pt="card" pb="card" gap="card-row" borderBottomWidth={1} borderBottomColor="border-soft">
         <Row items="center" gap="inline-item">
           <Button
-            label={variant === 'page' ? '收起' : '返回概览'}
+            label={variant === 'page' ? m.collapse : m.backToOverview}
             onPress={onClose}
             testID="ticket-records-close"
             variant="outline"
             tone="neutral"
             size="xs"
           />
-          <Text size="section-title" weight="extrabold">证据与记录</Text>
+          <Text size="section-title" weight="extrabold">{m.title}</Text>
           {variant === 'page' ? (
             <Row flex={1} minW={0} items="center" gap="inline-item">
               <Text size="meta" mono weight="bold" tone="strong">{`#${ticketDisplayId}`}</Text>
@@ -135,17 +140,17 @@ export function TicketRecords({
               />
               <Column gap="card-section">
                 <SectionHeader
-                  title="运行日志"
+                  title={m.runLogs}
                   count={[
-                    logRuns.length > 1 ? `${logRuns.length} 次 Run` : null,
-                    pow && pow.metrics.toolOperationCount > 0 ? `${pow.metrics.toolOperationCount} 次工具调用` : null,
+                    logRuns.length > 1 ? m.runCount(logRuns.length) : null,
+                    pow && pow.metrics.toolOperationCount > 0 ? m.toolCalls(pow.metrics.toolOperationCount) : null,
                   ].filter(Boolean).join(' · ')}
                 />
                 {logRuns.length > 1
                   ? <RunLogGroups runs={logRuns} />
                   : logs.length > 0
                     ? <LogTimeline items={logs} />
-                    : <DetailEmpty title="还没有日志" body="Run 的工具调用和事件到达后会显示在这里。" icon="document" />}
+                    : <DetailEmpty title={m.noLogs} body={m.noLogsBody} icon="document" />}
               </Column>
             </Column>
           ) : null}

@@ -16,18 +16,19 @@
 // 推送：LeadActivityPublisher 比较前后两份投影，变了的卡和横幅用 snapshot.required（resource=lead-activity）推出去，
 // payload 带 entityKey、entityVersion 和变化后的卡片。只发给声明了 include=lead_activity 的连接（protocol 的 gatewayEventOptIn）。
 import {
-  DEFAULT_LEAD_NAME, EVENT_ACKNOWLEDGED_KIND, OWNER_ACTION_PERFORMED_KIND, ownerActionDefinition, LEAD_ACTIVITY_DISPOSITIONS, LEAD_ACTIVITY_LIMITS, LEAD_ACTIVITY_RESOURCE, LEAD_TURN_RESPONDING_KIND,
+  DEFAULT_LEAD_NAME, DEFAULT_LOCALE, type Locale, EVENT_ACKNOWLEDGED_KIND, OWNER_ACTION_PERFORMED_KIND, ownerActionDefinition, LEAD_ACTIVITY_DISPOSITIONS, LEAD_ACTIVITY_LIMITS, LEAD_ACTIVITY_RESOURCE, LEAD_TURN_RESPONDING_KIND,
   leadInterruptOpen, REMINDER_PUSHED_KIND, REMINDER_UNACKNOWLEDGED_KIND,
   type LeadActivityBasis, type LeadActivityCard, type LeadActivityNote, type LeadActivityOwnerAction, type LeadActivityView, type LeadInterrupt,
   type ReminderCard, type TriageBasis,
   SETUP_CHECKLIST_KEY, type SetupChecklistCard, type SetupHintCard,
 } from "@pi-lead-child/protocol";
 import {
-  findInterruptAck, getEvent, latestCorrelatedEvent, latestEntityEvent, leadDisplayName, listInterruptEvents, listLeadActivityEvents, listReminderFires,
+  findInterruptAck, getEvent, getLocale, latestCorrelatedEvent, latestEntityEvent, leadDisplayName, listInterruptEvents, listLeadActivityEvents, listReminderFires,
   maxEventSeq, reminderFireState, loadSetupChecklist, loadSetupHints, loadSetupStatus,
   type Db, type EventRecord, type PublishGatewayEventInput,
 } from "@pi-lead-child/store";
 import { leadActivityCardAction } from "@pi-lead-child/engine";
+import { leadActivityMessages } from "./lead-activity.messages.js";
 
 // 同一个对象的事件隔多久算新的一段。
 export const EPISODE_GAP_MS = 2 * 3_600_000;
@@ -74,34 +75,25 @@ function ticketIdOfKey(key: string): number | null {
   return match ? Number(match[1]) : null;
 }
 
-const OP_LABELS: Record<string, string> = {
-  create: "新增", update: "修改", disable: "停用", enable: "启用", rollback: "回滚",
-};
-const TIER_LABELS: Record<string, (leadName: string) => string> = {
-  conservative: (leadName) => `${leadName} 改得更保守，直接生效`,
-  permissive: (leadName) => `你批准了 ${leadName} 的修改`,
-  user: () => "你改的",
-};
-
-/** 一条事件对用户说的那一句话。leadName 是 Lead 的名字（设置 → 身份与风格）。 */
+/** 一条事件对用户说的那一句话。leadName 是 Lead 的名字（设置 → 身份与风格），locale 是用户现在选的语言。 */
 export function leadActivityEventSummary(
-  event: Pick<EventRecord, "kind" | "payload" | "rootCause">, leadName: string = DEFAULT_LEAD_NAME,
+  event: Pick<EventRecord, "kind" | "payload" | "rootCause">, leadName: string = DEFAULT_LEAD_NAME, locale: Locale = DEFAULT_LOCALE,
 ): string {
   const payload = event.payload;
+  const m = leadActivityMessages(locale);
   if (event.kind === "standing_order.changed") {
     const title = textOf(payload.title) ?? String(payload.orderId ?? "");
     const previous = idOf(payload.previousVersion);
     const version = idOf(payload.version);
     const versions = version === null ? "" : previous === null ? `v${version}` : `v${previous}→v${version}`;
-    const op = OP_LABELS[String(payload.change)] ?? "修改";
-    const tier = TIER_LABELS[String(payload.tier)]?.(leadName);
+    const op = m.op(String(payload.change));
+    const tier = m.tier(String(payload.tier), leadName);
     // 10 写的说明以「修改常设指令 <编号>「<标题>」」开头，和前面重复，去掉这一段，只留改了什么。
     const parts = (textOf(payload.summary) ?? "").split("；");
     const details = (parts[0]?.includes(`「${title}」`) ? parts.slice(1) : parts).join("；").trim();
     const reason = textOf(payload.reason);
     // 两行里先放最要紧的：哪条指令、哪一版、谁改的、为什么；改了什么放在后面。
-    return clip(`常设指令「${title}」${op}${versions ? ` ${versions}` : ""}${tier ? `（${tier}）` : ""}`
-      + `${reason ? `。原因：${reason}` : ""}${details ? `。${details}` : ""}`);
+    return clip(m.standingOrder(title, op, versions, tier, reason ?? null, details));
   }
   if (event.kind === "notification.created") {
     const body = textOf(payload.body);
@@ -109,11 +101,11 @@ export function leadActivityEventSummary(
   }
   if (event.kind === "timer.fired") {
     return payload.timer === "reminder"
-      ? clip(`提醒「${String(payload.title ?? "")}」到点`)
-      : clip(`跟进到点${textOf(payload.note) ? `：${textOf(payload.note)}` : ""}`);
+      ? clip(m.reminderFired(String(payload.title ?? "")))
+      : clip(m.followUpFired(textOf(payload.note) ?? null));
   }
   if (event.kind === "system.event_rejected") {
-    return clip(`一条事件没有写成（${String(payload.rejectedKind ?? "未知类型")}）：${String(payload.error ?? "")}`);
+    return clip(m.eventRejected(String(payload.rejectedKind ?? m.unknownKind), String(payload.error ?? "")));
   }
   const summary = textOf(payload.summary) ?? textOf(payload.title) ?? textOf(payload.note);
   if (summary) return clip(summary);
@@ -155,7 +147,7 @@ function laterOf(left: string, right: string | null): string {
   return Date.parse(right) > Date.parse(left) ? right : left;
 }
 
-function eventCard(events: readonly EventRecord[], leadName: string): LeadActivityCard {
+function eventCard(events: readonly EventRecord[], leadName: string, locale: Locale): LeadActivityCard {
   const first = events[0]!;
   const latest = events.at(-1)!;
   const entityKey = leadActivityObjectKey(first);
@@ -178,18 +170,20 @@ function eventCard(events: readonly EventRecord[], leadName: string): LeadActivi
     ticketId: ticketIdOfKey(entityKey),
     kind,
     state,
-    summary: leadActivityEventSummary(latest, leadName),
+    summary: leadActivityEventSummary(latest, leadName, locale),
     count: events.length,
     basis: leadActivityBasis(latest.triage),
     lead,
     entries: events.slice(-LEAD_ACTIVITY_LIMITS.entries).map((event) => ({
-      seq: event.seq, at: event.occurredAt, kind: event.kind, level: event.level, summary: leadActivityEventSummary(event, leadName),
+      seq: event.seq, at: event.occurredAt, kind: event.kind, level: event.level, summary: leadActivityEventSummary(event, leadName, locale),
     })),
   };
 }
 
 /** 按对象分段：同一个对象的事件，和上一条隔不到 EPISODE_GAP_MS 的，合进同一张卡。事件按 seq 从旧到新给。 */
-export function groupLeadActivityCards(events: readonly EventRecord[], leadName: string = DEFAULT_LEAD_NAME): LeadActivityCard[] {
+export function groupLeadActivityCards(
+  events: readonly EventRecord[], leadName: string = DEFAULT_LEAD_NAME, locale: Locale = DEFAULT_LOCALE,
+): LeadActivityCard[] {
   const open = new Map<string, EventRecord[]>();
   const episodes: EventRecord[][] = [];
   for (const event of events) {
@@ -204,7 +198,7 @@ export function groupLeadActivityCards(events: readonly EventRecord[], leadName:
     open.set(key, episode);
     episodes.push(episode);
   }
-  return episodes.map((episode) => eventCard(episode, leadName));
+  return episodes.map((episode) => eventCard(episode, leadName, locale));
 }
 
 // Lead 在 inbox 行上记的处置（方案 A 的「Lead 动态」）：这一行的事件不在事件卡里时，一行一张卡。
@@ -259,7 +253,7 @@ export function leadInterruptOf(db: Db, event: EventRecord): LeadInterrupt {
     at: event.occurredAt,
     ticketId: ticketIdOfKey(leadActivityObjectKey(event)),
     kind: event.kind,
-    summary: leadActivityEventSummary(event, leadDisplayName(db)),
+    summary: leadActivityEventSummary(event, leadDisplayName(db), getLocale(db)),
     rootCause: event.rootCause ? { code: event.rootCause.code, ...(message ? { message: clip(message) } : {}) } : null,
     basis: leadActivityBasis(event.triage),
     acknowledgedAt: ack ? ack.occurredAt : null,
@@ -328,7 +322,7 @@ export function buildLeadActivityView(db: Db, options: LeadActivityViewOptions =
     const watermark = maxEventSeq(db);
     const afterSeq = Math.max(0, watermark - SCAN_WINDOW);
     const events = listLeadActivityEvents(db, { afterSeq, limit: DISPLAY_EVENT_LIMIT });
-    const eventCards = groupLeadActivityCards(events, leadDisplayName(db));
+    const eventCards = groupLeadActivityCards(events, leadDisplayName(db), getLocale(db));
     const covered = new Set(events.flatMap((event) => {
       const match = INBOX_CORRELATION.exec(event.correlationId ?? "");
       return match ? [Number(match[1])] : [];
@@ -368,6 +362,7 @@ export function setupChecklistCardOf(db: Db): SetupChecklistCard | null {
 /** 建议卡，旧的在前。还没处理、这一项后来配好了的，状态是 ready；只有 open 的卡带「以后再说」「不用再提」。 */
 export function setupHintCardsOf(db: Db): SetupHintCard[] {
   const status = loadSetupStatus(db);
+  const m = leadActivityMessages(getLocale(db));
   return loadSetupHints(db).cards.map((hint) => {
     const ready = hint.state === "open" && status?.items.find((item) => item.key === hint.item)?.ready === true;
     const updatedAt = ready && status && Date.parse(status.changedAt) > Date.parse(hint.updatedAt) ? status.changedAt : hint.updatedAt;
@@ -377,7 +372,7 @@ export function setupHintCardsOf(db: Db): SetupHintCard[] {
       at: hint.at, updatedAt, hintId: hint.id, item: hint.item,
       state: ready ? "ready" : hint.state,
       actions: hint.state === "open" && !ready
-        ? [{ target, action: "snooze", label: "以后再说" }, { target, action: "dismiss", label: "不用再提" }]
+        ? [{ target, action: "snooze", label: m.snooze }, { target, action: "dismiss", label: m.dismiss }]
         : [],
     };
   });

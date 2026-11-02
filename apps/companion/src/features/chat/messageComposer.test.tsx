@@ -92,7 +92,7 @@ describe('the message composer', () => {
   it('sends on Enter, puts a newline on Shift+Enter, and leaves the Enter that confirms a candidate alone', () => {
     const { sendChat } = setup();
     expect(input().tagName).toBe('TEXTAREA');
-    expect(input().placeholder).toBe('给 Paimon 发消息');
+    expect(input().placeholder).toBe('Message Paimon');
     type('第一行');
     enter({ shiftKey: true });
     enter({ isComposing: true });
@@ -124,7 +124,7 @@ describe('the message composer', () => {
 
     fireEvent.click(screen.getByTestId('composer-image-0-remove'));
     expect(thumbnails()).toHaveLength(1);
-    expect(screen.getByTestId('composer-image-0').getAttribute('aria-label')).toBe('图片 1');
+    expect(screen.getByTestId('composer-image-0').getAttribute('aria-label')).toBe('Image 1');
 
     type('看这张');
     enter();
@@ -152,7 +152,7 @@ describe('the message composer', () => {
     setup();
     await paste(Array.from({ length: 9 }, (_, index) => png(`${index}.png`)));
     await waitFor(() => expect(thumbnails()).toHaveLength(8));
-    expect(screen.getByTestId('composer-notice').textContent).toBe('一条消息最多带 8 张图片，多出来的没有加上');
+    expect(screen.getByTestId('composer-notice').textContent).toBe('A message can have at most 8 images. The extra images were not added.');
 
     fireEvent.click(screen.getByTestId('composer-image-0-remove'));
     await paste([png('broken.png')]);

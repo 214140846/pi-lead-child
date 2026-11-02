@@ -8,6 +8,7 @@ import { tempDir } from "@pi-lead-child/core/testing";
 import { CHANNEL_HANDBOOK_DEFAULTS, type ChannelHandbook } from "@pi-lead-child/protocol";
 import { channelHandbook, getStandingOrder, listStandingOrderVersions, openDb, type Db } from "@pi-lead-child/store";
 import { runUiAction, UiActionError } from "../src/index.js";
+import { updateDesignPreferences } from "../src/design-preferences.js";
 
 let db: Db;
 
@@ -53,7 +54,11 @@ describe("the channel_handbook actions", () => {
     expect(same.result).toMatchObject({ unchanged: true });
     const noFallback = { ...CHANNEL_HANDBOOK_DEFAULTS, situations: CHANNEL_HANDBOOK_DEFAULTS.situations.filter((item) => item.id !== "other") };
     await expect(runUiAction(db, { target, action: "update", input: noFallback, caller: { kind: "user" } }))
-      .rejects.toMatchObject({ code: "invalid_input" });
+      .rejects.toMatchObject({ code: "invalid_input", message: "The fallback sentence (other) is missing." });
+    // 设置页直接显示这句话：按用户选的语言写。
+    updateDesignPreferences(db, { request: { locale: "zh" }, caller: { kind: "user" } });
+    await expect(runUiAction(db, { target, action: "update", input: noFallback, caller: { kind: "user" } }))
+      .rejects.toMatchObject({ code: "invalid_input", message: "缺少兜底的一句（other）" });
     expect(listStandingOrderVersions(db, "channel.handbook")).toHaveLength(1);
   });
 

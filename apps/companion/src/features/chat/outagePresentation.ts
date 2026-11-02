@@ -8,7 +8,10 @@ import {
   userFacingBacklogText, type LeadModelFailureKind,
 } from '@pi-lead-child/protocol';
 
+import type { Locale } from '@/i18n';
+
 import { leadNameNow } from '../../state/leadName';
+import { conversationMessages } from './conversation.messages';
 
 export type OutagePresentation = {
   headline: string;
@@ -16,6 +19,7 @@ export type OutagePresentation = {
   lines: string[];
 };
 
+// 旧版 daemon 写的标题，认原文（不是界面文字）。
 const OLD_HEADLINE = /^Lead 现在不可用：(.*?)。积压了 (\d+) 件事：?$/u;
 
 export function presentOutage(input: {
@@ -24,13 +28,14 @@ export function presentOutage(input: {
   // 停摆以后第一次成功的 Lead 回答。没有就是还没恢复。
   recoveredAt: string | null;
   clock: (value: string) => string;
+  locale: Locale;
 }): OutagePresentation {
-  const { notices, failures, recoveredAt, clock } = input;
+  const { notices, failures, recoveredAt, clock, locale } = input;
   // 称呼 Lead 用它的名字（设置 → 身份与风格）。daemon 写的标题里已经是写下时的名字。
   const name = leadNameNow();
   const failureKinds = failures.map((failure) => classifyLeadModelError(failure.raw));
   const failureLine = failures.length
-    ? [`期间 ${name} 有 ${failures.length} 次自动处理没有完成（${leadModelFailureReason(dominantKind(failureKinds), name)}）`]
+    ? [conversationMessages(locale).outage.failures(name, failures.length, leadModelFailureReason(dominantKind(failureKinds), name, locale))]
     : [];
   const latest = notices.at(-1);
   const latestLines = (latest?.text ?? '').replace(/^⏰\s*/u, '').split('\n').map((line) => line.trim()).filter(Boolean);
@@ -50,7 +55,7 @@ export function presentOutage(input: {
     if (parsed) reason = parsed[1] ?? reason;
     // 认不出的格式：开头一行也是一件事，不丢。
     for (const line of parsed ? rest : [head, ...rest]) {
-      const text = userFacingBacklogText(line.replace(/^\d+\.\s*/u, ''), name);
+      const text = userFacingBacklogText(line.replace(/^\d+\.\s*/u, ''), name, locale);
       if (text && !items.includes(text)) items.push(text);
     }
   }
@@ -62,11 +67,12 @@ export function presentOutage(input: {
     headline: leadOutageHeadline({
       start: clock(start),
       end: recoveredAt ? clock(recoveredAt) : null,
-      cause: leadOutageCause(kind),
+      cause: leadOutageCause(kind, locale),
       pending: items.length,
       resumed: false,
       durationMs: recoveredAt && start ? Date.parse(recoveredAt) - Date.parse(start) : null,
       name,
+      locale,
     }),
     lines: [...items, ...failureLine],
   };

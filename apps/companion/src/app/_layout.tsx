@@ -1,12 +1,11 @@
-import { ActivityBoundary, DesignPreferencesProvider, palette, UIProvider, useUIFonts } from '@pi-lead-child/components';
-import type { PropsWithChildren } from 'react';
+import { ActivityBoundary, palette, UIProvider, useUIFonts } from '@pi-lead-child/components';
 import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect } from 'react';
 
+import { DesignPreferencesBridge } from '@/components/DesignPreferencesBridge';
 import { CompanionStateProvider } from '@/state/CompanionStateProvider';
-import { useDesignPreferences } from '@/state/hooks';
 
 void SplashScreen.preventAutoHideAsync();
 
@@ -40,10 +39,4 @@ export default function RootLayout() {
       </CompanionStateProvider>
     </UIProvider>
   );
-}
-
-// 外观偏好（设置 → 外观）从 daemon 取到后交给组件库：密度、字号、行高、圆角、颜色都按它画。没取到时用缺省值。
-function DesignPreferencesBridge({ children }: PropsWithChildren) {
-  const { designPreferences } = useDesignPreferences();
-  return <DesignPreferencesProvider value={designPreferences}>{children}</DesignPreferencesProvider>;
 }

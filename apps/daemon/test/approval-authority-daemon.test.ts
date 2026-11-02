@@ -7,7 +7,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { join } from "node:path";
 import { tempDir } from "@pi-lead-child/core/testing";
-import { createCoordinator } from "@pi-lead-child/engine";
+import { createCoordinator, updateDesignPreferences } from "@pi-lead-child/engine";
 import { createLeadTools } from "@pi-lead-child/lead";
 import { OWNER_ACTION_PERFORMED_KIND, UI_ACTION_PERFORMED_KIND } from "@pi-lead-child/protocol";
 import {
@@ -25,6 +25,8 @@ beforeEach(() => {
   dir = tempDir("plc-approval-authority-");
   dbPath = join(dir, "plc.db");
   db = openDb(dbPath);
+  // 这个文件的断言是中文：先把界面语言设成中文（缺省是英文）。
+  updateDesignPreferences(db, { request: { locale: "zh" }, caller: { kind: "user" } });
 });
 
 afterEach(async () => {

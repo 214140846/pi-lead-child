@@ -91,9 +91,9 @@ describe('the card when a reminder fires', () => {
     const card = within(screen.getByTestId('reminder-fire-5'));
     expect(card.getByTestId('reminder-card-5')).toBeTruthy();
     expect(card.getByTestId('reminder-card-5').textContent).toContain('抢票');
-    expect(card.getByTestId('reminder-card-fired').textContent).toBe('重要，到点了');
-    expect(card.getByTestId('reminder-card-note').textContent).toBe('08:55 提前推过 · 已推送 1 次 · 没确认 09:02 再推');
-    expect(card.getByRole('button', { name: '知道了' })).toBeTruthy();
+    expect(card.getByTestId('reminder-card-fired').textContent).toBe('Important. It is due.');
+    expect(card.getByTestId('reminder-card-note').textContent).toBe('Pushed early at 08:55 · Pushed 1 time · If not acknowledged, pushes again at 09:02');
+    expect(card.getByRole('button', { name: 'Got it' })).toBeTruthy();
   });
 
   it('updates in place, folds into one line when confirmed, and ignores an older version', () => {
@@ -101,21 +101,21 @@ describe('the card when a reminder fires', () => {
     push(runtime, { reminder: reminder() });
     push(runtime, { reminder: reminder({ entityVersion: 43, lastSeq: 43, pushes: { ...reminder().pushes, count: 2, nextAt: local(9, 4) } }) });
     expect(screen.getAllByTestId(/^reminder-fire-5$/)).toHaveLength(1);
-    expect(screen.getByTestId('reminder-card-note').textContent).toContain('已推送 2 次');
+    expect(screen.getByTestId('reminder-card-note').textContent).toContain('Pushed 2 times');
     push(runtime, { reminder: reminder({ entityVersion: 44, lastSeq: 44, state: 'acked', closedAt: local(9, 1), closedBy: 'user' }) });
-    expect(screen.getByTestId('reminder-fire-line').textContent).toBe('09:00 抢票 · 09:01 已确认');
-    expect(screen.queryByRole('button', { name: '知道了' })).toBeNull();
+    expect(screen.getByTestId('reminder-fire-line').textContent).toBe('09:00 抢票 · Acknowledged at 09:01');
+    expect(screen.queryByRole('button', { name: 'Got it' })).toBeNull();
     // 乱序到达的旧版本不让它回到「到点」。
     push(runtime, { reminder: reminder() });
-    expect(screen.getByTestId('reminder-fire-line').textContent).toBe('09:00 抢票 · 09:01 已确认');
+    expect(screen.getByTestId('reminder-fire-line').textContent).toBe('09:00 抢票 · Acknowledged at 09:01');
     push(runtime, { reminder: reminder({ entityVersion: 50, lastSeq: 50, state: 'snoozed', closedAt: local(9, 1), nextAt: local(9, 11) }) });
-    expect(screen.getByTestId('reminder-fire-line').textContent).toBe('09:00 抢票 · 改到 09:11');
+    expect(screen.getByTestId('reminder-fire-line').textContent).toBe('09:00 抢票 · Moved to 09:11');
   });
 
   it('says it stays in the tray when the pushes ran out', () => {
     const runtime = setup();
     push(runtime, { reminder: reminder({ pushes: { count: 6, planned: 6, lastAt: local(9, 10), nextAt: null, exhausted: true, earlyAt: null } }) });
-    expect(screen.getByTestId('reminder-card-note').textContent).toBe('已推送 6 次 · 还没确认，留在「待你」里');
+    expect(screen.getByTestId('reminder-card-note').textContent).toBe('Pushed 6 times · Not acknowledged. It stays in "For you".');
   });
 
   it('hangs Lead\'s own turn under the card instead of a separate bubble', () => {
@@ -150,14 +150,14 @@ describe('the card when a reminder fires', () => {
       { id: 'reschedule', label: '改时间', permission: 'lead_allowed', available: true, reason: null, irreversible: false, where: '', params: [] } as never,
     ]);
     push(runtime, { reminder: reminder() });
-    fireEvent.click(await screen.findByRole('button', { name: '知道了' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Got it' }));
     await waitFor(() => expect(performUiAction).toHaveBeenCalledWith('reminder', '5', 'ack', { input: {} }));
     expect(runTicketAction).not.toHaveBeenCalled();
     performUiAction.mockClear();
     fireEvent.click(screen.getByTestId('surface-disclosure-reminder-5-summary'));
-    fireEvent.click(await screen.findByRole('radio', { name: '10 分钟后' }));
+    fireEvent.click(await screen.findByRole('radio', { name: 'In 10 minutes' }));
     const before = Date.now();
-    fireEvent.click(screen.getByRole('button', { name: /^改到/ }));
+    fireEvent.click(screen.getByRole('button', { name: /^Move to/ }));
     await waitFor(() => expect(performUiAction).toHaveBeenCalled());
     const [type, id, action, options] = performUiAction.mock.calls[0]! as [string, string, string, { input: { remindAt: string } }];
     expect([type, id, action]).toEqual(['reminder', '5', 'reschedule']);
@@ -263,11 +263,11 @@ describe('the reminder card Lead created', () => {
   // 2026-10-27 按画布重画：卡上没有按钮，点开以后在浮层里改时间、取消（细节见 reminderCard.test.tsx）。
   it('marks it important and offers 改到… and 取消提醒 once it is opened', async () => {
     render(async () => detail('scheduled'));
-    expect(await screen.findByText('重要，到点会打断你')).toBeTruthy();
-    expect(screen.queryByRole('button', { name: '取消提醒' })).toBeNull();
+    expect(await screen.findByText('Important. It interrupts you when it is due.')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Cancel reminder' })).toBeNull();
     fireEvent.click(screen.getByTestId('surface-disclosure-reminder-5-summary'));
-    expect(await screen.findByRole('button', { name: '取消提醒' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '改到…' })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: 'Cancel reminder' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Move to…' })).toBeTruthy();
   });
 
   // 到点以后会话里另有一张到点卡（ReminderFireCard）；这张卡写「到点了」。
@@ -275,7 +275,7 @@ describe('the reminder card Lead created', () => {
   it('shows the fired state as soon as the daemon announces the reminder, without the 70 second timer', async () => {
     let current = detail('scheduled');
     const runtime = render(async () => current);
-    expect(await screen.findByText('重要，到点会打断你')).toBeTruthy();
+    expect(await screen.findByText('Important. It interrupts you when it is due.')).toBeTruthy();
     current = detail('fired');
     // 连上了 daemon（hello 带来 Lead 的会话）：之后的事件照常应用。
     act(() => runtime.handleHello({ latestSeq: 0, daemon: { sessionId: SESSION }, capabilities: [] } as never));
@@ -286,6 +286,6 @@ describe('the reminder card Lead created', () => {
         payload: { ticketId: 5, snapshotRequired: true },
       });
     });
-    expect(await screen.findByText(/到点了$/, {}, { timeout: 1_000 })).toBeTruthy();
+    expect(await screen.findByText(/(Due|It is due\.)$/, {}, { timeout: 1_000 })).toBeTruthy();
   });
 });

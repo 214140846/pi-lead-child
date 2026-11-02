@@ -9,7 +9,8 @@ import {
   RULE_CHANGE_CONFIRMATION_ID, ResolveRuleChangeConfirmationRequestSchema,
   type RuleChangeConfirmationDto, type RuleChangeDecision, type Scope,
 } from "@pi-lead-child/protocol";
-import type { Db } from "@pi-lead-child/store";
+import { getLocale, type Db } from "@pi-lead-child/store";
+import { routeMessages } from "./routes.messages.js";
 import { getRuleChangeConfirmation } from "@pi-lead-child/engine";
 
 export interface RuleChangeRouteContext {
@@ -43,7 +44,7 @@ export async function handleRuleChangeRoute(ctx: RuleChangeRouteContext): Promis
     }
     const confirmation = getRuleChangeConfirmation(ctx.db, id);
     if (!confirmation) {
-      fail(ctx, 404, "not_found", `没有确认卡 ${id}`);
+      fail(ctx, 404, "not_found", routeMessages(getLocale(ctx.db)).ruleChangeNotFound(id));
       return true;
     }
     ctx.json(200, { confirmation });

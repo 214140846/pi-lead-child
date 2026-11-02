@@ -17,6 +17,7 @@ import { ChannelSettingsResponseSchema, ChannelSourceSettingsResponseSchema, Htt
 import { createCliBinding, createLoopbackBinding, listEvents, openDb, type Db } from "@pi-lead-child/store";
 import { startDaemon } from "../src/server.js";
 import { fakePiLead } from "./fake-pi-session.js";
+import { updateDesignPreferences } from "@pi-lead-child/engine";
 
 const LOCAL_PAGE = "http://localhost:8081";
 const APP = "PLC_SLACK_APP_TOKEN";
@@ -34,6 +35,8 @@ beforeEach(() => {
   dbPath = join(dir, "plc.db");
   process.env.PLC_DATA_DIR = dir;
   db = openDb(dbPath);
+  // 这个文件的断言是中文：先把界面语言设成中文（缺省是英文）。
+  updateDesignPreferences(db, { request: { locale: "zh" }, caller: { kind: "user" } });
   logs = [];
   vi.stubEnv("PLC_NOTICE_POLL_MS", "20");
   vi.stubEnv("PLC_ALLOW_LOOPBACK_AUTO_PAIR", "1");

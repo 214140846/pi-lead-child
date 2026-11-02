@@ -100,7 +100,7 @@ describe('the inbox as an action queue', () => {
     const { client } = render();
 
     const blocked = screen.getByTestId('inbox-card-72');
-    expect(within(blocked).getByText('#72 · 需介入 · 等了 50 天')).toBeTruthy();
+    expect(within(blocked).getByText('#72 · Needs you · Waited 50 days')).toBeTruthy();
     expect(within(blocked).getByText('Run #54 交付的成果格式不合法')).toBeTruthy();
     // 阻塞的工单没有一键动作：只有「查看」。
     expect(within(blocked).queryByTestId('inbox-action-72')).toBeNull();
@@ -120,13 +120,13 @@ describe('the inbox as an action queue', () => {
     const { client } = render();
 
     const handled = screen.getByTestId('lead-handled');
-    expect(within(handled).getByText('Paimon 已处理')).toBeTruthy();
+    expect(within(handled).getByText('Handled by Paimon')).toBeTruthy();
     fireEvent.click(within(handled).getByTestId('lead-handled-inbox:120'));
     expect(within(handled).getByText('Run #64 崩溃：等网络时超时')).toBeTruthy();
     expect(within(handled).getByText('网络中断')).toBeTruthy();
     expect(within(handled).getByText('网络恢复后重派 Run #86')).toBeTruthy();
     // 「需要你」只数等你的工单。
-    expect(within(screen.getByTestId('inbox-queue')).getByText('需要你')).toBeTruthy();
+    expect(within(screen.getByTestId('inbox-queue')).getByText('Needs you')).toBeTruthy();
     expect(within(screen.getByTestId('inbox-needs-count')).getByText('2')).toBeTruthy();
     // 打开收件箱就记下「看过了」。
     expect(client.markInboxSeen).toHaveBeenCalledTimes(1);
@@ -149,7 +149,7 @@ describe('the inbox as an action queue', () => {
   // 阶段 3：卡上带最近的节点（提测 明天 18:00），一眼看出哪件事有日期压着。
   it('tags a card with the ticket\'s next milestone', () => {
     render();
-    expect(within(screen.getByTestId('inbox-card-72')).getByText('提测 明天 18:00')).toBeTruthy();
+    expect(within(screen.getByTestId('inbox-card-72')).getByText('提测 Tomorrow 18:00')).toBeTruthy();
   });
 
   // 决定 3：已触发、没有确认的提醒，30 天后从收件箱收起（它们在日程的「已过期」里）。
@@ -160,13 +160,13 @@ describe('the inbox as an action queue', () => {
       reminder(3, '2026-07-28T09:00:00.000Z'),
     ] });
     const card = screen.getByTestId('reminder-notices');
-    expect(within(card).getByText('1 条提醒没有确认')).toBeTruthy();
-    expect(within(card).getByText('另有 2 条超过 30 天，收在日程的「已过期」里')).toBeTruthy();
+    expect(within(card).getByText('1 reminder is not acknowledged')).toBeTruthy();
+    expect(within(card).getByText('2 more are older than 30 days. They are in Overdue in the agenda.')).toBeTruthy();
   });
 
   it('can reach zero', () => {
     const { runtime } = render();
     act(() => runtime.control.getState().replaceTickets([tickets[2]!]));
-    expect(screen.getByText('没有需要你的事')).toBeTruthy();
+    expect(screen.getByText('Nothing needs you')).toBeTruthy();
   });
 });

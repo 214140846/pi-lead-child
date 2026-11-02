@@ -70,7 +70,7 @@ function apply(runtime: ReturnType<typeof setup>, type: GatewayEvent['type'], pa
   });
 }
 
-const WAITING = '网络不可用，这条消息还没有得到回答。网络恢复后会自动再试一次。';
+const WAITING = 'The network is not available. This message has no answer yet. The system tries again automatically when the network is back.';
 
 describe('a user turn waiting for its one retry', () => {
   it('says it is waiting, with no resend, and becomes a normal answer when the retry works', () => {
@@ -79,7 +79,7 @@ describe('a user turn waiting for its one retry', () => {
 
     const card = screen.getByTestId('failure-card');
     expect(card.textContent).toContain(WAITING);
-    expect(within(card).queryByRole('button', { name: '重发' })).toBeNull();
+    expect(within(card).queryByRole('button', { name: 'Resend' })).toBeNull();
 
     apply(runtime, 'lead.turn.started', { messageId: 'msg_turn-1', commandId: null, originKind: 'paired:companion', mode: 'started' });
     apply(runtime, 'lead.message.completed', { messageId: 'msg_turn-1', text: '收到，我在。' });
@@ -98,7 +98,7 @@ describe('a user turn waiting for its one retry', () => {
     apply(runtime, 'lead.turn.started', { messageId: 'msg_turn-1', commandId: null, originKind: 'paired:companion', mode: 'started' });
     apply(runtime, 'notice.created', { severity: 'error', message: DNS });
     const card = screen.getByTestId('failure-card');
-    expect(card.textContent).not.toContain('自动再试');
-    expect(within(card).getByRole('button', { name: '重发' })).toBeTruthy();
+    expect(card.textContent).not.toContain('tries again automatically');
+    expect(within(card).getByRole('button', { name: 'Resend' })).toBeTruthy();
   });
 });

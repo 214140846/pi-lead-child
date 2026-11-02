@@ -61,7 +61,7 @@ describe('the current state line', () => {
       runtimeName: 'codex',
       elapsedMs: 12 * 60_000,
     };
-    expect(ticketNowLine(ticket)).toBe('Run #87 · Codex · 已 12 分钟');
+    expect(ticketNowLine(ticket)).toBe('Run #87 · Codex · 12 minutes so far');
   });
 
   it('is empty when nothing runs and there is nothing to say', () => {

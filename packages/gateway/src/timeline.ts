@@ -13,11 +13,13 @@ import {
   ticketTurn,
   type TicketSummary,
   type TimelineEntry,
+  type Locale,
   type TimelineResponse,
 } from "@pi-lead-child/protocol";
 import {
   agendaNote,
   firedOccurrences,
+  getLocale,
   listItems,
   listMilestones,
   listTriggers,
@@ -27,6 +29,7 @@ import {
   type MilestoneActor,
 } from "@pi-lead-child/store";
 import type { Item } from "@pi-lead-child/core";
+import { timelineMessages } from "./timeline.messages.js";
 
 const HOUR = 60 * 60_000;
 const DAY = 24 * HOUR;
@@ -55,18 +58,22 @@ function ticketTitle(summary: TicketSummary): string {
   return summary.displayTitle ?? summary.title;
 }
 
-function risk(summary: TicketSummary, at: string, now: Date): TimelineEntry["risk"] {
+function risk(summary: TicketSummary, at: string, now: Date, locale: Locale): TimelineEntry["risk"] {
+  const m = timelineMessages(locale);
   if (new Date(at).getTime() - now.getTime() > RISK_WINDOW_MS) return null;
   const turn = ticketTurn(summary);
   if (turn === "ended") return null;
-  if (summary.stage === "blocked") return { reason: "ticket_blocked", label: "工单还阻塞" };
-  if (turn === "user") return { reason: "ticket_needs_user", label: "工单在等你" };
-  if (turn === "queued" && !summary.hasRun) return { reason: "not_started", label: "还没开始" };
+  if (summary.stage === "blocked") return { reason: "ticket_blocked", label: m.ticketBlocked };
+  if (turn === "user") return { reason: "ticket_needs_user", label: m.ticketNeedsUser };
+  if (turn === "queued" && !summary.hasRun) return { reason: "not_started", label: m.notStarted };
   return null;
 }
 
 export function buildTimeline(db: Db, input: TimelineInput): TimelineResponse {
   const { now } = input;
+  // 风险提示和执行结果读的时候现算，按用户现在选的语言。
+  const locale = getLocale(db);
+  const m = timelineMessages(locale);
   const nowIso = now.toISOString();
   const fromIso = input.from.toISOString();
   const toIso = input.to.toISOString();
@@ -125,7 +132,7 @@ export function buildTimeline(db: Db, input: TimelineInput): TimelineResponse {
         at: iso(last?.created_at ?? milestone.updated_at) ?? milestone.updated_at,
       },
       status,
-      risk: status === "upcoming" || status === "overdue" ? risk(summary, milestone.at, now) : null,
+      risk: status === "upcoming" || status === "overdue" ? risk(summary, milestone.at, now, locale) : null,
       editable: true,
     };
   };
@@ -189,10 +196,10 @@ export function buildTimeline(db: Db, input: TimelineInput): TimelineResponse {
       risk: null,
       editable: false,
       detail: fire.status === "failed"
-        ? `失败${fire.error ? `：${fire.error}` : ""}`
+        ? m.fireFailed(fire.error)
         : fire.status === "succeeded"
-          ? fire.produced_item_id ? `已执行 · 生成 #${fire.produced_item_id}` : "已执行"
-          : "正在执行",
+          ? m.fireDone(fire.produced_item_id)
+          : m.fireRunning,
     });
   }
   const futureFrom = new Date(Math.max(input.from.getTime(), now.getTime()));

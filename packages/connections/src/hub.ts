@@ -46,6 +46,8 @@ import {
   setConnectionSettings,
   takeConnectionLease,
   updateConnection,
+  getLocale,
+  leadDisplayName,
   type ConnectionRow,
   type Db,
 } from "@pi-lead-child/store";
@@ -58,6 +60,7 @@ import {
   stricterConnectionSettings,
   type ConnectionSettings,
   type ConnectionSettingsSealState,
+  type Locale,
   type RunGrant,
 } from "@pi-lead-child/protocol";
 import type {
@@ -72,8 +75,11 @@ import type {
   StartConnectionResponse,
 } from "@pi-lead-child/protocol";
 import {
-  CATALOG, catalogEntry, knownServer, knownServerByAlias, normalizeCustomServerUrl, type CatalogEntry, type ConnectionsConfig,
+  CATALOG, capabilityText, catalogEntry, knownServer, knownServerByAlias, normalizeCustomServerUrl, unavailableText,
+  type CatalogEntry, type ConnectionsConfig,
 } from "./catalog.js";
+import { githubMessages } from "./github.messages.js";
+import { hubMessages } from "./hub.messages.js";
 import {
   authorizeUrl,
   createPkce,
@@ -120,8 +126,14 @@ export type ConnectionErrorCode =
 
 // relaxWritePolicyOnce 做过的标记（kv）。
 const WRITE_POLICY_RELAXED_KEY = "connection.write_policy_relaxed_2026_10_28";
+// 守卫拒绝时，next 是调用方下一步能做的事。为空时调用方按 code 给通用的下一步。
+const GUARD_REFUSAL_NEXT = "这是 plc 守卫的规则，设置里改不了，换 token 也一样。按 message 里的原因补上缺的条件再试；"
+  + "补不上就把原因告诉用户，不要绕过守卫。";
+
 export class ConnectionError extends Error {
-  constructor(readonly code: ConnectionErrorCode, message: string, readonly key: string | null = null) {
+  constructor(
+    readonly code: ConnectionErrorCode, message: string, readonly key: string | null = null, readonly next: string | null = null,
+  ) {
     super(message);
   }
 }
@@ -417,6 +429,15 @@ export class ConnectionHub {
     this.#clients.clear();
   }
 
+  // 用户现在选的界面语言。给设置页的状态、说明和错误按它写（读的时候现算，不存）。
+  #locale(): Locale {
+    return getLocale(this.#db);
+  }
+
+  #m() {
+    return hubMessages(this.#locale());
+  }
+
   // ——— 目录和状态 ———
 
   list(): ConnectionDto[] {
@@ -441,25 +462,25 @@ export class ConnectionHub {
     const known = knownServerByAlias(key);
     if (known && !catalogEntry(key)) {
       const row = listConnections(this.#db).find((candidate) => candidate.provider === "custom" && knownServer(candidate.server_url) === known);
-      if (!row) throw new ConnectionError("not_connected", `${known.label} 还没有连接：在设置 → 连接里添加自定义 MCP ${known.url}`, key);
+      if (!row) throw new ConnectionError("not_connected", this.#m().knownNotConnected(known.label, known.url), key);
       return { entry: null, row: this.#verified(row) };
     }
     const custom = /^custom-(\d+)$/.exec(key);
     if (custom) {
       const row = getConnection(this.#db, Number(custom[1]));
-      if (!row || row.provider !== "custom") throw new ConnectionError("not_found", `没有这个连接：${key}`, key);
+      if (!row || row.provider !== "custom") throw new ConnectionError("not_found", this.#m().noSuchConnection(key), key);
       return { entry: null, row: this.#verified(row) };
     }
     const entry = catalogEntry(key);
-    if (!entry) throw new ConnectionError("not_found", `没有这个连接：${key}`, key);
+    if (!entry) throw new ConnectionError("not_found", this.#m().noSuchConnection(key), key);
     const row = entry.serverUrl ? getConnectionByServer(this.#db, entry.serverUrl) : null;
     return { entry, row: row ? this.#verified(row) : null };
   }
 
   #liveRow(key: string): ConnectionRow {
     const { row } = this.#resolve(key);
-    if (!row || row.status === "disconnected") throw new ConnectionError("not_connected", `${this.#labelOf(key)} 还没有连接`, key);
-    if (row.status === "needs_reauth") throw new ConnectionError("needs_reauth", `${row.label} 的授权失效了，需要重新授权`, key);
+    if (!row || row.status === "disconnected") throw new ConnectionError("not_connected", this.#m().notConnected(this.#labelOf(key)), key);
+    if (row.status === "needs_reauth") throw new ConnectionError("needs_reauth", this.#m().needsReauth(row.label), key);
     return row;
   }
 
@@ -478,21 +499,23 @@ export class ConnectionHub {
     const provider = (entry?.id ?? "custom") as ConnectionProvider;
     const key = row ? connectionKey(row) : provider;
     const live = row && row.status !== "disconnected" ? row : null;
+    const locale = this.#locale();
+    const m = hubMessages(locale);
     let state: ConnectionDto["state"];
     let setupHint: string | null = null;
-    if (entry?.unavailableReason) {
+    if (entry?.unavailable) {
       state = "unavailable";
-      setupHint = entry.unavailableReason;
+      setupHint = unavailableText(locale, entry);
     } else if (live) {
       state = live.status as Exclude<ConnectionRow["status"], "disconnected">;
     } else if (entry?.requiresClient && !this.#config.clients[entry.id as "slack"]) {
       state = "needs_setup";
-      setupHint = "需要先在 daemon 上配置你们工作区的 Slack app（client ID）";
+      setupHint = m.setupSlack;
     } else if (entry?.auth === "github") {
       const gh = this.#ghInstalled();
       const device = Boolean(this.#config.clients.github);
       state = gh || device ? "not_connected" : "needs_setup";
-      setupHint = gh ? "会使用这台 Mac 上 gh 的登录" : device ? "会显示一个设备码，在 GitHub 上输入即可" : "需要先安装并登录 gh，或者粘贴一个 PAT";
+      setupHint = gh ? m.setupGhCli : device ? m.setupGhDevice : m.setupGhMissing;
     } else {
       state = "not_connected";
     }
@@ -501,7 +524,7 @@ export class ConnectionHub {
       key,
       provider,
       label: row?.label ?? entry?.label ?? key,
-      capability: entry?.capability ?? knownServer(row?.server_url)?.capability ?? "这个远程 MCP 服务器提供的工具",
+      capability: capabilityText(locale, entry?.id ?? knownServer(row?.server_url)?.alias ?? null),
       serverUrl: row?.server_url ?? entry?.serverUrl ?? null,
       state,
       account: live?.account_label ?? null,
@@ -520,17 +543,18 @@ export class ConnectionHub {
   }
 
   #problem(row: ConnectionRow, now: number): ConnectionProblem | null {
+    const m = this.#m();
     if (row.status === "needs_reauth") {
       const message = row.failure_kind === "invalid_client"
-        ? `${row.label} 不再认这个客户端，需要重新授权`
+        ? m.problemInvalidClient(row.label)
         : row.failure_kind === "insufficient_scope"
-        ? `${row.label} 的授权缺少需要的权限，需要重新授权`
-        : `${row.label} 的授权失效了（可能被撤销或已过期），需要重新授权`;
+        ? m.problemInsufficientScope(row.label)
+        : m.problemInvalidGrant(row.label);
       return { kind: row.failure_kind ?? "invalid_grant", message, since: row.updated_at, nextAttemptAt: null };
     }
     if (row.status === "degraded") {
       return {
-        kind: "transient", message: `暂时连不上 ${row.label}，daemon 会自动重试`,
+        kind: "transient", message: m.problemTransient(row.label),
         since: row.updated_at, nextAttemptAt: row.next_attempt_at,
       };
     }
@@ -539,7 +563,7 @@ export class ConnectionHub {
       const days = Math.max(0, Math.ceil((grantEnds - now) / DAY));
       return {
         kind: "expiring",
-        message: days > 0 ? `${row.label} 的授权 ${days} 天后到期，到期前重新授权不会打断正在跑的工作` : `${row.label} 的授权今天到期`,
+        message: days > 0 ? m.problemExpiring(row.label, days) : m.problemExpiresToday(row.label),
         since: null, nextAttemptAt: null,
       };
     }
@@ -571,13 +595,14 @@ export class ConnectionHub {
   async start(key: string, input: { token?: string } = {}): Promise<StartConnectionResponse> {
     this.#sweepFlows();
     const { entry, row } = this.#resolve(key);
-    if (entry?.unavailableReason) throw new ConnectionError("unavailable", entry.unavailableReason, key);
+    const unavailable = unavailableText(this.#locale(), entry);
+    if (unavailable) throw new ConnectionError("unavailable", unavailable, key);
     const serverUrl = row?.server_url ?? entry?.serverUrl;
-    if (!serverUrl) throw new ConnectionError("unavailable", "这个服务还没有地址", key);
+    if (!serverUrl) throw new ConnectionError("unavailable", this.#m().noServerUrl, key);
     const label = row?.label ?? entry?.label ?? key;
     const provider = (entry?.id ?? "custom") as ConnectionProvider;
     if (entry?.auth === "github") return this.#startGithub(entry, serverUrl, input.token);
-    if (input.token !== undefined) throw new ConnectionError("invalid_request", "只有 GitHub 支持粘贴令牌", key);
+    if (input.token !== undefined) throw new ConnectionError("invalid_request", this.#m().patOnlyGithub, key);
     return this.#startOAuth({ key, provider, label, serverUrl, entry });
   }
 
@@ -586,12 +611,12 @@ export class ConnectionHub {
     this.#sweepFlows();
     let url: string;
     try {
-      url = normalizeCustomServerUrl(serverUrl);
+      url = normalizeCustomServerUrl(serverUrl, this.#locale());
     } catch (error) {
       throw new ConnectionError("invalid_request", error instanceof Error ? error.message : String(error));
     }
     if (CATALOG.some((entry) => entry.serverUrl === url)) {
-      throw new ConnectionError("invalid_request", "这个地址已经在连接列表里了，请直接在列表里连接");
+      throw new ConnectionError("invalid_request", this.#m().urlAlreadyListed);
     }
     const existing = getConnectionByServer(this.#db, url);
     const key = existing ? connectionKey(existing) : "custom";
@@ -601,13 +626,13 @@ export class ConnectionHub {
 
   async #startOAuth(input: { key: string; provider: ConnectionProvider; label: string; serverUrl: string; entry: CatalogEntry | null }): Promise<StartConnectionResponse> {
     if (input.entry?.requiresClient && !this.#config.clients[input.entry.id as "slack"]) {
-      throw new ConnectionError("needs_setup", `${input.entry.label} 需要先在 daemon 上配置预注册的 app`, input.key);
+      throw new ConnectionError("needs_setup", this.#m().needsPreregisteredApp(input.entry.label), input.key);
     }
     let discovery;
     try {
       discovery = await discover(this.#fetch, input.serverUrl);
     } catch (error) {
-      throw this.#authError(input.key, error, `读不到 ${input.label} 的授权信息`);
+      throw this.#authError(input.key, error, this.#m().readAuthInfoFailed(input.label));
     }
     if (!discovery.server || !discovery.resource) {
       // 服务器不要授权：直接连上。
@@ -643,7 +668,7 @@ export class ConnectionHub {
   async #clientFor(key: string, entry: CatalogEntry | null, server: AuthorizationServerMetadata, redirectUri: string, scope: string | null): Promise<ClientCredentials> {
     const preregistered = entry && (entry.id === "slack" || entry.id === "github") ? this.#config.clients[entry.id] : undefined;
     if (preregistered) return { clientId: preregistered.clientId, clientSecret: this.#secrets.get(preregistered.secretName) };
-    if (entry?.requiresClient) throw new ConnectionError("needs_setup", `${entry.label} 需要先在 daemon 上配置预注册的 app`, key);
+    if (entry?.requiresClient) throw new ConnectionError("needs_setup", this.#m().needsPreregisteredApp(entry.label), key);
     const stored = getOAuthClient(this.#db, server.issuer, redirectUri);
     if (stored) {
       return {
@@ -655,7 +680,7 @@ export class ConnectionHub {
     try {
       registered = await registerClient(this.#fetch, server, { redirectUri, clientName: this.#clientName, scope });
     } catch (error) {
-      throw this.#authError(key, error, "注册客户端失败");
+      throw this.#authError(key, error, this.#m().registerClientFailed);
     }
     saveOAuthClient(this.#db, {
       issuer: server.issuer, redirect_uri: redirectUri, client_id: registered.clientId, method: "dcr",
@@ -668,9 +693,9 @@ export class ConnectionHub {
   #authError(key: string, error: unknown, prefix: string): ConnectionError {
     if (error instanceof ConnectionError) return error;
     if (error instanceof OAuthError && error.kind === "transient") {
-      return new ConnectionError("temporarily_unavailable", `${prefix}：网络或服务暂时不可用，请稍后再试`, key);
+      return new ConnectionError("temporarily_unavailable", this.#m().authTransient(prefix), key);
     }
-    return new ConnectionError("authorization_failed", `${prefix}：${error instanceof Error ? error.message : String(error)}`, key);
+    return new ConnectionError("authorization_failed", this.#m().authFailed(prefix, error instanceof Error ? error.message : String(error)), key);
   }
 
   // 浏览器回到 /oauth/callback。state 只能用一次，10 分钟过期。
@@ -678,27 +703,28 @@ export class ConnectionHub {
     this.#sweepFlows();
     const flowId = params.state ? this.#flowByState.get(hashState(params.state)) : undefined;
     const flow = flowId ? this.#flows.get(flowId) : undefined;
-    if (!flow || flow.kind !== "browser") throw new ConnectionError("flow_not_found", "这个授权链接已经失效了，请回到 Paimon 重新连接");
+    const m = this.#m();
+    if (!flow || flow.kind !== "browser") throw new ConnectionError("flow_not_found", m.flowLinkInvalid(leadDisplayName(this.#db)));
     this.#flowByState.delete(flow.stateHash);
-    if (flow.state !== "pending") throw new ConnectionError("flow_not_found", "这个授权链接已经用过了");
+    if (flow.state !== "pending") throw new ConnectionError("flow_not_found", m.flowLinkUsed);
     if (flow.expiresAt <= this.#now()) {
-      this.#failFlow(flow, "expired", "授权超时了，请重新连接");
-      throw new ConnectionError("flow_not_found", "授权超时了，请回到 Paimon 重新连接", flow.key);
+      this.#failFlow(flow, "expired", m.flowTimedOut);
+      throw new ConnectionError("flow_not_found", m.flowTimedOutReturn(leadDisplayName(this.#db)), flow.key);
     }
     if (params.error) {
-      const message = params.error === "access_denied" ? "你在授权页上拒绝了授权" : `授权失败：${params.errorDescription ?? params.error}`;
+      const message = params.error === "access_denied" ? m.deniedOnAuthPage : m.authorizationFailed(params.errorDescription ?? params.error);
       this.#failFlow(flow, "failed", message);
       throw new ConnectionError("authorization_failed", message, flow.key);
     }
     // RFC 9207：有 iss 时必须是这个授权服务器；服务器声明支持 iss 时必须有。
     if ((params.iss !== null && params.iss !== flow.server.issuer)
       || (params.iss === null && flow.server.authorization_response_iss_parameter_supported)) {
-      this.#failFlow(flow, "failed", "授权响应来自另一个授权服务器，已拒绝");
-      throw new ConnectionError("authorization_failed", "授权响应来自另一个授权服务器，已拒绝", flow.key);
+      this.#failFlow(flow, "failed", m.wrongIssuer);
+      throw new ConnectionError("authorization_failed", m.wrongIssuer, flow.key);
     }
     if (!params.code) {
-      this.#failFlow(flow, "failed", "授权响应里没有授权码");
-      throw new ConnectionError("authorization_failed", "授权响应里没有授权码", flow.key);
+      this.#failFlow(flow, "failed", m.noCode);
+      throw new ConnectionError("authorization_failed", m.noCode, flow.key);
     }
     let tokens: TokenSet;
     try {
@@ -706,7 +732,7 @@ export class ConnectionHub {
         code: params.code, verifier: flow.verifier, redirectUri: flow.redirectUri, resource: flow.serverUrl,
       });
     } catch (error) {
-      const failure = this.#authError(flow.key, error, "换取令牌失败");
+      const failure = this.#authError(flow.key, error, m.exchangeTokenFailed);
       this.#failFlow(flow, "failed", failure.message);
       throw failure;
     }
@@ -723,7 +749,7 @@ export class ConnectionHub {
   flowStatus(flowId: string): ConnectionFlowResponse {
     this.#sweepFlows();
     const flow = this.#flows.get(flowId);
-    if (!flow) return { flowId, state: "expired", message: "授权已经结束或超时", connection: null };
+    if (!flow) return { flowId, state: "expired", message: this.#m().flowEnded, connection: null };
     const row = flow.connectionId ? getConnection(this.#db, flow.connectionId) : null;
     return {
       flowId,
@@ -743,7 +769,7 @@ export class ConnectionHub {
   #sweepFlows(): void {
     const now = this.#now();
     for (const flow of this.#flows.values()) {
-      if (flow.state === "pending" && flow.expiresAt <= now) this.#failFlow(flow, "expired", "授权超时了，请重新连接");
+      if (flow.state === "pending" && flow.expiresAt <= now) this.#failFlow(flow, "expired", this.#m().flowTimedOut);
       if (flow.expiresAt + FLOW_TTL_MS <= now) {
         this.#flows.delete(flow.id);
         if (flow.kind === "browser") this.#flowByState.delete(flow.stateHash);
@@ -755,9 +781,9 @@ export class ConnectionHub {
     const key = entry.id;
     if (pat !== undefined) {
       const token = pat.trim();
-      if (!/^[A-Za-z0-9_]{20,255}$/.test(token)) throw new ConnectionError("invalid_request", "这不像一个 GitHub 令牌", key);
+      if (!/^[A-Za-z0-9_]{20,255}$/.test(token)) throw new ConnectionError("invalid_request", this.#m().notGithubToken, key);
       const account = await githubLogin(this.#fetch, token);
-      if (!account) throw new ConnectionError("authorization_failed", "GitHub 不接受这个令牌", key);
+      if (!account) throw new ConnectionError("authorization_failed", this.#m().githubRejectedToken, key);
       const row = this.#saveConnected({ key, provider: "github", label: entry.label, serverUrl, entry, tokenSource: "pat", tokens: { accessToken: token, refreshToken: null, expiresIn: null, scope: null }, server: null, client: null, scope: null });
       await this.#afterConnect(row, account);
       return { flow: "connected", connection: this.get(key) };
@@ -773,7 +799,7 @@ export class ConnectionHub {
     }
     const client = this.#config.clients.github;
     if (!client) {
-      throw new ConnectionError("needs_setup", "这台 Mac 上没有登录过的 gh。请先运行 gh auth login，或者粘贴一个 GitHub 令牌", key);
+      throw new ConnectionError("needs_setup", this.#m().noGhLogin, key);
     }
     let code: DeviceCode;
     try {
@@ -800,11 +826,11 @@ export class ConnectionHub {
   async #pollDevice(flow: DeviceFlow, entry: CatalogEntry): Promise<void> {
     if (flow.state !== "pending") return;
     if (flow.expiresAt <= this.#now()) {
-      this.#failFlow(flow, "expired", "设备码过期了，请重新连接");
+      this.#failFlow(flow, "expired", githubMessages(this.#locale()).deviceExpired);
       this.#onChange(flow.key);
       return;
     }
-    const result = await pollDeviceFlow(this.#fetch, flow.clientId, flow.code, flow.interval);
+    const result = await pollDeviceFlow(this.#fetch, flow.clientId, flow.code, flow.interval, this.#locale());
     if (result.state === "pending") {
       flow.interval = result.interval;
       this.#scheduleDevicePoll(flow, entry);
@@ -931,7 +957,7 @@ export class ConnectionHub {
   // 主人操作的事件（谁改的、从哪里改的、「不是我」）由网关的路由记。
   updateSettings(key: string, settings: ConnectionSettingsRequest): ConnectionDto {
     const { entry, row } = this.#resolve(key);
-    if (!row) throw new ConnectionError("not_connected", `${entry?.label ?? key} 还没有连接`, key);
+    if (!row) throw new ConnectionError("not_connected", this.#m().notConnected(entry?.label ?? key), key);
     const before = this.#rowSettings(row);
     const after = normalizeConnectionSettings({
       roles: settings.roles ?? before.roles, writePolicy: settings.writePolicy ?? before.writePolicy,
@@ -942,7 +968,7 @@ export class ConnectionHub {
       if (!manifest) throw new Error("the settings manifest is not readable");
       sealed = this.#sealNext(row.id, after, manifest);
     } catch (error) {
-      throw new ConnectionError("temporarily_unavailable", `保险库暂时不可用，设置没有保存：${error instanceof Error ? error.message : String(error)}`, key);
+      throw new ConnectionError("temporarily_unavailable", this.#m().vaultUnavailable(error instanceof Error ? error.message : String(error)), key);
     }
     setConnectionSettings(this.#db, row.id, {
       ...after, ...sealed, event: CONNECTION_SETTINGS_CHANGED_EVENT, detail: JSON.stringify(settings),
@@ -1189,7 +1215,7 @@ export class ConnectionHub {
     try {
       const row = this.#liveRow(key);
       const tools = this.#shapeTools(row, await this.#withAuthRetry(row.id, () => this.#refreshTools(row.id)));
-      return { ok: true, message: `能用，${tools.length} 个工具`, connection: this.get(key) };
+      return { ok: true, message: this.#m().testOk(tools.length), connection: this.get(key) };
     } catch (error) {
       return { ok: false, message: error instanceof Error ? error.message : String(error), connection: this.get(key) };
     }
@@ -1321,7 +1347,7 @@ export class ConnectionHub {
     }
     const context = this.#callContext(row, key, tool, args, options, null);
     const problem = await this.#guardProblem(context);
-    if (problem) throw new ConnectionError("forbidden", `${row.label} 拒绝了这次调用：${problem}`, key);
+    if (problem) throw new ConnectionError("forbidden", `plc 的 ${row.label} 守卫拒绝了这次调用：${problem}`, key, GUARD_REFUSAL_NEXT);
     const result = await this.#invoke(row, tool, args, options.signal);
     return { text: result.text, truncated: result.truncated, isError: result.isError };
   }
@@ -1412,7 +1438,7 @@ export class ConnectionHub {
     }
     // 没有守卫说明的写操作当作别人看得到（保守：记成主人操作，推给你）。
     const description: WriteDescription = guard?.describe?.(context, result)
-      ?? { summary: `调用了 ${row.label} 的 ${toolName}`, target, url: null, visible: true };
+      ?? { summary: this.#m().writeSummary(row.label, toolName), target, url: null, visible: true };
     settleRunToolCall(this.#db, callId, {
       outcome: result.isError ? "error" : "ok", summary: description.summary, url: description.url, visible: description.visible,
       ...(result.isError ? { reason: result.text.slice(0, 300) } : {}),
@@ -1433,7 +1459,7 @@ export class ConnectionHub {
   ): ToolCallContext {
     return {
       key, tool: tool.name, args, readOnly: tool.readOnly, role: options.role,
-      runId: run?.runId ?? null, ledger: run?.ledger ?? null,
+      runId: run?.runId ?? null, ledger: run?.ledger ?? null, locale: this.#locale(),
       ...(options.signal ? { signal: options.signal } : {}),
       read: async (name, readArgs) => {
         const found = (await this.#toolsOf(row)).find((entry) => entry.name === name);
@@ -1503,7 +1529,7 @@ export class ConnectionHub {
     const now = this.#now();
     const write: PendingWrite = {
       id: `cfm_${randomBytes(12).toString("base64url")}`, key, label: row.label, tool: toolName, args,
-      summary: summary.trim().slice(0, 300) || `调用 ${toolName}`, createdAt: now, expiresAt: now + CONFIRMATION_TTL_MS,
+      summary: summary.trim().slice(0, 300) || this.#m().confirmSummary(toolName), createdAt: now, expiresAt: now + CONFIRMATION_TTL_MS,
       state: "pending", resolvedBy: null, resultPreview: null,
     };
     this.#writes.set(write.id, write);
@@ -1514,7 +1540,7 @@ export class ConnectionHub {
   confirmation(id: string): ConnectionConfirmationDto {
     this.#sweepWrites();
     const write = this.#writes.get(id);
-    if (!write) throw new ConnectionError("not_found", "这个确认已经过期或不存在");
+    if (!write) throw new ConnectionError("not_found", this.#m().confirmationGone);
     return this.#confirmationDto(write);
   }
 
@@ -1522,7 +1548,7 @@ export class ConnectionHub {
   async resolveConfirmation(id: string, approve: boolean, resolvedBy: string): Promise<ConnectionConfirmationDto> {
     this.#sweepWrites();
     const write = this.#writes.get(id);
-    if (!write) throw new ConnectionError("not_found", "这个确认已经过期或不存在");
+    if (!write) throw new ConnectionError("not_found", this.#m().confirmationGone);
     if (write.state !== "pending") return this.#confirmationDto(write);
     write.resolvedBy = resolvedBy;
     if (!approve) {
@@ -1572,10 +1598,10 @@ export class ConnectionHub {
   #callError(key: string, row: ConnectionRow, error: unknown): ConnectionError {
     if (error instanceof ConnectionError) return error;
     if (error instanceof McpTransportError) {
-      return new ConnectionError("temporarily_unavailable", `暂时连不上 ${row.label}：${error.message}`, key);
+      return new ConnectionError("temporarily_unavailable", this.#m().callTransient(row.label, error.message), key);
     }
-    if (error instanceof McpRpcError) return new ConnectionError("invalid_request", `${row.label} 拒绝了这次调用：${error.message}`, key);
-    if (error instanceof McpAuthError) return new ConnectionError("needs_reauth", `${row.label} 的授权失效了，需要重新授权`, key);
+    if (error instanceof McpRpcError) return new ConnectionError("invalid_request", this.#m().callRejected(row.label, error.message), key);
+    if (error instanceof McpAuthError) return new ConnectionError("needs_reauth", this.#m().needsReauth(row.label), key);
     return new ConnectionError("temporarily_unavailable", error instanceof Error ? error.message : String(error), key);
   }
 
@@ -1794,7 +1820,7 @@ export class ConnectionHub {
     // 一次失效只通知一次：只在从别的状态变成 needs_reauth 时通知。
     this.#onAttention({
       kind: "needs_reauth", key, label: row.label,
-      message: this.#problem({ ...row, status: "needs_reauth", failure_kind: kind }, this.#now())?.message ?? `${row.label} 需要重新授权`,
+      message: this.#problem({ ...row, status: "needs_reauth", failure_kind: kind }, this.#now())?.message ?? this.#m().reauthFallback(row.label),
     });
   }
 
@@ -1864,7 +1890,7 @@ export class ConnectionHub {
       }
       addConnectionEvent(this.#db, row.id, "expiry_warning", warning.label, iso(now));
       const key = connectionKey(row);
-      const message = this.#problem(row, now)?.message ?? `${row.label} 的授权快到期了`;
+      const message = this.#problem(row, now)?.message ?? this.#m().expiringFallback(row.label);
       this.#onAttention({ kind: "expiring", key, label: row.label, message });
       this.#onChange(key);
       break;

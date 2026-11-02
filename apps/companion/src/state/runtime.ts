@@ -129,7 +129,9 @@ import {
 } from './control-plane/invalidation';
 import { adaptGatewayEvent, projectToolDisplay } from './control-plane/protocolAdapter';
 import { createControlPlaneStore } from './control-plane/store';
+import { cachedLocale } from '../i18n/localeCache';
 import { rememberLeadName } from './leadName';
+import { runtimeMessages } from './runtime.messages';
 import { createStreamCoordinator, type StreamCoordinator, type StreamScheduler } from './streams/batching';
 import { createStreamStore } from './streams/store';
 import { createWorkspaceStore } from './workspace/store';
@@ -299,6 +301,11 @@ export class CompanionStateRuntime {
     this.outbox = this.createOutbox(dependencies.outboxStorage ?? memoryOutboxStorage());
   }
 
+  // 给用户看的错误按界面语言：外观偏好取到以前用上次记住的语言（localeCache.ts）。
+  private messages() {
+    return runtimeMessages(this.control.getState().designPreferences?.locale ?? cachedLocale());
+  }
+
   start(options: { loopbackEndpoint?: string | null } = {}): Promise<void> {
     if (this.stopped) return Promise.resolve();
     const epoch = this.lifecycle;
@@ -430,14 +437,14 @@ export class CompanionStateRuntime {
   // Lead 可以用的模型和推理强度（会话输入框右下角的模型选择）。
   loadLeadModels(): Promise<LeadModelCatalog> {
     const getLeadModels = this.dependencies.client.getLeadModels;
-    if (!getLeadModels) return Promise.reject(new Error('这个 daemon 还不能换 Lead 的模型'));
+    if (!getLeadModels) return Promise.reject(new Error(this.messages().noLeadModelSwitch));
     return getLeadModels.call(this.dependencies.client);
   }
 
   // 换 Lead 的模型和推理强度。马上换好时，输入框右下角的模型名马上跟着变（daemon 也会发 daemon.status.changed）。
   async switchLeadModel(choice: LeadModelChoice): Promise<LeadModelSwitchResult> {
     const switchLeadModel = this.dependencies.client.switchLeadModel;
-    if (!switchLeadModel) throw new Error('这个 daemon 还不能换 Lead 的模型');
+    if (!switchLeadModel) throw new Error(this.messages().noLeadModelSwitch);
     const result = await switchLeadModel.call(this.dependencies.client, choice);
     const overview = this.control.getState().overview;
     if (result.applied === 'now' && overview) {
@@ -597,7 +604,7 @@ export class CompanionStateRuntime {
   // 别的客户端由推送收起。
   async acknowledgeLeadInterrupt(seq: number): Promise<void> {
     const { client } = this.dependencies;
-    if (typeof client.acknowledgeLeadInterrupt !== 'function') throw new Error('这个版本的客户端不能确认横幅');
+    if (typeof client.acknowledgeLeadInterrupt !== 'function') throw new Error(this.messages().noBannerAck);
     const interrupt = await client.acknowledgeLeadInterrupt(seq);
     this.control.getState().applyLeadActivityPush({ interrupt });
   }
@@ -606,7 +613,7 @@ export class CompanionStateRuntime {
   // 这里仍然显式重取这条提醒和通知：点完按钮就该看到结果，不依赖一条可能正在重连的 socket。
   async rescheduleReminder(reminderId: number, change: { remindAt?: string; snoozeMinutes?: number }): Promise<void> {
     const { client } = this.dependencies;
-    if (typeof client.rescheduleReminder !== 'function') throw new Error('这个版本的客户端不能改提醒的时间');
+    if (typeof client.rescheduleReminder !== 'function') throw new Error(this.messages().noReminderMove);
     const result = await client.rescheduleReminder(reminderId, change);
     if (result.ticket) this.control.getState().upsertTicket(result.ticket);
     await Promise.allSettled([
@@ -627,7 +634,7 @@ export class CompanionStateRuntime {
   // 执行它：和 Lead 的 perform_action 同一个函数，actor 是你本人。做完以后重取这个对象相关的资源（提醒是那条提醒、通知和日程）。
   async performUiAction(type: string, id: string, action: string, request: UiActionRunRequest = {}): Promise<UiActionRunResponse> {
     const { client } = this.dependencies;
-    if (typeof client.performUiAction !== 'function') throw new Error('这个版本的客户端不能做这个操作');
+    if (typeof client.performUiAction !== 'function') throw new Error(this.messages().noAction);
     const result = await client.performUiAction(type, id, action, request);
     const itemId = Number(id);
     await Promise.allSettled([
@@ -824,7 +831,7 @@ export class CompanionStateRuntime {
 
   // 交付里一个文件的全文或改动。按需读，不进缓存：文件可能很大，看完就关。
   async getTicketDeliveryFile(ticketId: number, path: string, view: DeliveryFileView): Promise<DeliveryFileContent> {
-    if (!this.dependencies.client.getTicketDeliveryFile) throw new Error('这个版本的服务端不能预览文件。');
+    if (!this.dependencies.client.getTicketDeliveryFile) throw new Error(this.messages().noFilePreview);
     return this.dependencies.client.getTicketDeliveryFile(ticketId, path, view);
   }
 
@@ -832,7 +839,7 @@ export class CompanionStateRuntime {
   // 带上界面画出来的那份交付（workspace.head、workspace.target），服务端比对（2026-10-21 审查 M2）。交付在用户看过以后
   // 变了，服务端拒绝（409，details.reason 是 stale）：重取交付，让用户看过新的再决定。
   async performDeliveryAction(ticketId: number, action: DeliveryActionId): Promise<DeliveryActionResult> {
-    if (!this.dependencies.client.performDeliveryAction) throw new Error('这个版本的服务端不支持这个操作。');
+    if (!this.dependencies.client.performDeliveryAction) throw new Error(this.messages().serverNoAction);
     const seen = this.control.getState().deliveryByTicket[ticketId]?.workspace ?? null;
     let result: DeliveryActionResult;
     try {
@@ -860,7 +867,7 @@ export class CompanionStateRuntime {
   // 服务端拒绝时（409，原因和清单里的 reason 一样）也重取清单：页面上的按钮可能已经过时。
   async runTicketAction(ticketId: number, action: TicketOperationId, request: TicketActionRunRequest = {}): Promise<TicketActionRunResponse> {
     const run = this.dependencies.client.runTicketAction;
-    if (typeof run !== 'function') throw new Error('这个版本的服务端不支持这个操作。');
+    if (typeof run !== 'function') throw new Error(this.messages().serverNoAction);
     let result: TicketActionRunResponse;
     try {
       result = await run.call(this.dependencies.client, ticketId, action, request);
@@ -1307,7 +1314,7 @@ export class CompanionStateRuntime {
   // 直觉变了时重排可能跟着换，记忆设置也重取一次（daemon 回复之前已经生成了要确认的切换）。
   async modelSettingsAction(action: string, input: Record<string, unknown>): Promise<unknown> {
     const { client } = this.dependencies;
-    if (typeof client.performUiAction !== 'function') throw new Error('这个版本的客户端不能改模型设置');
+    if (typeof client.performUiAction !== 'function') throw new Error(this.messages().noModelSettings);
     const outcome = await client.performUiAction('model_settings', 'models', action, { input });
     await Promise.allSettled([
       this.ensureResource(RESOURCE_KEYS.modelSettings, true),
@@ -1322,7 +1329,7 @@ export class CompanionStateRuntime {
   // 测试是只读的，不重取。网关之后的 snapshot.required（resource 是 memory）也会触发重取。
   async memorySettingsAction(action: string, input: Record<string, unknown>): Promise<unknown> {
     const { client } = this.dependencies;
-    if (typeof client.performUiAction !== 'function') throw new Error('这个版本的客户端不能改记忆设置');
+    if (typeof client.performUiAction !== 'function') throw new Error(this.messages().noMemorySettings);
     const outcome = await client.performUiAction('memory_settings', 'memory', action, { input });
     if (action !== 'test_summary_model') {
       await Promise.allSettled([
@@ -1339,7 +1346,7 @@ export class CompanionStateRuntime {
   // 网关之后的 snapshot.required（resource 是 memory）也会触发重取。失败时抛出，原因是 daemon 写的那句话。
   async memoryAction(type: 'core_memory' | 'core_memory_change' | 'memory_fact', id: string, action: string, input: Record<string, unknown> = {}): Promise<unknown> {
     const { client } = this.dependencies;
-    if (typeof client.performUiAction !== 'function') throw new Error('这个版本的客户端不能改记忆');
+    if (typeof client.performUiAction !== 'function') throw new Error(this.messages().noMemoryChange);
     const outcome = await client.performUiAction(type, id, action, { input });
     await this.refreshObservedMemory();
     return outcome.result;
@@ -1350,7 +1357,7 @@ export class CompanionStateRuntime {
   // 网关之后的 snapshot.required（resource 是 widgets）也会触发重取。失败时抛出，原因是 daemon 写的那句话。
   async widgetAction(type: 'widget' | 'widget_board', id: string, action: string, input: Record<string, unknown> = {}): Promise<unknown> {
     const { client } = this.dependencies;
-    if (typeof client.performUiAction !== 'function') throw new Error('这个版本的客户端不能改控件');
+    if (typeof client.performUiAction !== 'function') throw new Error(this.messages().noWidgetChange);
     const outcome = await client.performUiAction(type, id, action, { input });
     await this.ensureResource(RESOURCE_KEYS.widgets, true);
     return outcome.result;
@@ -1361,7 +1368,7 @@ export class CompanionStateRuntime {
   // 设置 → 记忆开着时，那一份也跟着重取。
   async leadActivityCardAction(action: LeadActivityCardAction): Promise<void> {
     const { client } = this.dependencies;
-    if (typeof client.performUiAction !== 'function') throw new Error('这个版本的客户端不能做这个操作');
+    if (typeof client.performUiAction !== 'function') throw new Error(this.messages().noAction);
     await client.performUiAction(action.target.type, action.target.id, action.action, { input: {} });
     await this.refreshObservedMemory();
   }
@@ -1958,7 +1965,7 @@ export class CompanionStateRuntime {
   // 这时重取一次卡，让用户按新的样子再决定。
   async actOnChannelCard(cardId: number, action: import('@pi-lead-child/protocol').ChannelCardAction, text?: string): Promise<void> {
     const { client } = this.dependencies;
-    if (typeof client.actOnChannelCard !== 'function') throw new Error('这个 daemon 不支持通道卡片');
+    if (typeof client.actOnChannelCard !== 'function') throw new Error(this.messages().noChannelCards);
     const held = this.control.getState().channelCards.find((card) => card.id === cardId);
     try {
       const card = await client.actOnChannelCard(cardId, action, held?.version, text);
@@ -1983,7 +1990,7 @@ export class CompanionStateRuntime {
   // 排队面板上的「排到下一个」「移出队列」（操作层的 lead_queue）。回答是操作以后的排队，直接替换；失败时重取一次再抛出。
   async leadQueueAction(action: import('@pi-lead-child/protocol').LeadQueueAction, key: string): Promise<void> {
     const { client } = this.dependencies;
-    if (typeof client.leadQueueAction !== 'function') throw new Error('这个 daemon 不支持排队');
+    if (typeof client.leadQueueAction !== 'function') throw new Error(this.messages().noQueue);
     try {
       this.control.getState().replaceLeadQueue(await client.leadQueueAction(action, key));
     } catch (error) {
@@ -1996,7 +2003,7 @@ export class CompanionStateRuntime {
   // 结果经会话的推送回来（这一轮的 placement 变成 steered 或 cancelled），这里不改本地状态；失败时抛出，状态栏写「没有做成」。
   async followUpAction(action: import('@pi-lead-child/protocol').FollowUpAction, turnId: string): Promise<void> {
     const { client } = this.dependencies;
-    if (typeof client.followUpAction !== 'function') throw new Error('这个 daemon 不支持 Steer 和取消');
+    if (typeof client.followUpAction !== 'function') throw new Error(this.messages().noFollowUp);
     await client.followUpAction(action, turnId);
   }
 

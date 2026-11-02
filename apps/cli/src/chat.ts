@@ -72,7 +72,7 @@ export class ChatRenderer {
       case "lead.turn.started": {
         const origin = typeof event.payload.originKind === "string" ? event.payload.originKind : null;
         // Lead 自己发起的回合写 Lead 的名字；daemon 的系统通知照旧写「系统通知 …」。
-        const label = isDaemonNoticeOrigin(origin) ? systemTurnLabel(origin) : systemTurnLabel(origin) ? this.leadName : null;
+        const label = isDaemonNoticeOrigin(origin) ? systemTurnLabel(origin, "zh") : systemTurnLabel(origin) ? this.leadName : null;
         if (label) this.out.write(`\n${CYAN(`[${label}]`)}\n`);
         else if (event.payload.mode === "steered") this.out.write(`${DIM(`（已插话，${this.leadName} 将在当前步骤后看到）`)}\n`);
         return;
@@ -100,13 +100,13 @@ export class ChatRenderer {
         // 在等那一次自动重试：不是失败（daemon 的 waitToRetry）。
         if (event.payload.retry === "waiting") {
           const waitingFor = event.payload.waitingFor === "network" ? "network" : "model";
-          this.out.write(`\n${DIM(`（${leadTurnWaitingSentence(String(event.payload.message ?? ""), waitingFor, this.leadName)}）`)}\n`);
+          this.out.write(`\n${DIM(`（${leadTurnWaitingSentence(String(event.payload.message ?? ""), waitingFor, this.leadName, "zh")}）`)}\n`);
           return;
         }
         // 和 companion 的失败卡片用同一套分类说成一句话：认证失败不叫人重试；原文放在下面一行。
         // 发给所有人的（audienceBindingId 为 null）是 Lead 自己发起的一轮，没有人在等回答。
         const raw = String(event.payload.message ?? "");
-        const sentence = leadTurnFailureSentence(raw, { system: event.audienceBindingId === null, name: this.leadName });
+        const sentence = leadTurnFailureSentence(raw, { system: event.audienceBindingId === null, name: this.leadName, locale: "zh" });
         this.out.write(`\n${YELLOW(`[error] ${sentence ?? raw}`)}\n`);
         if (sentence && raw.trim() !== OLD_DAEMON_AUTH_ERROR) this.out.write(`${DIM(`技术详情：${raw.length > 300 ? `${raw.slice(0, 300)}…` : raw}`)}\n`);
         this.out.prompt();

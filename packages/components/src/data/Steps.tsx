@@ -1,6 +1,8 @@
 import { Icon } from '../display/Icon';
 import { Box, Column, Row } from '../primitives/layout';
 import { Text, type TextTone } from '../primitives/Text';
+import { useMessages } from '../i18n';
+import { dataMessages } from './data.messages';
 
 // skipped：这一步不做了，detail 写原因。blocked：这一步卡住了，等别人或别的事，detail 写卡在哪里。
 export type StepState = 'done' | 'current' | 'pending' | 'failed' | 'skipped' | 'blocked';
@@ -15,11 +17,6 @@ export type StepsProps = {
    */
   variant?: 'regular' | 'compact';
   testID?: string;
-};
-
-// 每种状态在无障碍服务里的名字，也是标记的 aria-label。
-const STEP_LABEL: Record<StepState, string> = {
-  done: '已完成', current: '进行中', pending: '未开始', failed: '失败', skipped: '已跳过', blocked: '受阻',
 };
 
 function labelTone(state: StepState): TextTone {
@@ -84,7 +81,8 @@ export function Steps({ items, variant = 'regular', testID }: StepsProps) {
 }
 
 function StepMark({ state }: { state: StepState }) {
-  const label = STEP_LABEL[state];
+  // 每种状态在无障碍服务里的名字，也是标记的 aria-label。
+  const label = useMessages(dataMessages).stepState[state];
   if (state === 'done' || state === 'failed') {
     return (
       <Box aria-label={label} role="img" w={20} h={20} rounded="full" bg={state === 'done' ? 'success' : 'danger'} items="center" justify="center">
@@ -118,7 +116,8 @@ function StepMark({ state }: { state: StepState }) {
 
 // 浅底深色的小标记：完成是浅绿底的勾，失败和受阻是同样做法的红色、琥珀色。
 function CompactMark({ state }: { state: StepState }) {
-  const label = STEP_LABEL[state];
+  // 每种状态在无障碍服务里的名字，也是标记的 aria-label。
+  const label = useMessages(dataMessages).stepState[state];
   if (state === 'done' || state === 'failed' || state === 'blocked') {
     const look = {
       done: { bg: 'success-soft', icon: 'check', color: 'success-dark' },

@@ -57,23 +57,23 @@ describe('the runtimes section', () => {
   it('turns a runtime off with one switch and shows what that means for automatic review', async () => {
     const { runtime, client } = runtimesRuntime(ALL_ON);
     renderWithRuntime(<RuntimesSection />, runtime);
-    expect(screen.getByTestId('runtimes-reviewer').textContent).toBe('自动核查用 Codex。它不能用时，自动换下一个能用的执行器。');
-    expect(screen.getByTestId('runtime-row-pi').textContent).toContain('没有安装');
+    expect(screen.getByTestId('runtimes-reviewer').textContent).toBe('Codex does the automatic reviews. If it cannot be used, the next runtime that can be used takes over.');
+    expect(screen.getByTestId('runtime-row-pi').textContent).toContain('Not installed');
     expect(screen.getByTestId('runtime-switch-codex').getAttribute('aria-checked')).toBe('true');
 
     await act(async () => { fireEvent.click(screen.getByTestId('runtime-switch-codex')); });
     expect(client.updateRuntimeSettings).toHaveBeenCalledWith({ runtime: 'codex', enabled: false });
     expect(screen.getByTestId('runtime-switch-codex').getAttribute('aria-checked')).toBe('false');
-    expect(screen.getByTestId('runtime-row-codex').textContent).toContain('已停用');
+    expect(screen.getByTestId('runtime-row-codex').textContent).toContain('Stopped');
     // 回归（2026-10-21）：以前写「自动核查会排队等着，重新启用 Codex 以后自动派出」，可核查员已经自动换成了下一个。
     expect(screen.getByTestId('runtimes-reviewer').textContent)
-      .toBe('自动核查用 Claude Code。Claude Code 只能读代码，不能运行测试，核查结论来自阅读。它不能用时，自动换下一个能用的执行器。');
+      .toBe('Claude Code does the automatic reviews. Claude Code can only read code. It cannot run tests, so its review results come from reading. If it cannot be used, the next runtime that can be used takes over.');
   });
 
   it('says automatic review cannot go out only when every runtime is off', async () => {
     const { runtime } = runtimesRuntime(ALL_OFF, ALL_OFF);
     renderWithRuntime(<RuntimesSection />, runtime);
     expect(screen.getByTestId('runtimes-reviewer').textContent)
-      .toBe('所有执行器都停用了，自动核查派不出去。委托给 Paimon 验收的工单要你自己验收。');
+      .toBe('All runtimes are stopped, so automatic reviews cannot start. You must accept the tickets that you gave to Paimon to accept.');
   });
 });
