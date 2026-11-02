@@ -202,4 +202,44 @@ describe("the Lead model failover", () => {
     expect(failover.turnFailed(RATE_LIMIT, 0)).toMatchObject({ kind: "exhausted" });
     expect(failover.desired()).toBe("p/a");
   });
+
+  // 回归（2026-10-31，北京时间 00:16 起约 7 个半小时）：两个 Claude 账号都返回 503 auth_unavailable。顺序是 a、b、c（能用）。
+  // a 坏了换 b，b 坏了本该换 c，可 a 的 30 分钟从 a 坏的那一刻算，下一轮开始前已经到了，又换回 a；一整夜在 a、b 之间来回，
+  // 只有一次轮到 c，16 分钟后又被拉回坏掉的 a。
+  it("stays on the model that works and backs off, instead of pulling Lead back to a first model that is still broken", () => {
+    const AUTH_503 = '503: {"message":"auth_unavailable: no auth available (providers=claude, model=a; last upstream error: '
+      + '{\\"error\\": {\\"type\\": \\"forbidden\\", \\"message\\": \\"Request not allowed\\"}})"}';
+    const minutes = (value: number) => value * 60_000;
+    const failover = createLeadModelFailover({ models: ["p/a", "p/b", "p/c"] });
+    failover.turnSucceeded();
+
+    expect(failover.turnFailed(AUTH_503, 0)).toMatchObject({ kind: "switch", from: "p/a", to: "p/b" });
+    expect(failover.turnFailed(AUTH_503, minutes(18))).toMatchObject({ kind: "switch", from: "p/b", to: "p/c" });
+    // 下一轮在 16 分钟后开始：c 还一轮都没跑，不换回 a。等待从最近一次切换算。
+    expect(failover.restore(minutes(34))).toBeNull();
+    expect(failover.desired()).toBe("p/c");
+    failover.turnSucceeded();
+
+    // 换到 c 满 30 分钟：试一次 a。
+    expect(failover.restore(minutes(48))).toMatchObject({ kind: "switch", from: "p/c", to: "p/a", cause: "recovered" });
+    // a 还是坏的：回到刚才能用的 c，不按顺序换到同样坏着的 b；下次多等一倍。
+    expect(failover.turnFailed(AUTH_503, minutes(49))).toMatchObject({ kind: "switch", from: "p/a", to: "p/c", restoreAt: minutes(49 + 60) });
+    failover.turnSucceeded();
+    expect(failover.restore(minutes(49 + 59))).toBeNull();
+    expect(failover.restore(minutes(49 + 60))).toMatchObject({ kind: "switch", to: "p/a" });
+    expect(failover.turnFailed(AUTH_503, minutes(110))).toMatchObject({ kind: "switch", to: "p/c", restoreAt: minutes(110 + 120) });
+    failover.turnSucceeded();
+    // 等待最长 4 小时。
+    expect(failover.restore(minutes(230))).toMatchObject({ to: "p/a" });
+    expect(failover.turnFailed(AUTH_503, minutes(231))).toMatchObject({ to: "p/c", restoreAt: minutes(231 + 240) });
+    failover.turnSucceeded();
+    expect(failover.restore(minutes(471))).toMatchObject({ to: "p/a" });
+    expect(failover.turnFailed(AUTH_503, minutes(472))).toMatchObject({ to: "p/c", restoreAt: minutes(472 + 240) });
+    failover.turnSucceeded();
+
+    // a 好了：用成功一轮以后，下次出事又从 30 分钟算起。
+    expect(failover.restore(minutes(712))).toMatchObject({ to: "p/a" });
+    failover.turnSucceeded();
+    expect(failover.turnFailed(AUTH_503, minutes(800))).toMatchObject({ kind: "switch", from: "p/a", to: "p/b", restoreAt: minutes(830) });
+  });
 });

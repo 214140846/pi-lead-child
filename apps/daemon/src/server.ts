@@ -19,7 +19,7 @@ import {
   assertConfiguredLeadModel, leadModelCatalog, loadLeadModelConfig, setLeadModelChainInConfig, setLeadModelInConfig, type LeadCatalogModel,
 } from "@pi-lead-child/lead";
 import { overflowLimits, overflowReached, overflowReminder, queueNotice, queueNoticeMs, waitingText, type WaitingConversation } from "@pi-lead-child/lead";
-import { isSummaryTokenCapError, leadCompactionInstructions, LEAD_COMPACTION_BUDGETS } from "@pi-lead-child/lead";
+import { isSummaryTokenCapError, leadCompactionInstructions, LEAD_COMPACTION_BUDGETS, type CompactionProgress } from "@pi-lead-child/lead";
 import { contextUsageLine, leadContextUsage, type LeadContextUsage } from "@pi-lead-child/lead";
 import { userMessagePlacement } from "./user-placement.js";
 import { createLeadInput, defaultDigestBatch, isReminderFireEvent, type DigestBatchPolicy } from "./lead-input.js";
@@ -2609,6 +2609,7 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
     ...(memoryControl ? { decisionModel: () => memoryControl.decisionChainCredentials() } : {}),
     llmFallback: () => loadDecisionModels(opts.dataDir).llmFallback,
     dataDir: opts.dataDir, dbPath: opts.dbPath, db,
+    onCompactionProgress: (progress: CompactionProgress) => compactionProgress(progress),
     ...(opts.skillDirs ? { skillDirs: opts.skillDirs } : {}),
     childPi: opts.childPi,
     onChildDone, onChildEvent, runtimeRegistry,
@@ -2949,6 +2950,29 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
     ? configuredCompactionTimeoutMs : 10 * 60_000;
   let compactionTimer: NodeJS.Timeout | null = null;
   let compactionTimedOut = false;
+  let compactionReason = "unknown";
+  // 压缩的计时：到时限还没完成时中止这次压缩，按失败处理。
+  function startCompactionTimer(): void {
+    if (compactionTimer) clearTimeout(compactionTimer);
+    compactionTimer = setTimeout(() => {
+      compactionTimer = null;
+      compactionTimedOut = true;
+      log(`compaction (${compactionReason}) still running after ${compactionTimeoutMs}ms: aborting it`);
+      // pi 有中止压缩的接口：只停这次压缩。会话没有这个接口时，退一步中止这一轮。
+      if (session.abortCompaction) {
+        session.abortCompaction();
+      } else {
+        Promise.resolve(session.abort?.()).catch((error: any) => log(`compaction abort failed: ${error?.message ?? String(error)}`));
+      }
+    }, compactionTimeoutMs);
+    compactionTimer.unref();
+  }
+  // 分段压缩每写完一段（lead 的 compaction-chunks.ts，2026-11-01）：重新计时。时限防的是一次调用卡住，不是段数多：
+  // 135 万 token 的历史要分好几段写，加起来会超过 10 分钟。
+  function compactionProgress(progress: CompactionProgress): void {
+    log(`compaction (${compactionReason}): part ${progress.done}/${progress.total} written (history about ${progress.tokens} tokens)`);
+    if (compactionTimer) startCompactionTimer();
+  }
   // 自动压缩失败了，还没有压缩成功过：哪一种（recoverLeadContext 在下一轮开始以前先压缩一次）。
   // overflow：溢出恢复的压缩失败，上下文确实满了；threshold：到了压缩线，模型还有一点余量。
   let compactionDue: "threshold" | "overflow" | null = null;
@@ -3098,22 +3122,10 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
       if (fullText.startsWith(streamed)) routeAssistantText(fullText.slice(streamed.length));
     }
     if (event.type === "compaction_start") {
-      if (compactionTimer) clearTimeout(compactionTimer);
       compactionTimedOut = false;
-      const reason = String(event.reason ?? "unknown");
-      log(`compaction started (${reason})`);
-      compactionTimer = setTimeout(() => {
-        compactionTimer = null;
-        compactionTimedOut = true;
-        log(`compaction (${reason}) still running after ${compactionTimeoutMs}ms: aborting it`);
-        // pi 有中止压缩的接口：只停这次压缩。会话没有这个接口时，退一步中止这一轮。
-        if (session.abortCompaction) {
-          session.abortCompaction();
-        } else {
-          Promise.resolve(session.abort?.()).catch((error: any) => log(`compaction abort failed: ${error?.message ?? String(error)}`));
-        }
-      }, compactionTimeoutMs);
-      compactionTimer.unref();
+      compactionReason = String(event.reason ?? "unknown");
+      log(`compaction started (${compactionReason})`);
+      startCompactionTimer();
     }
     // 以前每一次 compaction_end 都记成「compaction done」，失败的压缩也一样（2026-10-16 那五次）。
     // 现在读 pi 的 aborted 和 errorMessage：失败写明原因，算进 Lead 的健康状态，Lead 的下一轮也知道。

@@ -32,8 +32,9 @@ afterEach(async () => {
   vi.unstubAllEnvs();
 });
 
-// 用户的一轮之后 pi 做的压缩：ok 成功，fail 失败（带 pi 的 errorMessage），hang 一直不结束，直到 abortCompaction。
-type Compaction = { kind: "ok" } | { kind: "fail"; errorMessage: string } | { kind: "hang" };
+// 用户的一轮之后 pi 做的压缩：ok 成功，fail 失败（带 pi 的 errorMessage），hang 一直不结束，直到 abortCompaction；
+// chunked 是分段压缩（lead 的 compaction-chunks.ts）：每隔 partMs 写完一段，用 daemon 给的 onCompactionProgress 报告。
+type Compaction = { kind: "ok" } | { kind: "fail"; errorMessage: string } | { kind: "hang" } | { kind: "chunked"; parts: number; partMs: number };
 
 // 不调用模型的 Lead。每一轮先回答一句话，再按 plan 的下一项做一次压缩（整理笔记那一轮只回 NO_REPLY，不压缩）。
 function stubLead(plan: Array<Compaction | null>, options: { contextFull?: boolean } = {}) {
@@ -46,7 +47,8 @@ function stubLead(plan: Array<Compaction | null>, options: { contextFull?: boole
   };
   let endCompaction: (() => void) | null = null;
   const aborts: number[] = [];
-  const factory = async () => ({
+  let factoryArgs: any = null;
+  const factory = async (args: any) => (factoryArgs = args, {
     modelName: "stub/model",
     session: {
       sessionId: "stub-session",
@@ -74,6 +76,17 @@ function stubLead(plan: Array<Compaction | null>, options: { contextFull?: boole
             type: "compaction_end", reason: "threshold", aborted: false, willRetry: false,
             result: { summary: "摘要", firstKeptEntryId: "entry-1", tokensBefore: 90_000 },
           });
+        } else if (step.kind === "chunked") {
+          for (let done = 1; done <= step.parts && aborts.length === 0; done += 1) {
+            await new Promise((resolve) => setTimeout(resolve, step.partMs));
+            factoryArgs?.onCompactionProgress?.({ done, total: step.parts, tokens: 1_350_000 });
+          }
+          emit(aborts.length > 0
+            ? { type: "compaction_end", reason: "threshold", result: undefined, aborted: true, willRetry: false }
+            : {
+              type: "compaction_end", reason: "threshold", aborted: false, willRetry: false,
+              result: { summary: "摘要", firstKeptEntryId: "entry-1", tokensBefore: 1_350_000 },
+            });
         } else if (step.kind === "fail") {
           emit({ type: "compaction_end", reason: "threshold", result: undefined, aborted: false, willRetry: false, errorMessage: step.errorMessage });
         } else {
@@ -186,6 +199,20 @@ describe("a failed compaction", () => {
     }));
     expect((await overview()).lead!.detail).toContain("超时");
     expect(logs.some((line) => line.includes("compaction failed"))).toBe(true);
+  });
+
+  // 回归（2026-11-01）：135 万 token 的历史要分好几段摘要，加起来超过时限。时限防的是一次调用卡住，
+  // 所以每写完一段重新计时：段数多不算超时。
+  it("restarts the timeout after each part of a chunked compaction, so many parts do not count as a hang", async () => {
+    vi.stubEnv("PLC_LEAD_COMPACTION_TIMEOUT_MS", "100");
+    const lead = stubLead([{ kind: "chunked", parts: 4, partMs: 60 }]);
+    const { logs, chat } = await start(lead);
+
+    await chat("看一下 #77");
+    await vi.waitFor(() => expect(logs.some((line) => line.includes("compaction done (threshold)"))).toBe(true), { timeout: 2_000 });
+    expect(lead.aborts).toEqual([]);
+    expect(logs.filter((line) => /part \d\/4 written/.test(line))).toHaveLength(4);
+    expect(logs.some((line) => line.includes("compaction failed"))).toBe(false);
   });
 });
 

@@ -10,6 +10,10 @@
 //   · 换走以后什么时候用回第一个模型：服务端给了恢复时间时按它（最优先）；额度用尽、服务端没给时间、错误又明确说是周额度时，
 //     按这类模型的周重置时间（DEFAULT_LEAD_QUOTA_RESETS：笔记 #46，Claude 的额度每周一 16:00 重置，
 //     config.json 的 lead.quotaResets 可以改）；都没有时等 restoreAfterMs（缺省 30 分钟）再试第一个模型；
+//     2026-10-31 北京时间 00:16 起约 7 个半小时：两个 Claude 账号都返回 503 auth_unavailable。以前等待从第一个模型坏的那一刻算，
+//     第二个也坏了、刚决定换到第三个（能用）时，第一个的时间往往已经到了，下一轮又换回第一个：一整夜在两个坏的之间来回。
+//     现在：等待从最近一次切换算，刚换上的模型至少用满一段等待；换回第一个以后它还是坏的，回到刚才用成功过的那个模型，
+//     不按顺序往下换；每次换回都失败，下次等待加倍，最长 MAX_LEAD_MODEL_RESTORE_MS；第一个模型用成功一轮以后，等待回到 restoreAfterMs；
 //   · 额度用尽的模型在可以再用以前跳过，不再去试（重启 daemon 也记得：quotaStore 存在 kv 里）；
 //     判断错了可以手动清掉（clearBlocked，Lead 的 clear_lead_model_quota 工具）；
 //   · 所有模型都失败了：不再换，daemon 现有的停摆流程接手。
@@ -36,6 +40,8 @@ export const DEFAULT_LEAD_QUOTA_RESETS: readonly LeadModelQuotaReset[] = [{ matc
 
 // 没有恢复时间可依据时，换走多久以后再试第一个模型。
 export const DEFAULT_LEAD_MODEL_RESTORE_MS = 30 * 60_000;
+// 换回第一个模型一再失败时，等待每次加倍，最长这么久。
+export const MAX_LEAD_MODEL_RESTORE_MS = 4 * 60 * 60_000;
 
 /** 额度用尽、在重置以前跳过的模型：模型名 → 到什么时候（毫秒时间戳）。daemon 存在 kv 里，重启不丢。 */
 export interface LeadModelQuotaStore {
@@ -225,6 +231,13 @@ export function createLeadModelFailover(options: {
   // 下一次换回第一个模型的原因（手动清掉封禁时写明是这样换回的）。没有时用「恢复时间到了」。
   let restoreNote: string | null = null;
   let restoreAt: number | null = null;
+  // 最近一次用成功的模型：换回第一个模型又失败时回到它（2026-10-31）。
+  let lastGood: number | null = null;
+  // 刚换回第一个模型，它还没用成功或者失败过一轮。
+  let justRestored = false;
+  // 连着几次换回第一个模型都失败：等待按它加倍。第一个模型用成功一轮时清零。
+  let failedRestores = 0;
+  const restoreWait = () => Math.min(MAX_LEAD_MODEL_RESTORE_MS, restoreAfterMs * 2 ** failedRestores);
   // 最近一次决定换模型的原因：换不到某个模型、接着换下一个时沿用。
   let last: { from: string; cause: LeadModelFailureCause; reason: string } | null = null;
 
@@ -277,13 +290,18 @@ export function createLeadModelFailover(options: {
 
   const advance = (from: string, cause: LeadModelFailureCause, reason: string, now: number): LeadModelFailoverDecision => {
     last = { from, cause, reason };
-    const index = next(now);
+    // 刚才用成功过的模型（不是正在失败的这个）优先：它最可能还能用。
+    const good = lastGood !== null && lastGood !== desired && !failed.has(lastGood) && !isBlocked(lastGood, now) ? lastGood : null;
+    const index = good ?? next(now);
     if (index === null) {
       return { kind: "exhausted", cause, reason, tried: models.filter((_, at) => failed.has(at) || isBlocked(at, now)) };
     }
     desired = index;
     // 绕回了第一个模型：不用再等它恢复。
     if (index === 0) restoreAt = null;
+    // 备用的模型也坏了、换到下一个：至少让新换上的用满一段等待再试第一个，不让第一个模型更早的恢复时间刚换过去就把它拉回来。
+    // 第一个模型自己失败时不在这里改：turnFailed 刚按服务端给的时间或者等待算好。
+    else if (restoreAt !== null && from !== models[0]) restoreAt = Math.max(restoreAt, now + restoreWait());
     return { kind: "switch", from, to: models[index]!, cause, reason, restoreAt };
   };
 
@@ -310,12 +328,15 @@ export function createLeadModelFailover(options: {
       unavailableStreak = 0;
       const from = models[desired]!;
       failed.add(desired);
+      // 刚换回第一个模型它就失败了：下次多等一倍。
+      if (desired === 0 && justRestored) failedRestores += 1;
+      justRestored = false;
       const quotaUntil = cause === "quota" ? blockForQuota(from, rawError, now) : null;
       // 第一个模型失败时记下什么时候再试它（每次都重新记，不留上一次的）：服务端给的恢复时间；
       // 额度用尽时是重置时间；都没有时等 restoreAfterMs。
       if (desired === 0) {
         const serverWait = leadModelRetryAfterMs(rawError);
-        restoreAt = quotaUntil ?? (serverWait !== null ? now + serverWait : now + restoreAfterMs);
+        restoreAt = quotaUntil ?? (serverWait !== null ? now + serverWait : now + restoreWait());
       }
       const reason = cause === "quota" && quotaUntil !== null
         ? `${from}${CAUSE_LABELS[cause]}（${brief(rawError)}），${localIso(new Date(quotaUntil))} 以前不再用它`
@@ -326,6 +347,9 @@ export function createLeadModelFailover(options: {
       failed.clear();
       overflowStreak = 0;
       unavailableStreak = 0;
+      lastGood = desired;
+      justRestored = false;
+      if (desired === 0) failedRestores = 0;
     },
     blockedModels(now = clock()) {
       return Object.entries(blocked).filter(([, until]) => until > now).map(([model, until]) => ({ model, until }));
@@ -361,6 +385,7 @@ export function createLeadModelFailover(options: {
       failed.clear();
       overflowStreak = 0;
       last = null;
+      justRestored = true;
       const reason = restoreNote ?? `${models[0]} 的恢复时间到了，换回第一个模型`;
       restoreNote = null;
       return { kind: "switch", from, to: models[0]!, cause: "recovered", reason, restoreAt: null };

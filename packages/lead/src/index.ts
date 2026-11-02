@@ -14,6 +14,7 @@ export * from "./model-failover.js";
 export * from "./model-switch.js";
 export * from "./precipitate.js";
 export * from "./compaction-settings.js";
+export * from "./compaction-chunks.js";
 export * from "./cost-signals.js";
 export { renderLeadSystemPrompt } from "./prompt.js";
 export * from "./session.js";

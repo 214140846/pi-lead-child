@@ -27,6 +27,7 @@ import { REPLY_STYLE_SECTION, renderReplyStyle } from "./reply-style.js";
 import { credentialGuardExtension, knownSecretValues } from "./credential-guard.js";
 import { applyLeadCompactionReserve } from "./compaction-settings.js";
 import { costSignalsExtension } from "./cost-signals.js";
+import { compactionChunksExtension, type CompactionProgress } from "./compaction-chunks.js";
 import {
   getDesignPreferences, getLeadProfile, getReplyStyle, leadProfileFields, recordDecisionModelCall, renderCoreMemory, renderStandingOrdersForLead,
 } from "@pi-lead-child/store";
@@ -164,6 +165,8 @@ export async function createLeadSession(opts: {
   dataDir: string;
   dbPath: string;
   db: LeadDeps["db"];
+  // 分段压缩每写完一段（compaction-chunks.ts）：daemon 用它重新计压缩的时限。
+  onCompactionProgress?: (progress: CompactionProgress) => void;
   onChildDone?: LeadDeps["onChildDone"];
   onChildEvent?: LeadDeps["onChildEvent"];
   childPi?: LeadDeps["childPi"];
@@ -355,6 +358,14 @@ export async function createLeadSession(opts: {
       {
         name: "plc-cost-signals", hidden: true,
         factory: costSignalsExtension({ compactAt: (window) => window - settingsManager.getCompactionSettings().reserveTokens }),
+      },
+      // 历史放不进一次摘要请求时分段压缩（compaction-chunks.ts，2026-11-01）。放得进时 pi 照常压缩。
+      {
+        name: "plc-compaction-chunks", hidden: true,
+        factory: compactionChunksExtension({
+          ...(opts.onCompactionProgress ? { onProgress: opts.onCompactionProgress } : {}),
+          log: (line) => console.error(line),
+        }),
       },
       // inlineBudget 0：codemode 的说明不列不常用工具的签名，系统提示词列它们的名字（tool-exposure.ts）。
       { name: "codemode", factory: createCodemodeExtension({ inlineBudget: LEAD_CODEMODE_INLINE_BUDGET }), hidden: true },
