@@ -49,8 +49,9 @@ export interface TurnOriginDeps {
 // 每个 Lead 工具在这里声明它的输出算不算外部内容（spec D10）：由代码定，不让模型判断。daemon 在 tool_execution_start 记，
 // Lead 去不掉。用户 2026-10-27 定的范围：只有读外部通道的对话（带卡的事实）、连接工具的结果算（加上外部消息叫醒的一轮）。
 // 调用以后 external 和 externalBy 都记上，规则 1–4 都生效。读卡的 get_channel_card 并进了 read_channel_conversation（工单 05）。
+// 外部消息附带的文件（read_channel_file，2026-11-02）和对话一样算：图片里的字也是别人写的。
 export const EXTERNAL_TEXT_TOOLS: ReadonlySet<string> = new Set([
-  "read_channel_conversation", "call_connection_tool", "read_connection_result",
+  "read_channel_conversation", "read_channel_file", "call_connection_tool", "read_connection_result",
 ]);
 
 // 输出不算外部内容的工具。用户 2026-10-27：笔记、本机文件、工单状态、child 和子 agent 的报告、账本记录都不算；

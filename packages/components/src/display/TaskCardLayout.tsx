@@ -68,7 +68,7 @@ export function TaskCardLayout({ Toggle, ...props }: TaskCardProps & { Toggle: T
   const bodyId = `task-card-${useId().replace(/[^A-Za-z0-9_-]/g, '')}`;
   const items = groupTaskSteps(props.steps);
   const thinking = props.status === 'thinking' || (props.status === 'working' && summary.title === 'Thinking');
-  const title = summary.detail ? `${summary.title} · ${summary.detail}` : summary.title;
+  const title = [summary.title, summary.detail, summary.time].filter(Boolean).join(' · ');
   const timeline = expansion.expanded ? (
     <Column
       id={bodyId}
@@ -132,6 +132,9 @@ export function TaskCardLayout({ Toggle, ...props }: TaskCardProps & { Toggle: T
             {summary.detail ? (
               <Text flex={1} minW={0} size="code" mono tone="muted" align="left" numberOfLines={1}>{`· ${summary.detail}`}</Text>
             ) : null}
+            {summary.time ? (
+              <Text size="code" tone="muted" numberOfLines={1} shrink={0}>{`· ${summary.time}`}</Text>
+            ) : null}
           </Row>
           <Icon name={expansion.expanded ? 'chevron-up' : 'chevron-down'} size={13} color="text-muted" weight="semibold" />
         </Row>
@@ -143,6 +146,8 @@ export function TaskCardLayout({ Toggle, ...props }: TaskCardProps & { Toggle: T
 
 // 并进消息头的一行：「Lead · 17:57 · 5 个工具 · 21 秒 ⌄」。和时间一样是灰色小字，没有卡片、没有成功的勾。
 // 在跑时前面有一个小转圈；有失败的工具时，失败数单独用琥珀色写出来。
+// 这一行不换行（2026-11-02 用户：在跑的命令很长时折到下一行，还超出了消息的宽度）：放不下时只截断工具的参数，
+// 工具名、用时和展开箭头照样看得到（主题 11.10）。
 function InlineSummary({
   Toggle, expansion, bodyId, title, timeline, ...props
 }: TaskCardProps & {
@@ -157,14 +162,16 @@ function InlineSummary({
   const summary = taskCardSummary(props, locale);
   const failedCount = props.steps.filter((step) => step.kind === 'tool' && step.state === 'failed').length;
   const failedLabel = failedCount ? m.failedCount(failedCount) : null;
-  const quietTitle = failedLabel ? title.replace(` · ${failedLabel}`, '') : title;
+  const quietTitle = failedLabel ? summary.title.replace(` · ${failedLabel}`, '') : summary.title;
+  const tone = summary.tone === 'failed' ? 'danger-dark' : 'secondary';
+  const testID = (part: string) => (props.testID ? `${props.testID}-${part}` : undefined);
   return (
-    <Column testID={props.testID ? `${props.testID}-inline` : undefined} w="100%" gap="card-row">
-      <Row items="center" gap="inline-item" flexWrap="wrap">
+    <Column testID={testID('inline')} w="100%" gap="card-row">
+      <Row testID={testID('inline-row')} items="center" gap="inline-item" minW={0}>
         {props.leadingMark ?? null}
-        {props.leading ? <Text size="meta" weight="semibold" tone="secondary">{props.leading}</Text> : null}
+        {props.leading ? <Text size="meta" weight="semibold" tone="secondary" numberOfLines={1} shrink={0}>{props.leading}</Text> : null}
         {/* spacing-exempt: 分隔点字号 */}
-        {props.leading ? <Text size="11" weight="semibold" tone="secondary" aria-hidden>·</Text> : null}
+        {props.leading ? <Text size="11" weight="semibold" tone="secondary" shrink={0} aria-hidden>·</Text> : null}
         <Toggle
           inline
           expanded={expansion.expanded}
@@ -174,11 +181,21 @@ function InlineSummary({
           testID={props.testID ? `${props.testID}-toggle` : undefined}
         >
           {/* spacing-exempt: 摘要开关点击区 */}
-          <Row items="center" gap="inline-item" px={4} minH={24}>
+          <Row items="center" gap="inline-item" px={4} minH={24} minW={0} shrink={1}>
             {summary.tone === 'running' && !props.leadingMark ? <Spinner size={10} color="accent" /> : null}
-            <Text size="meta" weight="semibold" tone={summary.tone === 'failed' ? 'danger-dark' : 'secondary'} numberOfLines={1}>{quietTitle}</Text>
+            <Text size="meta" weight="semibold" tone={tone} numberOfLines={1} {...(summary.detail ? { shrink: 0 } : { minW: 0, shrink: 1 })}>
+              {quietTitle}
+            </Text>
+            {summary.detail ? (
+              <Text testID={testID('detail')} size="meta" weight="semibold" tone={tone} numberOfLines={1} minW={0} shrink={1}>
+                {`· ${summary.detail}`}
+              </Text>
+            ) : null}
+            {summary.time ? (
+              <Text testID={testID('time')} size="meta" weight="semibold" tone={tone} numberOfLines={1} shrink={0}>{`· ${summary.time}`}</Text>
+            ) : null}
             {failedLabel ? (
-              <Text testID={props.testID ? `${props.testID}-failures` : undefined} size="meta" weight="semibold" tone="warning-dark">{failedLabel}</Text>
+              <Text testID={testID('failures')} size="meta" weight="semibold" tone="warning-dark" numberOfLines={1} shrink={0}>{failedLabel}</Text>
             ) : null}
             <Icon name={expansion.expanded ? 'chevron-up' : 'chevron-down'} size={10} color="text-secondary" weight="semibold" />
           </Row>

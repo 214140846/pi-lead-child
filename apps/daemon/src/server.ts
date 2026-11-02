@@ -2679,6 +2679,11 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
         if (!channelHub) throw new Error("没有接任何外部通道");
         return channelHub.recentConversations(source, limit);
       },
+      // 看消息附带的文件（2026-11-02：别人发来的截图）。只读。
+      readFile: (fileId, maxBytes) => {
+        if (!channelHub) throw new Error("没有接任何外部通道");
+        return channelHub.readFile(fileId, maxBytes);
+      },
     },
     turnUserActions,
     leadModelQuota,

@@ -1,10 +1,10 @@
-import { useEffect, useEffectEvent, useLayoutEffect, useRef } from 'react';
+import { useEffect, useEffectEvent, useImperativeHandle, useLayoutEffect, useRef } from 'react';
 import { TextInput, type NativeSyntheticEvent, type TextInputKeyPressEventData, type TextStyle } from 'react-native';
 
 import { fontFaces, palette, textLeading, textSizes } from '../theme/tokens';
 import type { ChatInputProps } from './ChatInput.types';
 
-export type { ChatInputProps } from './ChatInput.types';
+export type { ChatInputHandle, ChatInputProps } from './ChatInput.types';
 
 // 规格：文字和会话正文一样（message-body，14/24）。最少一行，最多 8 行（192 像素），再多就在框里滚动。
 const LINE = textLeading['message-body'];
@@ -16,9 +16,10 @@ const webOnly = { outlineStyle: 'none', resize: 'none' } as unknown as TextStyle
 
 // web 实现：react-native-web 的多行 TextInput（一个 textarea）。原生实现见 ChatInput.native.tsx。
 export function ChatInput({
-  value, onChangeText, placeholder, disabled = false, onSubmit, onPasteFiles, onBlur, autoFocus, testID, accessibilityLabel,
+  value, onChangeText, placeholder, disabled = false, onSubmit, onPasteFiles, onBlur, autoFocus, testID, accessibilityLabel, ref,
 }: ChatInputProps) {
   const inputRef = useRef<TextInput>(null);
+  useImperativeHandle(ref, () => ({ focus: () => inputRef.current?.focus() }), []);
 
   // 自动长高：先把高度清零，量出内容要多高，再设回去（textarea 的 scrollHeight 不会小于它现在的高度）。
   // 超过上限时固定在上限，出现滚动条。窗口宽度变了，折行跟着变，再量一次。

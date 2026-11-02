@@ -127,6 +127,24 @@ export interface ChannelOutboundRequest {
   emoji?: string;
 }
 
+/** 消息附带的一个文件（ChannelAdapter.readFile，2026-11-02：Lead 要能看别人发来的截图）。内容是不可信的外部资料。 */
+export interface ChannelFile {
+  // 带来源名的文件编号，和正文里文件标记写的一样，例如 slack:F0123。
+  id: string;
+  name: string;
+  mimeType: string;
+  size: number;
+  data: Uint8Array;
+}
+
+/** 文件编号不对或者找不到（readFile）。 */
+export class ChannelFileNotFoundError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ChannelFileNotFoundError";
+  }
+}
+
 /** 一个可以发消息的对话（ChannelAdapter.findConversations）。id 交给 resolveConversation。 */
 export interface ChannelConversationCandidate {
   id: string;
@@ -380,6 +398,11 @@ export interface ChannelAdapter {
   send(request: ChannelOutboundRequest, options: { idempotencyKey: string }, context: ChannelAdapterContext): Promise<ChannelOutboundResult>;
   /** 只读：取一个对话前面的消息，从旧到新。capabilities.history 为 true 时才有。取不到时抛错，hub 用已有的上下文。 */
   history?(request: ChannelHistoryRequest, context: ChannelAdapterContext): Promise<ChannelHistoryMessage[]>;
+  /**
+   * 只读：取消息附带的一个文件（例如截图）。ref 是正文里文件标记的文件编号去掉「来源名:」。超过 maxBytes 时抛错。
+   * 编号不对、找不到时抛 ChannelFileNotFoundError；别的原因（缺权限、下载失败）抛错，错误的话是给人看的原因。不支持时没有。
+   */
+  readFile?(ref: string, options: { maxBytes: number }, context: ChannelAdapterContext): Promise<ChannelFile>;
   /** 只读：按人名、对话名找可以发消息的对话（Lead 代用户直接发消息，2026-10-23）。不支持时没有。 */
   findConversations?(query: string, context: ChannelAdapterContext): Promise<ChannelConversationCandidate[]>;
   /**

@@ -158,7 +158,7 @@ export type { ChecklistColumn, ChecklistItem, ChecklistProps, ChecklistVerdict }
 export { Button, IconButton } from './controls/Button';
 export type { ButtonProps, ButtonSize, ButtonTone, ButtonVariant, IconButtonProps } from './controls/Button';
 export { ChatInput } from './controls/ChatInput';
-export type { ChatInputProps } from './controls/ChatInput';
+export type { ChatInputHandle, ChatInputProps } from './controls/ChatInput';
 export { Chip } from './controls/Chip';
 export type { ChipProps } from './controls/Chip';
 export { ChoiceGroup } from './controls/ChoiceGroup';

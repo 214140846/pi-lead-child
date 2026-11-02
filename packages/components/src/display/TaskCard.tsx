@@ -27,7 +27,7 @@ function WebToggle({ expanded, onPress, label, controls, children, testID, inlin
   return (
     <ToggleFrame
       testID={testID}
-      {...(inline ? { w: 'auto', rounded: 'sm' } as const : {})}
+      {...(inline ? { w: 'auto', rounded: 'sm', minW: 0, shrink: 1 } as const : {})}
       aria-expanded={expanded}
       aria-controls={expanded ? controls : undefined}
       aria-label={label}

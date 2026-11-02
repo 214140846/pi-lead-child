@@ -27,17 +27,17 @@ const note = (id: string, text: string): TaskCardStep => ({ kind: 'note', id, te
 
 describe('the collapsed line', () => {
   it('says Thinking while the model generates and no tool runs', () => {
-    expect(taskCardSummary({ status: 'thinking', steps: [] })).toEqual({ tone: 'running', title: 'Thinking', detail: null });
+    expect(taskCardSummary({ status: 'thinking', steps: [] })).toEqual({ tone: 'running', title: 'Thinking', detail: null, time: null });
     expect(taskCardSummary({ status: 'working', steps: [tool('a', 'list_items', {})] }))
-      .toEqual({ tone: 'running', title: 'Thinking', detail: null });
+      .toEqual({ tone: 'running', title: 'Thinking', detail: null, time: null });
   });
 
-  // spec D9：回合还在进行时，收起的一行写这一轮已经过去的时间。
+  // spec D9：回合还在进行时，收起的一行写这一轮已经过去的时间。时间和参数分开：参数太长时只截断参数（2026-11-02）。
   it('adds the time since the turn started while it runs', () => {
-    expect(taskCardSummary({ status: 'thinking', steps: [], durationMs: 12_000 })).toEqual({ tone: 'running', title: 'Thinking', detail: '12 s' });
+    expect(taskCardSummary({ status: 'thinking', steps: [], durationMs: 12_000 })).toEqual({ tone: 'running', title: 'Thinking', detail: null, time: '12 s' });
     const steps = [tool('b', 'query_tickets', { stage: 'review' }, { state: 'running' })];
     expect(taskCardSummary({ status: 'working', steps, durationMs: 65_000 }))
-      .toEqual({ tone: 'running', title: 'query_tickets', detail: 'stage=review · 1 min 5 s' });
+      .toEqual({ tone: 'running', title: 'query_tickets', detail: 'stage=review', time: '1 min 5 s' });
   });
 
   it('names the running tool and its most meaningful argument', () => {
@@ -45,37 +45,37 @@ describe('the collapsed line', () => {
       tool('a', 'list_items', {}),
       tool('b', 'query_tickets', { stage: 'review' }, { state: 'running' }),
     ];
-    expect(taskCardSummary({ status: 'working', steps })).toEqual({ tone: 'running', title: 'query_tickets', detail: 'stage=review' });
+    expect(taskCardSummary({ status: 'working', steps })).toEqual({ tone: 'running', title: 'query_tickets', detail: 'stage=review', time: null });
   });
 
   it('counts the tools and the time when the turn finished', () => {
     const steps = Array.from({ length: 10 }, (_, index) => tool(String(index), 'query_tickets', {}));
     expect(taskCardSummary({ status: 'done', steps: [note('n', '先查一下。'), ...steps], durationMs: 12_400 }))
-      .toEqual({ tone: 'done', title: '10 tools · 12 s', detail: null });
+      .toEqual({ tone: 'done', title: '10 tools · 12 s', detail: null, time: null });
     expect(taskCardSummary({ status: 'done', steps: [tool('a', 'x', {}, { state: 'failed' })], durationMs: 125_000 }))
-      .toEqual({ tone: 'done', title: '1 tool · 1 failed · 2 min 5 s', detail: null });
+      .toEqual({ tone: 'done', title: '1 tool · 1 failed · 2 min 5 s', detail: null, time: null });
   });
 
   it('shows an error state when the turn failed', () => {
     expect(taskCardSummary({ status: 'failed', steps: [tool('a', 'x', {}), tool('b', 'y', {})], durationMs: 3_000 }))
-      .toEqual({ tone: 'failed', title: 'Reply not finished · 2 tools done · 3 s', detail: null });
+      .toEqual({ tone: 'failed', title: 'Reply not finished · 2 tools done · 3 s', detail: null, time: null });
   });
 
   // 2026-10-16：建好提醒以后这一轮失败了，卡片只写「未完成 · 1个工具」，看不出提醒已经建好。
   it('says which tools finished when the turn failed', () => {
     expect(taskCardSummary({ status: 'failed', steps: [tool('a', 'create_reminder', {})], durationMs: 1_000 }))
-      .toEqual({ tone: 'failed', title: 'Reply not finished · 1 tool done · 1 s', detail: null });
+      .toEqual({ tone: 'failed', title: 'Reply not finished · 1 tool done · 1 s', detail: null, time: null });
     expect(taskCardSummary({ status: 'failed', steps: [tool('a', 'x', {}), tool('b', 'y', {}, { state: 'stopped' })] }))
-      .toEqual({ tone: 'failed', title: 'Reply not finished · 2 tools, 1 done', detail: null });
+      .toEqual({ tone: 'failed', title: 'Reply not finished · 2 tools, 1 done', detail: null, time: null });
   });
 
   // 界面语言是中文时，收起的一行写中文。
   it('writes the line in Chinese when the locale is zh', () => {
     const steps = [tool('a', 'x', {}, { state: 'failed' }), tool('b', 'y', {})];
     expect(taskCardSummary({ status: 'done', steps, durationMs: 125_000 }, 'zh'))
-      .toEqual({ tone: 'done', title: '2 个工具 · 1 个失败 · 2 分 5 秒', detail: null });
+      .toEqual({ tone: 'done', title: '2 个工具 · 1 个失败 · 2 分 5 秒', detail: null, time: null });
     expect(taskCardSummary({ status: 'failed', steps: [tool('a', 'x', {}), tool('b', 'y', {}, { state: 'stopped' })] }, 'zh'))
-      .toEqual({ tone: 'failed', title: '回复未完成 · 2 个工具，1 个已完成', detail: null });
+      .toEqual({ tone: 'failed', title: '回复未完成 · 2 个工具，1 个已完成', detail: null, time: null });
   });
 });
 
@@ -177,7 +177,7 @@ describe('TaskCard on web', () => {
   it('marks a call that never ended in a finished turn as not completed, without a spinner', () => {
     const unfinished = [tool('a', 'bash', { command: 'sleep 99' }, { state: 'stopped' })];
     expect(taskCardSummary({ status: 'done', steps: unfinished, durationMs: null }))
-      .toEqual({ tone: 'done', title: '1 tool · 1 not finished', detail: null });
+      .toEqual({ tone: 'done', title: '1 tool · 1 not finished', detail: null, time: null });
     renderUI(<TaskCard status="done" steps={unfinished} expanded />);
     expect(screen.getByRole('button', { name: 'bash, sleep 99, Not finished' })).toBeTruthy();
     expect(screen.queryByRole('progressbar')).toBeNull();
@@ -246,6 +246,29 @@ describe('the inline variant', () => {
         steps={[tool('a', 'query_tickets', {}), tool('b', 'add_comment', {}, { state: 'failed', error: 'db locked' })]} />,
     );
     expect(screen.getByTestId('turn-failures').textContent).toBe('1 failed');
+  });
+
+  // 2026-11-02 用户：在跑的命令很长时，这一行折到下一行，还超出了消息的宽度。整行不换行，只截断命令，工具名和用时照样看得到。
+  it('keeps a long running command on one line: the command is cut, the tool name and the time stay', () => {
+    const command = `cd ~/.pi-lead-child/lead-scratch && for u in ${'"https://docs.slack.dev/apis/events-api/using-socket-mode" '.repeat(6)}; do curl -s "$u"; done`;
+    const running = [tool('a', 'bash', { command }, { state: 'running' })];
+    renderUI(<TaskCard variant="inline" leading="Lead · Replying" status="working" steps={running} durationMs={11_000} testID="turn" />);
+    const row = getComputedStyle(screen.getByTestId('turn-inline-row'));
+    expect(row.flexWrap).not.toBe('wrap');
+    const toggle = getComputedStyle(screen.getByTestId('turn-toggle'));
+    expect(toggle.minWidth).toBe('0px');
+    expect(toggle.flexShrink).toBe('1');
+    const detail = screen.getByTestId('turn-detail');
+    expect(detail.textContent).toContain('cd ~/.pi-lead-child/lead-scratch');
+    const cut = getComputedStyle(detail);
+    expect(cut.whiteSpace).toBe('nowrap');
+    expect(cut.textOverflow).toBe('ellipsis');
+    expect(cut.minWidth).toBe('0px');
+    expect(getComputedStyle(screen.getByText('bash')).flexShrink).toBe('0');
+    const time = screen.getByTestId('turn-time');
+    expect(time.textContent).toBe('· 11 s');
+    expect(getComputedStyle(time).flexShrink).toBe('0');
+    expect(screen.getByRole('button').getAttribute('aria-label')).toContain('bash');
   });
 
   it('keeps the card variant as before for other surfaces', () => {

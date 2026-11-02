@@ -135,9 +135,10 @@ import { CHANNEL_URGENCY_TIMEOUT_MS, channelUrgencyNotAsked, judgeChannelUrgency
 import type {
   ChannelAdapter, ChannelAdapterContext, ChannelCredential, ChannelCredentialSource, ChannelDelivery,
   ChannelConversationCandidate, ChannelInbound, ChannelInboundRole, ChannelInterest, ChannelOpenCard, ChannelOpenLane, ChannelReaction,
-  ChannelConversationRead, ChannelMarkPreview, ChannelRecentConversation, ChannelSentMessage,
+  ChannelConversationRead, ChannelFile, ChannelMarkPreview, ChannelRecentConversation, ChannelSentMessage,
   ChannelTransportContext,
 } from "./types.js";
+import { ChannelFileNotFoundError } from "./types.js";
 
 export interface ChannelPushNotice {
   cardId: number;
@@ -2091,6 +2092,25 @@ export class ChannelHub {
         role: message.role, sender: message.sender.name, text: clipEventText(message.text, TEXT_MAX),
       })),
     };
+  }
+
+  /**
+   * Lead 取消息附带的一个文件（2026-11-02：别人发来的截图）。fileId 是正文里文件标记的文件编号（来源名:编号）。从来源里现取，
+   * 只读，不告诉对方。内容是不可信的外部资料。来源不能取文件、没接上、取不到时抛 unavailable；编号不对、找不到时抛 not_found。
+   */
+  async readFile(fileId: string, maxBytes: number): Promise<ChannelFile> {
+    const bar = fileId.indexOf(":");
+    const source = bar < 0 ? "" : fileId.slice(0, bar);
+    const adapter = this.options.registry.get(source);
+    if (!adapter?.readFile) throw new ChannelActionError("unavailable", `来源 ${source || fileId} 不能取文件`);
+    const context = await this.context(adapter);
+    if (!context) throw new ChannelActionError("unavailable", `来源 ${source} 现在没有接上`);
+    try {
+      return await adapter.readFile(fileId.slice(bar + 1), { maxBytes }, context);
+    } catch (error) {
+      if (error instanceof ChannelFileNotFoundError) throw new ChannelActionError("not_found", error.message);
+      throw new ChannelActionError("unavailable", `没有取到文件 ${fileId}：${errorText(error)}`);
+    }
   }
 
   /** 最近有动静的对话（道），最近的在前：给 Lead 翻对话列表用，只有结构化的事实。 */

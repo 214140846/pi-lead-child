@@ -1,10 +1,10 @@
 import {
-  Box, ChatInput, Column, IconButton, ImageThumbnail, Row, SegmentedControl, Spacer, Text,
+  Box, ChatInput, Column, IconButton, ImageThumbnail, Row, SegmentedControl, Spacer, Text, type ChatInputHandle,
 } from '@pi-lead-child/components';
 import {
   CHAT_IMAGE_MAX_COUNT, CHAT_IMAGES_MAX_TOTAL_BASE64_LENGTH, type ChatImageInput, type ChatPlacement,
 } from '@pi-lead-child/protocol';
-import { useState, type ReactNode } from 'react';
+import { useRef, useState, type ReactNode } from 'react';
 
 import { useLocale, type Locale } from '@/i18n';
 import { canPickImages, ChatImageError, pickImageFiles, prepareChatImage, type ComposerImage } from '@/data/chatImagePicker';
@@ -84,6 +84,7 @@ function MessageComposerField({
   const [preparing, setPreparing] = useState(0);
   const canAttach = attachImages && canPickImages && !minimal;
   const ready = !disabled && preparing === 0 && (text.trim().length > 0 || images.length > 0);
+  const inputRef = useRef<ChatInputHandle>(null);
 
   const send = () => {
     if (!ready) return;
@@ -91,6 +92,8 @@ function MessageComposerField({
     setText('');
     setAttachments(EMPTY_ATTACHMENTS);
     workspace.getState().clearComposerDraft(contextKey);
+    // 发完以后焦点回到输入框，好接着打字（2026-11-02）。点发送按钮时焦点在按钮上，按钮随后变灰，焦点会掉到页面上。
+    inputRef.current?.focus();
   };
 
   const addFiles = async (files: Blob[]) => {
@@ -110,6 +113,7 @@ function MessageComposerField({
 
   const input = (
     <ChatInput
+      ref={inputRef}
       value={text}
       onChangeText={setText}
       placeholder={placeholder}

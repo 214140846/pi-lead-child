@@ -121,7 +121,7 @@ describe("previewing an emoji for the settings page", () => {
   });
 
   it("keeps emoji:read optional: in the app manifest, not in the checked scopes", () => {
-    expect(SLACK_OPTIONAL_USER_SCOPES).toEqual(["emoji:read"]);
+    expect(SLACK_OPTIONAL_USER_SCOPES).toEqual(["emoji:read", "files:read"]);
     expect(SLACK_USER_SCOPES).not.toContain("emoji:read");
     expect(slackAppManifest("Leo")).toContain("      - emoji:read\n");
   });

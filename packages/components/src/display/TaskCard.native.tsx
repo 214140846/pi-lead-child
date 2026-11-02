@@ -23,7 +23,11 @@ function NativeToggle({ expanded, onPress, label, controls, children, testID, in
       accessibilityHint={expanded ? m.collapse : m.expand}
       onPress={onPress}
       hitSlop={inline ? { top: 10, bottom: 10 } : undefined}
-      style={({ pressed }) => ({ alignSelf: inline ? 'flex-start' : 'stretch', opacity: pressed ? 0.6 : 1 })}
+      style={({ pressed }) => ({
+        alignSelf: inline ? 'flex-start' : 'stretch', opacity: pressed ? 0.6 : 1,
+        // 并进消息头时，放不下就收窄，里面的参数截断（2026-11-02）。
+        ...(inline ? { flexShrink: 1, minWidth: 0 } : {}),
+      })}
     >
       {children}
     </Pressable>

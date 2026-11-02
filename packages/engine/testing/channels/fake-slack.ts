@@ -8,7 +8,9 @@
 //     记下客户端回的 ack；dropConnection 模拟断线；failNextSocketStart 让下一次连接失败。
 // 实现的 Web API：auth.test、apps.connections.open（只认 app-level token）、users.info、conversations.info（外部共享）、
 // conversations.history、conversations.replies（oldest、limit）、chat.postMessage、chat.delete、chat.update、reactions.add、
-// emoji.list（工作区的自定义 emoji，要 emoji:read；缺省的权限里没有它，和建应用的清单一样是可选的）。
+// emoji.list（工作区的自定义 emoji，要 emoji:read；缺省的权限里没有它，和建应用的清单一样是可选的）、
+// files.info（消息里附带的文件，要 files:read；也是可选的权限）。文件的内容按 url_private 下载：api.download，或者 fetch
+// 一个 https://files.slack.com/ 的地址（Authorization 头带用户令牌；令牌不对时和真的 Slack 一样回登录网页）。
 // chat.update 和真的 Slack 一样只能改自己发的消息（别人的回 cant_update_message）；reactions.add 要 reactions:write，
 // 同一个人对同一条消息回同一个表情第二次回 already_reacted。
 // 令牌的权限：真实的 Slack 在 x-oauth-scopes 头里说这个令牌有哪些权限，WebClient 把它放进 response_metadata.scopes。
@@ -43,11 +45,23 @@ export interface FakeSlackMessage {
   // 发消息时带的 Block Kit（chat.postMessage 的 blocks）。没带时没有这一项。
   blocks?: Array<Record<string, unknown>>;
   metadata?: { event_type: string; event_payload: Record<string, unknown> };
+  // 消息附带的文件（dm 的 files 选项）。
+  files?: FakeSlackFile[];
   deleted: boolean;
   // chat.update 改过几次。
   edits?: number;
   // 表情回应：名字和回了这个表情的人。
   reactions?: Array<{ name: string; users: string[] }>;
+}
+
+/** 一个上传到 Slack 的文件（addFile）。 */
+export interface FakeSlackFile {
+  id: string;
+  name: string;
+  mimetype: string;
+  data: Uint8Array;
+  // files.info 给的下载地址。缺省是 files.slack.com 上的私有地址。
+  url: string;
 }
 
 export interface FakeSlackOptions {
@@ -156,6 +170,8 @@ export class FakeSlack {
   // 工作区的自定义 emoji。测试可以改它（例如用户传了新的 emoji）。
   readonly emoji: Map<string, string>;
   readonly messages: FakeSlackMessage[] = [];
+  // 上传过的文件（addFile），按编号。
+  readonly files = new Map<string, FakeSlackFile>();
   // 收到的 Web API 调用（不含令牌）。
   readonly calls: Array<{ method: string; args: Record<string, unknown> }> = [];
   // fetch 收到的请求：方法、内容类型，和 Authorization 头里是不是 Bearer 令牌（不记令牌本身）。
@@ -168,6 +184,7 @@ export class FakeSlack {
   nextEnvelope = 1;
   private readonly now: () => Date;
   private nextEvent = 1;
+  private nextFile = 1;
   private nextTs = 1_760_000_000;
   private crashAfterPost = false;
   private failures = new Map<string, string>();
@@ -204,7 +221,34 @@ export class FakeSlack {
 
   readonly api: SlackWebApi = {
     call: async (method, args, token) => this.handle(method, args, token),
+    download: async (url, token, maxBytes) => {
+      this.downloads.push(url);
+      const file = [...this.files.values()].find((candidate) => candidate.url === url);
+      if (!file) throw new Error("slack file download: HTTP 404");
+      if (token !== this.credential.token) throw new Error("slack file download: Slack answered with a web page, not the file");
+      if (file.data.byteLength > maxBytes) throw new Error(`slack file download: the file is larger than ${maxBytes} bytes`);
+      return file.data;
+    },
   };
+
+  // 下载过的文件地址（api.download 和 fetch 都记）。
+  readonly downloads: string[] = [];
+
+  /** 上传一个文件，返回它（编号 F0…）。消息带上它：dm 的 files 选项。 */
+  addFile(name: string, mimetype: string, data: Uint8Array, options: { url?: string } = {}): FakeSlackFile {
+    const id = `F0${String(this.nextFile++).padStart(6, "0")}`;
+    const file = { id, name, mimetype, data, url: options.url ?? `https://files.slack.com/files-pri/${this.teamId}-${id}/${encodeURIComponent(name)}` };
+    this.files.set(id, file);
+    return file;
+  }
+
+  /** 消息和 files.info 里的文件（和真的 Slack 一样，不带内容）。 */
+  wireFile(file: FakeSlackFile): Record<string, unknown> {
+    return {
+      id: file.id, name: file.name, title: file.name, mimetype: file.mimetype, filetype: file.name.split(".").pop() ?? "",
+      size: file.data.byteLength, mode: "hosted", url_private: file.url, url_private_download: `${file.url}?download=1`,
+    };
+  }
 
   private async handle(method: string, args: Record<string, unknown>, token: string): Promise<Record<string, unknown>> {
     const result = await this.handleNow(method, args, token);
@@ -249,6 +293,11 @@ export class FakeSlack {
           ok: true, user_id: this.self.id, user: "me", team_id: this.teamId, team: "Home",
           response_metadata: { scopes: [...this.scopes] },
         };
+      case "files.info": {
+        if (!this.scopes.includes("files:read")) return { ok: false, error: "missing_scope", needed: "files:read" };
+        const file = this.files.get(String(args.file));
+        return file ? { ok: true, file: { ...this.wireFile(file), url_private_download: file.url } } : { ok: false, error: "file_not_found" };
+      }
       case "users.info": {
         const user = this.users.get(String(args.user));
         return user
@@ -389,6 +438,7 @@ export class FakeSlack {
       ...(message.thread_ts ? { thread_ts: message.thread_ts } : {}),
       ...(message.blocks ? { blocks: message.blocks } : {}),
       ...(message.metadata ? { metadata: message.metadata } : {}),
+      ...(message.files ? { files: message.files.map((file) => this.wireFile(file)) } : {}),
     };
   }
 
@@ -397,6 +447,18 @@ export class FakeSlack {
     const method = String(url).replace(/^.*\/api\//, "");
     const headers = new Headers(init?.headers as HeadersInit | undefined);
     const authorization = headers.get("authorization") ?? "";
+    if (String(url).startsWith("https://files.slack.com/")) {
+      this.downloads.push(String(url));
+      const file = [...this.files.values()].find((candidate) => candidate.url === String(url));
+      if (!file) return new Response("not found", { status: 404 });
+      // 和真的 Slack 一样：令牌不对（或者缺 files:read）时回 200 和登录网页，不是文件。
+      if (authorization !== `Bearer ${this.credential.token}`) {
+        return new Response("<!DOCTYPE html><title>Slack</title>", { status: 200, headers: { "content-type": "text/html; charset=utf-8" } });
+      }
+      return new Response(Buffer.from(file.data), {
+        status: 200, headers: { "content-type": file.mimetype, "content-length": String(file.data.byteLength) },
+      });
+    }
     const contentType = headers.get("content-type") ?? "";
     this.requests.push({ method, contentType, bearer: authorization.startsWith("Bearer ") });
     const limited = this.rateLimits.get(method);
@@ -540,7 +602,9 @@ export class FakeSlack {
   // bot：应用发的（带 bot_id）。attachments、blocks：应用常把正文放在这里，text 是空的（例如日历提醒）。
   dm(
     from: string, text: string,
-    options: { channel?: string; thread?: string; bot?: boolean; attachments?: unknown[]; blocks?: unknown[] } = {},
+    options: {
+      channel?: string; thread?: string; bot?: boolean; attachments?: unknown[]; blocks?: unknown[]; files?: FakeSlackFile[]; subtype?: string;
+    } = {},
   ): ChannelDelivery {
     const channel = options.channel ?? `D0${from.slice(2)}`;
     return this.post({
@@ -548,7 +612,9 @@ export class FakeSlack {
       ...(options.bot ? { bot_id: `B0${from.slice(2)}` } : {}),
       ...(options.attachments ? { attachments: options.attachments } : {}),
       ...(options.blocks ? { blocks: options.blocks } : {}),
-    });
+      ...(options.files ? { files: options.files.map((file) => this.wireFile(file)) } : {}),
+      ...(options.subtype ? { subtype: options.subtype } : {}),
+    }, options.files);
   }
 
   /** 别人在频道里提到用户。 */
@@ -636,13 +702,14 @@ export class FakeSlack {
     return channel.startsWith("D") ? "im" : "channel";
   }
 
-  private post(event: Record<string, unknown>): ChannelDelivery {
+  private post(event: Record<string, unknown>, files?: FakeSlackFile[]): ChannelDelivery {
     const ts = this.ts();
     const user = this.users.get(String(event.user));
     const team = user?.team ?? this.teamId;
     const message: FakeSlackMessage = {
       channel: String(event.channel), ts, user: String(event.user), team, text: String(event.text), deleted: false,
       ...(typeof event.thread_ts === "string" ? { thread_ts: event.thread_ts } : {}),
+      ...(files ? { files } : {}),
     };
     this.messages.push(message);
     return this.envelope({ type: "message", ...event, ts, user_team: team });

@@ -150,6 +150,8 @@ export type TaskCardSummary = {
   title: string;
   // 跑着的工具的参数。
   detail: string | null;
+  // 还在跑时这一轮已经过去的时间。和参数分开：参数太长时只截断参数，用时照样看得到（2026-11-02）。结束了的一轮，用时写在 title 里。
+  time: string | null;
 };
 
 export function formatDuration(ms: number | null | undefined, locale: Locale = 'en'): string | null {
@@ -173,8 +175,8 @@ export function taskCardSummary(
   if (status === 'thinking' || status === 'working') {
     // 还在跑：调用方给了用时（这一轮开始到现在）就写在后面，例如「Thinking · 12 秒」。
     const running = [...tools].reverse().find((step) => step.state === 'running');
-    if (status === 'thinking' || !running) return { tone: 'running', title: 'Thinking', detail: duration };
-    return { tone: 'running', title: running.name, detail: [summarizeToolArgs(running.args), duration].filter(Boolean).join(' · ') || null };
+    if (status === 'thinking' || !running) return { tone: 'running', title: 'Thinking', detail: null, time: duration };
+    return { tone: 'running', title: running.name, detail: summarizeToolArgs(running.args) || null, time: duration };
   }
   const count = tools.length ? m.toolCount(tools.length) : null;
   if (status === 'failed') {
@@ -183,7 +185,7 @@ export function taskCardSummary(
     const work = !count || done === 0 ? count
       : done === tools.length ? m.toolsDone(tools.length) : m.toolsPartlyDone(tools.length, done);
     // 说「回复未完成」：「未完成 · 1 个工具已完成」读起来自相矛盾（发布评审 3688968）。
-    return { tone: 'failed', title: [m.replyNotFinished, work, duration].filter(Boolean).join(' · '), detail: null };
+    return { tone: 'failed', title: [m.replyNotFinished, work, duration].filter(Boolean).join(' · '), detail: null, time: null };
   }
   const failed = tools.filter((step) => step.state === 'failed').length;
   const stopped = tools.filter((step) => step.state === 'stopped').length;
@@ -193,7 +195,7 @@ export function taskCardSummary(
     stopped ? m.stoppedCount(stopped) : null,
     duration,
   ].filter(Boolean);
-  return { tone: 'done', title: parts.join(' · '), detail: null };
+  return { tone: 'done', title: parts.join(' · '), detail: null, time: null };
 }
 
 // 无障碍名称里的状态。

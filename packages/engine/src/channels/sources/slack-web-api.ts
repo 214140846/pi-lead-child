@@ -5,6 +5,8 @@
 //   - SDK 遇到 ok:false 会抛「平台错误」。这里转回 Slack 原来的回答（{ ok:false, error }）：适配器按 error 分情况处理
 //     （例如撤回时 message_not_found 算已经删掉了）。网络错误、HTTP 错误照样抛错。
 //   - 报错和日志里不带令牌：先把这次的令牌原样换掉，再按通用的规则脱敏。SDK 的日志只要 warn 以上。
+//   - 下载消息附带的文件（download，2026-11-02）：不是 Web API 的方法，按 files.info 给的 url_private 直接取，
+//     令牌放在 Authorization 头里，只发往 https://files.slack.com。
 // SDK 第一次调用时才加载：engine 被很多进程引用（每个 Run 的 mcp-server、测试），加载 SDK 要几百毫秒。
 import { redactSecretText } from "@pi-lead-child/protocol";
 import type { Logger, LogLevel, RetryOptions, WebClient, WebClientOptions } from "@slack/web-api";
@@ -12,6 +14,24 @@ import type { Logger, LogLevel, RetryOptions, WebClient, WebClientOptions } from
 /** Slack Web API 的一个方法（https://slack.com/api/<method>）。返回 Slack 的 JSON（带 ok）。网络错误时抛错。 */
 export interface SlackWebApi {
   call(method: string, args: Record<string, unknown>, token: string): Promise<Record<string, unknown>>;
+  /**
+   * 下载一个文件（files.info 的 url_private_download）：只下载 https://files.slack.com 上的地址，令牌只放在 Authorization 头里。
+   * 超过 maxBytes、Slack 回的不是文件（例如令牌缺 files:read 时的登录网页）、网络错误时抛错。没有时不能下载文件。
+   */
+  download?(url: string, token: string, maxBytes: number): Promise<Uint8Array>;
+}
+
+/** 令牌只发往这个主机（slackFileUrlAllowed）。 */
+export const SLACK_FILES_HOST = "files.slack.com";
+
+/** 这个文件地址能不能带上令牌去下载：只能是 https://files.slack.com 上的地址。 */
+export function slackFileUrlAllowed(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "https:" && parsed.hostname === SLACK_FILES_HOST && !parsed.username && !parsed.password;
+  } catch {
+    return false;
+  }
 }
 
 /** WebClient 用的 fetch。测试注入假的 Slack。 */
@@ -95,7 +115,52 @@ export function createSlackWebApi(options: SlackWebApiOptions = {}): SlackWebApi
     clients.set(token, client);
     return client;
   };
+  const fetchFile = (options.fetch ?? globalThis.fetch) as typeof globalThis.fetch;
   return {
+    async download(url, token, maxBytes) {
+      if (!slackFileUrlAllowed(url)) throw new Error(`slack file download: only ${SLACK_FILES_HOST} addresses are allowed`);
+      let response: Response;
+      try {
+        response = await fetchFile(url, {
+          headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(options.timeoutMs ?? 15_000),
+        });
+      } catch (error) {
+        throw new Error(`slack file download: ${scrubSlackText(errorText(error), [token])}`);
+      }
+      if (!response.ok) throw new Error(`slack file download: HTTP ${response.status}`);
+      // 令牌不对或者缺 files:read 时，Slack 回 200 和登录网页。
+      if ((response.headers.get("content-type") ?? "").startsWith("text/html")) {
+        await response.body?.cancel();
+        throw new Error("slack file download: Slack answered with a web page, not the file (the token may lack files:read)");
+      }
+      const tooLarge = () => new Error(`slack file download: the file is larger than ${maxBytes} bytes`);
+      if (Number(response.headers.get("content-length") ?? 0) > maxBytes) {
+        await response.body?.cancel();
+        throw tooLarge();
+      }
+      const chunks: Uint8Array[] = [];
+      let size = 0;
+      if (response.body) {
+        const reader = response.body.getReader();
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          size += value.byteLength;
+          if (size > maxBytes) {
+            await reader.cancel();
+            throw tooLarge();
+          }
+          chunks.push(value);
+        }
+      }
+      const data = new Uint8Array(size);
+      let offset = 0;
+      for (const chunk of chunks) {
+        data.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      return data;
+    },
     async call(method, args, token) {
       try {
         const web = await load(token);

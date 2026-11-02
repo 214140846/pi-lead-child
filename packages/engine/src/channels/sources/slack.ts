@@ -44,15 +44,15 @@ import { SLACK_APP_TOKEN_ENV, SLACK_USER_TOKEN_ENV } from "@pi-lead-child/core";
 import { normalizeSlackEmojiCode, SLACK_BYLINE_EMOJI_DEFAULT, type SenderTrust } from "@pi-lead-child/protocol";
 import type { SystemStandingOrderSeed } from "@pi-lead-child/store";
 import { channelInboundPayload } from "../payload.js";
-import { ChannelTargetGoneError } from "../types.js";
+import { ChannelFileNotFoundError, ChannelTargetGoneError } from "../types.js";
 import type {
   ChannelAdapter, ChannelAdapterContext, ChannelConversationCandidate, ChannelConversationTarget, ChannelCredential, ChannelDelivery,
-  ChannelHistoryMessage, ChannelHistoryRequest, ChannelInbound, ChannelMarkLookup, ChannelMemorySpec, ChannelOutboundRequest, ChannelOutboundResult,
+  ChannelFile, ChannelHistoryMessage, ChannelHistoryRequest, ChannelInbound, ChannelMarkLookup, ChannelMemorySpec, ChannelOutboundRequest, ChannelOutboundResult,
   ChannelTransportContext, ChannelTransportDeliver,
 } from "../types.js";
 import { createSlackSettings } from "./slack-settings.js";
 import { createSlackSocketTransport, type SlackSocketOptions } from "./slack-socket.js";
-import { scrubSlackText, type SlackWebApi } from "./slack-web-api.js";
+import { scrubSlackText, SLACK_FILES_HOST, slackFileUrlAllowed, type SlackWebApi } from "./slack-web-api.js";
 
 export type { SlackWebApi } from "./slack-web-api.js";
 
@@ -515,6 +515,8 @@ interface SlackMessage {
   // 应用发的消息常把正文放在这里，text 是空的（slackMessageText）。
   attachments?: unknown[];
   blocks?: unknown[];
+  // 附带的文件（图片、截图、文档）：只有编号、名字、类型和下载地址，没有内容（slackFileLine）。
+  files?: unknown[];
   ts?: string;
   thread_ts?: string;
   metadata?: { event_type?: string; event_payload?: Record<string, unknown> };
@@ -590,15 +592,34 @@ function attachmentText(attachment: unknown): string[] {
   return all.length ? all : [attachment.fallback].filter(isString);
 }
 
+// Slack 的文件编号（F 开头）。readFile 只认它。
+const SLACK_FILE_ID = /^F[A-Z0-9]{1,30}$/;
+
+// 一个附带的文件在正文里的一行标记，例如「[图片 a.png，文件编号 slack:F0123]」。Lead 按文件编号取内容（readFile）。
+// 删掉的文件（tombstone）不写；超出工作区存储上限、看不到的文件写一行说明。
+function slackFileLine(file: unknown): string[] {
+  if (!isRecord(file)) return [];
+  if (file.mode === "tombstone") return [];
+  if (file.mode === "hidden_by_limit") return ["[文件 看不到：超出了工作区的存储上限]"];
+  if (!isString(file.id)) return [];
+  const name = (isString(file.name) ? file.name : isString(file.title) ? file.title : file.id).replace(/[[\]<>\n]/g, " ");
+  const type = isString(file.mimetype) ? file.mimetype : "";
+  const ref = `文件编号 ${SLACK_SOURCE}:${file.id}`;
+  return [type.startsWith("image/") ? `[图片 ${name}，${ref}]` : `[文件 ${name}，${type ? `${type}，` : ""}${ref}]`];
+}
+
 /**
  * 一条消息的正文。text 有字时就是它。应用（例如日历提醒）常把正文放在附件或者 block 里，text 是空的（2026-10-21：Google
  * Calendar 的提醒判断时拿到的是空字符串）：这时按结构取出 block 和附件里的文字，一段一行。只按结构取，不看内容。
+ * 附带的文件在正文后面，一个文件一行标记（2026-11-02：别人发来的截图以前整个丢了，Lead 只读到正文）。
  */
 export function slackMessageText(message: SlackMessage): string {
-  if (typeof message.text === "string" && message.text.trim()) return message.text;
+  const files = Array.isArray(message.files) ? message.files.flatMap(slackFileLine) : [];
+  if (typeof message.text === "string" && message.text.trim()) return [message.text, ...files].join("\n");
   const blocks = Array.isArray(message.blocks) ? message.blocks.flatMap(blockText) : [];
   const attachments = Array.isArray(message.attachments) ? message.attachments.flatMap(attachmentText) : [];
-  return [...blocks, ...attachments].map((part) => part.trim()).filter(Boolean).join("\n").slice(0, MESSAGE_TEXT_MAX);
+  const body = [...blocks, ...attachments].map((part) => part.trim()).filter(Boolean).join("\n").slice(0, MESSAGE_TEXT_MAX);
+  return [body, ...files].filter(Boolean).join("\n");
 }
 
 // Slack 正文里的标记（https://docs.slack.dev/messaging/formatting-message-text）：<@U…> 提到一个人，<#C…|名字> 一个频道，
@@ -1339,6 +1360,36 @@ export function createSlackChannelAdapter(options: SlackChannelOptions): Channel
         });
       }
       return out;
+    },
+
+    // 消息附带的文件（2026-11-02）：files.info 问下载地址，再带用户令牌下载。要 files:read（可选的权限，缺了只是看不到文件）。
+    async readFile(ref: string, readOptions: { maxBytes: number }, context: ChannelAdapterContext): Promise<ChannelFile> {
+      if (!SLACK_FILE_ID.test(ref)) throw new ChannelFileNotFoundError(`不是 Slack 的文件编号：${ref}`);
+      const result = await options.api.call("files.info", { file: ref }, context.credential.token);
+      if (result.ok !== true) {
+        const error = isString(result.error) ? result.error : "not ok";
+        if (error === "file_not_found" || error === "file_deleted") throw new ChannelFileNotFoundError(`Slack 里没有这个文件：${ref}（${error}）`);
+        if (error === "missing_scope") {
+          throw new Error("用户令牌缺 files:read 权限，读不了消息里的文件。在应用的 OAuth & Permissions 的 User Token Scopes 里加上 "
+            + "files:read，再重新安装，把新的 User OAuth Token 填进设置页");
+        }
+        throw new Error(`slack files.info: ${error}`);
+      }
+      const file = isRecord(result.file) ? result.file : {};
+      const url = isString(file.url_private_download) ? file.url_private_download : isString(file.url_private) ? file.url_private : null;
+      if (!url) throw new Error(`Slack 没有给这个文件的下载地址：${ref}`);
+      if (!slackFileUrlAllowed(url)) throw new Error(`这个文件的下载地址不在 ${SLACK_FILES_HOST} 上，不带令牌去下载`);
+      const size = typeof file.size === "number" ? file.size : 0;
+      if (size > readOptions.maxBytes) throw new Error(`文件有 ${size} 字节，超过了上限 ${readOptions.maxBytes} 字节`);
+      if (!options.api.download) throw new Error("这个 Slack 客户端不能下载文件");
+      const data = await options.api.download(url, context.credential.token, readOptions.maxBytes);
+      return {
+        id: `${SLACK_SOURCE}:${ref}`,
+        name: isString(file.name) ? file.name : ref,
+        mimeType: isString(file.mimetype) ? file.mimetype : "application/octet-stream",
+        size: data.byteLength,
+        data,
+      };
     },
 
     async send(request: ChannelOutboundRequest, sendOptions: { idempotencyKey: string }, context: ChannelAdapterContext): Promise<ChannelOutboundResult> {

@@ -105,6 +105,27 @@ describe('the message composer', () => {
     expect(input().value).toBe('');
   });
 
+  // 2026-11-02 用户：发完消息后输入框要有焦点，好接着打字。点发送按钮时浏览器先把焦点给了按钮，按钮随后变灰（没有可发的了），
+  // 焦点掉到页面上。
+  it('puts the focus back in the input after the send button sends', () => {
+    const { sendChat } = setup();
+    type('在吗');
+    const send = screen.getByTestId('send-message');
+    // 浏览器在按下鼠标时把焦点给按钮（jsdom 的 click 不会）。
+    send.focus();
+    fireEvent.click(send);
+    expect(sendChat).toHaveBeenCalledWith('在吗', undefined, undefined);
+    expect(document.activeElement).toBe(input());
+  });
+
+  it('keeps the focus in the input when Enter sends', () => {
+    setup();
+    input().focus();
+    type('在吗');
+    enter();
+    expect(document.activeElement).toBe(input());
+  });
+
   it('keeps the send button grey and inactive until there is something to send', () => {
     const { sendChat } = setup();
     const send = screen.getByTestId('send-message');

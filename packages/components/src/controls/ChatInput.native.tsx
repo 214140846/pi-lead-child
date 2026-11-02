@@ -4,7 +4,7 @@ import { useEffect } from 'react';
 import { fontFaces, palette, textLeading, textSizes } from '../theme/tokens';
 import type { ChatInputProps } from './ChatInput.types';
 
-export type { ChatInputProps } from './ChatInput.types';
+export type { ChatInputHandle, ChatInputProps } from './ChatInput.types';
 
 // 原生实现：Expo UI 的多行输入框（iOS 是 SwiftUI TextField，Android 是 Compose TextField）。multiline 的输入框随内容长高。
 // 键盘的回车换行，发送用旁边的按钮，所以不接 onSubmit；原生上也没有粘贴图片（onPasteFiles 不调）。

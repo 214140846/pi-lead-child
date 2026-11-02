@@ -14,6 +14,7 @@ description: 处理外部通道（例如 Slack）的消息之前读：交给你�
 - 交给你的外部消息带着上下文包（系统提示词「消息的来源」讲了它的格式）：这个对话最近的消息（更早的是摘要）、别的对话里的相关消息（同一个人、用户最近 30 分钟说的、提到同一个对象）、提到的对象现在的状态、这个对话以前的卡、记忆里的笔记。先看上下文包再判断，不用先读卡。事件里写了「缺了」哪几项、或者还不够时，再用 read_channel_conversation 补。
 - 要看内容时，用 read_channel_conversation 读对话（event 填消息事件时带上卡的状态、草稿和子 agent 查到的结果）。
 - 要确认 Slack 里的上下文（这件事聊到哪了、对方前面说了什么、某个频道或 thread 里的讨论）时，用 read_channel_conversation 读这个对话最近的消息；不知道是哪个对话时，用 list_channel_conversations 看最近有动静的对话，或者用 find_channel_conversations 按名字找。不要说「没有 Slack 连接，没法看」。
+- 消息正文里有文件标记（例如「[图片 screenshot.png，文件编号 slack:F0123]」）时，对方发了图片或文件。要知道里面是什么时，用 read_channel_file 看它（file 填标记里的文件编号）。不要说看不到图片。
 
 ## 2. 每条交给你的消息都要定下来
 
