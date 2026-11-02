@@ -1,6 +1,6 @@
 // 工具守卫（landing.md 第 3 节 C2）：连接中心按工具名和参数的一层检查，对所有调用方生效（Lead、执行 agent、核查 agent、
 // daemon 自己发 review）。动作的规矩写在这里，不写在某一个通道或某一种任务里：
-// 「approve 以前检查都通过、评论都 resolve、不是 draft、批准的就是看过的提交」是 GitHub 批准这个动作自己的检查。
+// 「approve 以前检查都通过（Lead 自己判断检查）、评论都 resolve、不是 draft、批准的就是看过的提交」是 GitHub 批准这个动作自己的检查。
 //
 // 一个守卫管一个连接（按连接的 key），可以做四件事：
 //   - facts：从参数里认出调用的对象，给清单检查用（例如 GitHub 搜索词里 repo: 后面的 owner 和 repo）。

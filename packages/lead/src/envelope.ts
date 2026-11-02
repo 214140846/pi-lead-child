@@ -360,7 +360,8 @@ function contextMessageLine(message: Record<string, unknown>, reasons: readonly 
   const role = CONTEXT_ROLE_LABELS[textOf(message.role) ?? ""] ?? "对方";
   const why = reasons.flatMap((reason) => (CONTEXT_REASON_LABELS[reason] ? [CONTEXT_REASON_LABELS[reason]] : []));
   const time = contextTime(message.at);
-  return `${time ? `[${time}] ` : ""}${message.root === true ? "（thread 的根消息）" : ""}${textOf(message.sender) ?? "某人"}`
+  const place = message.root === true ? "（thread 的根消息）" : message.thread === true ? "（上一条下面的 thread 里最新的回复）" : "";
+  return `${time ? `[${time}] ` : ""}${place}${textOf(message.sender) ?? "某人"}`
     + `（${role}${why.length ? `；${why.join("、")}` : ""}）：${typeof message.text === "string" ? message.text : ""}`;
 }
 

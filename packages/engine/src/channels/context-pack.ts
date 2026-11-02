@@ -421,15 +421,69 @@ function conversationMessages(db: Db, input: ContextPackInput, messageId: string
       extra.push({ seq: origin.seq ?? 0, at: origin.at, role: origin.role, senderId: "", sender: origin.sender, text: origin.text, ref: origin.ref ?? null, amends: null, root: true });
     }
   }
+  // 这个对话里的根消息下面的 thread 不在这个对话里时（例如私信），系统发进 thread 的话推回来以后记在 thread 里：这里不再放一遍。
+  const threads = rows.length ? threadMessages(db, input, rows[0]!.seq, messageId)
+    : { latest: new Map<string, InboundMessage>(), refs: new Set<string>(), texts: new Set<string>() };
+  // 推回来的消息按编号认（来源可能换了格式，例如 Markdown 换成 mrkdwn），没有编号时按原话认。
+  const seen = (sent: { ref?: string; text: string }) => (sent.ref !== undefined
+    ? messages.some((message) => message.ref === sent.ref) || threads.refs.has(sent.ref)
+    : messages.some((message) => message.text.trim() === sent.text.trim()) || threads.texts.has(sent.text.trim()));
   for (const sent of lane.filter((message) => !message.origin && message.seq === null && message.text.trim())) {
-    if (!messages.some((message) => message.text.trim() === sent.text.trim())) {
+    if (!seen(sent)) {
       extra.push({ seq: 0, at: sent.at, role: sent.role, senderId: "", sender: sent.sender, text: sent.text, ref: null, amends: null, root: false });
     }
   }
   const ordered = [...messages, ...extra].sort((a, b) => (Number(b.root) - Number(a.root)) || (timeOf(a.at) ?? 0) - (timeOf(b.at) ?? 0));
-  return ordered.map((message) => ({
-    at: message.at, role: message.role, sender: message.sender, text: clip(message.text, MESSAGE_TEXT_MAX), ...(message.root ? { root: true } : {}),
-  }));
+  const replies = threads.latest;
+  return ordered.flatMap((message) => {
+    const own: MessageContextMessage = {
+      at: message.at, role: message.role, sender: message.sender, text: clip(message.text, MESSAGE_TEXT_MAX), ...(message.root ? { root: true } : {}),
+    };
+    const reply = message.ref ? replies.get(message.ref) : undefined;
+    return reply
+      ? [own, { at: reply.at, role: reply.role, sender: reply.sender, text: clip(reply.text, MESSAGE_TEXT_MAX), thread: true }]
+      : [own];
+  });
+}
+
+// 这个对话里的根消息下面的 thread 不在这个对话里时（例如私信：回复都进 thread，thread 是另一个道，2026-11-02）：
+// latest 是每个 thread 最新的一条回复，按根消息的编号。只带一条：看得出这件事聊到了哪里，又不挤掉更早的根消息。
+// refs、texts 是这些 thread 里说过的话的编号和原话。频道的 thread 和根消息在同一个对话里，这里找不到。
+// since：这个对话读到的最早的事件，更早的根消息不在上下文包里。
+function threadMessages(
+  db: Db, input: ContextPackInput, since: number, messageId: string | null,
+): { latest: Map<string, InboundMessage>; refs: Set<string>; texts: Set<string> } {
+  const rows = db.prepare(
+    `SELECT seq, occurred_at, entity_key, payload FROM events
+      WHERE source = ? AND seq > ? AND seq < ? AND entity_key IS NOT NULL AND entity_key <> ? AND json_valid(payload)
+        AND json_extract(payload, '$.replyTo.objectKey') = ?
+      ORDER BY seq LIMIT ?`,
+  ).all(input.source, since, input.event.seq, input.conversation.key, input.conversation.key, CONVERSATION_EVENTS_MAX) as Array<{
+    seq: number; occurred_at: string; entity_key: string; payload: string;
+  }>;
+  const threads = new Map<string, { root: string; entries: InboundMessage[] }>();
+  for (const row of rows) {
+    const payload = parsePayload(row.payload);
+    const root = (payload?.replyTo as { ref?: unknown } | undefined)?.ref;
+    const message = payload ? messageOf({ seq: row.seq, occurredAt: row.occurred_at, payload }) : null;
+    if (!message || typeof root !== "string") continue;
+    const thread = threads.get(row.entity_key) ?? { root, entries: [] };
+    thread.entries.push(message);
+    threads.set(row.entity_key, thread);
+  }
+  const latest = new Map<string, InboundMessage>();
+  const refs = new Set<string>();
+  const texts = new Set<string>();
+  for (const thread of threads.values()) {
+    const said = applyAmends(thread.entries).filter((message) => message.text.trim() && message.ref !== messageId);
+    for (const message of said) {
+      if (message.ref) refs.add(message.ref);
+      texts.add(message.text.trim());
+    }
+    const last = said.at(-1);
+    if (last) latest.set(thread.root, last);
+  }
+  return { latest, refs, texts };
 }
 
 // 对话摘要：记忆沉淀的整理器写，按对话缓存（更早的那一段没变时不再问模型）。没有模型、到了每天的上限、写不成时是 null。

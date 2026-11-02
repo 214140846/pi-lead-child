@@ -18,6 +18,8 @@ export interface ChannelOutboundOutcome {
   // sent：这一次做成了；already_sent：这个键以前做成过，这一次没有调用适配器；failed：这一次没做成。
   status: "sent" | "already_sent" | "failed";
   remoteRef: Record<string, string> | null;
+  // 发出去的消息在来源里的编号（ChannelOutboundResult.messageId）。没有时不给。
+  messageId?: string;
   // 适配器说来源里已经有了（崩溃后的重试）。
   duplicate: boolean;
   error: string | null;
@@ -46,12 +48,15 @@ export class ChannelOutbox {
   constructor(private readonly options: { db: Db; now: () => Date; log: (line: string) => void }) {}
 
   /** 这个键以前做成过的结果。没有时是 null。 */
-  completed(adapterId: string, key: string): { remoteRef: Record<string, string>; duplicate: boolean } | null {
+  completed(adapterId: string, key: string): { remoteRef: Record<string, string>; duplicate: boolean; messageId?: string } | null {
     const row = this.options.db.prepare("SELECT payload FROM events WHERE source = 'system' AND source_ref = ?")
       .get(`${refBase(adapterId, key)}:done`) as { payload: string } | undefined;
     if (!row) return null;
-    const payload = JSON.parse(row.payload) as { remoteRef?: Record<string, string>; duplicate?: boolean };
-    return { remoteRef: payload.remoteRef ?? {}, duplicate: Boolean(payload.duplicate) };
+    const payload = JSON.parse(row.payload) as { remoteRef?: Record<string, string>; duplicate?: boolean; messageId?: unknown };
+    return {
+      remoteRef: payload.remoteRef ?? {}, duplicate: Boolean(payload.duplicate),
+      ...(typeof payload.messageId === "string" ? { messageId: payload.messageId } : {}),
+    };
   }
 
   /** 这个键失败过几次。 */
@@ -81,7 +86,7 @@ export class ChannelOutbox {
     const base = refBase(adapter.id, input.key);
     const common = { channel: adapter.id, key: input.key, action: input.request.action, cardId: input.cardId };
     const done = this.completed(adapter.id, input.key);
-    if (done) return { status: "already_sent", remoteRef: done.remoteRef, duplicate: done.duplicate, error: null, failures: 0 };
+    if (done) return { status: "already_sent", ...done, error: null, failures: 0 };
     db.transaction(() => {
       appendEvent(db, {
         source: "system", sourceRef: base, kind: CHANNEL_EVENT_KINDS.outboundRequested, entityKey: input.request.objectKey,
@@ -100,10 +105,13 @@ export class ChannelOutbox {
           source: "system", sourceRef: `${base}:done`, kind: CHANNEL_EVENT_KINDS.outboundCompleted,
           entityKey: input.request.objectKey, correlationId: `channel:${input.request.objectKey}`, level: "record",
           occurredAt: now().toISOString(),
-          payload: { ...common, remoteRef: result.remoteRef, duplicate: result.duplicate },
+          payload: { ...common, remoteRef: result.remoteRef, duplicate: result.duplicate, ...(result.messageId ? { messageId: result.messageId } : {}) },
         });
       })();
-      return { status: "sent", remoteRef: result.remoteRef, duplicate: result.duplicate, error: null, failures: 0 };
+      return {
+        status: "sent", remoteRef: result.remoteRef, duplicate: result.duplicate, ...(result.messageId ? { messageId: result.messageId } : {}),
+        error: null, failures: 0,
+      };
     } catch (error) {
       const message = clipEventText(scrubCredential(error instanceof Error ? error.message : String(error), context), 500);
       const attempt = this.failures(adapter.id, input.key) + 1;

@@ -100,7 +100,8 @@ export interface ChannelInbound {
   // 交给 Lead 时，改了的消息按共用入站层的规则合并（inbound.ts 的 editMergeOf）：按 messageId 认出改的是哪一条。
   amends?: "edited" | "deleted";
   // 用户本人的话（role self_reply）：说了这句话，用户就关注了它所在的对象（照来源自己的规则，例如 Slack 里发起或者回复
-  // 一个 thread 就会关注它）。没有道时 hub 照样只记录这条事件（不开道、不进 Lead 的上下文），以后 interest.followed 认它。
+  // 一个 thread 就会关注它）。没有道时 hub 照样只记录这条事件（不开道），以后 interest.followed 认它。
+  // 推回来的回复（role echo）也可以带它：没有道时只记录（例如私信的 thread，2026-11-02），上下文包从事件里看得到这条回复。
   follows?: boolean;
 }
 
@@ -122,6 +123,7 @@ export interface ChannelOutboundRequest {
   text?: string;
   // 署名和正文分开（spec D8）：有自己样式的来源用它排版（例如署名排成小字、正文分段），
   // 并且照样把 text 作为退路（通知、不显示样式的客户端）。不认识它的来源只发 text，署名也在。
+  // 带署名的正文是助手按 Markdown 写的：来源发送时换成自己的格式（例如 Slack 的 mrkdwn）。
   parts?: { byline: string; body: string | null };
   // react、unreact：表情的名字，不带冒号。
   emoji?: string;
@@ -193,7 +195,11 @@ export interface ChannelConversationRead {
   label: string;
   objectKey: string;
   // ref：这条消息在来源里的编号。Lead 改消息（editMessage）时用它指定哪一条。
-  messages: Array<{ at: string; ref: string; seq: number | null; role: "them" | "me" | "assistant"; sender: string; text: string }>;
+  // thread：这条根消息下面的 thread 有几条回复、对话编号是什么（要看回复时读它）。
+  messages: Array<{
+    at: string; ref: string; seq: number | null; role: "them" | "me" | "assistant"; sender: string; text: string;
+    thread?: { replies: number; objectKey: string };
+  }>;
 }
 
 /** 改过的一条消息（ChannelHub.editMessage，2026-11-02）：在哪个对话、哪一条，现在的文字。 */
@@ -255,6 +261,8 @@ export interface ChannelHistoryMessage {
   text: string;
   // 改这条消息时出站动作的目标（edit，2026-11-02），例如 Slack 的 { channel, ts }。来源不能改消息时没有。
   target?: Record<string, string>;
+  // 整段对话里的根消息下面有 thread 时：几条回复和这个 thread 的对话编号（回复都进 thread，2026-11-02）。回复本身不在整段对话里。
+  thread?: { replies: number; objectKey: string };
 }
 
 /**
@@ -270,6 +278,8 @@ export interface ChannelOutboundResult {
   remoteRef: Record<string, string>;
   // true：同一个幂等键以前已经做过，这一次没有在来源里再做一次。
   duplicate: boolean;
+  // reply：发出去的消息在来源里的编号（和 ChannelInbound.messageId 同一种编号）。来源推回这条消息时，按它认出是同一条。
+  messageId?: string;
 }
 
 /**
@@ -422,11 +432,6 @@ export interface ChannelAdapter {
    * 错误的话是给人看的原因。和 findConversations 一起有。
    */
   resolveConversation?(id: string, context: ChannelAdapterContext): Promise<ChannelConversationTarget>;
-  /**
-   * 回给用户本人的话（role owner 的那一轮的回复）换成来源自己的格式。Lead 按 Markdown 写；例如 Slack 的 mrkdwn 粗体是 *x*、
-   * 链接是 <url|文字>。没有时原样发。
-   */
-  ownerReplyText?(markdown: string): string;
   /**
    * 把 auth.secrets 声明的密钥（按名字）换成凭据，例如问来源「这个令牌是谁的」。换不成（令牌不对、来源不可用）时返回 null。
    * 日志里不能写密钥。

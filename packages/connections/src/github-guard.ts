@@ -1,7 +1,7 @@
 // GitHub 连接的守卫（guards.ts）。工具名和参数是 GitHub 远程 MCP（github/github-mcp-server）的线上名字。
 //   - check（对所有调用方生效）：
 //       · APPROVE 以前代码查四条（landing.md 第 3 节 C2），有一条不过就拒绝并给出原因：
-//         没有失败的检查（check run 和 commit status；还在跑的不拦）、review 线程都 resolve、不是 draft（并且 PR 是打开的）、
+//         没有失败的检查（check run 和 commit status；还在跑的不拦；Lead 不拦）、review 线程都 resolve、不是 draft（并且 PR 是打开的）、
 //         head 就是 review 过的那个提交。「review 过的提交」：带清单的 Run 看它的读取记录（最后一次读 PR 时的 head，
 //         并且之后读过这个 head 的 diff）；别的调用方（Lead、daemon）要在 commitID 里写明。读不到、读不懂的一律拒绝。
 //       · 读文件过禁止名单（硬性底线：仓库里提交了的 .env、私钥、凭据文件、日志也不读），和本地读取同一份名单。
@@ -311,7 +311,9 @@ async function approveProblem(context: ToolCallContext): Promise<string | null> 
     return "不知道 review 的是哪个提交：commitID 要写 review 过的那个提交";
   }
 
-  // 没有失败的检查。
+  // 没有失败的检查。只拦子 agent：Lead 自己读检查、自己判断（2026-11-02，用户明确要 approve 时，标题检查红了也该能批）。
+  // approve 不是合并，合并时分支保护还会再查一次。
+  if (context.role === "lead") return reviewThreadsProblem(read);
   const runs = await read("get_check_runs");
   const statuses = await read("get_status");
   const runList = runs.isError ? null : checkRuns(runs.text);
@@ -323,9 +325,11 @@ async function approveProblem(context: ToolCallContext): Promise<string | null> 
   ];
   if (failing.length) return `检查没通过：${failing.slice(0, 5).join("、")}`;
   // 还在跑的检查不拦：有的检查要等有人 approve 才会变绿（例如 human-approval 一类的状态），拦了就是死锁。
-  // approve 不是合并，合并时分支保护还会再查一次。
+  return reviewThreadsProblem(read);
+}
 
-  // review 线程都 resolve。
+/** review 线程都 resolve。 */
+async function reviewThreadsProblem(read: (method: string) => Promise<{ text: string; isError: boolean }>): Promise<string | null> {
   const threads = await read("get_review_comments");
   const state = threads.isError ? null : reviewThreadState(threads.text);
   if (!state) return "看不出 review 线程有没有都 resolve，不能 approve";

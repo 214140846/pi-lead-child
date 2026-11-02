@@ -100,9 +100,13 @@ describe("reading a conversation", () => {
     await hub.sendMessage("slack:@U0OLIVER", { text: "晚点发你", words: "user", forUser: true, by });
     const read = await hub.readConversation("slack:@U0OLIVER", 10);
     expect(read).toMatchObject({ conversation: "slack:@U0OLIVER", label: "oliver.z的私信", objectKey: "slack:D0OLIVER:main" });
-    expect(read.messages.map((message) => [message.role, message.text, message.seq])).toEqual([
-      ["them", "demo 的地址是哪个？", received.seq], ["assistant", "晚点发你", null],
+    // 回复进了这条消息下面的 thread（2026-11-02）：整段私信里只有根消息，它指向 thread。
+    const thread = `slack:D0OLIVER:${read.messages[0]!.ref}`;
+    expect(read.messages.map((message) => [message.role, message.text, message.seq, message.thread])).toEqual([
+      ["them", "demo 的地址是哪个？", received.seq, { replies: 1, objectKey: thread }],
     ]);
+    expect((await hub.readConversation(thread, 10)).messages.map((message) => [message.role, message.text]))
+      .toEqual([["them", "demo 的地址是哪个？"], ["assistant", "晚点发你"]]);
     expect(hub.recentConversations("slack")).toMatchObject([{ id: "slack:D0OLIVER:main", label: "oliver.z的私信" }]);
     expect(hub.recentConversations("jira")).toEqual([]);
     // 读不发东西。

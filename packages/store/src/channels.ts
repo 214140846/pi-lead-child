@@ -118,8 +118,8 @@ export function ensureChannelLane(db: Db, input: { source: string; objectKey: st
   return getChannelLane(db, input.objectKey)!;
 }
 
-/** 道里的起点最多几条。 */
-export const CHANNEL_LANE_ORIGIN_LIMIT = 8;
+/** 道里的起点最多几条。私信的 thread 要放前面 10 条根消息（用户 2026-11-02）。 */
+export const CHANNEL_LANE_ORIGIN_LIMIT = 10;
 
 // 起点在前、不删；别的消息只留最近的，一共不超过 CHANNEL_LANE_CONTEXT_LIMIT 条。
 function trimContext(messages: readonly ChannelLaneMessage[]): ChannelLaneMessage[] {

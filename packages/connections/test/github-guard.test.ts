@@ -1,6 +1,7 @@
 // GitHub 的工具守卫（landing.md C2，src/github-guard.ts）：对所有调用方生效。APPROVE 以前代码查四条：
 // 没有失败的检查、review 线程都 resolve、不是 draft、head 就是 review 过的那个提交。有一条不过就拒绝并给出原因。
-// 带清单的 Run 按它的读取记录认「review 过的提交」；Lead 这类调用方要在 commitID 里写明。GitHub 是假的 MCP 服务器。
+// 带清单的 Run 按它的读取记录认「review 过的提交」；Lead 这类调用方要在 commitID 里写明。失败的检查不拦 Lead。
+// GitHub 是假的 MCP 服务器。
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -124,10 +125,30 @@ describe("approving a PR, for Lead and other callers", () => {
       .rejects.toMatchObject({ code: "forbidden", message: expect.stringContaining("commitID 要写 review 过的那个提交") });
     await expect(h.callTool("github", "pull_request_review_write", { ...approve, commitID: "c".repeat(40) }, lead))
       .rejects.toMatchObject({ message: expect.stringContaining("不是 PR 现在的 head") });
-    pr.checkRuns = [{ name: "test", status: "completed", conclusion: "failure" }];
+    pr.draft = true;
     await expect(h.callTool("github", "pull_request_review_write", { ...approve, commitID: HEAD }, lead))
-      .rejects.toMatchObject({ message: expect.stringContaining("检查没通过") });
-    pr.checkRuns = [];
+      .rejects.toMatchObject({ message: expect.stringContaining("PR 还是 draft") });
+    pr.draft = false;
+    pr.threads = [{ id: "t1", isResolved: false, path: "a.ts", line: 2, body: "?" }];
+    await expect(h.callTool("github", "pull_request_review_write", { ...approve, commitID: HEAD }, lead))
+      .rejects.toMatchObject({ message: expect.stringContaining("还有 1 个 review 线程没 resolve") });
+    pr.threads[0]!.isResolved = true;
+    await h.callTool("github", "pull_request_review_write", { ...approve, commitID: HEAD }, lead);
+    expect(approved()).toHaveLength(1);
+  });
+
+  // 2026-11-02：用户明确要 Lead approve 一个 PR，PR 上只有标题检查是红的（标题缺工单号）。
+  // 守卫按失败的检查拒绝了，用户只能自己去网页点。失败的检查只拦子 agent：Lead 自己判断，合并时分支保护还会再查。
+  it("lets Lead approve with a failing check, while a run with a grant is still refused", async () => {
+    const h = await hub();
+    const lead = { role: "lead" as const, confirmed: true };
+    pr.checkRuns = [{ name: "test", status: "completed", conclusion: "success" }, { name: "Validate PR Title", status: "completed", conclusion: "failure" }];
+    pr.statuses = [{ context: "ci/legacy", state: "error" }];
+    const runId = approveRun();
+    await review(h, runId);
+    await expect(h.callTool("github", "pull_request_review_write", approve, asRun(runId)))
+      .rejects.toMatchObject({ message: expect.stringContaining("检查没通过：Validate PR Title、ci/legacy") });
+    expect(approved()).toEqual([]);
     await h.callTool("github", "pull_request_review_write", { ...approve, commitID: HEAD }, lead);
     expect(approved()).toHaveLength(1);
   });
@@ -146,7 +167,7 @@ describe("approving a PR, for Lead and other callers", () => {
   it("says a refusal comes from the plc guard, not from GitHub, and that settings cannot change it", async () => {
     const h = await hub();
     const lead = { role: "lead" as const, confirmed: true };
-    pr.checkRuns = [{ name: "test", status: "completed", conclusion: "failure" }];
+    pr.draft = true;
     const refused = await h.callTool("github", "pull_request_review_write", { ...approve, commitID: HEAD }, lead).catch((error) => error);
     expect(refused).toMatchObject({ code: "forbidden", message: expect.stringContaining("plc 的 GitHub 守卫拒绝了这次调用") });
     expect(refused.message).not.toMatch(/^GitHub 拒绝/);

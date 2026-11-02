@@ -13,6 +13,7 @@
 //       订阅频道里的普通消息（slack.channel.message：只记录。这个频道 14 天内有过道就算订阅，hub 用 channel_lanes 回答；
 //       配置 channels.slack.memory.exclude 里的频道不订阅）。
 //     系统替用户发出去的回复被推回来时，带着我们写的 metadata，认成 echo，不算用户自己回复。和用户无关的频道消息不返回。
+//     别人也装了这个应用时，Slack 也推他们能看到的消息：只收用户本人能看到的（visibleToUser）。
 //   - 鉴权：Socket Mode 用两个 daemon 专用的密钥（auth.secrets）：app-level token（xapp-）开连接，用户令牌（xoxp-）调 Web API。
 //     resolveCredential 用 auth.test 认出用户本人（编号和工作区），users.info 取用户的名字（accountName）。
 //     推来的 HTTP 请求按 Slack 的签名规则校验（x-slack-signature = v0=HMAC-SHA256(signing secret, "v0:<timestamp>:<body>")，
@@ -197,6 +198,17 @@ export function slackMrkdwnFromMarkdown(markdown: string): string {
   flushTable();
   return out.join("\n");
 }
+
+/**
+ * 发到 Slack 的文字。带署名的是助手写的话（Lead 按 Markdown 写）：正文换成 mrkdwn，text 照署名和正文重拼。
+ * 不带署名的是用户的原话或者系统的固定的话，原样发（用户 2026-11-02）。卡和事件里留的还是 Markdown，界面照常显示。
+ */
+function slackOutgoing(text: string, parts: ChannelOutboundRequest["parts"]): { text: string; parts?: { byline: string; body: string | null } } {
+  if (!parts) return { text };
+  const body = parts.body?.trim() ? slackMrkdwnFromMarkdown(parts.body) : null;
+  return { text: body ? `${parts.byline}\n${body}` : parts.byline, parts: { byline: parts.byline, body } };
+}
+
 /** Slack 通道要的两个 daemon 专用密钥（core 的 SLACK_APP_TOKEN_ENV、SLACK_USER_TOKEN_ENV）。 */
 export const SLACK_SECRET_NAMES = [SLACK_APP_TOKEN_ENV, SLACK_USER_TOKEN_ENV] as const;
 
@@ -297,6 +309,9 @@ const SLACK_EDIT_GONE = new Set(["message_not_found", "cant_update_message", "ed
 // 重连以后补拉：最多看几条道，每条道最多补几条消息。
 const BACKFILL_LANES = 20;
 const BACKFILL_MESSAGES = 50;
+// 别人也装了这个应用时，查一个事件的完整名单（apps.event.authorizations.list）：每页几个人，最多翻几页。
+const AUTHORIZATION_PAGE_SIZE = 100;
+const AUTHORIZATION_PAGES = 10;
 // 找对话（Lead 代用户直接发消息）：工作区的人一小时问一次，用户所在的对话十分钟问一次，每次最多翻几页；最多给几个结果。
 const PEOPLE_TTL_MS = 60 * MINUTE;
 const JOINED_TTL_MS = 10 * MINUTE;
@@ -500,6 +515,9 @@ interface SlackEnvelope {
   team_id?: string;
   event_id?: string;
   event_time?: number;
+  // 装了这个应用、能看到这个事件的人：Slack 只写一个。完整名单用 event_context 查（visibleToUser）。
+  authorizations?: Array<{ user_id?: string }>;
+  event_context?: string;
   event?: SlackMessageEvent;
 }
 
@@ -519,6 +537,8 @@ interface SlackMessage {
   files?: unknown[];
   ts?: string;
   thread_ts?: string;
+  // conversations.history 里 thread 的根消息带回复的条数。
+  reply_count?: number;
   metadata?: { event_type?: string; event_payload?: Record<string, unknown> };
 }
 
@@ -683,13 +703,16 @@ export function compareSlackTs(a: string, b: string): number {
   return left === right ? 0 : left < right ? -1 : 1;
 }
 
-/** 一条消息属于哪个对话：对象键和回复的目标。私信里不在线程中的是整段私信；频道里不在线程中的是以它开头的线程。 */
+/**
+ * 一条消息属于哪个对话：对象键和回复的目标。私信里不在线程中的是整段私信；频道里不在线程中的是以它开头的线程。
+ * 回复都进 thread（用户 2026-11-02）：私信的根消息也回在它下面的 thread 里，整段私信还是一个道。
+ */
 function placeOf(channel: string, channelType: string, ts: string, threadTs: string | undefined) {
   const direct = channelType === "im" || channelType === "mpim";
   // 线程的第一条消息自己也带 thread_ts（等于它的 ts）：它不是线程里的回复。
   const thread = isString(threadTs) && threadTs !== ts ? threadTs : null;
   const root = thread ?? (direct ? null : ts);
-  const replyTarget: Record<string, string> = root ? { channel, thread_ts: root } : { channel };
+  const replyTarget: Record<string, string> = { channel, thread_ts: thread ?? ts };
   return {
     direct,
     thread,
@@ -1008,6 +1031,45 @@ export function createSlackChannelAdapter(options: SlackChannelOptions): Channel
     return !excluded.has(channel, (await conversation(channel, context)).name);
   }
 
+  // 别人也装了这个应用时（用户 2026-11-02）：Slack 把装了它的人能看到的事件都推过来，包括同事和别人的私信。一个事件只发一次，
+  // authorizations 里只写一个能看到它的人。写的是用户本人就收；写的是别人时查完整名单，名单里有用户本人才收。
+  // 名单查不到（例如 App-Level Token 缺 authorizations:read）时丢掉：宁可漏收，也不把别人的消息交给 Lead。
+  // 补拉的投递是用户令牌取来的，不带 authorizations，照收。
+  async function visibleToUser(envelope: SlackEnvelope, context: ChannelAdapterContext): Promise<boolean> {
+    const self = context.credential.account;
+    const named = Array.isArray(envelope.authorizations) ? envelope.authorizations : [];
+    if (!self || !named.length || named.some((entry) => isRecord(entry) && entry.user_id === self)) return true;
+    const appToken = context.credential.secrets?.[SLACK_APP_TOKEN_ENV];
+    const drop = (reason: string) => {
+      context.log(`dropped a Slack event: ${scrubSlackText(reason, [appToken, context.credential.token])}`);
+      return false;
+    };
+    if (!isString(envelope.event_context) || !appToken) return drop("another person who installed this Slack app can see it, and it carries no event_context to check the user");
+    let cursor = "";
+    for (let page = 0; page < AUTHORIZATION_PAGES; page += 1) {
+      let result: Record<string, unknown>;
+      try {
+        result = await options.api.call("apps.event.authorizations.list", {
+          event_context: envelope.event_context, limit: AUTHORIZATION_PAGE_SIZE, ...(cursor ? { cursor } : {}),
+        }, appToken);
+      } catch (error) {
+        return drop(`cannot tell whether the user can see it (apps.event.authorizations.list failed: ${errorText(error)})`);
+      }
+      if (result.ok !== true) {
+        const code = isString(result.error) ? result.error : "not ok";
+        return drop(code === "missing_scope"
+          ? "cannot tell whether the user can see it: the App-Level Token needs authorizations:read (another person installed this Slack app)"
+          : `cannot tell whether the user can see it (apps.event.authorizations.list: ${code})`);
+      }
+      const list = Array.isArray(result.authorizations) ? result.authorizations : [];
+      if (list.some((entry) => isRecord(entry) && entry.user_id === self)) return true;
+      const next = (result.response_metadata as { next_cursor?: unknown } | undefined)?.next_cursor;
+      if (!isString(next)) break;
+      cursor = next;
+    }
+    return drop("not visible to the user (another person who installed this Slack app can see it)");
+  }
+
   // 改消息、删消息：只对已有的道（和订阅频道里的线程）。用户自己的、系统替用户发的不算（改自己的话不是回复）；只改了附件预览、文字没变的不算。
   async function amendment(
     envelope: SlackEnvelope, event: SlackMessageEvent, channel: string, channelType: string, context: ChannelAdapterContext,
@@ -1204,6 +1266,7 @@ export function createSlackChannelAdapter(options: SlackChannelOptions): Channel
       if (isString(envelope.team_id)) homeTeam ??= envelope.team_id;
       const event = envelope.event;
       if (!event || event.type !== "message" || !isString(event.channel)) return [];
+      if (!await visibleToUser(envelope, context)) return [];
       const channel = event.channel;
       const channelType = isString(event.channel_type) ? event.channel_type : "channel";
       if (event.subtype === "message_changed" || event.subtype === "message_deleted") {
@@ -1248,7 +1311,9 @@ export function createSlackChannelAdapter(options: SlackChannelOptions): Channel
         return [];
       }
       // 用户本人在频道里说的话（不是私信，不是系统替用户发的）：照 Slack 的规则，发起或者回复一个 thread 就关注它。
-      const follows = role === "self_reply" && !place.direct && await followable(channel, context);
+      // 私信里的 thread 也这样记（只记录）：回复都进 thread（2026-11-02），上下文包要看得到用户和系统在 thread 里说了什么。
+      const follows = (role === "self_reply" && (!place.direct || place.thread !== null)
+        || role === "echo" && place.direct && place.thread !== null) && await followable(channel, context);
       return [await inbound({
         envelope, message: event, channel, channelType, ts: event.ts, kind, role,
         deliveryId: `${channel}:${event.ts}`, text: await displayText(text, context), echo, occurredAt: occurred(envelope, event.ts), follows,
@@ -1280,9 +1345,6 @@ export function createSlackChannelAdapter(options: SlackChannelOptions): Channel
       }
       return found;
     },
-
-    // 回给用户本人的话（用户发给自己的私信那一轮的回复）：Lead 写的 Markdown 换成 mrkdwn（用户 2026-10-30）。
-    ownerReplyText: slackMrkdwnFromMarkdown,
 
     // 对话编号换成发消息的目标。私信某个人：先找已有的私信，没有时开一个（conversations.open，要 im:write）。
     async resolveConversation(id: string, context: ChannelAdapterContext): Promise<ChannelConversationTarget> {
@@ -1358,6 +1420,8 @@ export function createSlackChannelAdapter(options: SlackChannelOptions): Channel
           sender: { id, name: mine ? "你" : isString(message.user) ? await userName(message.user, context) : id },
           text: (await displayText(slackMessageText(message), context)).slice(0, MESSAGE_TEXT_MAX),
           target: { channel, ts: message.ts! },
+          ...(!thread && typeof message.reply_count === "number" && message.reply_count > 0
+            ? { thread: { replies: message.reply_count, objectKey: `${SLACK_SOURCE}:${channel}:${message.ts}` } } : {}),
         });
       }
       return out;
@@ -1427,14 +1491,15 @@ export function createSlackChannelAdapter(options: SlackChannelOptions): Channel
         throw new Error(`slack reactions.add: ${isString(result.error) ? result.error : "not ok"}`);
       }
       if (!isString(request.text)) throw new Error("slack: a reply needs text");
+      const outgoing = slackOutgoing(request.text, request.parts);
       if (request.action === "edit") {
         if (!isString(request.target.ts)) throw new Error("slack: nothing to edit (no ts)");
         // 同样的内容改两次结果一样，所以改写本身是幂等的。不带署名的样式时清掉原来的 blocks（不传时 Slack 会留着旧的）。
         const result = await options.api.call("chat.update", {
-          channel, ts: request.target.ts, text: request.text,
-          blocks: request.parts ? slackDisclosureBlocks(request.parts) : [],
+          channel, ts: request.target.ts, text: outgoing.text,
+          blocks: outgoing.parts ? slackDisclosureBlocks(outgoing.parts) : [],
         }, context.credential.token);
-        if (result.ok === true) return { remoteRef: { channel, ts: request.target.ts }, duplicate: false };
+        if (result.ok === true) return { remoteRef: { channel, ts: request.target.ts }, duplicate: false, messageId: request.target.ts };
         const error = isString(result.error) ? result.error : "not ok";
         // 消息没了、不是自己的、过了能改的时间：再试也一样。
         if (SLACK_EDIT_GONE.has(error)) throw new ChannelTargetGoneError(`slack chat.update: ${error}`);
@@ -1443,18 +1508,18 @@ export function createSlackChannelAdapter(options: SlackChannelOptions): Channel
       const existing = await findSent(request.target, sendOptions.idempotencyKey, context);
       if (existing) {
         rememberPosted(channel, existing);
-        return { remoteRef: { channel, ts: existing }, duplicate: true };
+        return { remoteRef: { channel, ts: existing }, duplicate: true, messageId: existing };
       }
       const result = await trackPosting(channel, api("chat.postMessage", {
         channel,
         ...(request.target.thread_ts ? { thread_ts: request.target.thread_ts } : {}),
-        text: request.text,
-        ...(request.parts ? { blocks: slackDisclosureBlocks(request.parts) } : {}),
+        text: outgoing.text,
+        ...(outgoing.parts ? { blocks: slackDisclosureBlocks(outgoing.parts) } : {}),
         metadata: { event_type: SLACK_REPLY_METADATA_TYPE, event_payload: { idempotency_key: sendOptions.idempotencyKey } },
       }, context));
       if (!isString(result.ts)) throw new Error("slack chat.postMessage: no ts in the response");
       rememberPosted(channel, result.ts);
-      return { remoteRef: { channel, ts: result.ts }, duplicate: false };
+      return { remoteRef: { channel, ts: result.ts }, duplicate: false, messageId: result.ts };
     },
   };
 }

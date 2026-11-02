@@ -18,6 +18,9 @@
 // bot token（FAKE_SLACK_BOT_TOKEN）：auth.test 认它，结果带 bot_id（设置页要拒绝它）。
 // 投递（Events API 的 event_callback）：dm、mention、chatter、selfReply、echoOf、edit、remove，签名按 Slack 的规则（v0 HMAC-SHA256）。
 // 系统用 chat.postMessage 发出去的消息，Slack 会再推回一条 message 事件（echoOf 造这一条）。
+// 装了这个应用的人（Events API 的 authorizations）：和真的 Slack 一样，一个事件只发一次，authorizations 里只写一个能看到它的人，
+// 完整名单用 event_context 调 apps.event.authorizations.list（只认 App-Level Token，要 authorizations:read，可以分页）。
+// 缺省只有用户本人能看到；seenBy 改成别的装了这个应用的人（例如共用一个应用的同事）。
 import { createHmac } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { SLACK_APP_TOKEN_ENV } from "@pi-lead-child/core";
@@ -79,6 +82,8 @@ export interface FakeSlackOptions {
   botToken?: string;
   // 用户令牌的权限（x-oauth-scopes）。缺省是 FAKE_SLACK_USER_SCOPES。
   scopes?: readonly string[];
+  // App-Level Token 的权限。缺省只有 connections:write（Slack 生成令牌时要自己选）。
+  appScopes?: readonly string[];
   // 和用户还没有私信对话的人（users.conversations 里没有，要 conversations.open，2026-10-23）。别的人都有私信 D0<编号>。
   noDirect?: readonly string[];
   // 工作区的自定义 emoji（emoji.list）：名字 → 图片地址或者 alias:<名字>。缺省没有。
@@ -167,6 +172,8 @@ export class FakeSlack {
   readonly botToken: string;
   // 用户令牌现在的权限。测试可以改它（例如用户在 Slack 里补了权限）。
   scopes: string[];
+  // App-Level Token 现在的权限。测试可以改它。
+  appScopes: string[];
   // 工作区的自定义 emoji。测试可以改它（例如用户传了新的 emoji）。
   readonly emoji: Map<string, string>;
   readonly messages: FakeSlackMessage[] = [];
@@ -184,6 +191,8 @@ export class FakeSlack {
   nextEnvelope = 1;
   private readonly now: () => Date;
   private nextEvent = 1;
+  // 每个事件的 event_context → 装了这个应用、能看到它的人（apps.event.authorizations.list 的回答）。
+  private readonly visibility = new Map<string, string[]>();
   private nextFile = 1;
   private nextTs = 1_760_000_000;
   private crashAfterPost = false;
@@ -206,6 +215,7 @@ export class FakeSlack {
     this.appToken = options.appToken ?? FAKE_SLACK_APP_TOKEN;
     this.botToken = options.botToken ?? FAKE_SLACK_BOT_TOKEN;
     this.scopes = [...(options.scopes ?? FAKE_SLACK_USER_SCOPES)];
+    this.appScopes = [...(options.appScopes ?? ["connections:write"])];
     this.emoji = new Map(Object.entries(options.emoji ?? {}));
     this.credential = {
       token: options.token ?? FAKE_SLACK_TOKEN,
@@ -266,6 +276,7 @@ export class FakeSlack {
     if (method === "apps.connections.open") {
       return token === this.appToken ? { ok: true, url: "wss://fake-slack.test/link" } : { ok: false, error: "invalid_auth" };
     }
+    if (method === "apps.event.authorizations.list") return this.eventAuthorizations(args, token);
     if (token === this.appToken) return { ok: false, error: "not_allowed_token_type" };
     if (token === this.botToken) {
       if (method === "auth.test") {
@@ -341,8 +352,17 @@ export class FakeSlack {
         return { ok: true, channel: { id: `D0${user.slice(2)}` } };
       }
       case "conversations.history": {
-        const top = this.live().filter((message) => message.channel === args.channel && !message.thread_ts && this.after(message, args.oldest));
-        return { ok: true, messages: top.reverse().slice(0, this.limit(args.limit)).map((message) => this.wire(message)) };
+        const live = this.live();
+        const top = live.filter((message) => message.channel === args.channel && !message.thread_ts && this.after(message, args.oldest));
+        // 真 Slack 的 thread 根消息带 reply_count（只有根消息，回复不在这里）。
+        const replies = (ts: string) => live.filter((reply) => reply.channel === args.channel && reply.thread_ts === ts).length;
+        return {
+          ok: true,
+          messages: top.reverse().slice(0, this.limit(args.limit)).map((message) => {
+            const count = replies(message.ts);
+            return { ...this.wire(message), ...(count ? { reply_count: count } : {}) };
+          }),
+        };
       }
       case "conversations.replies": {
         const thread = this.live().filter((message) => message.channel === args.channel
@@ -715,10 +735,45 @@ export class FakeSlack {
     return this.envelope({ type: "message", ...event, ts, user_team: team });
   }
 
+  /** 同一次投递，但装了这个应用、能看到它的是这些人（第一个写进 authorizations）。例如张三也装了用户的应用。 */
+  seenBy(delivery: ChannelDelivery, users: readonly string[]): ChannelDelivery {
+    if (!users.length) throw new Error("seenBy needs at least one user");
+    const envelope = JSON.parse(delivery.body) as Record<string, unknown>;
+    const context = this.eventContext();
+    this.visibility.set(context, [...users]);
+    return this.sign(JSON.stringify({ ...envelope, authorizations: [this.authorization(users[0]!)], event_context: context }), {});
+  }
+
+  private authorization(user: string): Record<string, unknown> {
+    return { enterprise_id: null, team_id: this.teamId, user_id: user, is_bot: false, is_enterprise_install: false };
+  }
+
+  private eventContext(): string {
+    return `4-fake-${this.nextEvent}-${this.visibility.size + 1}`;
+  }
+
+  // apps.event.authorizations.list：只认 App-Level Token（放在 Authorization 头里），要 authorizations:read；按 limit 分页。
+  private eventAuthorizations(args: Record<string, unknown>, token: string): Record<string, unknown> {
+    if (token !== this.appToken) return { ok: false, error: token === this.credential.token ? "not_allowed_token_type" : "invalid_auth" };
+    if (!this.appScopes.includes("authorizations:read")) return { ok: false, error: "missing_scope", needed: "authorizations:read" };
+    const users = typeof args.event_context === "string" ? this.visibility.get(args.event_context) : undefined;
+    if (!users) return { ok: false, error: "invalid_event_context" };
+    const limit = Math.max(Number(args.limit) || 100, 1);
+    const start = typeof args.cursor === "string" && args.cursor ? Number(args.cursor) : 0;
+    if (!Number.isInteger(start) || start < 0 || start > users.length) return { ok: false, error: "invalid_cursor" };
+    const next = start + limit < users.length ? String(start + limit) : "";
+    return {
+      ok: true, authorizations: users.slice(start, start + limit).map((user) => this.authorization(user)),
+      response_metadata: { next_cursor: next },
+    };
+  }
+
   private envelope(event: Record<string, unknown>): ChannelDelivery {
+    const context = this.eventContext();
+    this.visibility.set(context, [this.self.id]);
     const body = JSON.stringify({
       type: "event_callback", team_id: this.teamId, event_id: `Ev${String(this.nextEvent++).padStart(6, "0")}`,
-      event_time: Math.floor(this.now().getTime() / 1000), event,
+      event_time: Math.floor(this.now().getTime() / 1000), authorizations: [this.authorization(this.self.id)], event_context: context, event,
     });
     return this.sign(body, {});
   }

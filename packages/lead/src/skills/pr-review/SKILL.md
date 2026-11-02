@@ -18,6 +18,7 @@ description: 用户要你评审一个 GitHub PR 之前读（「review 这个 PR�
 - 缺省 deliver='post'：评审 agent 自己发到这个 PR（建待提交的评审、逐条加行内评论、提交），只能写这个 PR，交回的是一句话和评审的链接。用户说「PR 评审直接发行内评论」就是这种做法。
 - 用户说「先给我看看」时用 deliver='return'：评审只交回、不发，交回说明写着它有多长。你读完自己发，或者再派一个轻子 agent 去发。
 - review_events 缺省是 COMMENT 和 REQUEST_CHANGES。用户明确要 approve 时才加上 APPROVE。读过外部内容的一轮里，系统不给 APPROVE。
+- 用户明确要你 approve 一个 PR 时，你自己用 GitHub 连接提交（pull_request_review_write，event=APPROVE，commitID 写 PR 现在的 head）。上次评审以后有新提交时，先读新的 diff，确认阻塞点改了再批。检查失败或者还在跑（例如等人批准的状态）都不拦你：你自己判断，值得说的告诉用户。
 
 ## 3. 结论回来以后
 

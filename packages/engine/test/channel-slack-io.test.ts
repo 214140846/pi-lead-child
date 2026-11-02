@@ -3,7 +3,7 @@
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { tempDir } from "@pi-lead-child/core/testing";
-import { getEvent, openDb, type Db } from "@pi-lead-child/store";
+import { getEvent, getOpenChannelCard, openDb, type Db } from "@pi-lead-child/store";
 import { ChannelHub, ChannelRegistry, createSlackChannelAdapter, type ChannelAdapter, type ChannelAdapterContext } from "../src/index.js";
 import { FakeSlack, FAKE_SLACK_USER_SCOPES } from "../testing/index.js";
 
@@ -52,6 +52,20 @@ describe("inbound: which message a reply answers", () => {
     });
   });
 
+  // 用户 2026-11-02：DM 里很多人直接在根上发消息。回复默认进 thread：挂在这条消息下面，没有 thread 就开一个。
+  // 整段私信还是一个道（:main），只有回复的位置变了。
+  it("answers a DM root message in a thread under it, and keeps the whole DM as one conversation", async () => {
+    const { hub } = setup();
+    const root = slack.dm("U0ETHAN", "Could you take a look at the deploy doc?");
+    const item = (await hub.receive("slack", root)).items[0]!;
+    expect(item.objectKey).toBe("slack:D0ETHAN:main");
+    expect(getOpenChannelCard(db, item.objectKey)!.replyTarget).toEqual({ channel: "D0ETHAN", thread_ts: tsOf(root) });
+
+    const reply = slack.dm("U0ETHAN", "the second section", { thread: tsOf(root) });
+    const second = (await hub.receive("slack", reply)).items[0]!;
+    expect(getOpenChannelCard(db, second.objectKey)!.replyTarget).toEqual({ channel: "D0ETHAN", thread_ts: tsOf(root) });
+  });
+
   it("in a channel thread the root and the replies share one conversation", async () => {
     const { hub } = setup();
     const root = slack.mention("U0ETHAN", "这个接口的超时是多少？");
@@ -95,6 +109,27 @@ describe("history (read only)", () => {
     expect((await adapter.history!({ objectKey: "slack:D0ETHAN:main", limit: 5 }, context)).map((message) => message.text))
       .toEqual(["第一条", "第二条"]);
     await expect(adapter.history!({ objectKey: "jira:ABC-1:main", limit: 5 }, context)).rejects.toThrow("not a Slack conversation");
+  });
+});
+
+// 用户 2026-11-02：Lead 按 Markdown 写给别人的话，以前原样当 mrkdwn 发，对方看到 **粗体** 两边的星号。
+// 带署名的话（Lead 写的）发到 Slack 时换成 mrkdwn；用户的原话不带署名，原样发。
+describe("outbound: Lead writes Markdown", () => {
+  const markdown = "**Done.** See [the doc](https://example.com/doc)\n- step one";
+
+  it("sends Lead's Markdown to someone else as mrkdwn, in the text and in the blocks", async () => {
+    const { hub } = setup();
+    await hub.sendMessage("slack:D0ETHAN:main", { text: markdown, words: "assistant", by: "lead", forUser: false });
+    const message = slack.sent("D0ETHAN").at(-1)!;
+    expect(message.text).toContain("*Done.* See <https://example.com/doc|the doc>\n• step one");
+    expect(message.text).not.toContain("**");
+    expect(JSON.stringify(message.blocks)).toContain("*Done.* See <https://example.com/doc|the doc>");
+  });
+
+  it("sends the user's own words as they are", async () => {
+    const { hub } = setup();
+    await hub.sendMessage("slack:D0ETHAN:main", { text: "*bold* in Slack syntax", words: "user", by: "user", forUser: true });
+    expect(slack.sent("D0ETHAN").at(-1)!.text).toBe("*bold* in Slack syntax");
   });
 });
 

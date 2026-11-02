@@ -82,6 +82,8 @@ export const MessageContextMessageSchema = Type.Object({
   ...ContextMessageProperties,
   // thread 的根消息（和它之前的几条）：总在最前面，超过上限时也不换成摘要。
   root: Type.Optional(Type.Boolean()),
+  // 前一条根消息下面的 thread 里最新的一条回复（thread 是另一个对话，例如私信里的回复都进 thread，2026-11-02）。
+  thread: Type.Optional(Type.Boolean()),
 });
 export type MessageContextMessage = Static<typeof MessageContextMessageSchema>;
 

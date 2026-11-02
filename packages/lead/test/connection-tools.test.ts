@@ -75,8 +75,8 @@ describe("a refusal from a connection guard", () => {
     const db = openDb(join(tempDir("plc-lead-conn-gh-"), "plc.db"));
     const gh = new FakeGithub();
     gh.addPullRequest({
-      owner: "Acme", repo: "x", number: 7, title: "t", body: "b", headSha: "a".repeat(40), diff: "",
-      checkRuns: [{ name: "test", status: "completed", conclusion: "failure" }], statuses: [],
+      owner: "Acme", repo: "x", number: 7, title: "t", body: "b", headSha: "a".repeat(40), diff: "", draft: true,
+      checkRuns: [{ name: "test", status: "completed", conclusion: "success" }], statuses: [],
     });
     const hub = new ConnectionHub({
       db, vault: new Vault(randomBytes(32)), config: { clients: {} }, redirectUri: () => "http://127.0.0.1:1/cb",
@@ -97,7 +97,7 @@ describe("a refusal from a connection guard", () => {
       arguments: { owner: "Acme", repo: "x", pullNumber: 7, method: "create", event: "APPROVE", body: "LGTM", commitID: "a".repeat(40) },
     });
     expect(result).toMatchObject({ ok: false, error: "forbidden", message: expect.stringContaining("plc 的 GitHub 守卫拒绝了这次调用") });
-    expect(result.message).toContain("检查没通过：test");
+    expect(result.message).toContain("PR 还是 draft");
     expect(result.next).toContain("设置里改不了");
     expect(result.next).not.toContain("可以在设置里改");
   });

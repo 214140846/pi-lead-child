@@ -386,8 +386,9 @@ export class ChannelActionError extends Error {
 }
 
 const EXCERPT_MAX = 280;
-// 起点里放被回复的那条之前的几条（同一个对话里的）。
-const ORIGIN_BEFORE = 2;
+// 起点里放被回复的那条之前的几条（同一个对话里的）。只有根消息在另一个对话里时才放（例如私信的 thread，根消息在整段私信里）：
+// 私信里很多人直接在根上发消息，收到 thread 里的话时先看前面 10 条根消息（被回复的那条和它之前的 9 条，用户 2026-11-02）。
+const ORIGIN_BEFORE = 9;
 const HISTORY_TIMEOUT_MS = 3_000;
 
 // 事件 payload 里的 replyTo（ChannelInbound.replyTo）。形状不对时当作没有。
@@ -661,8 +662,8 @@ export class ChannelHub {
   }
 
   /**
-   * 回用户本人（用户写给 Lead 的话那一轮的回复，ChannelHubOptions.owner）：Lead 写的 Markdown 换成来源自己的格式
-   * （ownerReplyText），署上助手的名字，发回那个对话。key 是幂等键（daemon 用轮次的编号），重试不会发两次。
+   * 回用户本人（用户写给 Lead 的话那一轮的回复，ChannelHubOptions.owner）：署上助手的名字，发回那个对话。
+   * Lead 写的 Markdown 由来源发送时换成自己的格式（带署名的话都这样）。key 是幂等键（daemon 用轮次的编号），重试不会发两次。
    * 没有经过卡、授权表和信心模型：这是用户本人和 Lead 的对话。发不出去时抛 ChannelActionError。
    */
   async replyToOwner(conversationId: string, text: string, key: string): Promise<{ objectKey: string; status: ChannelOutboundOutcome["status"] }> {
@@ -677,8 +678,7 @@ export class ChannelHub {
     } catch (error) {
       throw new ChannelActionError("not_found", errorText(error));
     }
-    const body = (adapter.ownerReplyText ? adapter.ownerReplyText(text) : text).trim();
-    const signed = ownerReplyDisclosure(this.assistantFor(adapter), body);
+    const signed = ownerReplyDisclosure(this.assistantFor(adapter), text.trim());
     const outcome = await this.outbox.perform(adapter, context, {
       key: `owner:${key}`, purpose: "auto_reply", cardId: null,
       request: { action: "reply", objectKey: place.objectKey, target: place.target, text: signed.text, parts: signed.parts },
@@ -752,7 +752,8 @@ export class ChannelHub {
     // 例外：用户本人说了让他关注这个对象的话（follows，例如在 Slack 的 thread 里发起或者回复）：没有道也只记录这一条，
     // 以后 interest.followed 认它，这个对象里别人的话只记录、沉淀进记忆（用户 2026-10-21：照 Slack 的自动关注规则）。
     const existingLane = getChannelLane(db, item.objectKey);
-    const followOnly = item.role === "self_reply" && item.follows === true && !existingLane;
+    // 推回来的回复带 follows 时同样只记录（例如私信 thread 里的回复，2026-11-02）：以后这个 thread 有道时，上下文包里有这条。
+    const followOnly = (item.role === "self_reply" || item.role === "echo") && item.follows === true && !existingLane;
     if (item.role !== "message" && !existingLane && !followOnly) return { item: { ...base, ignored: "no_lane" }, card: null, push: false };
     const at = this.now();
     const text = clipEventText(item.text, TEXT_MAX);
@@ -1234,7 +1235,7 @@ export class ChannelHub {
           resolution: { by, action, at },
         }, { at: now });
         this.disposeCardEvents(card, "handled", { by, action, cardId: card.id });
-        this.laneMessage(card, "me", sent.text, at);
+        this.laneMessage(card, "me", sent.text, at, outcome.messageId);
         return;
       }
       // 代查的自动回复（幂等键里有代查的编号）按 channel.reply；授权表代你拒绝的按授权表；模板的（旧卡）按 channel.delegate。
@@ -1272,7 +1273,7 @@ export class ChannelHub {
       });
       setEventDisposition(db, event.seq, "auto_handled", { standingOrder: order, cardId: card.id }, now);
       this.disposeCardEvents(card, "auto_handled", { standingOrder: order, cardId: card.id, autoReplySeq: event.seq });
-      this.laneMessage(card, "assistant", sent.text, at);
+      this.laneMessage(card, "assistant", sent.text, at, outcome.messageId);
     })();
   }
 
@@ -2148,6 +2149,7 @@ export class ChannelHub {
         ref: message.ref,
         seq: (seqOf.get(adapter.id, place.objectKey, message.ref) as { seq: number } | undefined)?.seq ?? null,
         role: message.role, sender: message.sender.name, text: clipEventText(message.text, TEXT_MAX),
+        ...(message.thread ? { thread: message.thread } : {}),
       })),
     };
   }
@@ -4188,12 +4190,13 @@ export class ChannelHub {
     }
   }
 
-  private laneMessage(card: ChannelCard, role: "me" | "assistant", text: string, at: string): void {
+  // ref：发出去的消息在来源里的编号。来源推回这条消息时，上下文包按它认出是同一条（文字可能换了格式）。
+  private laneMessage(card: ChannelCard, role: "me" | "assistant", text: string, at: string, ref?: string): void {
     const lane = getChannelLaneById(this.db, card.laneId);
     if (!lane) return;
     const next = recordChannelLaneMessage(this.db, {
       source: card.source, objectKey: card.objectKey, label: lane.label,
-      message: { at, seq: null, role, sender: role === "me" ? "你" : "系统代你", text },
+      message: { at, seq: null, role, sender: role === "me" ? "你" : "系统代你", text, ...(ref ? { ref } : {}) },
     });
     this.refreshLaneSummary(next);
   }

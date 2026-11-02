@@ -39,7 +39,7 @@ const SECRETS: readonly ChannelSecretSpec[] = [
     name: SLACK_APP_TOKEN_ENV,
     label: "App-Level Token",
     prefix: "xapp-",
-    hint: "在应用的 Basic Information → App-Level Tokens 点 Generate Token and Scopes，加 connections:write。",
+    hint: "在应用的 Basic Information → App-Level Tokens 点 Generate Token and Scopes，加 connections:write 和 authorizations:read（别人也装了这个应用时，用它认出哪些消息是你能看到的）。",
   },
   {
     name: SLACK_USER_TOKEN_ENV,

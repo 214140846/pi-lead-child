@@ -349,3 +349,82 @@ describe("notes are recalled by topic and by sender separately (replay finding C
     expect(contextOf(latestMessageEvent())!.memory).toEqual([expect.objectContaining({ title: "Lucas Chen" })]);
   });
 });
+
+// 用户 2026-11-02：DM 里很多人直接在根上发消息，回复都进 thread。收到 DM 时，先看前面 10 条根消息，判断是不是在接着说。
+// thread 是另一个道，所以上下文包要把两边接起来：thread 的道带上前面的根消息；整段私信带上每个 thread 里最新的一条回复。
+describe("a DM where the replies are in threads (2026-11-02)", () => {
+  const tsOf = (delivery: { body: string }) => (JSON.parse(delivery.body) as { event: { ts: string } }).event.ts;
+
+  it("shows the latest reply of each thread right after its root in the whole DM", async () => {
+    const channels = hub();
+    const root = slack.dm("U0ETHAN", "Could you check the deploy doc?");
+    await deliver(channels, root);
+    pass(MINUTE);
+    await deliver(channels, slack.selfReply("D0ETHAN", "Looking now", { thread: tsOf(root) }));
+    pass(MINUTE);
+    await deliver(channels, slack.selfReply("D0ETHAN", "Done, I left two comments", { thread: tsOf(root) }));
+    pass(HOUR);
+    await deliver(channels, slack.dm("U0ETHAN", "Thanks! One more question on step 3"));
+
+    const messages = contextOf(latestMessageEvent())!.conversation.messages as Array<Record<string, unknown>>;
+    expect(messages.map((message) => [message.role, message.text, message.thread ?? false])).toEqual([
+      ["them", "Could you check the deploy doc?", false],
+      ["me", "Done, I left two comments", true],
+    ]);
+  });
+
+  it("shows what was sent in the thread when the other person answers there, and shows it once in the whole DM", async () => {
+    const channels = hub();
+    const root = slack.dm("U0ETHAN", "Is the staging deploy done?");
+    await deliver(channels, root);
+    pass(MINUTE);
+    await channels.sendMessage("slack:D0ETHAN:main", { text: "Not yet, which branch do you need?", words: "user", by: "user", forUser: true });
+    await deliver(channels, slack.echoOf(slack.sent("D0ETHAN").at(-1)!));
+    pass(MINUTE);
+    await deliver(channels, slack.dm("U0ETHAN", "release/2.4", { thread: tsOf(root) }));
+
+    const inThread = contextOf(latestMessageEvent())!.conversation.messages as Array<Record<string, unknown>>;
+    expect(inThread.map((message) => [message.role, message.text])).toContainEqual(["assistant", "Not yet, which branch do you need?"]);
+
+    pass(HOUR);
+    await deliver(channels, slack.dm("U0ETHAN", "Another thing: the logs"));
+    const whole = contextOf(latestMessageEvent())!.conversation.messages as Array<Record<string, unknown>>;
+    expect(whole.filter((message) => message.text === "Not yet, which branch do you need?")).toHaveLength(0);
+    expect(whole.map((message) => [message.role, message.text, message.thread ?? false])).toEqual([
+      ["them", "Is the staging deploy done?", false],
+      ["them", "release/2.4", true],
+    ]);
+  });
+
+  it("knows Lead's Markdown reply when it comes back from Slack as mrkdwn, and shows it once", async () => {
+    const channels = hub();
+    await deliver(channels, slack.dm("U0ETHAN", "Is the staging deploy done?"));
+    pass(MINUTE);
+    await channels.sendMessage("slack:D0ETHAN:main", { text: "**Not yet.** Which branch?", words: "assistant", by: "lead", forUser: false });
+    const sent = slack.sent("D0ETHAN").at(-1)!;
+    expect(sent.text).toContain("*Not yet.* Which branch?");
+    await deliver(channels, slack.echoOf(sent));
+    pass(HOUR);
+    await deliver(channels, slack.dm("U0ETHAN", "Another thing: the logs"));
+
+    const whole = contextOf(latestMessageEvent())!.conversation.messages as Array<Record<string, unknown>>;
+    const replies = whole.filter((message) => String(message.text).includes("Which branch?"));
+    expect(replies).toHaveLength(1);
+    expect(replies[0]).toMatchObject({ role: "assistant", thread: true });
+  });
+
+  it("gives a message in a DM thread the ten root messages before it", async () => {
+    const channels = hub();
+    const roots = [];
+    for (let index = 1; index <= 12; index += 1) {
+      roots.push(slack.dm("U0ETHAN", `root ${index}`));
+      await deliver(channels, roots.at(-1)!);
+      pass(MINUTE);
+    }
+    await deliver(channels, slack.dm("U0ETHAN", "and this one?", { thread: tsOf(roots.at(-1)!) }));
+
+    const messages = contextOf(latestMessageEvent())!.conversation.messages as Array<Record<string, unknown>>;
+    expect(messages.filter((message) => message.root).map((message) => message.text))
+      .toEqual(Array.from({ length: 10 }, (_, index) => `root ${index + 3}`));
+  });
+});
