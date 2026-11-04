@@ -251,6 +251,32 @@ daemon 常驻本机，supervisor 负责守护和自动拉起，所有数据存�
 
 ---
 
+<!-- install-guide:zh:start -->
+## 安装 Bytezard Lead
+
+Bytezard Lead 需要 Apple 芯片的 Mac。
+
+1. 下载 `bytezard-lead-<版本>-arm64.dmg`。
+2. 打开 dmg，把 **Bytezard Lead** 拖到「应用程序」。
+3. 打开 Bytezard Lead。macOS 提示无法验证开发者，点「完成」。
+4. 打开「系统设置 → 隐私与安全性」，向下滚动，点「仍要打开」。
+5. 警告再次出现时，点「打开」。
+
+Bytezard Lead 还没有 Apple 证书签名。这几步只需要做一次。
+
+### 打不开怎么办
+
+如果 macOS 提示 Bytezard Lead「已损坏」，在终端运行下面的命令，然后重新打开 Bytezard Lead。
+
+```sh
+xattr -dr com.apple.quarantine "/Applications/Bytezard Lead.app"
+```
+<!-- install-guide:zh:end -->
+
+dmg 在本仓库的 [Releases](../../releases/latest) 页面。要从源码构建，看下一节。
+
+---
+
 ## 快速开始
 
 需要 macOS 和 Node 24。

@@ -97,6 +97,39 @@ export function chooseWorktreeBase(repoRoot: string, sourceDir: string): Worktre
   return { ref: remoteRef, branch };
 }
 
+async function asyncGit(args: string[], cwd: string): Promise<string | null> {
+  const result = await gitRun(args, cwd, { timeout: 10_000 });
+  return result.ok ? result.stdout.trim() : null;
+}
+
+/** originDefaultBranch 的异步版：git 在子进程里跑，不占住 daemon 的主线程（2026-11-03）。 */
+export async function originDefaultBranchAsync(repoRoot: string): Promise<string | null> {
+  if (await asyncGit(["remote", "get-url", "origin"], repoRoot) === null) return null;
+  const head = await asyncGit(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], repoRoot);
+  if (head) return head.replace(/^origin\//, "");
+  for (const name of ["main", "master"]) {
+    if (await asyncGit(["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${name}`], repoRoot)) return name;
+  }
+  return null;
+}
+
+/** chooseWorktreeBase 的异步版，选法一样。daemon 建新的隔离 worktree（provisionWorkspaceAsync）用它。 */
+export async function chooseWorktreeBaseAsync(repoRoot: string, sourceDir: string): Promise<WorktreeBase> {
+  const branch = await originDefaultBranchAsync(repoRoot);
+  const remoteRef = branch ? await asyncGit(["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${branch}`], repoRoot) : null;
+  if (!branch || !remoteRef) {
+    const head = await asyncGit(["rev-parse", "HEAD"], sourceDir);
+    if (!head) throw new Error(`cannot resolve HEAD in ${sourceDir}`);
+    return { ref: head, branch: null };
+  }
+  const localRef = await asyncGit(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], repoRoot);
+  if (localRef && localRef !== remoteRef
+      && await asyncGit(["merge-base", "--is-ancestor", remoteRef, localRef], repoRoot) !== null) {
+    return { ref: localRef, branch };
+  }
+  return { ref: remoteRef, branch };
+}
+
 /** 记下 worktree 基于哪个分支：PR 的 base 用它（delivery.ts 的 pullRequestBase）。 */
 export function recordWorktreeBase(db: Db, workspace: Pick<Workspace, "id" | "owner_item_id">, base: WorktreeBase): void {
   addActivity(db, {

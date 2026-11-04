@@ -9,7 +9,7 @@ import { openDb, type Db } from "@pi-lead-child/store";
 import { createPairing, listBindings } from "@pi-lead-child/store";
 import { tempDir } from "@pi-lead-child/core/testing";
 import { createControlPlaneService } from "../src/control-plane.js";
-import { startPairedServer } from "../src/paired-server.js";
+import { SHELL_PAIRING_HEADER, startPairedServer } from "../src/paired-server.js";
 import { gatewayBaseUrl, resolveWebFile } from "../src/web-static.js";
 
 let db: Db;
@@ -44,6 +44,7 @@ async function start(opts: {
   webRoot?: string;
   allowLoopbackAutoPair?: boolean;
   loopbackAutoPairOrigins?: string[];
+  loopbackAutoPairShellKey?: string;
   host?: string;
 } = {}) {
   const server = await startPairedServer({
@@ -240,6 +241,32 @@ describe("loopback auto-pair from the gateway's own web UI", () => {
       await disabled.close();
     }
     expect(listBindings(db)).toHaveLength(0);
+  });
+
+  // 桌面版的发布模式：回环自动配对开着，但要带 Bytezard Lead 窗口从数据目录读到的口令（P0-4 返工）。
+  // 同一台 Mac 上别的系统用户能连回环端口、能伪造 Origin，但读不到口令文件。
+  it("in desktop release mode pairs only requests that carry the shell's token", async () => {
+    const key = "a".repeat(64);
+    const server = await start({ webRoot, allowLoopbackAutoPair: true, loopbackAutoPairShellKey: key });
+    const origin = `http://127.0.0.1:${server.port}`;
+    const pair = (headers: Record<string, string>) => fetch(`${server.base}/v1/paired/loopback`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin, ...headers },
+      body: JSON.stringify({ name: "gateway-web" }),
+    });
+    try {
+      expect((await pair({})).status).toBe(403);
+      expect((await pair({ [SHELL_PAIRING_HEADER]: "b".repeat(64) })).status).toBe(403);
+      expect((await pair({ [SHELL_PAIRING_HEADER]: key.slice(1) })).status).toBe(403);
+      expect(listBindings(db)).toHaveLength(0);
+      const paired = await pair({ [SHELL_PAIRING_HEADER]: key });
+      expect(paired.status).toBe(201);
+      const { access_token } = await paired.json() as { access_token: string };
+      const overview = await fetch(`${server.base}/v1/overview`, { headers: { authorization: `Bearer ${access_token}` } });
+      expect(overview.status).toBe(200);
+    } finally {
+      await server.close();
+    }
   });
 
   it("does not trust its own origin when it serves no web UI", async () => {

@@ -814,7 +814,10 @@ describe('channel cards that follow each other', () => {
     expect(within(run).getByTestId('channel-card-1')).toBeTruthy();
     expect(within(run).getByTestId('channel-card-2')).toBeTruthy();
     expect(getComputedStyle(run).gap).toBe('var(--t-space-list-row)');
-    expect(getComputedStyle(screen.getByTestId('conversation-column')).gap).toBe('var(--t-space-conversation-block)');
+    // 会话流里块和块之间（ChatList 的间隔，2026-11-04）。
+    for (const gap of screen.getAllByTestId('lead-conversation-scroll-gap')) {
+      expect(getComputedStyle(gap).paddingTop).toBe('var(--t-space-conversation-block)');
+    }
   });
 });
 

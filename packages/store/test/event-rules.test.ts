@@ -243,3 +243,40 @@ describe("the digest batch", () => {
     expect(dueDigestBatch(db, new Date(), { userReturned: true })).toMatchObject({ due: false, events: [] });
   });
 });
+
+// 新库和线上库都没有统计信息，SQLite 只按索引的形状挑计划。加了 events_level（level, seq）以后，
+// 「level IN / level =」看起来比时间范围更窄，下面两条查询就改走它，按级别读全部历史：
+// 线上重启后第一次升级扫描用了 222 ms（2026-11-04）。它们要走只有未处置事件的 events_undisposed。
+describe("query plans", () => {
+  // 截下函数真正 prepare 的 SQL，再问 SQLite 给它的计划。
+  function plansOf(run: () => void, match: RegExp): string[] {
+    const prepare = db.prepare;
+    const seen: string[] = [];
+    db.prepare = ((source: string) => {
+      if (match.test(source)) seen.push(source);
+      return prepare(source);
+    }) as Db["prepare"];
+    try {
+      run();
+    } finally {
+      db.prepare = prepare;
+    }
+    expect(seen.length).toBeGreaterThan(0);
+    return seen.map((sql) => {
+      const params = Array<null>((sql.match(/\?/g) ?? []).length).fill(null);
+      return (prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...params) as { detail: string }[]).map((row) => row.detail).join("\n");
+    });
+  }
+
+  it("finds overdue events through the undisposed index", () => {
+    for (const plan of plansOf(() => escalateOverdueEvents(db, new Date()), /level IN \('digest', 'auto', 'tell'\)/)) {
+      expect(plan).toContain("events_undisposed");
+    }
+  });
+
+  it("finds the root-cause merge target through the undisposed index", () => {
+    for (const plan of plansOf(() => retryNotice(task("a")), /json_extract\(root_cause, '\$\.code'\)/)) {
+      expect(plan).toContain("events_undisposed");
+    }
+  });
+});

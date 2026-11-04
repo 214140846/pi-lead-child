@@ -9,7 +9,11 @@
 // 实现的 Web API：auth.test、apps.connections.open（只认 app-level token）、users.info、conversations.info（外部共享）、
 // conversations.history、conversations.replies（oldest、limit）、chat.postMessage、chat.delete、chat.update、reactions.add、
 // emoji.list（工作区的自定义 emoji，要 emoji:read；缺省的权限里没有它，和建应用的清单一样是可选的）、
-// files.info（消息里附带的文件，要 files:read；也是可选的权限）。文件的内容按 url_private 下载：api.download，或者 fetch
+// files.info（消息里附带的文件，要 files:read；也是可选的权限）。
+// 断线以后的补拉（2026-11-03）用的两个：search.messages（要 search:read，用户令牌缺省没有；会话令牌有用户的全部权限）和
+// client.counts（网页版客户端自己用的方法，只认会话令牌；用户令牌回 not_allowed_token_type）。search.messages 和真的 Slack 一样：
+// 按 sort=timestamp 排序、count 最多 100、page 从 1 起；同一个对话（频道或 thread）里挨得近（5 分钟以内）的几条匹配只回一条。
+// 查询只认两种写法：<@用户编号>（正文里提到这个人）和 after:YYYY-MM-DD（这一天以后，按 UTC 算）。文件的内容按 url_private 下载：api.download，或者 fetch
 // 一个 https://files.slack.com/ 的地址（Authorization 头带用户令牌；令牌不对时和真的 Slack 一样回登录网页）。
 // chat.update 和真的 Slack 一样只能改自己发的消息（别人的回 cant_update_message）；reactions.add 要 reactions:write，
 // 同一个人对同一条消息回同一个表情第二次回 already_reacted。
@@ -250,6 +254,8 @@ export class FakeSlack {
   // 用 cookie 换会话（GET /auth）成功了几次。
   sessionSignIns = 0;
   sessionLive = true;
+  // 认哪个会话 cookie。缺省是 FAKE_SLACK_SESSION_COOKIE；测试可以换成真实长度的（网页版的 d cookie 可能超过 1000 个字符）。
+  sessionCookie = FAKE_SLACK_SESSION_COOKIE;
   // 会话方式的 Web API 收到的方法名（不含令牌和 cookie）。
   readonly sessionCalls: string[] = [];
   private readonly now: () => Date;
@@ -327,8 +333,9 @@ export class FakeSlack {
     };
   }
 
-  private async handle(method: string, args: Record<string, unknown>, token: string): Promise<Record<string, unknown>> {
-    const result = await this.handleNow(method, args, token);
+  // via：调用从哪里来。session 是网页版的会话令牌（有用户的全部权限，能调 client.counts）。
+  private async handle(method: string, args: Record<string, unknown>, token: string, via: "app" | "session" = "app"): Promise<Record<string, unknown>> {
+    const result = await this.handleNow(method, args, token, via);
     const hold = this.responseHolds.get(method);
     if (hold) {
       this.responseHolds.delete(method);
@@ -337,7 +344,7 @@ export class FakeSlack {
     return result;
   }
 
-  private async handleNow(method: string, args: Record<string, unknown>, token: string): Promise<Record<string, unknown>> {
+  private async handleNow(method: string, args: Record<string, unknown>, token: string, via: "app" | "session"): Promise<Record<string, unknown>> {
     this.calls.push({ method, args });
     // app-level token 只能开 Socket 连接；别的方法要用户令牌。
     if (method === "apps.connections.open") {
@@ -471,6 +478,11 @@ export class FakeSlack {
         message.edits = (message.edits ?? 0) + 1;
         return { ok: true, channel: message.channel, ts: message.ts, text: message.text };
       }
+      case "search.messages":
+        if (via === "app" && !this.scopes.includes("search:read")) return { ok: false, error: "missing_scope", needed: "search:read" };
+        return this.searchMessages(args);
+      case "client.counts":
+        return via === "session" ? this.clientCounts() : { ok: false, error: "not_allowed_token_type" };
       case "emoji.list": {
         if (!this.scopes.includes("emoji:read")) return { ok: false, error: "missing_scope", needed: "emoji:read" };
         return { ok: true, emoji: Object.fromEntries(this.emoji), cache_ts: "1760000000.000000" };
@@ -507,6 +519,59 @@ export class FakeSlack {
       default:
         return { ok: false, error: "unknown_method" };
     }
+  }
+
+  // search.messages：只认 <@用户编号> 和 after:YYYY-MM-DD。挨得近的匹配只回一条（真的 Slack 的文档这样写）。
+  private searchMessages(args: Record<string, unknown>): Record<string, unknown> {
+    const query = String(args.query ?? "");
+    const mention = /<@([A-Z0-9]+)>/.exec(query)?.[1] ?? null;
+    const after = /after:(\d{4}-\d{2}-\d{2})/.exec(query)?.[1] ?? null;
+    const day = (ts: string) => new Date(Number(ts) * 1000).toISOString().slice(0, 10);
+    const hits = this.live()
+      .filter((message) => (!mention || message.text.includes(`<@${mention}>`)) && (!after || day(message.ts) > after))
+      .sort((a, b) => Number(a.ts) - Number(b.ts));
+    const shown: FakeSlackMessage[] = [];
+    for (const message of hits) {
+      const near = shown.find((other) => other.channel === message.channel && other.thread_ts === message.thread_ts
+        && Math.abs(Number(other.ts) - Number(message.ts)) < 300);
+      if (!near) shown.push(message);
+    }
+    if (args.sort === "timestamp" && args.sort_dir !== "asc") shown.reverse();
+    const count = Math.min(Math.max(Number(args.count) || 20, 1), 100);
+    const page = Math.max(Number(args.page) || 1, 1);
+    const pages = Math.max(Math.ceil(shown.length / count), 1);
+    const matches = shown.slice((page - 1) * count, page * count).map((message) => {
+      const direct = message.channel.startsWith("D");
+      const link = `${FAKE_SLACK_WORKSPACE_URL}archives/${message.channel}/p${message.ts.replace(".", "")}`;
+      return {
+        type: direct ? "im" : "message", iid: `${message.channel}-${message.ts}`, ts: message.ts, user: message.user, text: message.text,
+        team: message.team ?? this.teamId, username: this.users.get(message.user)?.name ?? message.user,
+        channel: { id: message.channel, name: direct ? message.user : this.channelNames.get(message.channel) ?? message.channel, is_mpim: false, is_private: false },
+        permalink: message.thread_ts ? `${link}?thread_ts=${message.thread_ts}&cid=${message.channel}` : link,
+      };
+    });
+    return { ok: true, query, messages: { matches, total: shown.length, paging: { count, total: shown.length, page, pages } } };
+  }
+
+  // client.counts：每个有消息的私信和频道，最新一条的 ts 和提到用户的条数（这里不记已读，提到的都算没读）。
+  private clientCounts(): Record<string, unknown> {
+    const latest = new Map<string, { latest: string; mentions: number }>();
+    for (const message of this.live()) {
+      const entry = latest.get(message.channel) ?? { latest: message.ts, mentions: 0 };
+      if (Number(message.ts) > Number(entry.latest)) entry.latest = message.ts;
+      if (message.text.includes(`<@${this.self.id}>`)) entry.mentions += 1;
+      latest.set(message.channel, entry);
+    }
+    const row = ([id, entry]: [string, { latest: string; mentions: number }]) => ({
+      id, latest: entry.latest, mention_count: entry.mentions, has_unreads: true,
+    });
+    const all = [...latest];
+    return {
+      ok: true,
+      ims: all.filter(([id]) => id.startsWith("D")).map(row),
+      mpims: [],
+      channels: all.filter(([id]) => !id.startsWith("D")).map(row),
+    };
   }
 
   private after(message: FakeSlackMessage, oldest: unknown): boolean {
@@ -691,7 +756,7 @@ export class FakeSlack {
   // ── 浏览器会话（网页版协议）──────────────────────────────────────────────────────
 
   private sessionCookieOk(cookieHeader: string | null): boolean {
-    return this.sessionLive && cookieHeader === `d=${FAKE_SLACK_SESSION_COOKIE}`;
+    return this.sessionLive && cookieHeader === `d=${this.sessionCookie}`;
   }
 
   /** 网页版的 HTTP 替身：换令牌和工作区 Web API。 */
@@ -724,7 +789,7 @@ export class FakeSlack {
       for (const key of Object.keys(args)) if (key.startsWith("_x_")) delete args[key];
       if (!cookieOk || token !== FAKE_SLACK_SESSION_TOKEN) return Response.json({ ok: false, error: "invalid_auth" });
       this.sessionCalls.push(method);
-      const result = await this.handle(method, args, this.credential.token);
+      const result = await this.handle(method, args, this.credential.token, "session");
       const { response_metadata: _scopes, ...rest } = result;
       return Response.json(rest);
     }

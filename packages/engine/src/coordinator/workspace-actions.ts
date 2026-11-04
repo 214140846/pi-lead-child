@@ -78,13 +78,13 @@ export function workspaceActionDone(workspace: Workspace, action: WorkspaceActio
  * 释放或清理一个工作区，按「谁做的」记一条活动（Lead 代你做时带 onBehalfOf 和那一轮）。谁能做由调用方（操作层）先查：
  * 这里只做状态的检查（releaseWorkspace、cleanupWorkspace 自己的）。
  */
-export function performWorkspaceAction(
+export async function performWorkspaceAction(
   db: Db,
   request: {
     action: WorkspaceActionId; workspaceId: number; by?: ActionAttribution; reason?: string;
     mergeStatus?: "merged" | "abandoned";
   },
-): WorkspaceActionResult {
+): Promise<WorkspaceActionResult> {
   const before = getWorkspace(db, request.workspaceId);
   if (!before) throw new Error(`workspace ${request.workspaceId} not found`);
   const by = request.by ?? BY_USER;
@@ -94,7 +94,7 @@ export function performWorkspaceAction(
     payload: { decision, workspaceId: workspace.id, status: workspace.state, reason: request.reason ?? null, ...behalfFields(by) },
   });
   if (request.action === "release") {
-    const result = releaseWorkspace(db, before.id, { mergeStatus: request.mergeStatus });
+    const result = await releaseWorkspace(db, before.id, { mergeStatus: request.mergeStatus });
     const status: WorkspaceActionResult["status"] = result.state === "pending_integration"
       ? "pending_integration"
       : ["released", "cleaned", "archived"].includes(before.state)
@@ -106,7 +106,7 @@ export function performWorkspaceAction(
   if (["cleaned", "archived"].includes(before.state)) {
     return { action: request.action, itemId, status: "already_cleaned", workspace: before };
   }
-  const result = cleanupWorkspace(db, before.id);
+  const result = await cleanupWorkspace(db, before.id);
   record("workspace_cleanup", result);
   return { action: request.action, itemId, status: "cleaned", workspace: result };
 }

@@ -5,35 +5,42 @@
 //                  用户 plc daemon stop 过、或者维护进行中时，supervisor 拒绝，退出码 3。
 //                  显式启动在维护进行中也被拒绝（退出码 3）
 //   stop           没有 supervisor 时停 daemon，并在 supervisor-state.json 里记下"用户停的"
-//   install        安装 launchd 常驻 supervisor
+//   install        安装 launchd 常驻 supervisor（开发安装；运行包里运行时不查 AM_API_KEY）
+//   desktop-install --root <安装根>/current [--locale en|zh] [--progress-json]
+//                  桌面版：一条命令装好 launchd 服务并等到健康，按行输出 JSON 进度（supervisor 的 desktop-install.ts）
+//   login-shell-path  读登录 shell 的 PATH，写进 <数据目录>/login-shell-path.json。App 每次打开时运行
+//   selfcheck      运行包自检：能加载 better-sqlite3，能读 release.json。换版本以前对新版本运行
 //   uninstall      卸载 launchd 常驻
 //   doctor         只读诊断
 //   lead-model     显示 Lead 模型与 provider
 //   lead-use SPEC  把 Lead 默认模型写入 config.json
+import Database from "better-sqlite3";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, openSync, statSync } from "node:fs";
 import { connect } from "node:net";
 import { join } from "node:path";
 import {
   DAEMON_ONLY_ENV_NAMES,
-  dataDir, dbPath, distDir, envConfigPath, loadEnvConfig, packageSource, projectRoot, workspaceDir,
+  captureLoginShellPath, dataDir, dbPath, distDir, envConfigPath, installRoot, loadEnvConfig, packageSource, projectRoot,
+  saveLoginShellPath, workspaceDir,
 } from "@pi-lead-child/core";
 import {
-  agentStatus, autoStartRefusal, buildsFreshReal, loadSupervisorState, saveSupervisorState, dbProbesReal, distFreshReal, formatChecks, installAgent, keychainSecretExists,
-  plistContent, plistPath, resolveDaemonOnlyKey, resolveKeyReal, runDoctor, supervisorAvailable, supervisorListening, supervisorRequest, supervisorSockPath,
+  agentStatus, autoStartRefusal, bootstrapAgent, buildsFreshReal, ensureRunningTimeoutMs, hasReleaseManifest, plistPath as launchdPlistPath,
+  preRenamePlistPaths, readReleaseManifest, runDesktopInstall, loadSupervisorState, saveSupervisorState, dbProbesReal, distFreshReal, formatChecks, installAgent, keychainSecretExists,
+  plistContent, plistPath, resolveDaemonOnlyKey, resolveKeyReal, runDoctor, supervisorListening, supervisorRequest, supervisorSockPath,
   uninstallAgent, uninstallHindsightService, type BuildOutput, type DoctorProbes, type SupervisorStatus,
 } from "@pi-lead-child/supervisor";
 import {
   loadLeadModelConfig, resolveLeadApiKey, selectedLeadModelSpec, setLeadModelInConfig,
 } from "@pi-lead-child/lead";
 import { defaultWebRoot } from "@pi-lead-child/gateway";
-import type { DaemonLocalStatus, LocalSocketCommand } from "@pi-lead-child/protocol";
+import { isLocale, type DaemonLocalStatus, type LocalSocketCommand } from "@pi-lead-child/protocol";
 import {
   dropLedgerGuards, ledgerGuardedTables, ledgerGuardDropSql, ledgerGuardTriggers, missingLedgerGuards, openExistingDb,
 } from "@pi-lead-child/store";
 
 const PROJECT_ROOT = projectRoot();
-const USAGE = "usage: ops.mjs start [--auto] | stop | install | uninstall | doctor | lead-model | lead-use <provider/model> | ledger-guard status|uninstall";
+const USAGE = "usage: ops.mjs start [--auto] | stop | install | desktop-install --root <dir> [--locale en|zh] [--progress-json] | login-shell-path | selfcheck | uninstall | doctor | lead-model | lead-use <provider/model> | ledger-guard status|uninstall";
 // start --auto 被 supervisor 拒绝（plc 的 daemon-link.ts 认这个退出码）。
 const AUTO_START_REFUSED = 3;
 
@@ -62,10 +69,13 @@ function spawnSupervisorDetached(): void {
   proc.unref();
 }
 
+// 有没有 supervisor 在跑，只看 supervisor.sock 连不连得上（supervisorListening）。2026-11-03 负载 35–90：supervisor 的
+// status 先问忙着的 daemon（最多 1.5 秒），这里以前只给它 1 秒，就当它没在跑：start 等满 20 秒报「supervisor 启动失败」，
+// stop 绕过它自己写它的状态文件。连得上就把请求交给它，请求有自己的时限。
 async function waitForSupervisor(timeoutMs = 20_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (await supervisorAvailable()) return;
+    if (await supervisorListening()) return;
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   throw new Error(`supervisor 启动失败，查看日志: ${join(dataDir(), "supervisor.log")}`);
@@ -74,7 +84,7 @@ async function waitForSupervisor(timeoutMs = 20_000): Promise<void> {
 async function waitForSupervisorStopped(timeoutMs = 40_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (!(await supervisorAvailable())) return;
+    if (!(await supervisorListening())) return;
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   throw new Error("旧 Supervisor 未能在安装前完整退出");
@@ -154,9 +164,9 @@ async function shutdownUnsupervisedDaemon(): Promise<void> {
 }
 
 async function start(auto: boolean, force = false): Promise<number> {
-  if (!(await supervisorAvailable())) {
-    // supervisor 在忙（socket 能连上，只是没及时回答）时只等它，不再起第二个（2026-10-15 live）。
-    if (!(await supervisorListening())) spawnSupervisorDetached();
+  // supervisor 在忙（socket 能连上，只是没及时回答）时不再起第二个（2026-10-15 live），也不等它先回答 status（2026-11-03）。
+  if (!(await supervisorListening())) {
+    spawnSupervisorDetached();
     await waitForSupervisor();
   }
   if (auto) {
@@ -195,7 +205,7 @@ async function start(auto: boolean, force = false): Promise<number> {
 // 没有 supervisor 时的 plc daemon stop。和 supervisor 的 stop_daemon 一样把 desiredState 记成 stopped
 // （同一个状态文件，同一套读写），这样之后的自动拉起不会把 daemon 又拉起来。
 async function stop(): Promise<number> {
-  if (await supervisorAvailable()) {
+  if (await supervisorListening()) {
     await supervisorRequest({ type: "stop_daemon" }, { timeoutMs: 35_000 });
     console.log("daemon 已停止，Supervisor 保持运行");
     return 0;
@@ -214,27 +224,33 @@ async function stop(): Promise<number> {
   return 0;
 }
 
+// 停掉正在跑的 supervisor 和 daemon：launchd 管的先 bootout，自己起的发 shutdown。install 和 desktop-install 共用。
+async function stopRunningService(): Promise<void> {
+  if ((await agentStatus()) !== null) {
+    await uninstallAgent(plistPath());
+    await waitForSupervisorStopped();
+  }
+  if (await supervisorListening()) {
+    await supervisorRequest({ type: "shutdown" }, { timeoutMs: 35_000 }).catch(() => {});
+    await waitForSupervisorStopped();
+  } else if (await daemonReachable()) {
+    await shutdownUnsupervisedDaemon();
+  }
+}
+
 async function install(): Promise<number> {
   const entry = join(distDir(), "supervisor.mjs");
   if (!existsSync(entry)) { console.error("先构建: npm run build"); return 1; }
+  // AM_API_KEY 是开发环境的要求。运行包（根目录有 release.json）里不查它。
   const configuredKey = resolveKeyReal(dataDir(), {}, "AM_API_KEY") === "config";
-  if (!configuredKey && !keychainSecretExists("AM_API_KEY")) {
+  if (!hasReleaseManifest(PROJECT_ROOT) && !configuredKey && !keychainSecretExists("AM_API_KEY")) {
     console.error(
       "无法安装：launchd 后台没有可持久读取的 AM_API_KEY。请先运行 "
       + "bash ~/.agents/skills/keychain-secrets/keychain-secrets.sh set AM_API_KEY",
     );
     return 1;
   }
-  if ((await agentStatus()) !== null) {
-    await uninstallAgent(plistPath());
-    await waitForSupervisorStopped();
-  }
-  if (await supervisorAvailable()) {
-    await supervisorRequest({ type: "shutdown" }, { timeoutMs: 35_000 }).catch(() => {});
-    await waitForSupervisorStopped();
-  } else if (await daemonReachable()) {
-    await shutdownUnsupervisedDaemon();
-  }
+  await stopRunningService();
   const logDir = join(dataDir(), "logs");
   mkdirSync(logDir, { recursive: true });
   const p = await installAgent(plistPath(), plistContent({
@@ -244,6 +260,90 @@ async function install(): Promise<number> {
   await supervisorRequest({ type: "ensure_running" }, { timeoutMs: 35_000 });
   console.log(`已安装并启动 Supervisor: ${p}\n日志: ${logDir}/supervisor.{out,err}.log`);
   return 0;
+}
+
+async function waitUntil<T>(timeoutMs: number, probe: () => Promise<T | null | false>): Promise<T | null> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const value = await probe();
+    if (value) return value;
+    if (Date.now() >= deadline) return null;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+}
+
+function flagValue(args: string[], name: string): string | undefined {
+  const at = args.indexOf(name);
+  return at >= 0 ? args[at + 1] : undefined;
+}
+
+// 桌面版的安装（设计第 4.2 节）。进度按行输出 JSON 到 stdout，App 逐行读。--progress-json 是 App 的写法，输出总是 JSON。
+async function desktopInstall(args: string[]): Promise<number> {
+  const root = flagValue(args, "--root");
+  const locale = flagValue(args, "--locale") ?? "en";
+  if (!root || !isLocale(locale)) { console.error(USAGE); return 2; }
+  const result = await runDesktopInstall({
+    root,
+    installRoot: installRoot(),
+    dataDir: dataDir(),
+    dbPath: dbPath(),
+    plistPath: launchdPlistPath(),
+    preRenamePlistPaths: preRenamePlistPaths(),
+    locale,
+    emit: (event) => process.stdout.write(`${JSON.stringify(event)}\n`),
+    captureLoginShellPath: () => captureLoginShellPath(),
+    launchd: {
+      loaded: async () => (await agentStatus()) !== null,
+      stopRunning: stopRunningService,
+      bootstrap: async (plist) => { await bootstrapAgent(plist); },
+    },
+    supervisor: {
+      // 只看 supervisor.sock 能不能连上：忙着的 supervisor 回答 status 要几秒，按回答判断会把在跑的服务停掉重装。
+      waitUntilAvailable: async (timeoutMs) => (await waitUntil(timeoutMs, async () => await supervisorListening() || null)) !== null,
+      // supervisor 等 daemon 就绪最多 10 分钟（daemonReadyTimeoutMs），这里比它多等 30 秒，机器忙时不把还在启动报成失败。
+      ensureRunning: async () => { await supervisorRequest({ type: "ensure_running" }, { timeoutMs: ensureRunningTimeoutMs() }); },
+    },
+    daemon: {
+      waitForStatus: (timeoutMs) => waitUntil(timeoutMs, async () => {
+        const status = await daemonLocalStatus();
+        return status ? { gatewayUrl: status.gatewayUrl } : null;
+      }),
+    },
+  });
+  return result.ok ? 0 : 1;
+}
+
+async function loginShellPath(): Promise<number> {
+  const result = await captureLoginShellPath();
+  const saved = saveLoginShellPath(dataDir(), result);
+  // 只输出状态和目录个数，不输出目录本身。
+  process.stdout.write(`${JSON.stringify({ state: result.state, saved, ...(result.state === "ok" ? { directories: result.path.length } : {}) })}\n`);
+  return 0;
+}
+
+// 运行包自检（设计第 7.3 节）：换到新版本以前，用新版本自己的 lead-agent 运行它，不停服务。
+function selfcheck(): number {
+  const checks: Array<{ name: string; ok: boolean; detail: string }> = [];
+  try {
+    const db = new Database(":memory:");
+    try {
+      db.prepare("SELECT 1").get();
+    } finally {
+      db.close();
+    }
+    checks.push({ name: "better-sqlite3", ok: true, detail: "loaded" });
+  } catch (error) {
+    checks.push({ name: "better-sqlite3", ok: false, detail: error instanceof Error ? error.message : String(error) });
+  }
+  try {
+    const manifest = readReleaseManifest(PROJECT_ROOT);
+    checks.push({ name: "release.json", ok: true, detail: `${manifest.version} ${manifest.arch}` });
+  } catch (error) {
+    checks.push({ name: "release.json", ok: false, detail: error instanceof Error ? error.message : String(error) });
+  }
+  const ok = checks.every((check) => check.ok);
+  process.stdout.write(`${JSON.stringify({ ok, root: PROJECT_ROOT, checks })}\n`);
+  return ok ? 0 : 1;
 }
 
 async function uninstall(): Promise<void> {
@@ -294,6 +394,7 @@ async function doctor(): Promise<number> {
       [".ts", ".tsx"],
     ),
     nodeVersion: () => process.version,
+    releaseMode: () => hasReleaseManifest(PROJECT_ROOT),
     gatewayExposure: async () => (await daemonLocalStatus())?.gatewayExposure ?? null,
   };
   const checks = await runDoctor(probes);
@@ -390,6 +491,9 @@ try {
     case "start": process.exitCode = await start(args.includes("--auto"), args.includes("--force")); break;
     case "stop": process.exitCode = await stop(); break;
     case "install": process.exitCode = await install(); break;
+    case "desktop-install": process.exitCode = await desktopInstall(args); break;
+    case "login-shell-path": process.exitCode = await loginShellPath(); break;
+    case "selfcheck": process.exitCode = selfcheck(); break;
     case "uninstall": await uninstall(); break;
     case "doctor": process.exitCode = await doctor(); break;
     case "lead-model": leadModel(); break;

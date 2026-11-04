@@ -251,6 +251,32 @@ The daemon runs on your computer. A supervisor keeps it alive and restarts it wh
 
 ---
 
+<!-- install-guide:en:start -->
+## Install Bytezard Lead
+
+Bytezard Lead needs a Mac with Apple silicon.
+
+1. Download `bytezard-lead-<version>-arm64.dmg`.
+2. Open the dmg and drag **Bytezard Lead** to **Applications**.
+3. Open Bytezard Lead. macOS says it cannot verify the developer. Click **Done**.
+4. Open **System Settings → Privacy & Security**. Scroll down and click **Open Anyway**.
+5. When the warning shows again, click **Open**.
+
+Bytezard Lead is not signed with an Apple certificate yet. You do these steps only once.
+
+### If Bytezard Lead does not open
+
+If macOS says that Bytezard Lead is damaged, run this command in Terminal. Then open Bytezard Lead again.
+
+```sh
+xattr -dr com.apple.quarantine "/Applications/Bytezard Lead.app"
+```
+<!-- install-guide:en:end -->
+
+The dmg is on the [Releases](../../releases/latest) page of this repository. To build from source instead, see the next section.
+
+---
+
 ## Quick start
 
 You need macOS and Node 24.

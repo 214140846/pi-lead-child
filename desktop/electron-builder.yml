@@ -1,0 +1,49 @@
+# Bytezard Lead 的打包配置（docs/desktop/macos-desktop-design.md 第 8.2、8.5 节）。
+# appId 和 productName 决定 Info.plist 的 CFBundleIdentifier 和 CFBundleName。App 名固定，不跟着用户配置的 Lead 名字变：
+# 装好以后再改 Info.plist 会让签名失效。
+# 没有 Apple 证书：identity "-" 是 ad-hoc 签名，Hardened Runtime 和公证都关掉（第 8.2 节）。
+# App 的版本号来自 package.json：发版的 workflow（.github/workflows/release-macos.yml）先用 npm version 把它改成 tag 的版本。
+appId: com.bytezard.plc
+productName: Bytezard Lead
+directories:
+  output: ../out/desktop
+files:
+  - dist/**
+  - package.json
+# 壳没有原生依赖。运行包里的 better-sqlite3 跑在运行包自带的 Node 上，不跑在 Electron 上（第 8.1 节）。
+npmRebuild: false
+# App 带的运行包：先在仓库根运行 scripts/desktop/pack-runtime.ts，它把 bytezard-lead-runtime-<版本>-arm64.tar.gz 写到 out/。
+# 壳在 Resources/runtime/ 里找它（desktop/src/runtime-bundle.ts 的 findBundledRuntime）。
+extraResources:
+  - from: ../out
+    to: runtime
+    filter:
+      - bytezard-lead-runtime-*-arm64.tar.gz
+mac:
+  target:
+    - target: dmg
+      arch:
+        - arm64
+  category: public.app-category.productivity
+  identity: "-"
+  hardenedRuntime: false
+  notarize: false
+# dmg 的窗口和背景（第 8.3 节第 2 条）。窗口尺寸和图标位置要和 desktop/src/dmg-background.ts 的 DMG_LAYOUT 一致，测试核对。
+# 背景图由 desktop/scripts/dmg-background.ts 生成；旁边的 dmg-background@2x.png 是 Retina 版，electron-builder 自动合进去。
+# 附件名是 bytezard-lead-<版本>-arm64.dmg（第 8.5 节），和 desktop/src/install-guide.ts 的 dmgFileName 一致。
+dmg:
+  artifactName: bytezard-lead-${version}-arm64.${ext}
+  title: Bytezard Lead
+  background: assets/dmg-background.png
+  iconSize: 96
+  window:
+    width: 540
+    height: 380
+  contents:
+    - x: 140
+      y: 150
+      type: file
+    - x: 400
+      y: 150
+      type: link
+      path: /Applications

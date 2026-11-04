@@ -123,7 +123,9 @@ import {
   ApprovalSchema,
   AttemptSchema,
   CommandResultSchema,
+  ConversationTurnPageSchema,
   ConversationTurnSchema,
+  compareConversationTurns,
   CreatePairingResponseSchema,
   GatewayEventSchema,
   HelloV2Schema,
@@ -269,6 +271,7 @@ import {
   type MilestonePatchRequest,
   type CommandResult,
   type ConversationTurn,
+  type ConversationTurnPage,
   type CreatePairingRequest,
   type CreatePairingResponse,
   type CreateTicketRequest,
@@ -1198,12 +1201,45 @@ export class ControlPlaneClient {
 
   // 每一轮带上工具调用（toolCalls）、Lead 生成的富交互卡片（surfaces）、用户的消息怎么放的（placement，工单 04）、
   // 工单回复在问你要不要做的动作（reply_actions，2026-10-19）和用户发的图片（images，2026-10-25），刷新以后和实时看到的一样。
+  // limit：只要最近的这么多轮（缺省是 daemon 的 100 轮）。
+  async getConversationTurns(ticketId?: number, signal?: AbortSignal, options: { limit?: number } = {}): Promise<ConversationTurn[]> {
+    const params = new URLSearchParams();
+    if (ticketId !== undefined) params.set('ticket_id', String(ticketId));
+    if (options.limit !== undefined) params.set('limit', String(options.limit));
+    return collection<ConversationTurn>(ConversationTurnSchema, await this.conversationTurnsRaw(params, signal));
+  }
+
+  // 往上翻：排在 before 那一轮前面的最多 limit 轮，从旧到新（2026-11-04）。
+  // 旧 daemon 不认识 before，回的是最近的几轮、没有 hasMore：只留比 before 更早的，当作没有更早的了。
+  async getOlderConversationTurns(
+    before: Pick<ConversationTurn, 'id' | 'createdAt'>,
+    options: { limit: number; ticketId?: number },
+    signal?: AbortSignal,
+  ): Promise<ConversationTurnPage> {
+    const params = new URLSearchParams({ before: before.id, limit: String(options.limit) });
+    if (options.ticketId !== undefined) params.set('ticket_id', String(options.ticketId));
+    const payload = await this.conversationTurnsRaw(params, signal);
+    if (Value.Check(ConversationTurnPageSchema, payload)) return payload;
+    const items = collection<ConversationTurn>(ConversationTurnSchema, payload);
+    return { items: items.filter((turn) => compareConversationTurns(turn, before) < 0), hasMore: false };
+  }
+
+  // 只取这几轮（Lead 说完一句以后只校正那一轮，2026-11-04）。不存在的不回。
+  // 旧 daemon 不认识 turn_id，回的是最近的 100 轮：从里面挑出要的那几轮。
+  async getConversationTurnsById(turnIds: readonly string[], signal?: AbortSignal): Promise<ConversationTurn[]> {
+    if (turnIds.length === 0) return [];
+    const wanted = new Set(turnIds);
+    const params = new URLSearchParams({ turn_id: [...wanted].join(',') });
+    const items = collection<ConversationTurn>(ConversationTurnSchema, await this.conversationTurnsRaw(params, signal));
+    return items.filter((turn) => wanted.has(turn.id));
+  }
+
   // 不认识的 include 旧 daemon 回 400 invalid include：依次退回少要一项。
-  async getConversationTurns(ticketId?: number, signal?: AbortSignal): Promise<ConversationTurn[]> {
-    const load = async (include: string) => {
-      const params = new URLSearchParams({ include });
-      if (ticketId !== undefined) params.set('ticket_id', String(ticketId));
-      return collection<ConversationTurn>(ConversationTurnSchema, await this.requestRaw(`/v1/conversation/turns?${params}`, { signal }));
+  private async conversationTurnsRaw(params: URLSearchParams, signal?: AbortSignal): Promise<unknown> {
+    const load = (include: string) => {
+      const query = new URLSearchParams(params);
+      query.set('include', include);
+      return this.requestRaw(`/v1/conversation/turns?${query}`, { signal });
     };
     const full = `tool_calls,surfaces,placement,${TICKET_REPLY_ACTIONS_INCLUDE}`;
     // 用户发的图片（include=images）总是先要：页面打开时快照在 hello.v2 之前就取了，那时还不知道 daemon 的能力。
@@ -2676,10 +2712,12 @@ function channelPolicyPath(source: string): string {
 
 // test、PUT 的请求。请求体先按契约校验，不合格的不发出去。
 // TypeBox 的 Record 不检查键的长度，所以键另外查：1 到 100 个字符；一个来源最多声明 8 个密钥。
+// test 可以不带密钥（浏览器会话的「测试」：用 daemon 现在生效的密钥试）；PUT 至少要带一个。
 function channelSecretsInit(method: 'POST' | 'PUT', secrets: Record<string, string>, signal?: AbortSignal): RequestInit {
   const body = { secrets };
   const names = Object.keys(secrets);
-  const namesOk = names.length >= 1 && names.length <= 8 && names.every((name) => name.length >= 1 && name.length <= 100);
+  const fewest = method === 'PUT' ? 1 : 0;
+  const namesOk = names.length >= fewest && names.length <= 8 && names.every((name) => name.length >= 1 && name.length <= 100);
   if (!namesOk || !Value.Check(ChannelSecretsRequestSchema, body)) throw new ControlPlaneClientError('channel secrets are invalid', 'invalid_request');
   return { method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), ...(signal ? { signal } : {}) };
 }

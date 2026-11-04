@@ -145,6 +145,56 @@ describe('conversation turns with surfaces', () => {
       'tool_calls,surfaces,placement,reply_actions,images', 'tool_calls,surfaces,placement,reply_actions', 'tool_calls,surfaces,placement',
     ]);
   });
+
+  // 2026-11-04：打开时只取最近几轮，往上翻时取更早的一页，Lead 说完一句只取那一轮。
+  const turnAt = (id: string, minute: number) => ({
+    id, originBindingId: null, originKind: 'paired:companion', ticketId: null, state: 'completed' as const,
+    userText: id, assistantText: '', error: null,
+    createdAt: `2026-11-04T10:${String(minute).padStart(2, '0')}:00.000Z`, updatedAt: `2026-11-04T10:${String(minute).padStart(2, '0')}:00.000Z`,
+  });
+
+  async function turnsClient(reply: (url: URL) => Response) {
+    const credentials = createJsonCredentialStore(new MemoryKeyValueStorage());
+    await credentials.save({ baseUrl: 'http://daemon.test', accessToken: 'secret', binding, lastSeq: 0 });
+    const asked: URL[] = [];
+    const fetcher = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      asked.push(url);
+      return reply(url);
+    });
+    return { client: new ControlPlaneClient({ fetch: fetcher, credentials }), asked };
+  }
+
+  it('asks for the newest turns with a limit, and pages older turns before a cursor', async () => {
+    const { client, asked } = await turnsClient((url) => url.searchParams.has('before')
+      ? response({ items: [turnAt('t1', 1)], hasMore: true })
+      : response({ items: [turnAt('t2', 2)] }));
+    await expect(client.getConversationTurns(undefined, undefined, { limit: 30 })).resolves.toEqual([turnAt('t2', 2)]);
+    expect(asked[0]!.searchParams.get('limit')).toBe('30');
+    await expect(client.getOlderConversationTurns(turnAt('t2', 2), { limit: 30 })).resolves.toEqual({ items: [turnAt('t1', 1)], hasMore: true });
+    expect(asked[1]!.searchParams.get('before')).toBe('t2');
+    expect(asked[1]!.searchParams.get('limit')).toBe('30');
+    expect(asked[1]!.searchParams.get('include')).toBe('tool_calls,surfaces,placement,reply_actions,images');
+  });
+
+  // 旧 daemon 不认识 before，回最近的几轮、没有 hasMore：只留比游标更早的，当作没有更早的了。
+  it('treats an older daemon that ignores the cursor as having no older turns', async () => {
+    const { client } = await turnsClient(() => response({ items: [turnAt('t1', 1), turnAt('t2', 2), turnAt('t3', 3)] }));
+    await expect(client.getOlderConversationTurns(turnAt('t2', 2), { limit: 30 })).resolves.toEqual({ items: [turnAt('t1', 1)], hasMore: false });
+  });
+
+  // 旧 daemon 不认识 turn_id，回最近的 100 轮：从里面挑出要的那几轮。
+  it('asks for single turns by id, and picks them out of an older daemon\'s full answer', async () => {
+    const newer = await turnsClient(() => response({ items: [turnAt('t3', 3)] }));
+    await expect(newer.client.getConversationTurnsById(['t3', 't3'])).resolves.toEqual([turnAt('t3', 3)]);
+    expect(newer.asked[0]!.searchParams.get('turn_id')).toBe('t3');
+    expect(newer.asked[0]!.searchParams.get('include')).toBe('tool_calls,surfaces,placement,reply_actions,images');
+
+    const older = await turnsClient(() => response({ items: [turnAt('t1', 1), turnAt('t2', 2), turnAt('t3', 3)] }));
+    await expect(older.client.getConversationTurnsById(['t3', 't1'])).resolves.toEqual([turnAt('t1', 1), turnAt('t3', 3)]);
+    await expect(older.client.getConversationTurnsById([])).resolves.toEqual([]);
+    expect(older.asked).toHaveLength(1);
+  });
 });
 
 // 工单 06：「Lead 动态」的卡片和横幅（include=events）。旧 daemon 不认识这个参数，回旧的 items：换成卡片，没有横幅。
@@ -167,7 +217,8 @@ describe('Lead activity view', () => {
     }));
     const view = await client.getLeadActivityView();
     // include=reminders（工单 07）：再要会话里的提醒卡。旧 daemon 不认识它，回的是旧的 items。
-    expect(asked[0]!.url.searchParams.get('include')).toBe('events,reminders');
+    // include=setup：首次启动引导的卡片，旧 daemon 同样不认识。
+    expect(asked[0]!.url.searchParams.get('include')).toBe('events,reminders,setup');
     expect(view).toEqual({
       watermark: 0, interrupts: [],
       cards: [expect.objectContaining({

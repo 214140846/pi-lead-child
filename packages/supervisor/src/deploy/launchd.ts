@@ -10,13 +10,48 @@ export const LEGACY_LAUNCHD_LABEL = "com.pi-lead-child.coordinatord";
 
 export interface PlistOpts { nodeBin: string; entry: string; cwd: string; logDir: string }
 
+// 改名以前的 supervisor 任务（docs/desktop/macos-desktop-design.md 第 4.2 节第 3 步）。P0-8 把 LAUNCHD_LABEL 改成
+// com.bytezard.plc.supervisor 以后，机器上还有它就说明是没迁移的开发机。改名以前它和 LAUNCHD_LABEL 是同一个任务，不算旧安装。
+export const PRE_RENAME_LAUNCHD_LABEL = "com.pi-lead-child.supervisor";
+
+export function launchAgentsDir(): string {
+  return join(homedir(), "Library", "LaunchAgents");
+}
+
 export function plistPath(): string {
-  return join(homedir(), "Library", "LaunchAgents", `${LAUNCHD_LABEL}.plist`);
+  return join(launchAgentsDir(), `${LAUNCHD_LABEL}.plist`);
+}
+
+/** 没迁移的旧安装可能留下的 plist。改名以前为空。 */
+export function preRenamePlistPaths(): string[] {
+  return PRE_RENAME_LAUNCHD_LABEL === LAUNCHD_LABEL ? [] : [join(launchAgentsDir(), `${PRE_RENAME_LAUNCHD_LABEL}.plist`)];
+}
+
+/**
+ * 桌面版运行包的 plist 参数（设计第 1.1 节）。root 是 <安装根>/current：plist 写软链接的路径，不写具体版本，
+ * 换版本时只换 current，不用重写 plist。Node 在运行包里改名为 lead-agent。
+ */
+export function desktopPlistOptions(root: string, logDir: string): PlistOpts {
+  return {
+    nodeBin: join(root, "bin", "lead-agent"),
+    entry: join(root, "apps", "daemon", "dist", "supervisor.mjs"),
+    cwd: root,
+    logDir,
+  };
 }
 
 // 路径里理论上可能含 &/</>（虽然实践中罕见），plist 是 XML，插值前必须转义，否则生成非法/被截断的 plist。
 const xmlEscape = (s: string): string =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+const xmlUnescape = (s: string): string =>
+  s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+
+/** plistContent 写出的 WorkingDirectory。读不到时为 null。 */
+export function plistWorkingDirectory(xml: string): string | null {
+  const match = /<key>WorkingDirectory<\/key>\s*<string>([^<]*)<\/string>/.exec(xml);
+  return match ? xmlUnescape(match[1]!) : null;
+}
 
 export function plistContent(o: PlistOpts): string {
   const nodeBin = xmlEscape(o.nodeBin);
@@ -55,6 +90,11 @@ export function launchctl(args: string[]): Promise<{ ok: boolean; out: string }>
 export async function installAgent(plist: string, content: string): Promise<string> {
   mkdirSync(dirname(plist), { recursive: true });
   writeFileSync(plist, content);
+  return bootstrapAgent(plist);
+}
+
+/** 让 launchd 按 plist 重新加载 supervisor：已加载的先 bootout（幂等），再 bootstrap。失败时抛错，message 带 launchctl 的原文。 */
+export async function bootstrapAgent(plist: string): Promise<string> {
   await launchctl(["bootout", `gui/${process.getuid!()}/${LEGACY_LAUNCHD_LABEL}`]);
   await launchctl(["bootout", `gui/${process.getuid!()}/${LAUNCHD_LABEL}`]); // 已装则先卸（幂等）
   const r = await launchctl(["bootstrap", `gui/${process.getuid!()}`, plist]);

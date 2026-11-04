@@ -1,0 +1,86 @@
+# 发布 release 时打出 Apple 芯片版的 Bytezard Lead，把 dmg、运行包和 manifest.json 挂到 release 上
+# （docs/desktop/macos-desktop-design.md 第 8.1 节和 P0-5；发版步骤见 docs/desktop/release-notes-template.md）。
+# - 只打 arm64：一个 macos-15 job，没有构建矩阵（第 9 节决定 1）。
+# - 上传前先对运行包跑冒烟测试。任何一步失败 job 就停下，所以冒烟失败时什么都不上传。
+# - 用 workflow_dispatch 填同一个 tag 能重跑；--clobber 覆盖已经传上去的附件。
+# - 不读任何 secret；只有这个 workflow 有 contents: write；第三方 action 固定到 commit SHA。
+# - 事件或输入里的 tag 先校验格式，再经 env 带引号传给 shell，不用 ${{ }} 拼进脚本。
+name: release-macos
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to package again, for example v1.3.0
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-macos-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+    steps:
+      - name: Check the tag
+        run: |
+          if [[ ! "$TAG" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+            echo "The tag is not a version such as v1.3.0." >&2
+            exit 1
+          fi
+          echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
+
+      - name: Check out the tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          persist-credentials: false
+
+      - name: Set up Node (the same version as the runtime bundle)
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: desktop/node-version
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build && npm run build:web
+
+      - name: Pack the runtime bundle
+        run: node --import tsx scripts/desktop/pack-runtime.ts --arch arm64 --version "$VERSION" --repository "$GITHUB_REPOSITORY"
+
+      - name: Smoke-test the runtime bundle
+        run: node --import tsx scripts/desktop/smoke-runtime.ts out/runtime
+
+      - name: Install the shell dependencies
+        working-directory: desktop
+        run: npm ci
+
+      - name: Set the App version
+        working-directory: desktop
+        run: npm version "$VERSION" --no-git-tag-version --allow-same-version
+
+      - name: Build the dmg
+        working-directory: desktop
+        run: npm run dist -- --mac dmg --arm64 --publish never
+
+      - name: Upload to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release upload "$TAG"
+          "out/desktop/bytezard-lead-${VERSION}-arm64.dmg"
+          "out/bytezard-lead-runtime-${VERSION}-arm64.tar.gz"
+          out/manifest.json
+          --clobber --repo "$GITHUB_REPOSITORY"

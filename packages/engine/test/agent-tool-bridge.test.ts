@@ -162,4 +162,38 @@ describe("agent tool host bridge", () => {
       db.close();
     }
   });
+
+  // 2026-11-03：子 agent 等不及断开以后，回答写进已经关掉的 socket，EPIPE 没有人接，整个 daemon 崩了（code=1）。
+  it("keeps running when the caller hangs up before the answer", async () => {
+    const dir = tempDir("plc-agent-bridge-hangup-");
+    const db = openDb(join(dir, "plc.db"));
+    const itemId = createItem(db, { title: "bridge hangup", brief: "b", createdBy: "system", workdir: dir });
+    const runId = createRun(db, { itemId, runtime: "codex" });
+    const bridge = await startAgentToolBridge({ db, itemId, runId, workdir: dir, dataDir: dir });
+    const errors: unknown[] = [];
+    const onError = (error: unknown) => errors.push(error);
+    process.on("uncaughtException", onError);
+    try {
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const caller = connect(bridge.socketPath);
+        await new Promise<void>((resolve) => caller.once("connect", resolve));
+        caller.write(`${JSON.stringify({ type: "agent_tool", id: `gone-${attempt}`, token: bridge.token, name: "no_such_tool", arguments: {} })}\n`);
+        caller.destroy();
+      }
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(errors).toEqual([]);
+      const caller = connect(bridge.socketPath);
+      const reply = new Promise<any>((resolve) => {
+        attachJsonlReader(caller, (line) => { if (line.trim()) resolve(JSON.parse(line)); });
+      });
+      await new Promise<void>((resolve) => caller.once("connect", resolve));
+      caller.write(`${JSON.stringify({ type: "agent_tool", id: "still-here", token: bridge.token, name: "no_such_tool", arguments: {} })}\n`);
+      expect(await reply).toMatchObject({ id: "still-here", success: false });
+      caller.destroy();
+    } finally {
+      process.off("uncaughtException", onError);
+      await bridge.close();
+      db.close();
+    }
+  });
 });

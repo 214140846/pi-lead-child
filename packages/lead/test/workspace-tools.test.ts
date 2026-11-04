@@ -109,7 +109,16 @@ describe("create_task for a pull request review", () => {
       title: "review PR 7", brief: "review it", workdir: repo, review_pull_request: 7, runtime: "codex",
     });
     const itemId = (db.prepare("SELECT id FROM items WHERE title='review PR 7'").get() as { id: number }).id;
-    expect(pullRequestReviewTarget(db, itemId)).toEqual({ number: 7, remote: "origin" });
+    // 没指定远端时不记 origin：检出时按 PR 所在仓库的地址找远端（工单 #212）。
+    expect(pullRequestReviewTarget(db, itemId)).toEqual({ number: 7 });
+  });
+
+  it("keeps the remote that Lead names", async () => {
+    await tool("create_task").execute("call", {
+      title: "review PR 9", brief: "review it", workdir: repo, review_pull_request: 9, pull_request_remote: "public", runtime: "codex",
+    });
+    const itemId = (db.prepare("SELECT id FROM items WHERE title='review PR 9'").get() as { id: number }).id;
+    expect(pullRequestReviewTarget(db, itemId)).toEqual({ number: 9, remote: "public" });
   });
 
   it("refuses a pull request review whose workdir is not a git repository", async () => {

@@ -34,6 +34,17 @@ const leadBusy = (): boolean => {
   const leadBusyPath = join(dataDir, "fake-lead-busy");
   return existsSync(leadBusyPath) && readFileSync(leadBusyPath, "utf8").trim() === "1";
 };
+// 只对这个 pid 生效的设置（JSON 文件）：重启后的新 daemon 不受影响。
+const forThisProcess = <T extends { pid: number }>(name: string): T | null => {
+  const path = join(dataDir, name);
+  if (!existsSync(path)) return null;
+  const value = JSON.parse(readFileSync(path, "utf8")) as T;
+  return value.pid === process.pid ? value : null;
+};
+// 很忙：until（毫秒时间戳）以前不回答 status，像事件循环被同步的工作占住（2026-11-03 07:25Z）。
+const busyUntil = (): number => forThisProcess<{ pid: number; until: number }>("fake-busy-until")?.until ?? 0;
+// 停机慢：收到 shutdown 或 SIGTERM 以后，再过 ms 毫秒才退出。
+const closeDelay = (): number => forThisProcess<{ pid: number; ms: number }>("fake-slow-close")?.ms ?? 0;
 const activeItems = (): number[] => {
   if (!existsSync(activePath)) return [];
   return JSON.parse(readFileSync(activePath, "utf8")) as number[];
@@ -58,6 +69,11 @@ const server = createServer((socket) => {
       return;
     }
     if (command.type === "status") {
+      const wait = busyUntil() - Date.now();
+      if (wait > 0) {
+        setTimeout(() => { if (!socket.destroyed) socket.write(`${JSON.stringify({ type: "response", id: command.id, success: true, data: { pid: process.pid } })}\n`); }, wait);
+        return;
+      }
       const runningItemIds = activeItems();
       socket.write(`${JSON.stringify({
         type: "response",
@@ -93,7 +109,12 @@ await new Promise<void>((resolve, reject) => {
   server.listen(sockPath, resolve);
 });
 
+let closing = false;
 async function close(): Promise<void> {
+  if (closing) return;
+  closing = true;
+  const wait = closeDelay();
+  if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
   for (const client of clients) client.destroy();
   await new Promise<void>((resolve) => server.close(() => resolve()));
   if (existsSync(sockPath)) unlinkSync(sockPath);

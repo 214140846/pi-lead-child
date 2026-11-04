@@ -25,6 +25,7 @@ import {
 } from "./typed-failure.js";
 import {
   claudeSandboxSettings, dataDir, sandboxCacheEnv, sandboxPolicy, sandboxTrustEnv, type TypedFailure,
+  warmGitDirs, warmSandboxTrustBundle,
 } from "@pi-lead-child/core";
 import { adapterProfile, type RuntimeProfile } from "./profile.js";
 import { childEnvironment } from "./environment.js";
@@ -313,6 +314,8 @@ export class ClaudeRuntime implements AgentRuntime {
     const sequencer = new RuntimeEventSequencer(request.runId);
     const emit = (event: RuntimeEventInput): void => queue.push(sequencer.event(event));
     const mcpConfig = request.mcpServer ? writeMcpConfig(request.mcpServer) : null;
+    // 沙箱策略要的 git 目录和根证书先在子进程里查好：buildArgs 和下面的环境只读缓存（2026-11-03）。
+    await Promise.all([warmGitDirs([request.workdir]), warmSandboxTrustBundle()]);
     const args = this.buildArgs(request, mcpConfig?.path ?? null);
 
     let proc: LaunchedProcess;

@@ -742,6 +742,9 @@ CREATE INDEX IF NOT EXISTS events_kind ON events (kind, seq);
 CREATE INDEX IF NOT EXISTS events_correlation ON events (correlation_id) WHERE correlation_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS events_undisposed ON events (received_at)
   WHERE disposition IS NULL AND level IS NOT NULL AND level <> 'record';
+-- 「Lead 动态」和横幅按级别取最近的事件（listLeadActivityEvents、listInterruptEvents）。没有这个索引时，
+-- 每次都从最新往回扫整个窗口（2026-11-04：约 1.6 万行，daemon 每 2 秒一次，每分钟占主线程 0.8 秒）。
+CREATE INDEX IF NOT EXISTS events_level ON events (level, seq);
 CREATE TRIGGER IF NOT EXISTS events_inbox_retracted AFTER DELETE ON inbox BEGIN
   UPDATE events SET disposition = 'superseded',
     disposition_detail = '{"reason":"inbox row retracted"}',
@@ -753,6 +756,47 @@ CREATE TRIGGER IF NOT EXISTS events_notification_retracted AFTER DELETE ON notif
     disposition_detail = '{"reason":"notification retracted"}',
     disposed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
   WHERE correlation_id = 'notification:' || old.id AND disposition IS NULL;
+END;
+`;
+
+// 「Lead 动态」的输入变了没有（2026-11-04）。daemon 以前每 2 秒把整份「Lead 动态」重算一遍，再逐张比较，
+// 因为卡片还取决于很多不发新事件的写入：事件的处置被原地改写、kv 里的首次引导状态、Lead 的名字和界面语言。
+// 这些写入分散在各处，有的来自别的进程（child 的工具调用直接写库），进程内的通知收不到。
+// 现在由库里的触发器在这些写入时把计数加 1，哪个连接写的都算。daemon 轮询时先读计数（一行），没变就不重算。
+// 这里的条件要和 gateway 的 buildLeadActivityView 读的东西对得上：插入的事件对应 isLeadActivityEvent
+// 和卡上的主人操作（owner_action.performed）；kv 的键是 setup.*、Lead 的资料、外观偏好（界面语言）。
+// 卡上按钮的可用性取决于各种对象的当前状态，不在这里：daemon 另外每 30 秒整份重算一次兜底。
+export const LEAD_ACTIVITY_INPUTS_SCHEMA = `
+CREATE TABLE IF NOT EXISTS change_counters (
+  name    TEXT PRIMARY KEY,
+  version INTEGER NOT NULL DEFAULT 0
+);
+INSERT OR IGNORE INTO change_counters (name, version) VALUES ('lead_activity', 0);
+CREATE TRIGGER IF NOT EXISTS lead_activity_event_inserted AFTER INSERT ON events
+  WHEN new.level IN ('digest', 'auto', 'interrupt')
+    OR new.kind IN ('standing_order.changed', 'event.acknowledged', 'owner_action.performed')
+    OR new.entity_key LIKE 'reminder:%'
+BEGIN
+  UPDATE change_counters SET version = version + 1 WHERE name = 'lead_activity';
+END;
+CREATE TRIGGER IF NOT EXISTS lead_activity_event_disposed AFTER UPDATE OF disposition, disposition_detail, disposed_at ON events
+BEGIN
+  UPDATE change_counters SET version = version + 1 WHERE name = 'lead_activity';
+END;
+CREATE TRIGGER IF NOT EXISTS lead_activity_kv_inserted AFTER INSERT ON kv
+  WHEN new.key LIKE 'setup.%' OR new.key IN ('lead.profile', 'ui.design-preferences')
+BEGIN
+  UPDATE change_counters SET version = version + 1 WHERE name = 'lead_activity';
+END;
+CREATE TRIGGER IF NOT EXISTS lead_activity_kv_updated AFTER UPDATE ON kv
+  WHEN new.key LIKE 'setup.%' OR new.key IN ('lead.profile', 'ui.design-preferences')
+BEGIN
+  UPDATE change_counters SET version = version + 1 WHERE name = 'lead_activity';
+END;
+CREATE TRIGGER IF NOT EXISTS lead_activity_kv_deleted AFTER DELETE ON kv
+  WHEN old.key LIKE 'setup.%' OR old.key IN ('lead.profile', 'ui.design-preferences')
+BEGIN
+  UPDATE change_counters SET version = version + 1 WHERE name = 'lead_activity';
 END;
 `;
 
@@ -1757,6 +1801,7 @@ ${RUNTIME_HEALTH_SCHEMA}
 ${ITEM_MILESTONES_SCHEMA}
 ${CONNECTIONS_SCHEMA}
 ${EVENTS_SCHEMA}
+${LEAD_ACTIVITY_INPUTS_SCHEMA}
 ${STANDING_ORDERS_SCHEMA}
 ${EVENT_TRIAGE_SHADOW_SCHEMA}
 ${CHANNELS_SCHEMA}

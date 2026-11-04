@@ -913,8 +913,8 @@ function workspaceAction(
       const blocker = workspaceActionBlocker(env.db, workspace, action);
       return blocker ? unavailable(blocker) : AVAILABLE;
     },
-    run: (run) => {
-      const result = performWorkspaceAction(run.db, {
+    run: async (run) => {
+      const result = await performWorkspaceAction(run.db, {
         action, workspaceId: run.target.id, by: run.by,
         ...(run.reasonGiven || run.by.actor === "lead" ? { reason: run.reason } : {}),
         ...(action === "release" && run.input.mergeStatus ? { mergeStatus: run.input.mergeStatus } : {}),

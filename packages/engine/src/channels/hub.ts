@@ -85,7 +85,7 @@ import {
 import { LLM_BACKEND } from "../smart-model/llm.js";
 import type { SmartModel, SmartTextComplete } from "../smart-model/types.js";
 import {
-  appendEvent, appendEventGuarded, channelAuthorityTable, channelDelegatePolicy, channelHandbook, CHANNEL_HANDBOOK_ORDER_ID, channelDeliveryPolicy, channelPolicy, channelReplyPolicy,
+  appendEvent, appendEventGuarded, channelAuthorityTable, getChannelCatchUpMark, setChannelCatchUpMark, channelDelegatePolicy, channelHandbook, CHANNEL_HANDBOOK_ORDER_ID, channelDeliveryPolicy, channelPolicy, channelReplyPolicy,
   clipEventText, createChannelLookup, findNoteByTitle, getActiveLookupForCard, getChannelCard, getChannelLane,
   getChannelLaneById, getChannelLookup, getEvent, getLocale, getRun, getLatestChannelCard, getLatestLookupForCard, getOpenChannelCard, hasRecentChannelLane, isActiveLookupState,
   leadDisplayName, listActiveLookups, listChannelCards, listChannelCardsForObject, listDueSnoozedChannelCards,
@@ -137,7 +137,7 @@ import type {
   ChannelAdapter, ChannelAdapterContext, ChannelCredential, ChannelCredentialSource, ChannelDelivery,
   ChannelConversationCandidate, ChannelInbound, ChannelInboundRole, ChannelInterest, ChannelOpenCard, ChannelOpenLane, ChannelReaction,
   ChannelConversationRead, ChannelEditedMessage, ChannelFile, ChannelMarkPreview, ChannelRecentConversation, ChannelSentMessage,
-  ChannelTransportContext,
+  ChannelCatchUpReport, ChannelTransportContext,
 } from "./types.js";
 import { ChannelFileNotFoundError } from "./types.js";
 
@@ -1468,26 +1468,37 @@ export class ChannelHub {
 
   // 交给 Lead 的请求（统一消息事件工单 05）：intake 是消息事件（并进编辑被取代的不算），reply 是交回 Lead 的子 agent 结果
   // （channel.task.finished 的 handedBack）。工单 05 以前的消息事件没有 forSeq，不算请求。undecided：跳过已经有 channel.lead.decided 的。
+  // 先按 kind 索引取这两种事件，再看 source（`+r.source` 不让 SQLite 改走 (source, source_ref) 索引）。走 source 索引时，
+  // 每次都要解析全部系统事件的 JSON：2026-11-03 一次卡片列表（185 张卡，每张一次）占住 daemon 主线程 10–12 秒。
+  // cardIds：一次取这些卡的请求（卡片列表用，不限条数）。
   private leadRequestRows(
-    filter: { cardId?: number; stage?: ChannelLeadStage; forSeq?: number; undecided: boolean; newest?: boolean },
+    filter: {
+      cardId?: number; cardIds?: readonly number[]; stage?: ChannelLeadStage; forSeq?: number; undecided: boolean; newest?: boolean;
+    },
   ): LeadRequest[] {
     const where: string[] = [];
     const params: unknown[] = [];
     if (filter.cardId !== undefined) { where.push("json_extract(r.payload, '$.cardId') = ?"); params.push(filter.cardId); }
+    if (filter.cardIds !== undefined) {
+      where.push("json_extract(r.payload, '$.cardId') IN (SELECT value FROM json_each(?))");
+      params.push(JSON.stringify(filter.cardIds));
+    }
     if (filter.forSeq !== undefined) { where.push("json_extract(r.payload, '$.forSeq') = ?"); params.push(filter.forSeq); }
     if (filter.stage !== undefined) { where.push("r.kind = ?"); params.push(filter.stage === "intake" ? MESSAGE_EVENT_KIND : CHANNEL_EVENT_KINDS.taskFinished); }
     const rows = this.db.prepare(
       `SELECT r.seq, r.kind, r.payload FROM events r
-       WHERE r.source = 'system' AND json_valid(r.payload) AND json_type(r.payload, '$.forSeq') = 'integer'
+       WHERE r.kind IN (?, ?) AND +r.source = 'system' AND json_valid(r.payload) AND json_type(r.payload, '$.forSeq') = 'integer'
          AND ((r.kind = ? AND (r.disposition IS NULL OR r.disposition <> 'superseded'))
            OR (r.kind = ? AND json_extract(r.payload, '$.handedBack') = 1))
          ${where.map((clause) => `AND ${clause}`).join(" ")}
          ${filter.undecided ? `AND NOT EXISTS (SELECT 1 FROM events d WHERE d.source = 'system' AND d.source_ref IN (
            'channel-lead-decided:' || (CASE r.kind WHEN ? THEN 'intake' ELSE 'reply' END) || ':' || json_extract(r.payload, '$.forSeq'),
            'channel-lead-decided:reply:' || json_extract(r.payload, '$.forSeq') || ':' || r.seq))` : ""}
-       ORDER BY r.seq ${filter.newest ? "DESC" : ""} LIMIT 20`,
-    ).all(MESSAGE_EVENT_KIND, CHANNEL_EVENT_KINDS.taskFinished, ...params, ...(filter.undecided ? [MESSAGE_EVENT_KIND] : [])) as
-      Array<{ seq: number; kind: string; payload: string }>;
+       ORDER BY r.seq ${filter.newest ? "DESC" : ""} ${filter.cardIds !== undefined ? "" : "LIMIT 20"}`,
+    ).all(
+      MESSAGE_EVENT_KIND, CHANNEL_EVENT_KINDS.taskFinished, MESSAGE_EVENT_KIND, CHANNEL_EVENT_KINDS.taskFinished,
+      ...params, ...(filter.undecided ? [MESSAGE_EVENT_KIND] : []),
+    ) as Array<{ seq: number; kind: string; payload: string }>;
     return rows.flatMap((row) => {
       const request = leadRequestOf(row.seq, row.kind, row.payload);
       return request ? [request] : [];
@@ -3163,7 +3174,7 @@ export class ChannelHub {
   }
 
   /** 卡的线上形状（网关的 /v1/channels/cards）。 */
-  cardDto(card: ChannelCard): ChannelCardDto {
+  cardDto(card: ChannelCard, newestRequests?: ReadonlyMap<number, LeadRequest>): ChannelCardDto {
     const adapter = this.options.registry.get(card.source);
     const lane = getChannelLaneById(this.db, card.laneId);
     const gate = card.gate;
@@ -3191,7 +3202,7 @@ export class ChannelHub {
         reasons: gate.failed.map((condition) => DELEGATION_GATE_LABELS[condition as keyof typeof DELEGATION_GATE_LABELS] ?? condition),
       } : null,
       lookup: this.lookupDtoFor(card, lane?.label ?? card.objectKey),
-      handling: this.handlingOf(card),
+      handling: this.handlingOf(card, newestRequests),
       sentText: card.sent && card.sent.status === "sent" ? card.sent.text : null,
       outcome: (CHANNEL_CARD_OPEN_STATES as readonly ChannelCardState[]).includes(card.state) || !card.resolution ? null : {
         by: card.resolution.by.startsWith("lead") ? "lead" : card.resolution.by === "system" ? "system" : "user",
@@ -3209,7 +3220,15 @@ export class ChannelHub {
 
   /** 最近的卡（只记录的不开卡），旧的在前。 */
   listCards(limit = 100): ChannelCardDto[] {
-    return listChannelCards(this.db, { limit }).map((card) => this.cardDto(card));
+    const cards = listChannelCards(this.db, { limit });
+    // 每张卡最新的 Lead 请求一次取完，不按卡一张一张查。
+    const requests = new Map<number, LeadRequest>();
+    if (this.options.lead && cards.length) {
+      for (const request of this.leadRequestRows({ cardIds: cards.map((card) => card.id), undecided: false, newest: true })) {
+        if (!requests.has(request.cardId)) requests.set(request.cardId, request);
+      }
+    }
+    return cards.map((card) => this.cardDto(card, requests));
   }
 
   /**
@@ -3231,7 +3250,8 @@ export class ChannelHub {
   }
 
   // 通道对这张卡最新一条消息的处理（落地计划 D3）：授权表的结论，交给 Lead 以后 Lead（或者系统兜底）的决定。都没有时是 null。
-  private handlingOf(card: ChannelCard): ChannelCardDto["handling"] {
+  // newestRequests：卡片列表已经一次取好的每张卡最新的 Lead 请求（listCards）。不给时这里自己查这一张卡的。
+  private handlingOf(card: ChannelCard, newestRequests?: ReadonlyMap<number, LeadRequest>): ChannelCardDto["handling"] {
     const payloadOf = (row: { payload: string } | undefined) => {
       if (!row) return null;
       try {
@@ -3247,7 +3267,9 @@ export class ChannelHub {
       action: decided.action as ChannelAuthorityActionKind,
       reason: typeof decided.reason === "string" ? decided.reason : "",
     } : null;
-    const request = this.options.lead ? this.leadRequestRows({ cardId: card.id, undecided: false, newest: true })[0] ?? null : null;
+    const request = !this.options.lead ? null : newestRequests
+      ? newestRequests.get(card.id) ?? null
+      : this.leadRequestRows({ cardId: card.id, undecided: false, newest: true })[0] ?? null;
     let lead: ChannelCardHandling["lead"] = null;
     if (request) {
       const decidedRow = (ref: string) => this.db.prepare("SELECT payload FROM events WHERE source = 'system' AND source_ref = ?")
@@ -3475,8 +3497,31 @@ export class ChannelHub {
         return context;
       },
       openLanes: (limit) => this.openLanesOf(adapter, limit),
+      catchUpMark: {
+        read: () => getChannelCatchUpMark(this.db, adapter.id),
+        write: (at) => setChannelCatchUpMark(this.db, adapter.id, at),
+      },
+      catchUpIncomplete: (report) => this.catchUpIncomplete(adapter, report),
       log: (line) => this.log(`[channels] ${adapter.id}: ${scrubCredential(line, latest ? { credential: latest } : null)}`),
     };
+  }
+
+  // 断线这段时间的补拉没补全：记一条 tell 级的事件，Lead 下一轮看到，自己决定要不要告诉用户、去来源里查。
+  // 同一段（来源和结束的时刻）只记一次。只有我们自己写的话，没有外部的原文。
+  private catchUpIncomplete(adapter: ChannelAdapter, report: ChannelCatchUpReport): void {
+    const from = report.from.toISOString();
+    const to = report.to.toISOString();
+    const summary = `${adapter.label} 在 ${from} 到 ${to}（UTC）之间断过线，重新连上以后补拉的消息没有补全，`
+      + `补到了 ${report.caught} 条：${report.reasons.join("；")}。这段时间里可能有消息没收到，需要时到 ${adapter.label} 里查。`;
+    try {
+      this.db.transaction(() => appendEvent(this.db, {
+        source: "system", sourceRef: `channel-catch-up:${adapter.id}:${to}`, kind: CHANNEL_EVENT_KINDS.catchUpIncomplete,
+        entityKey: `channel:${adapter.id}`, level: "tell", occurredAt: to,
+        payload: { channel: adapter.id, from, to, caught: report.caught, reasons: [...report.reasons], summary },
+      }))();
+    } catch (error) {
+      this.log(`[channels] ${adapter.id}: could not tell Lead that the catch-up is incomplete: ${errorText(error)}`);
+    }
   }
 
   // 这个来源有没结束的卡的道，带这条道里这个来源最后一条事件的 payload。

@@ -59,6 +59,12 @@ export function dataDir(): string {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   return dir;
 }
+// 桌面版运行包的安装根：<数据目录>/runtime/（docs/desktop/macos-desktop-design.md 第 1.1 节），下面是 versions/<版本>/ 和
+// current 软链接。跟着 dataDir() 走：P0-8 把数据目录改成 ~/Library/Application Support/Bytezard Lead/ 以后，它就是
+// ~/Library/Application Support/Bytezard Lead/runtime，这里不另写名字。
+export function installRoot(): string {
+  return join(dataDir(), "runtime");
+}
 export function dbPath(): string {
   return join(dataDir(), "plc.db");
 }

@@ -1,24 +1,14 @@
-import { execFileSync } from "node:child_process";
 import { basename } from "node:path";
 import type { Db } from "@pi-lead-child/store";
 import {
   createProject, findProject, getProject, linkProjectRepository, type Project,
 } from "@pi-lead-child/store";
+import { gitFacts, warmGitFacts, type GitFactSource } from "./git-facts.js";
 
 export interface RepositoryIdentity {
   root: string;
   remoteUrl: string | null;
   name: string;
-}
-
-function git(args: string[]): string | null {
-  try {
-    return execFileSync("git", args, {
-      encoding: "utf8", timeout: 3000, stdio: ["ignore", "pipe", "ignore"],
-    }).trim() || null;
-  } catch {
-    return null;
-  }
 }
 
 export function normalizeRemoteUrl(value: string): string {
@@ -36,11 +26,19 @@ export function normalizeRemoteUrl(value: string): string {
   return remote.replace(/^\/+/, "").replace(/\.git$/, "").replace(/\/+$/, "");
 }
 
-export function repositoryIdentity(workdir: string): RepositoryIdentity | null {
-  const root = git(["-C", workdir, "rev-parse", "--show-toplevel"]);
+// git 的事实从 facts 来（git-facts.ts）：缺省是缓存优先、缺了同步查。建工单的入口先用 warmRepositoryIdentity 异步预热，
+// 建工单的事务里就不再同步跑 git。
+export function repositoryIdentity(workdir: string, facts: GitFactSource = gitFacts): RepositoryIdentity | null {
+  const root = facts.get({ kind: "top", dir: workdir });
   if (!root) return null;
-  const rawRemote = git(["-C", root, "remote", "get-url", "origin"]);
+  const rawRemote = facts.get({ kind: "origin", root });
   return { root, remoteUrl: rawRemote ? normalizeRemoteUrl(rawRemote) : null, name: basename(root) };
+}
+
+/** 异步备好 workdir 的仓库身份（根目录、origin）：建工单之前用。 */
+export function warmRepositoryIdentity(workdir: string | null | undefined): Promise<void> {
+  if (!workdir) return Promise.resolve();
+  return warmGitFacts((facts) => repositoryIdentity(workdir, facts));
 }
 
 export function resolveProjectForWorkdir(

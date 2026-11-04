@@ -1,7 +1,8 @@
 // 设置 → 账号 → 消息通道的视图模型（2026-10-20）。契约：packages/protocol/src/channel-settings.ts。
 // 这里只处理 daemon 给的状态：卡片上永远没有密钥的值，输入框也不预填。
-import type {
-  ChannelSecretSetting, ChannelSecretsTestResult, ChannelSourceAccount, ChannelSourceSettingsDto, Locale,
+import {
+  CHANNEL_SECRET_MAX_LENGTH,
+  type ChannelSecretSetting, type ChannelSecretsTestResult, type ChannelSourceAccount, type ChannelSourceSettingsDto, type Locale,
 } from '@pi-lead-child/protocol';
 
 import { channelsMessages } from './channels.messages';
@@ -97,7 +98,8 @@ export function emptySecretForm(source: ChannelSourceSettingsDto): SecretForm {
 export type SecretRequest = { secrets: Record<string, string> } | { problem: string };
 
 // 要发出去的密钥：只发填了的那几个。还没保存过的密钥必须填；都已保存时至少要换一个。
-// 前缀只用来提示；格式由来源插件检查。
+// 前缀只用来提示；格式由来源插件检查。长度按协议的上限查（和客户端、网关同一个数）；来源给某个密钥声明的更小的上限
+// （例如应用令牌的 1000 个字符）由 daemon 查，没过时是一项没通过的检查。
 export function secretRequest(source: ChannelSourceSettingsDto, form: SecretForm, locale: Locale): SecretRequest {
   const m = channelsMessages(locale);
   const secrets: Record<string, string> = {};
@@ -108,7 +110,7 @@ export function secretRequest(source: ChannelSourceSettingsDto, form: SecretForm
   const missing = source.secrets.filter((secret) => !secret.present && !secrets[secret.name]);
   if (missing.length) return { problem: m.stillMissing(missing.map((secret) => secret.label)) };
   if (!Object.keys(secrets).length) return { problem: m.pasteFirst };
-  if (Object.values(secrets).some((value) => value.length > 1_000)) return { problem: m.tooLong };
+  if (Object.values(secrets).some((value) => value.length > CHANNEL_SECRET_MAX_LENGTH)) return { problem: m.tooLong(CHANNEL_SECRET_MAX_LENGTH) };
   return { secrets };
 }
 
@@ -137,7 +139,7 @@ function clientMessage(message: string, locale: Locale): string | undefined {
   const known: Record<string, string> = {
     'this client cannot manage channel settings': m.clientCannotManage,
     'device is not paired': m.deviceNotPaired,
-    'channel secrets are invalid': m.secretsInvalid,
+    'channel secrets are invalid': m.secretsInvalid(CHANNEL_SECRET_MAX_LENGTH),
     'channel source is invalid': m.sourceInvalid,
   };
   return known[message];

@@ -70,7 +70,7 @@ import { listActivitiesAfter } from "@pi-lead-child/store";
 import { listChatImageRefs, ticketReplyActionsByTurn } from "@pi-lead-child/store";
 import {
   listArtifacts,
-  openArtifactContent,
+  openArtifactContentAsync,
   type ArtifactContent,
 } from "@pi-lead-child/store";
 import { pendingApprovals } from "@pi-lead-child/store";
@@ -80,7 +80,7 @@ import { buildTimeline } from "./timeline.js";
 import { inboxSeenAt, latestBlockedReason, listLeadHandled } from "@pi-lead-child/store";
 import { getCheckpoint, listCheckpoints } from "@pi-lead-child/store";
 import { listConversationCardPage } from "@pi-lead-child/store";
-import { acknowledgeInterruptEvent, latestTurnStartedPayloads, listTurns, listTurnSurfaceEvents, listTurnToolEvents, userMessageOutcomes, type PublishGatewayEventInput } from "@pi-lead-child/store";
+import { acknowledgeInterruptEvent, getTurn, latestTurnStartedPayloads, listTurns, listTurnSurfaceEvents, listTurnToolEvents, userMessageOutcomes, type ChannelTurnRow, type PublishGatewayEventInput } from "@pi-lead-child/store";
 import { buildLeadActivityView, createLeadActivityPublisher, leadInterruptOf } from "./lead-activity.js";
 import { listChildren, listDependencies } from "@pi-lead-child/store";
 import { listInbox } from "@pi-lead-child/store";
@@ -1093,9 +1093,10 @@ export function createControlPlaneService(db: Db, options: ControlPlaneOptions) 
       }));
     },
 
-    openKernelArtifactContent(itemId: number, artifactId: number): ArtifactContent {
+    // 下载前要把整个文件重新算一遍哈希：异步算，不占住 daemon 的主线程（store 的 openArtifactContentAsync）。
+    async openKernelArtifactContent(itemId: number, artifactId: number): Promise<ArtifactContent> {
       if (!options.dataDir) throw new Error("artifact storage is unavailable");
-      return openArtifactContent(db, options.dataDir, itemId, artifactId);
+      return openArtifactContentAsync(db, options.dataDir, itemId, artifactId);
     },
 
     listKernelInterventionRefs(query?: {
@@ -1499,9 +1500,10 @@ export function createControlPlaneService(db: Db, options: ControlPlaneOptions) 
       return buildLeadActivityView(db, opts);
     },
 
-    // 把变了的卡和横幅推出去（daemon 在事件写进日志时、和每次轮询时调用；用户确认横幅以后网关也调用）。返回推了几条。
-    syncLeadActivity(publish: (event: PublishGatewayEventInput) => unknown): number {
-      return leadActivityPublisher.sync(publish);
+    // 把变了的卡和横幅推出去（daemon 在事件写进日志时、和每次轮询时调用；用户确认横幅以后网关也调用）。返回推了几条；
+    // 带 ifChanged 并且输入没变时不重算，返回 null。
+    syncLeadActivity(publish: (event: PublishGatewayEventInput) => unknown, options?: { ifChanged?: boolean }): number | null {
+      return leadActivityPublisher.sync(publish, options);
     },
 
     // 用户点了横幅上的「知道了」：记一条确认事件，被确认的事件写回处置 interrupted_user（store 的 acknowledgeInterruptEvent）。
@@ -1510,63 +1512,83 @@ export function createControlPlaneService(db: Db, options: ControlPlaneOptions) 
       return leadInterruptOf(db, event);
     },
 
-    listConversationTurns(opts?: {
-      itemId?: number; limit?: number; toolCallScopes?: readonly Scope[]; surfaceScopes?: readonly Scope[];
-      placement?: boolean;
-      // 工单 agent 的轮次带上回复在问你要不要做的动作（2026-10-19，store 的 ticket-reply-actions.ts）。
-      replyActions?: boolean;
-      // 用户的轮次带上发的图片（protocol 的 chat-images.ts）。
-      images?: boolean;
-    }): ConversationTurn[] {
-      const turns = listTurns(db, opts);
-      const imageRefs = opts?.images ? listChatImageRefs(db, turns.map((turn) => turn.id)) : null;
-      // 判断过的工单 agent 轮次才有；没有判断过的（还在判断、SmartModel 不可用、Lead 的轮次）不带这个字段。
-      const replyActions = opts?.replyActions
-        ? ticketReplyActionsByTurn(db, turns.filter((turn) => turn.origin_kind.endsWith(":ticket-agent")).map((turn) => turn.id))
-        : null;
-      // 用户的消息怎么放的（工单 04）：排着队、插进了正在跑的一轮，或者没有自己的回答、和另一条一起答了。
-      const outcomes = opts?.placement ? userMessageOutcomes(db, turns.map((turn) => turn.id)) : null;
-      // 插话赶不上这一轮、转为下一轮的输入（「下一轮回答」，工单 06）：daemon 发 lead.turn.started 时已经记在账本里，
-      // 这里读每一轮最后的那一条。以前快照只看 channel_turns，刷新以后它变回「已插入」。
-      const lastStarts = outcomes
-        ? latestTurnStartedPayloads(db, turns.filter((turn) => turn.state === "steered" && !outcomes.has(turn.id)).map((turn) => turn.id))
-        : null;
-      const placementOf = (turn: (typeof turns)[number]): { placement?: TurnPlacement; answeredWith?: string } => {
-        if (!outcomes || isSystemTurnOrigin(turn.origin_kind)) return {};
-        if (turn.state === "queued" && turn.error === null) return { placement: "queued" };
-        if (turn.state !== "steered") return {};
-        const outcome = outcomes.get(turn.id);
-        if (!outcome) return { placement: lastStarts?.get(turn.id)?.placement === "next_turn" ? "next_turn" : "steered" };
-        // 用户取消了这一条排着的追问（store 的 settleTurnCancelled）：Lead 不回答它。
-        if (outcome.outcome === "cancelled") return { placement: "cancelled" };
-        return {
-          placement: "answered_together",
-          ...(typeof outcome.answeredWith === "string" ? { answeredWith: outcome.answeredWith } : {}),
-        };
-      };
-      const toolEvents = opts?.toolCallScopes
-        ? listTurnToolEvents(db, turns.map((turn) => turn.id), { scopes: opts.toolCallScopes })
-        : null;
-      const surfaceEvents = opts?.surfaceScopes
-        ? listTurnSurfaceEvents(db, turns.map((turn) => turn.id), { scopes: opts.surfaceScopes })
-        : null;
-      return turns.map((turn) => ({
-        id: turn.id,
-        originBindingId: turn.origin_binding_id,
-        originKind: turn.origin_kind,
-        ticketId: turn.item_id,
-        state: turn.state,
-        userText: turn.user_text,
-        assistantText: turn.assistant_text,
-        error: turn.error,
-        createdAt: turn.created_at,
-        updatedAt: turn.updated_at,
-        ...(toolEvents ? { toolCalls: foldTurnToolCalls(toolEvents.get(turn.id) ?? []) } : {}),
-        ...(surfaceEvents ? { surfaces: foldTurnSurfaces(surfaceEvents.get(turn.id) ?? []) } : {}),
-        ...placementOf(turn),
-        ...(replyActions?.has(turn.id) ? { replyActions: replyActions.get(turn.id)! } : {}),
-        ...(imageRefs?.has(turn.id) ? { images: imageRefs.get(turn.id)! } : {}),
-      }));
+    // ids：只要这几轮（Lead 说完一句以后客户端只校正那一轮，2026-11-04）。
+    listConversationTurns(opts?: ConversationTurnQuery & { ids?: readonly string[] }): ConversationTurn[] {
+      return conversationTurnsOf(db, listTurns(db, opts), opts);
+    },
+
+    // 往前翻一页：排在 before 这一轮前面的最多 limit 轮，从旧到新；hasMore 说还有没有更早的。
+    // before 这一轮不存在时是 null。
+    listOlderConversationTurns(
+      before: string,
+      opts: ConversationTurnQuery & { limit: number },
+    ): { items: ConversationTurn[]; hasMore: boolean } | null {
+      if (!getTurn(db, before)) return null;
+      // 多取一轮，只用来判断还有没有更早的。
+      const rows = listTurns(db, { ...opts, before, limit: opts.limit + 1 });
+      const hasMore = rows.length > opts.limit;
+      return { items: conversationTurnsOf(db, hasMore ? rows.slice(1) : rows, opts), hasMore };
     },
   };
+}
+
+type ConversationTurnQuery = {
+  itemId?: number; limit?: number; toolCallScopes?: readonly Scope[]; surfaceScopes?: readonly Scope[];
+  placement?: boolean;
+  // 工单 agent 的轮次带上回复在问你要不要做的动作（2026-10-19，store 的 ticket-reply-actions.ts）。
+  replyActions?: boolean;
+  // 用户的轮次带上发的图片（protocol 的 chat-images.ts）。
+  images?: boolean;
+};
+
+// 快照里的一轮：按客户端要的 include 带上工具调用、卡片、放置方式、回复的动作和图片。
+function conversationTurnsOf(db: Db, turns: ChannelTurnRow[], opts?: ConversationTurnQuery): ConversationTurn[] {
+  const imageRefs = opts?.images ? listChatImageRefs(db, turns.map((turn) => turn.id)) : null;
+  // 判断过的工单 agent 轮次才有；没有判断过的（还在判断、SmartModel 不可用、Lead 的轮次）不带这个字段。
+  const replyActions = opts?.replyActions
+    ? ticketReplyActionsByTurn(db, turns.filter((turn) => turn.origin_kind.endsWith(":ticket-agent")).map((turn) => turn.id))
+    : null;
+  // 用户的消息怎么放的（工单 04）：排着队、插进了正在跑的一轮，或者没有自己的回答、和另一条一起答了。
+  const outcomes = opts?.placement ? userMessageOutcomes(db, turns.map((turn) => turn.id)) : null;
+  // 插话赶不上这一轮、转为下一轮的输入（「下一轮回答」，工单 06）：daemon 发 lead.turn.started 时已经记在账本里，
+  // 这里读每一轮最后的那一条。以前快照只看 channel_turns，刷新以后它变回「已插入」。
+  const lastStarts = outcomes
+    ? latestTurnStartedPayloads(db, turns.filter((turn) => turn.state === "steered" && !outcomes.has(turn.id)).map((turn) => turn.id))
+    : null;
+  const placementOf = (turn: (typeof turns)[number]): { placement?: TurnPlacement; answeredWith?: string } => {
+    if (!outcomes || isSystemTurnOrigin(turn.origin_kind)) return {};
+    if (turn.state === "queued" && turn.error === null) return { placement: "queued" };
+    if (turn.state !== "steered") return {};
+    const outcome = outcomes.get(turn.id);
+    if (!outcome) return { placement: lastStarts?.get(turn.id)?.placement === "next_turn" ? "next_turn" : "steered" };
+    // 用户取消了这一条排着的追问（store 的 settleTurnCancelled）：Lead 不回答它。
+    if (outcome.outcome === "cancelled") return { placement: "cancelled" };
+    return {
+      placement: "answered_together",
+      ...(typeof outcome.answeredWith === "string" ? { answeredWith: outcome.answeredWith } : {}),
+    };
+  };
+  const toolEvents = opts?.toolCallScopes
+    ? listTurnToolEvents(db, turns.map((turn) => turn.id), { scopes: opts.toolCallScopes })
+    : null;
+  const surfaceEvents = opts?.surfaceScopes
+    ? listTurnSurfaceEvents(db, turns.map((turn) => turn.id), { scopes: opts.surfaceScopes })
+    : null;
+  return turns.map((turn) => ({
+    id: turn.id,
+    originBindingId: turn.origin_binding_id,
+    originKind: turn.origin_kind,
+    ticketId: turn.item_id,
+    state: turn.state,
+    userText: turn.user_text,
+    assistantText: turn.assistant_text,
+    error: turn.error,
+    createdAt: turn.created_at,
+    updatedAt: turn.updated_at,
+    ...(toolEvents ? { toolCalls: foldTurnToolCalls(toolEvents.get(turn.id) ?? []) } : {}),
+    ...(surfaceEvents ? { surfaces: foldTurnSurfaces(surfaceEvents.get(turn.id) ?? []) } : {}),
+    ...placementOf(turn),
+    ...(replyActions?.has(turn.id) ? { replyActions: replyActions.get(turn.id)! } : {}),
+    ...(imageRefs?.has(turn.id) ? { images: imageRefs.get(turn.id)! } : {}),
+  }));
 }

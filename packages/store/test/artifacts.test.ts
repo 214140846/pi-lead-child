@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   readdirSync,
@@ -22,6 +23,7 @@ import {
   commitStagedArtifacts,
   listArtifacts,
   openArtifactContent,
+  openArtifactContentAsync,
   preflightArtifactRegistrations,
   repairArtifactStorage,
   stageArtifact,
@@ -144,6 +146,22 @@ describe("immutable artifact storage", () => {
     expect(content.byteLength).toBe(bytes.length);
     expect(content.sha256).toBe(createHash("sha256").update(bytes).digest("hex"));
     expect(await readContent(content)).toEqual(bytes);
+  });
+
+  // 2026-11-03：下载前把整个文件重新算一遍哈希，以前同步读（最大 25 MB）。异步版的检查要和同步版一样。
+  it("opens content asynchronously with the same checks: the same bytes, and a tampered blob is refused", async () => {
+    const bytes = Buffer.from("async artifact bytes\n".repeat(50_000), "utf8");
+    writeFileSync(join(workdir, "big.txt"), bytes);
+    const [artifact] = commitStagedArtifacts(db, checkpoint(), [stageArtifact(db, artifactInput("report/big", "big.txt"))]);
+
+    const content = await openArtifactContentAsync(db, dataDir, itemId, artifact!.id);
+    expect(content.sha256).toBe(createHash("sha256").update(bytes).digest("hex"));
+    expect(await readContent(content)).toEqual(bytes);
+
+    const [blob] = filesUnder(join(dataDir, "artifacts", "blobs"));
+    chmodSync(blob!, 0o600);
+    writeFileSync(blob!, Buffer.from(bytes).fill(0x41, 0, 10));
+    await expect(openArtifactContentAsync(db, dataDir, itemId, artifact!.id)).rejects.toThrow(/SHA does not match/);
   });
 
   it("supports metadata-only legacy-style registrations without inventing downloadable content", () => {

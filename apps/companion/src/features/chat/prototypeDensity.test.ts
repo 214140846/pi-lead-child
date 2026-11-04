@@ -70,8 +70,10 @@ describe('chat prototype density', () => {
   it('matches the conversation widths, turn grouping, and the conversation-block rhythm', () => {
     const conversation = source('LeadConversation.tsx');
 
-    expect(conversation).toContain('<ConversationColumn gap="conversation-block">');
-    expect(conversation).toContain('<Column grow={1} gap="conversation-block"');
+    // 虚拟列表（2026-11-04）：块和块之间是 ChatList 缺省的间隔 conversation-block，会话不另给 gap。
+    expect(conversation).toContain('<ChatList');
+    expect(conversation).not.toMatch(/<ChatList[^>]*\bgap=/);
+    expect(conversation).toContain('<Column gap="conversation-block" pb="conversation-block">{headerRows}</Column>');
     expect(conversation).not.toContain('gap={compact ? 16 : 20}');
     // 你的消息最宽是内容列的 70%；Lead 一侧占满内容列（ConversationColumn，2026-10-16）。
     expect(conversation).toContain("maxW: '70%'");

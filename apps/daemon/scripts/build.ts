@@ -8,16 +8,9 @@ import { join } from "node:path";
 import { build } from "esbuild";
 import { distDir, packageSource, projectRoot } from "@pi-lead-child/core";
 import { clearBuildProvenance, writeBuildProvenance } from "@pi-lead-child/supervisor";
+import { DAEMON_EXTERNALS } from "./externals.js";
 
-const external = [
-  "better-sqlite3",
-  // pi SDK 打包失败（transitive @mistralai/mistralai 引用未安装的 optional @opentelemetry/api），
-  // 按 spec §B1 决策规则加入 external，运行时靠仓库 node_modules 解析。
-  "@earendil-works/pi-coding-agent",
-  // 沙箱（lead-tools-and-routing spec D2）：它按自己的安装位置找辅助文件（Windows 的 srt-win、代理的入口），打进包里会找错位置。
-  // 运行时靠仓库 node_modules 解析；pi 子进程加载的扩展（engine 的 extension/sandbox.ts）也是这样找到它的。
-  "@anthropic-ai/sandbox-runtime",
-];
+const external = [...DAEMON_EXTERNALS];
 
 const outdir = distDir();
 mkdirSync(outdir, { recursive: true });

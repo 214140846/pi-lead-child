@@ -1,12 +1,15 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { dataDir, dbPath, distDir, loadEnvConfig, packageSource, projectRoot } from "@pi-lead-child/core";
+import { dataDir, dbPath, distDir, installRoot, loadEnvConfig, packageSource, projectRoot, readLoginShellPath } from "@pi-lead-child/core";
+import { daemonReadyTimeoutMs } from "./client.js";
 import { loadKeychainEnv } from "./deploy/keychain.js";
+import { hasReleaseManifest } from "./deploy/release.js";
 import { startSupervisor, SupervisorAlreadyRunningError, type SupervisorHandle } from "./server.js";
 import { runtimeSearchPath } from "@pi-lead-child/runtime";
 
 const root = projectRoot();
-process.env.PATH = runtimeSearchPath(process.env.PATH);
+// login-shell-path.json：安装时和每次打开 App 时记下的登录 shell PATH（core 的 login-shell.ts）。launchd 给的 PATH 只有系统目录。
+process.env.PATH = runtimeSearchPath(process.env.PATH, { loginShellPath: readLoginShellPath(dataDir()) });
 const keychainKeys = loadKeychainEnv();
 if (keychainKeys.length) console.log(`[config] keychain env keys applied: ${keychainKeys.join(", ")}`);
 const applied = loadEnvConfig();
@@ -26,12 +29,6 @@ function daemonCommand(): { bin: string; args: string[] } {
   };
 }
 
-// PLC_DAEMON_READY_TIMEOUT_MS：daemon 启动以后最多等多久它回答 status（毫秒）。不是正整数时用缺省值。
-function daemonReadyTimeoutMs(): number | undefined {
-  const configured = Number(process.env.PLC_DAEMON_READY_TIMEOUT_MS);
-  return Number.isSafeInteger(configured) && configured > 0 ? configured : undefined;
-}
-
 let supervisor: SupervisorHandle;
 try {
   supervisor = await startSupervisor({
@@ -40,7 +37,10 @@ try {
     daemonCommand: daemonCommand(),
     cwd: root,
     daemonReadyTimeoutMs: daemonReadyTimeoutMs(),
-    deployment: runsFromDist() ? { root, distDir: distDir() } : null,
+    // 桌面版的运行包（根目录有 release.json）还要知道安装根，闸门据此检查 current 和版本目录。
+    deployment: runsFromDist()
+      ? { root, distDir: distDir(), ...(hasReleaseManifest(root) ? { installRoot: installRoot() } : {}) }
+      : null,
   });
 } catch (error) {
   // 这个数据目录已经有 supervisor 了：让开，正常退出。launchd 的 KeepAlive 之后还会拉起本进程，

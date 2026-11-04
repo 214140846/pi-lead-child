@@ -740,6 +740,62 @@ describe("paired HTTP control-plane", () => {
     }
   });
 
+  // 2026-11-04：companion 打开时只取最近几轮，往上翻时按游标取更早的一页（带 hasMore），Lead 说完一句只取那一轮。
+  // 不带这两个参数时回答和以前一样。
+  it("pages older conversation turns before a cursor and returns single turns by id", async () => {
+    const base = Date.parse("2026-11-04T00:00:00.000Z");
+    for (let index = 1; index <= 7; index += 1) {
+      createTurn(db, {
+        id: `turn-${index}`, originKind: "companion", userText: `第 ${index} 句`, now: new Date(base + index * 60_000),
+      });
+    }
+    const surface = {
+      id: "s1", catalogVersion: 1, root: "t", fallbackText: "第 6 轮的卡片",
+      nodes: [{ id: "t", type: "Text", props: { text: "卡片" } }],
+    };
+    publishGatewayEvent(db, {
+      type: "lead.tool.updated", requiredScope: "chat", turnId: "turn-6",
+      payload: { toolCallId: "call-1", toolName: "render_ui", textOffset: 0, surface },
+    });
+    const server = await start();
+    try {
+      const { access_token } = await redeem(server.base, ["chat"]);
+      const headers = { authorization: `Bearer ${access_token}` };
+      const get = async (query: string) => {
+        const response = await fetch(`${server.base}/v1/conversation/turns?${query}`, { headers });
+        return { status: response.status, body: await response.json() as { items: Array<{ id: string; surfaces?: unknown }>; hasMore?: boolean } };
+      };
+      const ids = (body: { items: Array<{ id: string }> }) => body.items.map((turn) => turn.id);
+
+      const latest = await get("limit=3");
+      expect(ids(latest.body)).toEqual(["turn-5", "turn-6", "turn-7"]);
+      expect(latest.body).not.toHaveProperty("hasMore");
+
+      const older = await get("limit=3&before=turn-5");
+      expect(older.status).toBe(200);
+      expect(ids(older.body)).toEqual(["turn-2", "turn-3", "turn-4"]);
+      expect(older.body.hasMore).toBe(true);
+      const oldest = await get("limit=3&before=turn-2");
+      expect(ids(oldest.body)).toEqual(["turn-1"]);
+      expect(oldest.body.hasMore).toBe(false);
+      expect((await get("limit=3&before=turn-1")).body).toEqual({ items: [], hasMore: false });
+      expect((await get("before=turn-missing")).status).toBe(404);
+
+      const single = await get("turn_id=turn-6&include=tool_calls,surfaces");
+      expect(ids(single.body)).toEqual(["turn-6"]);
+      expect(single.body.items[0]!.surfaces).toEqual([{ callId: "call-1", textOffset: 0, surface }]);
+      expect(single.body).not.toHaveProperty("hasMore");
+      expect(ids((await get("turn_id=turn-7,turn-1&turn_id=turn-missing")).body)).toEqual(["turn-1", "turn-7"]);
+
+      expect((await get("before=turn-5&turn_id=turn-6")).status).toBe(400);
+      expect((await get(`turn_id=${Array.from({ length: 51 }, (_, index) => `t${index}`).join(",")}`)).status).toBe(400);
+      expect((await get(`before=${"x".repeat(257)}`)).status).toBe(400);
+      expect((await get("turn_id=turn%0A6")).status).toBe(400);
+    } finally {
+      await server.close();
+    }
+  });
+
   it("limits request bodies and repeated invalid pairing attempts", async () => {
     const server = await start({ maxBodyBytes: 32, redeemMaxAttempts: 2 });
     try {

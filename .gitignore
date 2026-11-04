@@ -9,3 +9,6 @@ dist/
 
 # 本机的方案和需求记录：里面有真实对话和名字，不进 git（2026-10-30，仓库公开）。
 .scratch/
+
+# 桌面版打包脚本的产物（scripts/desktop/pack-runtime.ts）。
+/out/

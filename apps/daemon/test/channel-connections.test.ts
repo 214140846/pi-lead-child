@@ -7,12 +7,12 @@
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { SLACK_SESSION_COOKIE_ENV } from "@pi-lead-child/core";
+import { SLACK_APP_TOKEN_ENV, SLACK_SESSION_COOKIE_ENV, SLACK_USER_TOKEN_ENV } from "@pi-lead-child/core";
 import { tempDir } from "@pi-lead-child/core/testing";
 import { Vault } from "@pi-lead-child/connections";
 import { builtinChannelAdapters, runUiAction, type ChannelAdapter, type SlackSignInBrowser } from "@pi-lead-child/engine";
 import { FAKE_SLACK_SESSION_COOKIE, FakeSlack } from "@pi-lead-child/engine/testing";
-import { ChannelConnectionDtoSchema } from "@pi-lead-child/protocol";
+import { CHANNEL_SECRET_MAX_LENGTH, ChannelConnectionDtoSchema } from "@pi-lead-child/protocol";
 import { getChannelConnection, openDb, type Db } from "@pi-lead-child/store";
 import { Value } from "typebox/value";
 import { ChannelSettings } from "../src/channel-settings.js";
@@ -35,7 +35,7 @@ const browser: SlackSignInBrowser = {
   async open() {
     return {
       closed: new Promise<void>(() => {}),
-      cookies: async () => (signedIn ? [{ name: "d", domain: ".slack.com", value: FAKE_SLACK_SESSION_COOKIE }] : []),
+      cookies: async () => (signedIn ? [{ name: "d", domain: ".slack.com", value: slack.sessionCookie }] : []),
       close: async () => { windowsClosed += 1; },
     };
   },
@@ -137,6 +137,57 @@ describe("choosing how Slack connects", () => {
     expect(back.result).toMatchObject({ mode: "app", writes: null });
     expect(reloads).toEqual(["slack", "slack"]);
     expect(adapter.auth.secrets).toEqual(["PLC_SLACK_APP_TOKEN", "PLC_SLACK_USER_TOKEN"]);
+  });
+});
+
+// 回归（#220）：网页版 Slack 的 d cookie 可能超过 1000 个字符。会话 cookie 的上限是协议的 CHANNEL_SECRET_MAX_LENGTH（16 KB），
+// 应用令牌仍是 1000 个字符。
+describe("how long a secret can be", () => {
+  const longCookie = `xoxd-${"Ab3".repeat(1_500)}`;
+
+  it("saves a session cookie longer than 1000 characters from the sign-in, and tests it again with no secrets", async () => {
+    slack.sessionCookie = longCookie;
+    await act("sign_in", user, { mode: "session" });
+    signedIn = true;
+    await vi.waitFor(() => expect(settings.state("slack")!.signIn!.state).toBe("done"));
+    expect(longCookie.length).toBeGreaterThan(1_000);
+    expect(settings.secret(SLACK_SESSION_COOKIE_ENV)).toBe(longCookie);
+    expect(getChannelConnection(db, "slack").mode).toBe("session");
+    // 设置页会话那一块的「测试」不带密钥：用保险库里的 cookie 试。
+    expect(await settings.test("slack", {})).toMatchObject({ ok: true });
+    expect(logs.join("\n")).not.toContain(longCookie);
+  });
+
+  it("saves a pasted session cookie longer than 1000 characters", async () => {
+    await act("sign_in", user, { mode: "session" });
+    signedIn = true;
+    await vi.waitFor(() => expect(settings.state("slack")!.mode).toBe("session"));
+    slack.sessionCookie = longCookie;
+    const saved = await settings.save("slack", { [SLACK_SESSION_COOKIE_ENV]: longCookie });
+    expect(saved.ok).toBe(true);
+    expect(settings.secret(SLACK_SESSION_COOKIE_ENV)).toBe(longCookie);
+  });
+
+  it("refuses a session cookie over the protocol limit, and saves nothing", async () => {
+    slack.sessionCookie = `xoxd-${"a".repeat(CHANNEL_SECRET_MAX_LENGTH)}`;
+    await act("sign_in", user, { mode: "session" });
+    signedIn = true;
+    await vi.waitFor(() => expect(settings.state("slack")!.signIn!.state).toBe("failed"));
+    expect(settings.state("slack")!.signIn).toMatchObject({ code: "checks_failed" });
+    expect(settings.secret(SLACK_SESSION_COOKIE_ENV)).toBeNull();
+    expect(getChannelConnection(db, "slack").mode).toBeNull();
+  });
+
+  it("keeps the 1000-character limit for the app tokens", async () => {
+    const tooLong = `xapp-${"a".repeat(1_000)}`;
+    const result = await settings.save("slack", { [SLACK_APP_TOKEN_ENV]: tooLong, [SLACK_USER_TOKEN_ENV]: "xoxp-short" });
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.result.checks).toEqual([{
+      id: `length_${SLACK_APP_TOKEN_ENV}`, label: "App-Level Token", pass: false,
+      detail: "App-Level Token is too long. It can have at most 1000 characters.",
+    }]);
+    expect(settings.secret(SLACK_APP_TOKEN_ENV)).toBeNull();
+    expect(reloads).toEqual([]);
   });
 });
 

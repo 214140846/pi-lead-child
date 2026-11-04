@@ -85,7 +85,7 @@ function userTurn(bindingId: number, id: string) {
 
 // 一个真的隔离 worktree，放弃改动以后已经释放：清理会删掉它的目录。
 let repos = 0;
-function releasedWorktree(): { itemId: number; workspaceId: number; path: string } {
+async function releasedWorktree(): Promise<{ itemId: number; workspaceId: number; path: string }> {
   const repo = join(dir, `repo-${++repos}`);
   execFileSync("git", ["init", "-q", repo]);
   execFileSync("git", ["-C", repo, "config", "user.email", "plc@example.test"]);
@@ -97,7 +97,7 @@ function releasedWorktree(): { itemId: number; workspaceId: number; path: string
   db.prepare("UPDATE items SET stage='done' WHERE id=?").run(itemId);
   provisionWorkspace(db, { itemId, mode: "shared" });
   const isolated = provisionWorkspace(db, { itemId, mode: "isolated" });
-  releaseWorkspace(db, isolated.id, { mergeStatus: "abandoned" });
+  await releaseWorkspace(db, isolated.id, { mergeStatus: "abandoned" });
   return { itemId, workspaceId: isolated.id, path: isolated.path };
 }
 const resultOf = (result: { content: Array<{ text: string }> }) => JSON.parse(result.content[0]!.text);
@@ -293,13 +293,13 @@ describe("lifecycle, reminder, workspace and milestone actions through the daemo
       .toMatchObject({ authority: "on_behalf" });
 
     // 清理隔离 worktree：没确认就拒绝（什么都不删），确认以后才删。
-    const pageTree = releasedWorktree();
+    const pageTree = await releasedWorktree();
     const refused = await call("POST", `/v1/workspaces/${pageTree.workspaceId}/cleanup`, {});
     expect(refused).toMatchObject({ status: 409, body: { error: { code: "conflict", message: expect.stringContaining("confirm: true") } } });
     expect(existsSync(pageTree.path)).toBe(true);
     expect((await call("POST", `/v1/workspaces/${pageTree.workspaceId}/cleanup`, { confirm: true })).body)
       .toMatchObject({ workspaceId: pageTree.workspaceId, status: "cleaned" });
-    const leadTree = releasedWorktree();
+    const leadTree = await releasedWorktree();
     await expect(leadTool("cleanup_workspace", turn).execute("t", { item_id: leadTree.itemId, reason: "用户说删掉它" }))
       .rejects.toThrow(/confirm: true/);
     expect(resultOf(await leadTool("cleanup_workspace", turn).execute("t", { item_id: leadTree.itemId, reason: "用户说删掉它", confirm: true })))

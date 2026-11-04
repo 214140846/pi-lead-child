@@ -14,6 +14,7 @@ import {
   LEAD_DRAIN_TIMEOUT_MS, SUPERVISOR_FEATURE_DEPLOY_GATE, SUPERVISOR_FEATURE_MAINTENANCE_BACKUP, type DaemonDrainResult,
 } from "@pi-lead-child/protocol";
 import { deployReadiness, type DeployReadiness } from "./deploy/readiness.js";
+import { databaseSchemaVersion } from "./deploy/release.js";
 import { backupSqlite } from "./deploy/backup.js";
 import { findRuntimeExecutable, runtimeSearchPath } from "@pi-lead-child/runtime";
 import type {
@@ -22,7 +23,7 @@ import type {
   SupervisorPersistentState,
   SupervisorStatus,
 } from "./protocol.js";
-import { socketListening } from "./client.js";
+import { DEFAULT_DAEMON_READY_TIMEOUT_MS, socketListening } from "./client.js";
 import { loadSupervisorState, saveSupervisorState } from "./state.js";
 import { autoStartRefusal, explicitStartRefusal } from "./auto-start.js";
 import {
@@ -47,9 +48,20 @@ export interface SupervisorOptions {
   // 部署闸门（deploy/readiness.ts）：daemon 从哪个 checkout 的哪个 dist 启动。给了它，每个维护请求（Lead 的重启、
   // 换 Lead 模型后的重启、plc daemon restart/upgrade）都先检查只部署已提交的代码，并在停机前备份数据库。
   // 崩溃后的自动拉起不拦截，只记一条警告。daemon 直接跑源码（PLC_DEV，没有 dist）时不给。
-  deployment?: { root: string; distDir: string } | null;
+  // installRoot：桌面版的安装根（<数据目录>/runtime），只在发布模式（root 有 release.json）下给。
+  deployment?: Deployment | null;
   // 维护前的数据库备份（缺省是 deploy/backup.ts 的 backupSqlite，有时限）。测试用它模拟一次很慢的备份。
   backupDatabase?: (source: string, destination: string) => Promise<void>;
+  // 停 daemon 之前，最多花多久等它回答 status（缺省 DEFAULT_DAEMON_STATUS_PATIENCE_MS）。
+  daemonStatusPatienceMs?: number;
+  // daemon 开始停机以后，最多等多久它退出（缺省 DEFAULT_DAEMON_STOP_TIMEOUT_MS）。
+  daemonStopTimeoutMs?: number;
+}
+
+export interface Deployment {
+  root: string;
+  distDir: string;
+  installRoot?: string | null;
 }
 
 export class DeployRefusedError extends Error {
@@ -59,9 +71,21 @@ export class DeployRefusedError extends Error {
   }
 }
 
-// 负载高时 daemon 启动会超过 30 秒：2026-10-19 14:54Z 负载约 37，daemon 用了 39 秒才开始监听。
-// 进程还活着就接着等，所以这个期限只用来认定启动卡住了，可以比正常启动时间长得多。
-export const DEFAULT_DAEMON_READY_TIMEOUT_MS = 120_000;
+// daemon 就绪的期限（10 分钟）定义在 client.ts，等 ensure_running 的客户端也用它。
+// 过了 DAEMON_SLOW_START_NOTE_MS 还没就绪时，只每分钟记一条"还在启动"的日志。
+export { DEFAULT_DAEMON_READY_TIMEOUT_MS };
+export const DAEMON_SLOW_START_NOTE_MS = 120_000;
+
+// 2026-11-03 07:25Z 的升级失败了：负载约 40，Lead 正在跑一轮，daemon 1.5 秒内没回答 status。supervisor 当它不在，
+// 跳过排空直接发 SIGTERM，只等 10 秒；daemon 的停机先排空 Lead（最多 LEAD_DRAIN_TIMEOUT_MS），之后又用了约 5 分钟。
+// 维护记成失败，daemon 退出后巡检用旧的 dist 把它拉了起来。现在：
+//   · 一次没回答不算不在：接着问，最多 DEFAULT_DAEMON_STATUS_PATIENCE_MS；
+//   · daemon 开始停机以后（shutdown 或 SIGTERM），等它自己走完，最多 DEFAULT_DAEMON_STOP_TIMEOUT_MS。
+// 那 5 分钟是 daemon 的 close 在等一个还在准备的 Run（2026-11-03 10:19Z 又卡了 4 分钟，只好 SIGKILL）。现在 daemon 不再等
+// 这种 Run，自己的停机也有上限（PLC_DAEMON_CLOSE_TIMEOUT_MS，缺省 60 秒）。过了这里的期限还没退出，说明它的事件循环
+// 卡死了：supervisor 强杀它。垫片启动的 child 不受影响，下一个 daemon 接管它们。
+export const DEFAULT_DAEMON_STATUS_PATIENCE_MS = 15_000;
+export const DEFAULT_DAEMON_STOP_TIMEOUT_MS = 3 * 60_000;
 
 export type StartingDaemonVerdict = "ready" | "exited" | "timed_out" | "starting";
 
@@ -109,22 +133,6 @@ async function socketCommand<T = unknown>(
     });
     socket.once("connect", () => socket.write(`${JSON.stringify(command)}\n`));
   });
-}
-
-function schemaVersion(path: string): number | null {
-  if (!existsSync(path)) return null;
-  try {
-    const db = new Database(path, { readonly: true, fileMustExist: true });
-    try {
-      const row = db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as
-        { version: number | null } | undefined;
-      return row?.version ?? null;
-    } finally {
-      db.close();
-    }
-  } catch {
-    return null;
-  }
 }
 
 // 维护要等哪些在跑的工单（spec D7，用户故事 14）。经启动垫片启动的 child 在 daemon 重启后被接管，
@@ -239,6 +247,7 @@ async function runSupervisor(opts: SupervisorOptions, lock: InstanceLock): Promi
   const readyTimeoutMs = opts.daemonReadyTimeoutMs ?? DEFAULT_DAEMON_READY_TIMEOUT_MS;
   const waitForStartedDaemon = async (started: ChildProcess): Promise<Record<string, unknown>> => {
     const startedAt = Date.now();
+    let nextNote = startedAt + DAEMON_SLOW_START_NOTE_MS;
     for (;;) {
       const status = await daemonStatus();
       const verdict = startingDaemonVerdict({
@@ -257,6 +266,11 @@ async function runSupervisor(opts: SupervisorOptions, lock: InstanceLock): Promi
         const listening = await socketListening(daemonSockPath);
         throw new Error(`daemon did not become ready within ${readyTimeoutMs}ms `
           + `(pid ${started.pid} is alive, ${listening ? "listening but not answering status" : "not listening"})`);
+      }
+      if (Date.now() >= nextNote) {
+        log(`daemon pid ${started.pid} is still starting after ${Math.round((Date.now() - startedAt) / 1000)} s; `
+          + `waiting up to ${Math.round(readyTimeoutMs / 1000)} s while the process is alive`);
+        nextNote = Date.now() + 60_000;
       }
       await delay(250);
     }
@@ -391,8 +405,23 @@ async function runSupervisor(opts: SupervisorOptions, lock: InstanceLock): Promi
   // 不认识 drain 的旧 daemon 回答失败：照旧发 shutdown（它的 close 不排空）。
   // 排空以后一直没有 shutdown 时（例如维护的备份失败了），daemon 过一会儿自己恢复 Lead 的回合（PLC_LEAD_DRAIN_EXPIRY_MS）。
   // 返回 daemon 有没有回答。
+  const statusPatienceMs = opts.daemonStatusPatienceMs ?? DEFAULT_DAEMON_STATUS_PATIENCE_MS;
+  const stopTimeoutMs = opts.daemonStopTimeoutMs ?? DEFAULT_DAEMON_STOP_TIMEOUT_MS;
+  const childRunning = (): boolean => Boolean(child && child.exitCode === null && child.signalCode === null);
+  // 忙着的 daemon（负载高、事件循环在跑同步的工作）一次 1.5 秒可能答不上来：接着问。只对本 supervisor 拉起、
+  // 还活着的 daemon 这样等。plc.sock 不在了、进程已经退出，或者不是自己拉起的（照旧只问一次），就不再等。
+  const daemonStatusPatiently = async (): Promise<Record<string, unknown> | null> => {
+    const deadline = Date.now() + statusPatienceMs;
+    for (;;) {
+      const status = await daemonStatus();
+      if (status) return status;
+      if (Date.now() >= deadline || !existsSync(daemonSockPath) || !childRunning()) return null;
+      await delay(250);
+    }
+  };
+
   const drainDaemon = async (): Promise<boolean> => {
-    const status = await daemonStatus();
+    const status = await daemonStatusPatiently();
     if (!status) return false;
     try {
       const drain = await socketCommand<DaemonDrainResult>(
@@ -410,12 +439,27 @@ async function runSupervisor(opts: SupervisorOptions, lock: InstanceLock): Promi
       try { await socketCommand(daemonSockPath, { type: "shutdown" }, 3_000); } catch { /* process exit closes socket */ }
       try { await waitForDaemonStopped(20_000); } catch {
         if (child?.pid) child.kill("SIGTERM");
-        await waitForDaemonStopped(10_000);
+        // 不是本 supervisor 拉起的 daemon：没有进程句柄，按 status 和 daemon.lock 等它停下。
+        if (!child) await waitForDaemonStopped(stopTimeoutMs);
       }
     }
-    if (child && child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
-    const childDeadline = Date.now() + 10_000;
-    while (child && Date.now() < childDeadline) await delay(50);
+    // SIGTERM 让没回答的 daemon 走同一套停机：先排空 Lead，再停各个部分。等它自己走完（见 DEFAULT_DAEMON_STOP_TIMEOUT_MS）。
+    if (childRunning()) child!.kill("SIGTERM");
+    const childDeadline = Date.now() + stopTimeoutMs;
+    let nextNote = Date.now() + 30_000;
+    while (child && Date.now() < childDeadline) {
+      await delay(50);
+      if (child && Date.now() >= nextNote) {
+        log(`daemon ${child.pid} is still stopping; waiting up to ${Math.round(stopTimeoutMs / 1000)} s`);
+        nextNote += 30_000;
+      }
+    }
+    if (child) {
+      log(`daemon ${child.pid} did not exit within ${Math.round(stopTimeoutMs / 1000)} s after the stop; sending SIGKILL`);
+      child.kill("SIGKILL");
+      const killDeadline = Date.now() + 10_000;
+      while (child && Date.now() < killDeadline) await delay(50);
+    }
     if (child) throw new Error("daemon process did not exit after shutdown");
     state.daemonPid = null;
     persist();
@@ -442,9 +486,12 @@ async function runSupervisor(opts: SupervisorOptions, lock: InstanceLock): Promi
     return destination;
   };
 
+  const readinessOf = (deployment: Deployment): DeployReadiness =>
+    deployReadiness(deployment.root, deployment.distDir, { installRoot: deployment.installRoot, dbPath: opts.dbPath });
+
   const deployRefusal = (): string[] => {
     if (!opts.deployment) return [];
-    const readiness = deployReadiness(opts.deployment.root, opts.deployment.distDir);
+    const readiness = readinessOf(opts.deployment);
     return readiness.ready ? [] : readiness.reasons;
   };
 
@@ -498,7 +545,7 @@ async function runSupervisor(opts: SupervisorOptions, lock: InstanceLock): Promi
       const status = await ensureDaemon();
       state.phase = "verifying";
       persist();
-      const version = schemaVersion(opts.dbPath);
+      const version = databaseSchemaVersion(opts.dbPath);
       const required = request.requiredSchemaVersion ?? LATEST_SCHEMA_VERSION;
       if (version === null || version < required) {
         throw new Error(`schema verification failed: current=${version ?? "unknown"}, required=${required}`);
@@ -571,13 +618,13 @@ async function runSupervisor(opts: SupervisorOptions, lock: InstanceLock): Promi
     return request;
   };
 
-  // status 里的闸门判断要跑好几个 git 命令，而 status 被频繁调用（plc、Lead 的 get_runtime_health）：缓存一会儿
+  // status 里的闸门判断要跑好几个 git 命令（发布模式下是给十来个文件算哈希），而 status 被频繁调用（plc、Lead 的 get_runtime_health）：缓存一会儿
   // （审查 2026-10-20 D）。维护请求和 plc daemon start 不用缓存，当场再查。
   let readinessCache: { at: number; value: DeployReadiness } | null = null;
-  const cachedReadiness = (deployment: { root: string; distDir: string }): DeployReadiness => {
+  const cachedReadiness = (deployment: Deployment): DeployReadiness => {
     const now = Date.now();
     if (!readinessCache || now - readinessCache.at > READINESS_CACHE_MS) {
-      readinessCache = { at: now, value: deployReadiness(deployment.root, deployment.distDir) };
+      readinessCache = { at: now, value: readinessOf(deployment) };
     }
     return readinessCache.value;
   };
@@ -591,7 +638,7 @@ async function runSupervisor(opts: SupervisorOptions, lock: InstanceLock): Promi
       supervisor: structuredClone(state),
       maintenanceActive: maintenanceRunning,
       daemon,
-      schemaVersion: schemaVersion(opts.dbPath),
+      schemaVersion: databaseSchemaVersion(opts.dbPath),
       latestSchemaVersion: LATEST_SCHEMA_VERSION,
       features: [SUPERVISOR_FEATURE_MAINTENANCE_BACKUP, SUPERVISOR_FEATURE_DEPLOY_GATE],
       ...(opts.deployment ? { deploy: cachedReadiness(opts.deployment) } : {}),

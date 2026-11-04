@@ -11,6 +11,7 @@ import {
   lstatSync,
   mkdirSync,
   openSync,
+  read,
   readSync,
   realpathSync,
   readdirSync,
@@ -20,6 +21,7 @@ import {
   writeSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { promisify } from "node:util";
 import type { ReadStream } from "node:fs";
 import type { Db } from "./db.js";
 import { repairItemProofMaterialization } from "./checkpoints.js";
@@ -503,6 +505,23 @@ function hashDescriptor(fd: number, expectedSize: number): { sha256: string; byt
   return { sha256: hash.digest("hex"), byteLength: position };
 }
 
+const readAsync = promisify(read);
+
+// hashDescriptor 的异步版：同一个文件描述符，用异步的 read 一块一块读。打开、fstat 这些检查照旧同步做（只看元数据），
+// 只有读整个文件这一步不占住 daemon 的主线程（2026-11-03：下载一个 artifact 要先把它整个重新算一遍哈希，最大 25 MB）。
+async function hashDescriptorAsync(fd: number, expectedSize: number): Promise<{ sha256: string; byteLength: number }> {
+  const hash = createHash("sha256");
+  const buffer = Buffer.allocUnsafe(COPY_BUFFER_BYTES);
+  let position = 0;
+  while (position < expectedSize) {
+    const { bytesRead } = await readAsync(fd, buffer, 0, Math.min(buffer.length, expectedSize - position), position);
+    if (bytesRead === 0) break;
+    hash.update(buffer.subarray(0, bytesRead));
+    position += bytesRead;
+  }
+  return { sha256: hash.digest("hex"), byteLength: position };
+}
+
 function copyDescriptorToFile(
   sourceFd: number,
   expectedSize: number,
@@ -542,6 +561,36 @@ function copyDescriptorToFile(
 }
 
 function openVerifiedFile(path: string, sha256: string, byteLength: number): number {
+  const fd = openManagedFile(path, byteLength);
+  try {
+    assertVerifiedHash(hashDescriptor(fd, byteLength), sha256, byteLength);
+    return fd;
+  } catch (error) {
+    closeSync(fd);
+    throw error;
+  }
+}
+
+/** openVerifiedFile 的异步版：检查一样，读整个文件算哈希这一步是异步的。 */
+async function openVerifiedFileAsync(path: string, sha256: string, byteLength: number): Promise<number> {
+  const fd = openManagedFile(path, byteLength);
+  try {
+    assertVerifiedHash(await hashDescriptorAsync(fd, byteLength), sha256, byteLength);
+    return fd;
+  } catch (error) {
+    closeSync(fd);
+    throw error;
+  }
+}
+
+function assertVerifiedHash(actual: { sha256: string; byteLength: number }, sha256: string, byteLength: number): void {
+  if (actual.byteLength !== byteLength || actual.sha256 !== sha256) {
+    throw new ArtifactIntegrityError("sha256", "managed artifact SHA does not match metadata");
+  }
+}
+
+// 打开一个受管的 artifact 文件（不跟随符号链接），核对它是普通文件、长度和元数据一样。返回文件描述符，哈希由调用方核对。
+function openManagedFile(path: string, byteLength: number): number {
   let entry;
   try {
     entry = lstatSync(path);
@@ -568,10 +617,6 @@ function openVerifiedFile(path: string, sha256: string, byteLength: number): num
         "length",
         "managed artifact byte length does not match metadata",
       );
-    }
-    const actual = hashDescriptor(fd, byteLength);
-    if (actual.byteLength !== byteLength || actual.sha256 !== sha256) {
-      throw new ArtifactIntegrityError("sha256", "managed artifact SHA does not match metadata");
     }
     return fd;
   } catch (error) {
@@ -1209,6 +1254,33 @@ export function openArtifactContent(
   itemId: number,
   artifactId: number,
 ): ArtifactContent {
+  const target = artifactContentTarget(db, dataDir, itemId, artifactId);
+  return finishArtifactContent(target, openVerifiedFile(target.canonicalPath, target.row.sha256!, target.row.byte_length!));
+}
+
+/**
+ * openArtifactContent 的异步版：检查一样，下载前重新算整个文件的哈希这一步是异步的（2026-11-03）。HTTP 下载和工作区的
+ * 清理检查用它。
+ */
+export async function openArtifactContentAsync(
+  db: Db,
+  dataDir: string,
+  itemId: number,
+  artifactId: number,
+): Promise<ArtifactContent> {
+  const target = artifactContentTarget(db, dataDir, itemId, artifactId);
+  return finishArtifactContent(target, await openVerifiedFileAsync(target.canonicalPath, target.row.sha256!, target.row.byte_length!));
+}
+
+interface ArtifactContentTarget {
+  row: ArtifactRow;
+  mediaType: string;
+  blobsRoot: string;
+  rawPath: string;
+  canonicalPath: string;
+}
+
+function artifactContentTarget(db: Db, dataDir: string, itemId: number, artifactId: number): ArtifactContentTarget {
   const row = db.prepare("SELECT * FROM artifacts WHERE item_id=? AND id=?")
     .get(itemId, artifactId) as ArtifactRow | undefined;
   if (!row || row.availability !== "available" || !row.sha256
@@ -1223,7 +1295,12 @@ export function openArtifactContent(
   const rawPath = keyPath(dataDir, row.storage_key);
   const canonicalPath = realpathSync(rawPath);
   if (!isContained(blobsRoot, canonicalPath)) throw new Error("artifact content escaped storage root");
-  const fd = openVerifiedFile(canonicalPath, row.sha256, row.byte_length);
+  return { row, mediaType, blobsRoot, rawPath, canonicalPath };
+}
+
+// 打开以后再核对一次：路径还在存储根目录里，指向的还是打开的那个文件。
+function finishArtifactContent(target: ArtifactContentTarget, fd: number): ArtifactContent {
+  const { row, mediaType, blobsRoot, rawPath, canonicalPath } = target;
   try {
     const afterOpenPath = realpathSync(rawPath);
     const opened = fstatSync(fd);
@@ -1237,8 +1314,8 @@ export function openArtifactContent(
       artifactId: row.id,
       filename: safeFilename(row.name, row.id),
       mediaType,
-      byteLength: row.byte_length,
-      sha256: row.sha256,
+      byteLength: row.byte_length!,
+      sha256: row.sha256!,
       stream: createReadStream(canonicalPath, { fd, autoClose: true, start: 0 }),
     };
   } catch (error) {

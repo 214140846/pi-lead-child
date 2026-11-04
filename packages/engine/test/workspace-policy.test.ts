@@ -2,12 +2,12 @@
 // 以前 52 个 workspace 全是 shared/primary：Lead 不把工单标成 coding、也不调 provision_workspace，
 // child 就直接在用户的 checkout 里改代码（#89、#92、#93、#95 改的是线上部署目录）。
 // 现在由系统按事实判定：工作目录在 git 仓库里，并且这次 Run 会写文件。
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { openDb, type Db } from "@pi-lead-child/store";
-import { createItem, createRun, getItem, getRun, getWorkspace, listActivities, listWorkspaces } from "@pi-lead-child/store";
+import { addActivity, createItem, createRun, getItem, getRun, getWorkspace, listActivities, listWorkspaces } from "@pi-lead-child/store";
 import { tempDir } from "@pi-lead-child/core/testing";
 import type { AgentRuntime, RuntimeStartRequest } from "@pi-lead-child/runtime";
 import { runItem } from "../src/children/manager.js";
@@ -16,6 +16,7 @@ import {
   prepareRunWorkspace, requestSharedWorkspace, setDeploymentRepositoriesForTesting, setPullRequestReviewTarget,
 } from "../src/coordinator/workspace-policy.js";
 import { sweepWorkspaces } from "../src/coordinator/workspace.js";
+import { forgetGitFacts, setGitFactsLog } from "../src/coordinator/git-facts.js";
 import { parseRepositorySpec, recordTicketRepository, startRepositoryClone } from "../src/coordinator/repository-checkout.js";
 
 let db: Db;
@@ -132,6 +133,29 @@ describe("the system decides that a ticket is a coding ticket", () => {
     const { request } = await run(itemId, { runId: claim.runId });
     expect(request.workdir).not.toBe(repo);
     expect(readFileSync(join(repo, "source.txt"), "utf8")).toBe("base\n");
+  });
+
+  // 回归 2026-11-03：认领在 SQLite 事务里同步跑 git（工作区判定），负载高时一个 git 几秒，daemon 停住、网页断线。
+  it("does not run git while claiming: it looks the facts up in the background and claims on a later tick", async () => {
+    const itemId = genericTicket();
+    forgetGitFacts();
+    const synchronous: string[] = [];
+    setGitFactsLog((line) => synchronous.push(line));
+    try {
+      const dispatcher = createDispatcher(db, { asyncWorkspaceFacts: true });
+      dispatcher.request({ itemId, role: "executor", purpose: "execution", runtime: "codex", trigger: "test", idempotencyKey: "k" });
+      expect(dispatcher.claimNext()).toBeNull();
+      let claim: ReturnType<typeof dispatcher.claimNext> = null;
+      await vi.waitFor(() => {
+        claim ??= dispatcher.claimNext();
+        expect(claim).not.toBeNull();
+      }, { timeout: 10_000 });
+      expect(synchronous).toEqual([]);
+      const bound = getRun(db, claim!.runId)!.workspace_id;
+      expect(bound === null || getWorkspace(db, bound)!.mode === "isolated").toBe(true);
+    } finally {
+      setGitFactsLog(null);
+    }
   });
 
   it("isolates the first ticket chat too, because a chat run can write files", async () => {
@@ -414,7 +438,7 @@ describe("pull request review", () => {
     const pending = preparation.checkout!(runId);
     // fetch 还没完成：行已经建好，并且绑在这个 Run 上。
     expect(getRun(db, runId)!.workspace_id).not.toBeNull();
-    expect(sweepWorkspaces(db, new Date())).toMatchObject({ cleaned: 0, failed: [] });
+    expect(await sweepWorkspaces(db, new Date())).toMatchObject({ cleaned: 0, failed: [] });
     const workspace = await pending;
     expect(workspace.state).toBe("active");
     expect(git(workspace.path, "rev-parse", "HEAD")).toBe(prHead);
@@ -425,8 +449,90 @@ describe("pull request review", () => {
     setPullRequestReviewTarget(db, { itemId, number: 7, actor: "lead" });
     await run(itemId);
     git(repo, "update-ref", "refs/plc/review/item-9-dead", "HEAD");
-    expect(sweepWorkspaces(db, new Date())).toMatchObject({ failed: [] });
+    expect(await sweepWorkspaces(db, new Date())).toMatchObject({ failed: [] });
     expect(git(repo, "for-each-ref", "refs/plc")).toBe("");
+  });
+
+  // 工单 #212：fetch 写死了 origin。用户的仓库里 PR 所在的远端不叫 origin（公开仓库只推快照，远端另有名字），
+  // 三张评审单一开跑就记成了宿主的未捕获异常。远端的地址写成 GitHub 的样子，insteadOf 把它改写到本地的裸仓库。
+  function renameOriginTo(name: string, address: string): void {
+    git(repo, "remote", "rename", "origin", name);
+    git(repo, "remote", "set-url", name, address);
+    git(repo, "config", `url.${origin}.insteadOf`, address);
+  }
+
+  function addDecoyRemote(name: string, address: string): void {
+    const decoy = join(dir, `${name}.git`);
+    execFileSync("git", ["init", "-q", "--bare", decoy]);
+    git(repo, "remote", "add", name, address);
+    git(repo, "config", `url.${decoy}.insteadOf`, address);
+  }
+
+  function blockers(itemId: number): Array<Record<string, unknown>> {
+    return (db.prepare("SELECT payload FROM inbox WHERE item_id=?").all(itemId) as Array<{ payload: string }>)
+      .map((row) => JSON.parse(row.payload) as Record<string, unknown>);
+  }
+
+  it("fetches from the remote that points at the PR's repository when it is not named origin, as for #208", async () => {
+    renameOriginTo("public", "https://github.com/acme/x.git");
+    addDecoyRemote("fork", "https://github.com/alice/x.git");
+    const itemId = genericTicket(repo);
+    // 和 #208 一样的记录：PR 评审模板记下 acme/x#7，以前的建单在没指定远端时也记成 origin。
+    addActivity(db, { itemId, actor: "lead", kind: "decision", payload: { decision: "ticket_template", template: "pr_review", pr: "acme/x#7" } });
+    addActivity(db, { itemId, actor: "lead", kind: "decision", payload: { decision: "workspace_pull_request_target", number: 7, remote: "origin" } });
+
+    const { runId, request } = await run(itemId);
+
+    expect(request.head).toBe(prHead);
+    expect(getRun(db, runId)).toMatchObject({ state: "finished", error_code: null });
+    assertWorkingCopyUntouched();
+    expect(decisions(itemId).at(-1)).toMatchObject({ mode: "pull_request", pullRequest: { number: 7, remote: "public" } });
+  });
+
+  it("uses the remote that the ticket names in pull_request_remote", async () => {
+    renameOriginTo("public", "https://github.com/acme/x.git");
+    addDecoyRemote("upstream", "https://github.com/acme/x-mirror.git");
+    const itemId = genericTicket(repo);
+    setPullRequestReviewTarget(db, { itemId, number: 7, remote: "public", actor: "lead" });
+
+    const { request } = await run(itemId);
+
+    expect(request.head).toBe(prHead);
+    expect(decisions(itemId).at(-1)).toMatchObject({ pullRequest: { number: 7, remote: "public" } });
+  });
+
+  it("fails the run with a reason a person can act on when no remote points at the PR's repository", async () => {
+    renameOriginTo("public", "https://github.com/acme/snapshot.git");
+    const itemId = genericTicket(repo);
+    setPullRequestReviewTarget(db, { itemId, number: 7, repository: "acme/x", actor: "lead" });
+    const seen: Array<RuntimeStartRequest & { head: string }> = [];
+
+    await expect(runItem(db, itemId, {
+      dbPath: join(dir, "plc.db"), dataDir: dir, prompt: "do it", sessionDir: join(dir, "sessions", "missing-remote"),
+      runtime: writingRuntime(seen),
+    })).rejects.toThrow(/没有指向 github\.com\/acme\/x 的 git 远端/);
+
+    expect(seen).toHaveLength(0);
+    const failed = db.prepare("SELECT * FROM runs WHERE item_id=?").get(itemId) as Record<string, unknown>;
+    expect(failed).toMatchObject({ state: "failed", error_code: "workspace_setup_failed", failure_code: "workspace_setup_failed" });
+    expect(String(failed.error_message)).toContain("现有的远端：public（github.com/acme/snapshot）");
+    expect(getItem(db, itemId)!.stage).toBe("blocked");
+    const [blocker] = blockers(itemId);
+    expect(blocker).toMatchObject({ blockerCode: "workspace_setup_failed", title: "PR #7 检出失败：没有指向 github.com/acme/x 的远端" });
+    expect(String(blocker!.nextStep)).toContain(`git -C ${realpathSync(repo)} remote add <远端名> https://github.com/acme/x.git`);
+    expect(blockers(itemId).some((payload) => payload.blockerCode === "unhandled_run_exception")).toBe(false);
+    assertWorkingCopyUntouched();
+  });
+
+  it("names the missing remote when pull_request_remote names one the repository does not have", async () => {
+    const itemId = genericTicket(repo);
+    setPullRequestReviewTarget(db, { itemId, number: 7, remote: "public", actor: "lead" });
+
+    await expect(run(itemId)).rejects.toThrow(/没有名为 public 的 git 远端/);
+
+    expect(db.prepare("SELECT error_code FROM runs WHERE item_id=?").get(itemId)).toEqual({ error_code: "workspace_setup_failed" });
+    expect(blockers(itemId)[0]).toMatchObject({ title: "PR #7 检出失败：没有远端 public" });
+    assertWorkingCopyUntouched();
   });
 
   // 审查 2026-10-19 第 6 条：PR 工单的核查者以前看的是用户的 checkout，结论针对 main，不针对 PR head。

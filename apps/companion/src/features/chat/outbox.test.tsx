@@ -14,6 +14,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { renderUI } from '../../../test/render';
 import { CompanionRuntimeProvider } from '../../state/CompanionStateProvider';
 import { createCompanionStateRuntime, type CompanionTransport } from '../../state/runtime';
+import type { MessageEntity } from '../../state/types';
 import { LeadConversation, latestSentMessageKey } from './LeadConversation';
 
 // 顶栏的状态点、「正在回复」的转圈是 Reanimated 的循环动画。jsdom 里它们在组件卸载以后还在按帧更新，
@@ -181,7 +182,7 @@ describe('the outbox in the Lead conversation', () => {
   });
 });
 
-// 会话列表的 ChatScroll 在「你刚发了消息」时回到底部（followKey）。断线时发的消息也算；
+// 会话列表的 ChatList 在「你刚发了消息」时回到底部（followKey）。断线时发的消息也算；
 // 它后来送达、本地消息换成那一轮的消息时，不算又发了一条：你往上翻了就不把你拽回来。
 describe('the follow key of the conversation list', () => {
   it('changes when you send, also offline, and stays when the message is delivered', async () => {
@@ -202,5 +203,19 @@ describe('the follow key of the conversation list', () => {
     setState('connected');
     await vi.waitFor(() => expect(bubbleStatus('断线时发的')).toBe('Delivered'));
     expect(key()).toBe(sent);
+  });
+
+  // 2026-11-04 预览发现：你往上翻着看历史，Lead 自己开了一轮（提醒、巡检、外部消息），列表被拽回了底部。
+  // 那一轮的「你的消息」是实时事件先垫上的空消息，不是你发的；别的设备和外部来源的消息也不是这台设备发的。
+  it('does not change when Lead starts a turn of its own or a message comes from somewhere else', () => {
+    const message = (id: string, extra: Partial<MessageEntity>): MessageEntity => ({
+      id, sessionId: 's', turnId: `turn-${id}`, ticketId: null, role: 'user', state: 'completed', failure: null,
+      clientCommandId: null, source: 'snapshot', createdAt: '2026-11-04T10:00:00.000Z', updatedAt: '2026-11-04T10:00:00.000Z', ...extra,
+    });
+    const mine = message('mine', { clientCommandId: 'cmd-1' });
+    expect(latestSentMessageKey([mine])).toBe('cmd-1');
+    expect(latestSentMessageKey([mine, message('lead-shell', { source: 'live' })])).toBe('cmd-1');
+    expect(latestSentMessageKey([mine, message('slack', {})])).toBe('cmd-1');
+    expect(latestSentMessageKey([message('slack', {})])).toBeNull();
   });
 });

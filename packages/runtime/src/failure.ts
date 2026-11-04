@@ -126,6 +126,7 @@ export function runtimeFailureTitle(runtime: RuntimeId, failure: TypedFailure): 
   if (failure.code === "usage_limited") return `${agent} 用量额度用完，在等重置`;
   if (failure.code === "network_error") return `${agent} 网络中断`;
   if (failure.code === "content_filtered") return `${agent} 的回答被 provider 的内容过滤拦下`;
+  if (failure.code === "workspace_setup_failed") return "工作区没有准备好";
   switch (failureCategory(failure)) {
     case "authentication": return `${agent} 认证失败`;
     case "account_quota": return `${agent} 账号余额不足`;
@@ -198,6 +199,9 @@ function healthRepair(agent: string, failure: Pick<TypedFailure, "needs" | "code
   }
   if (failure.code === "tool_channel_unavailable") {
     return `${agent} 的会话没有连上 plc 工具通道，agent 无法交接成果。需要检查 plc 的 MCP 服务器能否启动。`;
+  }
+  if (failure.code === "workspace_setup_failed") {
+    return "需要按失败原因修正本地仓库的设置（例如加上 PR 所在的 git 远端），然后重试这张工单。";
   }
   if (failure.needs === "config") return `需要修正 ${agent} 的配置。`;
   return null;

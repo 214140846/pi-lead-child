@@ -86,7 +86,7 @@ describe("failure learning candidates", () => {
     db.close();
   });
 
-  it("matches source candidate ids exactly instead of using substring LIKE semantics", () => {
+  it("matches source candidate ids exactly instead of using substring LIKE semantics", async () => {
     const dir = tempDir("plc-learning-exact-candidate-");
     const db = openDb(join(dir, "plc.db"));
     const projectId = createProject(db, { name: "returns", createdBy: "lead" });
@@ -113,7 +113,7 @@ describe("failure learning candidates", () => {
     mkdirSync(sourceDir);
     const asset = join(sourceDir, "SKILL.md");
     writeFileSync(asset, "# Exact candidate\n");
-    const registered = service.registerCapability({
+    const registered = await service.registerCapability({
       candidateId: second.candidate.id,
       type: "skill",
       name: "Exact candidate",

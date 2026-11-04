@@ -29,6 +29,7 @@ import type {
 import type {
   AttemptEntity,
   ControlPlaneData,
+  ConversationHistoryState,
   ResourceKey,
   TransientConversationCard,
 } from '../types';
@@ -36,11 +37,13 @@ import {
   conversationCardEntity,
   equalArray,
   equalValue,
+  mergeConversationTurns,
   mergeOrderedIds,
   normalizeConversationSnapshot,
   normalizeEntityPage,
   normalizeEntitySnapshot,
   reuseArray,
+  type ConversationMerge,
   type PageMergeMode,
 } from './normalize';
 import { applyLeadActivityPush, applyLeadActivitySnapshot, EMPTY_LEAD_ACTIVITY } from './leadActivity';
@@ -70,6 +73,9 @@ export interface ControlPlaneStoreState extends ControlPlaneData {
   replaceProjectOverviews(overviews: ProjectOverview[]): void;
   replaceTimeline(timeline: TimelineResponse): void;
   replaceConversation(sessionId: string, turns: ConversationTurn[], scope?: { ticketId?: number }): void;
+  // 主会话：最近一段、更早的一页、单独校正的几轮叠到手上的会话上（./normalize.ts 的 mergeConversationTurns）。
+  mergeConversation(sessionId: string, turns: ConversationTurn[], merge: ConversationMerge): void;
+  setConversationHistory(patch: Partial<ConversationHistoryState>): void;
   replaceAttempts(ticketId: number, attempts: AttemptDto[]): void;
   replaceActivities(ticketId: number, activities: import('@pi-lead-child/protocol').ActivityDto[]): void;
   mergeCheckpointPage(
@@ -179,6 +185,7 @@ export function createInitialControlPlaneData(): ControlPlaneData {
     conversationCardIds: [],
     conversationCardKeyByDurableId: {},
     conversationCardPagesByResource: {},
+    conversationHistory: { hasMore: false, loading: false, error: null, oldest: null },
     resourceState: {},
     lastAppliedGatewaySeq: 0,
   };
@@ -299,6 +306,22 @@ export function createControlPlaneStore() {
         Object.entries(normalized).filter(([key, value]) => current[key as keyof typeof normalized] !== value),
       );
       if (Object.keys(patch).length > 0) set(patch);
+    },
+    mergeConversation: (sessionId, turns, merge) => {
+      const current = get();
+      const merged = mergeConversationTurns(current, sessionId, turns, merge);
+      const patch = Object.fromEntries(
+        Object.entries(merged).filter(([key, value]) => current[key as keyof typeof merged] !== value),
+      );
+      if (Object.keys(patch).length > 0) set(patch);
+    },
+    setConversationHistory: (patch) => {
+      const current = get().conversationHistory;
+      const next = { ...current, ...patch };
+      if (next.hasMore !== current.hasMore || next.loading !== current.loading || next.error !== current.error
+        || next.oldest?.id !== current.oldest?.id || next.oldest?.createdAt !== current.oldest?.createdAt) {
+        set({ conversationHistory: next });
+      }
     },
     replaceAttempts: (ticketId, attempts) => {
       const current = get();

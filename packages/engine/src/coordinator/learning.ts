@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
-import { execFileSync } from "node:child_process";
-import { copyFileSync, mkdirSync, readFileSync } from "node:fs";
+import { execFile } from "node:child_process";
+import { mkdirSync } from "node:fs";
+import { copyFile, readFile } from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
+import { promisify } from "node:util";
 import type { Db } from "@pi-lead-child/store";
 import { createItem } from "@pi-lead-child/store";
 import { getProject } from "@pi-lead-child/store";
@@ -43,8 +45,11 @@ export function failureFingerprint(input: {
   return createHash("sha256").update(parts.join("\n")).digest("hex");
 }
 
-function fileHash(path: string): string {
-  return createHash("sha256").update(readFileSync(path)).digest("hex");
+const execFileAsync = promisify(execFile);
+
+// 登记、评估一项能力时读文件、跑评估脚本都是异步的：评估脚本最长跑 30 秒，以前在 daemon 的主线程上同步跑（2026-11-03）。
+async function fileHash(path: string): Promise<string> {
+  return createHash("sha256").update(await readFile(path)).digest("hex");
 }
 
 function slugify(value: string): string {
@@ -61,8 +66,8 @@ export interface LearningService {
   registerCapability(input: {
     candidateId: number; type: string; name: string; slug: string; summary: string;
     assetPath: string; evaluatorPath?: string;
-  }): Capability;
-  evaluateCapability(capabilityId: number): CapabilityRun;
+  }): Promise<Capability>;
+  evaluateCapability(capabilityId: number): Promise<CapabilityRun>;
   getCapability(id: number): Capability | undefined;
   renderActiveCapabilities(projectId: number): string;
 }
@@ -141,7 +146,7 @@ export function createLearningService(
 
   return {
     captureFailure,
-    registerCapability(input): Capability {
+    async registerCapability(input): Promise<Capability> {
       const candidate = getLearningCandidate(db, input.candidateId);
       if (!candidate) throw new Error(`learning candidate #${input.candidateId} not found`);
       const draft = findCapabilityBySourceCandidate(db, candidate, ["draft"]);
@@ -150,24 +155,26 @@ export function createLearningService(
       const versionDir = join(options.dataDir, "capabilities", scopeDir, slugify(input.slug), `v${draft.version}`);
       mkdirSync(versionDir, { recursive: true });
       const assetPath = join(versionDir, basename(input.assetPath));
-      copyFileSync(input.assetPath, assetPath);
+      await copyFile(input.assetPath, assetPath);
       const evaluatorPath = input.evaluatorPath ? join(versionDir, basename(input.evaluatorPath)) : null;
-      if (input.evaluatorPath && evaluatorPath) copyFileSync(input.evaluatorPath, evaluatorPath);
+      if (input.evaluatorPath && evaluatorPath) await copyFile(input.evaluatorPath, evaluatorPath);
+      const assetHash = await fileHash(assetPath);
+      const evaluatorHash = evaluatorPath ? await fileHash(evaluatorPath) : null;
       db.prepare(
         `UPDATE capabilities SET type=?, slug=?, name=?, summary=?, status='evaluating',
          asset_path=?, evaluator_path=?, asset_hash=?, evaluator_hash=?, updated_at=datetime('now')
          WHERE id=?`,
       ).run(input.type, slugify(input.slug), input.name, input.summary, assetPath, evaluatorPath,
-        fileHash(assetPath), evaluatorPath ? fileHash(evaluatorPath) : null, draft.id);
+        assetHash, evaluatorHash, draft.id);
       return getCapability(db, draft.id)!;
     },
-    evaluateCapability(capabilityId): CapabilityRun {
+    async evaluateCapability(capabilityId): Promise<CapabilityRun> {
       const capability = getCapability(db, capabilityId);
       if (!capability) throw new Error(`capability #${capabilityId} not found`);
       if (!capability.asset_path || !capability.asset_hash) throw new Error("capability asset is not registered");
-      if (fileHash(capability.asset_path) !== capability.asset_hash) throw new Error("capability asset hash mismatch");
+      if (await fileHash(capability.asset_path) !== capability.asset_hash) throw new Error("capability asset hash mismatch");
       if (!capability.evaluator_path || !capability.evaluator_hash) throw new Error("capability evaluator is not registered");
-      if (fileHash(capability.evaluator_path) !== capability.evaluator_hash) throw new Error("capability evaluator hash mismatch");
+      if (await fileHash(capability.evaluator_path) !== capability.evaluator_hash) throw new Error("capability evaluator hash mismatch");
       let outcome: CapabilityRun["outcome"] = "passed";
       let output = "";
       try {
@@ -176,14 +183,17 @@ export function createLearningService(
           ? process.execPath
           : capability.evaluator_path;
         const args = command === process.execPath ? [capability.evaluator_path] : [];
-        output = execFileSync(command, args, {
-          cwd: dirname(capability.asset_path), encoding: "utf8", timeout: 30_000,
-          maxBuffer: 1024 * 1024, stdio: ["ignore", "pipe", "pipe"],
-        });
+        ({ stdout: output } = await execFileAsync(command, args, {
+          cwd: dirname(capability.asset_path), encoding: "utf8", timeout: 30_000, maxBuffer: 1024 * 1024,
+        }));
       } catch (error: any) {
-        outcome = typeof error?.status === "number" ? "failed" : "error";
+        // 脚本以非零退出码结束：code 是退出码。超时被杀、起不来时 code 不是数字。
+        outcome = typeof error?.code === "number" ? "failed" : "error";
         output = String(error?.stdout ?? error?.stderr ?? error?.message ?? error).slice(0, 20_000);
       }
+      // 脚本跑的这段时间里，这项能力可能重新登记过（换了文件）：这次的结果不再自动启用它。
+      const current = getCapability(db, capability.id);
+      const changed = !current || current.asset_hash !== capability.asset_hash || current.evaluator_hash !== capability.evaluator_hash;
       const result = db.prepare(
         `INSERT INTO capability_runs (capability_id, outcome, metrics, evidence)
          VALUES (?, ?, ?, ?)`,
@@ -191,7 +201,7 @@ export function createLearningService(
         assetHash: capability.asset_hash, evaluatorHash: capability.evaluator_hash,
         outputDigest: createHash("sha256").update(output).digest("hex"),
       }));
-      const autoActivatable = capability.scope === "project"
+      const autoActivatable = !changed && capability.scope === "project"
         && ["skill", "runbook", "evaluator"].includes(capability.type);
       if (outcome === "passed" && autoActivatable) {
         db.prepare(

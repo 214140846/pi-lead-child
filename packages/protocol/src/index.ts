@@ -1011,6 +1011,22 @@ export const ConversationTurnSchema = StrictObject({
 });
 export type ConversationTurn = Static<typeof ConversationTurnSchema>;
 
+// 会话里两轮的先后：和 daemon 的快照一样按 (createdAt, id) 排（store 的 listTurns）。客户端按它合并分页和单轮校正。
+export function compareConversationTurns(
+  left: Pick<ConversationTurn, "createdAt" | "id">,
+  right: Pick<ConversationTurn, "createdAt" | "id">,
+): number {
+  if (left.createdAt !== right.createdAt) return left.createdAt < right.createdAt ? -1 : 1;
+  return left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
+}
+
+// GET /v1/conversation/turns?before=… 的回答（2026-11-04）：排在游标那一轮前面的一页，从旧到新；hasMore 说还有没有更早的。
+export const ConversationTurnPageSchema = StrictObject({
+  items: Type.Array(ConversationTurnSchema),
+  hasMore: Type.Boolean(),
+});
+export type ConversationTurnPage = Static<typeof ConversationTurnPageSchema>;
+
 // Lead 自己的模型调用是否正常。顶栏的状态点读它，不再只看 WebSocket 连没连上
 // （实例上每次 Lead 调模型都是 503，顶栏却一直亮着绿点）。离线由客户端按连接状态判断。
 export const LeadStatusSchema = StrictObject({

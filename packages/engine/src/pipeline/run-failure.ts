@@ -37,7 +37,7 @@ function alreadyReported(db: Db, itemId: number, runId: number): boolean {
   ).get(itemId, `run-crash:${runId}`));
 }
 
-function addAttemptEndIfMissing(db: Db, itemId: number, runId: number): void {
+function addAttemptEndIfMissing(db: Db, itemId: number, runId: number, reason = "unhandled_run_exception"): void {
   const exists = db.prepare(
     "SELECT 1 FROM activities WHERE run_id=? AND kind='attempt_end' LIMIT 1",
   ).get(runId);
@@ -47,7 +47,7 @@ function addAttemptEndIfMissing(db: Db, itemId: number, runId: number): void {
       runId,
       actor: "system",
       kind: "attempt_end",
-      payload: { finalItemStage: getItem(db, itemId)?.stage, reason: "unhandled_run_exception" },
+      payload: { finalItemStage: getItem(db, itemId)?.stage, reason },
     });
   }
 }
@@ -175,6 +175,76 @@ export function recordUnhandledRunFailure(
     return true;
   } catch {
     // 连最小结算都失败时也保留原异常；调用方的 onChildDone 仍会把它广播给控制面。
+    return false;
+  }
+}
+
+const WORKSPACE_SETUP_FAILED = "workspace_setup_failed";
+
+/**
+ * 工作区没准备好的 Run（workspace-policy.ts 的 RunWorkspaceSetupError，例如本地仓库没有 PR 所在的远端）：记成失败，
+ * 原因和修法照原样写给 Lead 和用户。它不是宿主代码的缺陷，不记成未捕获异常，也不扣工单的重试额度（工单 #212）。
+ * 不抛错：调用方照常把原来的异常抛出去。
+ */
+export function recordRunSetupFailure(
+  db: Db,
+  args: { itemId: number; runId: number; title: string; reason: string; nextStep: string; at?: Date },
+): boolean {
+  const at = args.at ?? new Date();
+  const reason = args.reason.slice(0, 4_000);
+  const failure = typedFailure(WORKSPACE_SETUP_FAILED, { errorCode: WORKSPACE_SETUP_FAILED, message: reason });
+  try {
+    const recorded = db.transaction(() => {
+      const run = getRun(db, args.runId);
+      if (!run || run.item_id !== args.itemId || !["starting", "running"].includes(run.state)) return false;
+      updateRun(db, args.runId, {
+        state: "failed", endedAt: true, exitCode: null, errorCode: WORKSPACE_SETUP_FAILED, errorMessage: reason, failure,
+      });
+      addActivity(db, {
+        itemId: args.itemId, runId: args.runId, actor: "system", kind: "decision",
+        payload: { decision: "run_workspace_setup_failed", title: args.title, reason, nextStep: args.nextStep },
+      });
+      // 成果修复回合不改变工单的 stage（工单 09），和未捕获异常一样。
+      if (getItem(db, args.itemId)?.stage === "active" && run.purpose !== "outcome_repair") {
+        transition(db, {
+          itemId: args.itemId, to: "blocked", actor: "system", reason: WORKSPACE_SETUP_FAILED, runId: args.runId, now: at,
+        });
+      }
+      addAttemptEndIfMissing(db, args.itemId, args.runId, WORKSPACE_SETUP_FAILED);
+      raiseBlocker(db, {
+        // 先交给 Lead：Lead 能按修法自己处理，或者转告用户。
+        needsUser: false,
+        itemId: args.itemId,
+        runId: args.runId,
+        code: WORKSPACE_SETUP_FAILED,
+        title: args.title,
+        summary: reason.slice(0, 1_600),
+        nextStep: args.nextStep,
+        source: "structural",
+        dedupKey: `run-setup:${args.runId}`,
+        evidence: { runId: args.runId, reason },
+      });
+      return true;
+    }).immediate();
+    if (!recorded) return false;
+    try {
+      createCheckpointDomainService({ db, now: () => at }).recordSystemCheckpoint({
+        itemId: args.itemId,
+        runId: args.runId,
+        kind: "blocked",
+        title: args.title,
+        summary: reason.slice(0, 1_600),
+        nextStep: args.nextStep,
+        keyFacts: [{ label: "错误类型", value: WORKSPACE_SETUP_FAILED }],
+        idempotencyKey: `run-setup:${args.runId}`,
+        leadVisible: true,
+        precedingEvents: [runUpdatedEvent(args.itemId, args.runId, at)],
+      });
+    } catch {
+      // 失败和 blocker 已经落账。卡片投影出错不能让这里再抛错。
+    }
+    return true;
+  } catch {
     return false;
   }
 }

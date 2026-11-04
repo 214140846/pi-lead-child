@@ -1,6 +1,6 @@
 import { Density } from '@pi-lead-child/components';
 import {
-  Box, Button, Card, ChatScroll, Column, ConversationColumn, Dot, Icon, IconButton, ImageThumbnail, KeyboardArea, LeadAvatar, MessageBubble, NoticeRow,
+  Box, Button, Card, ChatList, Column, ConversationColumn, Dot, Icon, IconButton, ImageThumbnail, KeyboardArea, LeadAvatar, MessageBubble, NoticeRow,
   Pressable, Row,
   Spacer,
   Text,
@@ -114,7 +114,7 @@ export function LeadConversation({ compact = false, railOpen = true, onOpenRail,
     () => messageIds.flatMap((messageId) => messagesById[messageId] ? [messagesById[messageId]] : []),
     [messageIds, messagesById],
   );
-  // 你发的最后一条消息。它变了，说明你刚发了消息：列表回到底部（ChatScroll 的 followKey）。
+  // 你发的最后一条消息。它变了，说明你刚发了消息：列表回到底部（ChatList 的 followKey）。
   const lastUserMessageId = useMemo(() => latestSentMessageKey(messages), [messages]);
   const directTicketTurns = useMemo(
     () => turnIds.flatMap((turnId) => {
@@ -270,6 +270,76 @@ export function LeadConversation({ compact = false, railOpen = true, onOpenRail,
       });
     }
   };
+  // 更早的消息（2026-11-04）：轮次只取了最近一段，往上滚到头时一页一页取；会话卡片也有自己的一页一页。
+  // 往上滚到头时两样都取。上一次没取到时不自己重试，等你点「重试」。
+  const turnHistory = useControlPlaneStore((state) => state.conversationHistory);
+  const olderAvailable = Boolean(conversationCardPage?.hasMore) || turnHistory.hasMore;
+  const olderLoading = historyRequest.loading || turnHistory.loading;
+  const olderError = historyRequest.error ?? turnHistory.error;
+  const loadOlder = (retry = false) => {
+    if (!connected) return;
+    if (turnHistory.hasMore && (retry || !turnHistory.error)) void runtime.loadOlderConversationTurns();
+    if (conversationCardPage?.hasMore && (retry || !historyRequest.error)) void loadOlderConversationCards();
+  };
+
+  // 一块要画的东西都在 rowContext 里：它变了，看得见的块重画（ChatList 的 extraData）。
+  const rowContext = useMemo(() => ({
+    cardsById, collapsedCardIds, compact, firedReminderIds, latestLeadMessageId, messagesById, selectedTicketId, suppressions,
+    windows: folded.windows,
+  }), [cardsById, collapsedCardIds, compact, firedReminderIds, folded.windows, latestLeadMessageId, messagesById, selectedTicketId, suppressions]);
+  // 两边留白在手机和桌面上都是 16：会话栏窄时内容列占满减留白，宽时内容列最宽 700、居中（2026-10-16）。
+  // 一个内容列（2026-10-16）：Lead 一侧所有的块在这一列里，宽度一致；你的气泡靠右，按这一列的 70% 定宽。
+  // 虚拟列表里每一块各有一个同样的列（2026-11-04）。块和块之间是语义间距 conversation-block（ChatList 的间隔）。
+  const renderRow = (item: LeadConversationRow) => (
+    <Box px="page-x">
+      <ConversationColumn>
+        <ConversationRowView item={item} context={rowContext} />
+      </ConversationColumn>
+    </Box>
+  );
+  const headerRows = [
+    hydrated && !connected ? (
+      <Row
+        key="cached"
+        self="center"
+        items="center"
+        gap="icon-label"
+        px="pill-x"
+        py="pill-y"
+        borderWidth={1}
+        borderColor="border"
+        rounded="full"
+        bg="surface"
+      >
+        <Dot color="text-muted" size={6} />
+        {/* spacing-exempt: 标签字号 */}
+        <Text size="11" weight="semibold" tone="secondary">{m.cached}</Text>
+      </Row>
+    ) : null,
+    hydrated && (olderAvailable || olderLoading || olderError) ? (
+      <Column key="history" items="center" gap="card-row">
+        {olderError ? (
+          <Text size="secondary" tone="danger-dark" align="center">{m.history.failed(olderError)}</Text>
+        ) : null}
+        <Button
+          disabled={!connected || olderLoading || !olderAvailable}
+          label={olderLoading ? m.history.loading : olderError ? m.history.retry : m.history.load}
+          onPress={() => loadOlder(true)}
+          testID={olderLoading ? 'conversation-history-loading' : 'conversation-history-load'}
+          variant="outline"
+          tone="neutral"
+          shape="pill"
+          size="sm"
+        />
+      </Column>
+    ) : null,
+  ].filter(Boolean);
+  const listHeader = (
+    // spacing-exempt: 会话流上下的留白，手机 18、桌面 24（和以前的 py 一样）
+    <Column px="page-x" pt={compact ? 18 : 24}>
+      {headerRows.length ? <Column gap="conversation-block" pb="conversation-block">{headerRows}</Column> : null}
+    </Column>
+  );
 
   // 会话按外观偏好里会话区域的密度（缺省标准）。
   return (
@@ -331,113 +401,26 @@ export function LeadConversation({ compact = false, railOpen = true, onOpenRail,
         ) : null}
       </Row>
 
-      {/* 会话流（ChatScroll）：打开时落在最底下；贴底时跟随新消息和流式输出；你往上翻时不拽回来，只给「新消息 ↓」；
-          你发了消息就回到底部。内容不满一屏时照旧从上往下排（空会话的提示要居中）。 */}
-      <ChatScroll key={sessionId ?? 'no-session'} testID="lead-conversation-scroll" followKey={lastUserMessageId} bottomAligned={false}>
-        {/* 两边留白在手机和桌面上都是 16：会话栏窄时内容列占满减留白，宽时内容列最宽 700、居中（2026-10-16）。 */}
-        {/* 块和块之间是语义间距 conversation-block，手机和桌面一样（2026-10-21，原来手机 16、桌面 20）。 */}
-        <Column grow={1} gap="conversation-block" px="page-x" py={compact ? 18 : 24}>
-          {hydrated && !connected ? (
-            <Row
-              self="center"
-              items="center"
-              gap="icon-label"
-              px="pill-x"
-              py="pill-y"
-              borderWidth={1}
-              borderColor="border"
-              rounded="full"
-              bg="surface"
-            >
-              <Dot color="text-muted" size={6} />
-              {/* spacing-exempt: 标签字号 */}
-              <Text size="11" weight="semibold" tone="secondary">{m.cached}</Text>
-            </Row>
-          ) : null}
-          {hydrated && (conversationCardPage?.hasMore || historyRequest.loading || historyRequest.error) ? (
-            <Column items="center" gap="card-row">
-              {historyRequest.error ? (
-                <Text size="secondary" tone="danger-dark" align="center">{m.history.failed(historyRequest.error)}</Text>
-              ) : null}
-              <Button
-                disabled={!connected || historyRequest.loading || !conversationCardPage?.hasMore}
-                label={historyRequest.loading ? m.history.loading : historyRequest.error ? m.history.retry : m.history.load}
-                onPress={() => void loadOlderConversationCards()}
-                testID={historyRequest.loading ? 'conversation-history-loading' : 'conversation-history-load'}
-                variant="outline"
-                tone="neutral"
-                shape="pill"
-                size="sm"
-              />
-            </Column>
-          ) : null}
-          {hydrated ? (folded.items.length ? (
-            // 一个内容列（2026-10-16）：Lead 一侧所有的块在这一列里，宽度一致；你的气泡靠右，按这一列的 70% 定宽。
-            <ConversationColumn gap="conversation-block">
-            {rows.map((item) => item.kind === 'channel-cards' ? (
-            // 连着的几张外部消息卡是一张列表，卡和卡之间是 list-row（2026-10-21）。
-            <Column key={item.key} testID="channel-card-run" w="100%" gap="list-row">
-              {item.cardIds.map((cardId) => <ChannelCardSlot key={cardId} cardId={cardId} />)}
-            </Column>
-          ) : item.kind === 'message' ? (
-            <ConversationMessage
-              key={item.key}
-              latest={item.messageId === latestLeadMessageId}
-              cardIds={item.cardIds}
-              activityIds={item.activityIds}
-              cardsById={cardsById}
-              collapsedCardIds={collapsedCardIds}
-              compact={compact}
-              dispatchScopes={folded.windows}
-              messageId={item.messageId}
-              selectedTicketId={selectedTicketId}
-              suppressedApprovalIds={suppressions.approvalIdsByTurn[messagesById[item.messageId]?.turnId ?? '']}
-              suppressedTicketIds={[...(suppressions.ticketIdsByTurn[messagesById[item.messageId]?.turnId ?? ''] ?? []), ...firedReminderIds]}
-            />
-          ) : item.kind === 'ticket-direct' ? (
-            <TicketDirectNotice key={item.key} compact={compact} turnId={item.turnId} />
-          ) : item.kind === 'failure-group' ? (
-            <FailureGroup key={item.key} messageIds={item.messageIds} />
-          ) : item.kind === 'owner-action-group' ? (
-            <OwnerActionGroup key={item.key} messageIds={item.messageIds} own={item.own === true} />
-          ) : item.kind === 'incident' ? (
-            <IncidentCard
-              key={item.key}
-              noticeMessageIds={item.noticeMessageIds}
-              failureMessageIds={item.failureMessageIds}
-              recoveredAt={item.recoveredAt}
-            />
-          ) : item.kind === 'date' ? (
-            <ConversationDateDivider key={item.key} label={item.label} />
-          ) : item.kind === 'lead-activity' ? (
-            <LeadActivityBlock key={item.key} ids={item.ids} defaultExpanded={false} />
-          ) : item.kind === 'channel-news' ? (
-            <ChannelNewsLine key={item.key} cardId={item.cardId} at={item.at} />
-          ) : item.kind === 'reminder' ? (
-            <ReminderFireCard key={item.key} cardKey={item.reminderKey} />
-          ) : item.kind === 'setup-checklist' ? (
-            <SetupChecklistCardItem key={item.key} />
-          ) : item.kind === 'setup-hint' ? (
-            <SetupHintCardItem key={item.key} cardKey={item.hintKey} />
-          ) : cardsById[item.cardId] ? (
-            <Box key={item.key} w="100%">
-              <ConversationCardView
-                card={cardsById[item.cardId]!}
-                collapsed={collapsedCardIds.has(item.cardId)}
-                compact={compact}
-                dispatchScope={folded.windows[item.cardId]}
-                selectedTicketId={selectedTicketId}
-              />
-            </Box>
-          ) : null)}
-            </ConversationColumn>
-          ) : (
-            <EmptyConversation title={m.empty.title} body={m.empty.body(leadName)} />
-          )) : (
-            <EmptyConversation title={m.empty.notConnectedTitle(leadName)} body={m.empty.notConnectedBody(leadName)} />
-          )}
-        </Column>
-      </ChatScroll>
+      {/* 会话流（ChatList，2026-11-04 换成 Legend List，只画看得见的块）：打开时落在最底下；贴底时跟随新消息和流式输出；
+          你往上翻时不拽回来，只给「新消息 ↓」；你发了消息就回到底部；往上滚到头时取更早的消息。
+          内容不满一屏时照旧从上往下排（空会话的提示要居中）。 */}
+      <ChatList
+        key={sessionId ?? 'no-session'}
+        testID="lead-conversation-scroll"
+        data={hydrated ? rows : NO_ROWS}
+        keyExtractor={conversationRowKey}
+        renderItem={renderRow}
+        extraData={rowContext}
+        followKey={lastUserMessageId}
+        bottomAligned={false}
+        onStartReached={loadOlder}
+        header={listHeader}
+        // spacing-exempt: 会话流上下的留白，手机 18、桌面 24（和以前的 py 一样）
+        footer={<Box pb={compact ? 18 : 24} />}
+        empty={hydrated
+          ? <EmptyConversation title={m.empty.title} body={m.empty.body(leadName)} />
+          : <EmptyConversation title={m.empty.notConnectedTitle(leadName)} body={m.empty.notConnectedBody(leadName)} />}
+      />
 
       {/* 输入框放进和会话同样的内容列：同样的留白、同样最宽 700、同样居中，左右边和上面的对话对齐。
           原来输入框上方那一行「执行中 · 需要处理 + 工单标签 + 查看全部」去掉了（方案 C，主题 11.14）：
@@ -471,6 +454,76 @@ export function LeadConversation({ compact = false, railOpen = true, onOpenRail,
       </Column>
     </KeyboardArea></Density>
   );
+}
+
+const NO_ROWS: LeadConversationRow[] = [];
+const conversationRowKey = (row: LeadConversationRow) => row.key;
+
+type ConversationRowContext = {
+  cardsById: Record<string, ConversationCardEntity>;
+  collapsedCardIds: ReadonlySet<string>;
+  compact: boolean;
+  firedReminderIds: readonly number[];
+  latestLeadMessageId: string | null;
+  messagesById: Record<string, MessageEntity>;
+  selectedTicketId: number | null;
+  suppressions: ReturnType<typeof buildMessagePartSuppressions>;
+  windows: Record<string, DispatchWindow>;
+};
+
+// 会话流里的一块（ChatList 的一项）。
+function ConversationRowView({ item, context }: { item: LeadConversationRow; context: ConversationRowContext }) {
+  const { cardsById, collapsedCardIds, compact, firedReminderIds, latestLeadMessageId, messagesById, selectedTicketId, suppressions, windows } = context;
+  if (item.kind === 'channel-cards') {
+    // 连着的几张外部消息卡是一张列表，卡和卡之间是 list-row（2026-10-21）。
+    return (
+      <Column testID="channel-card-run" w="100%" gap="list-row">
+        {item.cardIds.map((cardId) => <ChannelCardSlot key={cardId} cardId={cardId} />)}
+      </Column>
+    );
+  }
+  if (item.kind === 'message') {
+    const turnId = messagesById[item.messageId]?.turnId ?? '';
+    return (
+      <ConversationMessage
+        latest={item.messageId === latestLeadMessageId}
+        cardIds={item.cardIds}
+        activityIds={item.activityIds}
+        cardsById={cardsById}
+        collapsedCardIds={collapsedCardIds}
+        compact={compact}
+        dispatchScopes={windows}
+        messageId={item.messageId}
+        selectedTicketId={selectedTicketId}
+        suppressedApprovalIds={suppressions.approvalIdsByTurn[turnId]}
+        suppressedTicketIds={[...(suppressions.ticketIdsByTurn[turnId] ?? []), ...firedReminderIds]}
+      />
+    );
+  }
+  if (item.kind === 'ticket-direct') return <TicketDirectNotice compact={compact} turnId={item.turnId} />;
+  if (item.kind === 'failure-group') return <FailureGroup messageIds={item.messageIds} />;
+  if (item.kind === 'owner-action-group') return <OwnerActionGroup messageIds={item.messageIds} own={item.own === true} />;
+  if (item.kind === 'incident') {
+    return <IncidentCard noticeMessageIds={item.noticeMessageIds} failureMessageIds={item.failureMessageIds} recoveredAt={item.recoveredAt} />;
+  }
+  if (item.kind === 'date') return <ConversationDateDivider label={item.label} />;
+  if (item.kind === 'lead-activity') return <LeadActivityBlock ids={item.ids} defaultExpanded={false} />;
+  if (item.kind === 'channel-news') return <ChannelNewsLine cardId={item.cardId} at={item.at} />;
+  if (item.kind === 'reminder') return <ReminderFireCard cardKey={item.reminderKey} />;
+  if (item.kind === 'setup-checklist') return <SetupChecklistCardItem />;
+  if (item.kind === 'setup-hint') return <SetupHintCardItem cardKey={item.hintKey} />;
+  const card = cardsById[item.cardId];
+  return card ? (
+    <Box w="100%">
+      <ConversationCardView
+        card={card}
+        collapsed={collapsedCardIds.has(item.cardId)}
+        compact={compact}
+        dispatchScope={windows[item.cardId]}
+        selectedTicketId={selectedTicketId}
+      />
+    </Box>
+  ) : null;
 }
 
 function EmptyConversation({ title, body }: { title: string; body: string }) {
@@ -796,11 +849,13 @@ function BlockerNotice({ text, time }: { text: string; time: string }) {
 
 // 连着出现的同一种失败合成的一张卡片（例如每次心跳巡检一个 503）：写次数和最近一次的时间。
 // 一次停摆的系统卡片：开头一句（什么时候、为什么、积压几件、恢复了没有），展开看积压的事和 Lead 那几次没完成的处理。
-// ChatScroll 的 followKey：你发的最后一条消息。从本机发件箱发出的消息用它的 clientMessageId：断线时发出也变（列表回到底部），
+// ChatList 的 followKey：你在这台设备上发的最后一条消息，用它的 clientMessageId：断线时发出也变（列表回到底部），
 // 后来送达、本地消息换成那一轮的消息时不变（不算又发了一条，你往上翻了就不把你拽回来）。
+// 没有 clientMessageId 的不算（2026-11-04）：Lead 自己开的一轮先垫上的空消息、别的设备和外部来源的消息都不是你在这里发的，
+// 以前它们也会把正在往上看的你拽回底部。
 export function latestSentMessageKey(messages: readonly MessageEntity[]): string | null {
-  const latest = [...messages].reverse().find((message) => message.role === 'user');
-  return latest ? latest.clientCommandId ?? latest.id : null;
+  const latest = [...messages].reverse().find((message) => message.role === 'user' && message.clientCommandId !== null);
+  return latest?.clientCommandId ?? null;
 }
 
 function IncidentCard({ noticeMessageIds, failureMessageIds, recoveredAt }: {

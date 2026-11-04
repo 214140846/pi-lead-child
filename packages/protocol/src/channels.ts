@@ -60,6 +60,8 @@ export const CHANNEL_EVENT_KINDS = {
   // 交接说明的草稿（issue 08）：按「做好给你看」「交给你」放到卡上的草稿，你后来做了什么（原样发、改了再发、自己回）。
   // 页边批注的「放宽」建议读它。Lead 自己的回复放到卡上时（D2）不打分，所以不在 channel.reply.labeled 里。
   handbookDraftLabeled: "channel.handbook.draft.labeled",
+  // 断线、daemon 重启以后的补拉没补全（2026-11-03）：超过时间窗或条数上限，或者调用失败。告诉 Lead 这段时间的消息可能缺。
+  catchUpIncomplete: "channel.catch_up.incomplete",
 } as const;
 
 /**
@@ -318,6 +320,22 @@ export const CHANNEL_KERNEL_EVENT_KINDS: readonly EventKindDefinition[] = [
       summary: Type.String(),
     }),
     description: "一次代查结束了（查到、没查到、失败或者取消），出处已经由代码核实。",
+  },
+  {
+    kind: CHANNEL_EVENT_KINDS.catchUpIncomplete,
+    sources: ["system"],
+    payload: Type.Object({
+      channel: Type.String({ minLength: 1 }),
+      // 补的是哪一段：从（断线前最后确认收到的时刻，或者时间窗的起点）到（补拉开始的时刻），ISO 时间。
+      from: Type.String({ minLength: 1 }),
+      to: Type.String({ minLength: 1 }),
+      // 补到了几条。
+      caught: Type.Integer({ minimum: 0 }),
+      // 没补全的原因（来源写的话，不含外部的原文）。
+      reasons: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
+      summary: Type.String(),
+    }),
+    description: "断线或者 daemon 重启以后，补拉这段时间里的消息没有补全（超过上限、调用失败）：这段时间里可能有消息没收到。",
   },
   {
     kind: CHANNEL_EVENT_KINDS.replyNotNeeded,

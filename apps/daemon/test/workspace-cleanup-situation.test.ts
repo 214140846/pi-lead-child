@@ -14,7 +14,7 @@ function git(cwd: string, ...args: string[]): string {
 }
 
 describe("workspace cleanup in Lead's situation", () => {
-  it("lists removed worktrees as changes and keeps a pending merge decision in view until it is made", () => {
+  it("lists removed worktrees as changes and keeps a pending merge decision in view until it is made", async () => {
     const dir = tempDir("plc-cleanup-situation-");
     const repo = join(dir, "repo");
     execFileSync("git", ["init", "-q", "-b", "main", repo]);
@@ -33,7 +33,7 @@ describe("workspace cleanup in Lead's situation", () => {
     git(changedWorktree.path, "commit", "-qm", "feature");
     db.prepare("UPDATE items SET stage='done' WHERE id IN (?, ?)").run(clean, changed);
 
-    sweepWorkspaces(db, new Date(Date.now() + 8 * 24 * 60 * 60_000));
+    await sweepWorkspaces(db, new Date(Date.now() + 8 * 24 * 60 * 60_000));
     input.beginRun("digest");
     const situation = input.renderSituation({ queuedUserMessages: 0 });
     expect(situation).toContain(`隔离 worktree #${cleanWorktree.id} 已清理`);
@@ -42,7 +42,7 @@ describe("workspace cleanup in Lead's situation", () => {
     expect(input.pendingMessages().some((event) => event.kind === "inbox.attention"
       && (event.payload.payload as Record<string, unknown>)?.inboxKind === "workspace_merge_decision")).toBe(true);
 
-    abandonIsolatedWorkspace(db, changedWorktree.id, { actor: "lead", reason: "r", userConfirmation: "删吧" });
+    await abandonIsolatedWorkspace(db, changedWorktree.id, { actor: "lead", reason: "r", userConfirmation: "删吧" });
     expect(input.renderSituation({ queuedUserMessages: 0 })).not.toContain("等合并决定");
     db.close();
   });

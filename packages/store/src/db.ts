@@ -39,8 +39,92 @@ import { migrateTokenUsageRecompute, TOKEN_USAGE_RECOMPUTE_MIGRATION_VERSION } f
 
 export type Db = Database.Database;
 
+// 编译过的语句按 SQL 原文留着，同一句不再每次重新编译。代码里有一千多处 db.prepare(...)，大多在每张工单都要走的路径上：
+// 2026-11-03 的 CPU profile 里，45 秒有 16.7 秒花在 prepare 上，daemon 主线程被占满，网页心跳答不上，刷新一次就断线重连。
+// 缓存有上限（拼出来的 SQL 可能很多种），超出时丢掉最久没用的。正在 iterate 的语句不能重入，这时另外编译一个不进缓存的。
+// 缓存里的语句大家共用，所以一直是缺省状态：pluck/raw/expand/safeIntegers/bind 会改语句的状态，
+// 调它们时换成一个自己的、不进缓存的语句（否则别处同一句 SQL 拿到的就是 pluck 过的语句）。
+export const STATEMENT_CACHE_SIZE = 1_000;
+const STATEMENT_MODE_METHODS = new Set(["pluck", "raw", "expand", "safeIntegers", "bind"]);
+
+// 慢语句日志（2026-11-04）：主线程上一条语句跑了多久。busy_timeout 是 5 秒，别的进程（child 的工具调用直接写库）
+// 拿着写锁时，daemon 的写语句会在主线程上同步等。以前没有数据说明它发生过没有，所以先记下来：
+// 超过阈值的 run/get/all 记一行（只记 SQL 原文，不记参数），同一句 SQL 一分钟最多一行，带上这期间又慢了几次。
+const SLOW_STATEMENT_TIMED_METHODS = new Set(["run", "get", "all"]);
+const SLOW_STATEMENT_LOG_INTERVAL_MS = 60_000;
+let slowStatementSink: ((line: string) => void) | null = null;
+let slowStatementThresholdMs = 200;
+const slowStatementSeen = new Map<string, { loggedAt: number; suppressed: number }>();
+
+/** 设置慢语句日志的去处和阈值（毫秒）。null 关掉。 */
+export function setSlowStatementLog(sink: ((line: string) => void) | null, thresholdMs = 200): void {
+  slowStatementSink = sink;
+  slowStatementThresholdMs = thresholdMs;
+  slowStatementSeen.clear();
+}
+
+function noteStatementTime(source: string, method: string, ms: number, inTransaction: boolean): void {
+  if (!slowStatementSink || ms < slowStatementThresholdMs) return;
+  const now = Date.now();
+  const seen = slowStatementSeen.get(source);
+  if (seen && now - seen.loggedAt < SLOW_STATEMENT_LOG_INTERVAL_MS) {
+    seen.suppressed++;
+    return;
+  }
+  const more = seen?.suppressed ? `, ${seen.suppressed} more since the last line` : "";
+  slowStatementSeen.set(source, { loggedAt: now, suppressed: 0 });
+  if (slowStatementSeen.size > STATEMENT_CACHE_SIZE) slowStatementSeen.delete(slowStatementSeen.keys().next().value!);
+  const sql = source.replace(/\s+/g, " ").trim().slice(0, 160);
+  slowStatementSink(`[slow-sql] ${Math.round(ms)} ms ${method}${inTransaction ? " in a transaction" : ""}${more}: ${sql}`);
+}
+
+export function cacheStatements(db: Db, size = STATEMENT_CACHE_SIZE): Db {
+  const prepare = db.prepare.bind(db);
+  const cache = new Map<string, Database.Statement>();
+  const shared = (source: string, statement: Database.Statement): Database.Statement => {
+    const methods = new Map<PropertyKey, unknown>();
+    return new Proxy(statement, {
+      get(target, key) {
+        if (typeof key === "string" && STATEMENT_MODE_METHODS.has(key)) {
+          return (...args: unknown[]) => (prepare(source) as any)[key](...args);
+        }
+        const value = Reflect.get(target, key, target);
+        if (typeof value !== "function") return value;
+        if (!methods.has(key)) {
+          const bound = value.bind(target);
+          methods.set(key, typeof key === "string" && SLOW_STATEMENT_TIMED_METHODS.has(key)
+            ? (...args: unknown[]) => {
+              const start = performance.now();
+              try {
+                return bound(...args);
+              } finally {
+                noteStatementTime(source, key, performance.now() - start, db.inTransaction);
+              }
+            }
+            : bound);
+        }
+        return methods.get(key);
+      },
+    });
+  };
+  db.prepare = ((source: string) => {
+    const cached = cache.get(source);
+    if (cached && !cached.busy) {
+      cache.delete(source);
+      cache.set(source, cached);
+      return cached;
+    }
+    if (cached) return prepare(source);
+    const statement = shared(source, prepare(source));
+    cache.set(source, statement);
+    if (cache.size > size) cache.delete(cache.keys().next().value!);
+    return statement;
+  }) as Db["prepare"];
+  return db;
+}
+
 export function openDb(path: string): Db {
-  const db = new Database(path);
+  const db = cacheStatements(new Database(path));
   try {
     db.pragma("journal_mode = WAL");
     db.pragma("foreign_keys = ON");

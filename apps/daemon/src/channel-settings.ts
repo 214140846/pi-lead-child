@@ -19,7 +19,7 @@ import { createHash } from "node:crypto";
 import { channelSecretVaultName } from "@pi-lead-child/core";
 import type { SecretVault } from "@pi-lead-child/connections";
 import {
-  ChannelSignInError, UiActionError,
+  CHANNEL_TOKEN_MAX_LENGTH, ChannelSignInError, UiActionError,
   type ChannelAdapter, type ChannelConnectionControl, type ChannelConnectionService, type ChannelConnectionState, type ChannelSettingsSpec,
   type ChannelSignInFailure,
 } from "@pi-lead-child/engine";
@@ -292,6 +292,16 @@ export class ChannelSettings implements ChannelSettingsService, ChannelConnectio
     const log = (line: string) => this.options.log(`[channel-settings] ${adapter.id}: ${scrub(line)}`);
     const timeoutMs = this.options.testTimeoutMs ?? DEFAULT_TEST_TIMEOUT_MS;
     const m = this.m();
+    // 每个密钥按来源声明的上限查长度（应用令牌缺省 1000 个字符，浏览器会话的 cookie 更长）。超了就不交给来源检查。
+    const tooLong = spec.secrets.filter((item) => (secrets[item.name]?.length ?? 0) > (item.maxLength ?? CHANNEL_TOKEN_MAX_LENGTH));
+    if (tooLong.length) {
+      log(`settings test refused: ${tooLong.map((item) => item.name).join(", ")} too long`);
+      const checks = tooLong.map((item) => ({
+        id: `length_${item.name}`.slice(0, 60), label: item.label, pass: false,
+        detail: m.secretTooLong(item.label, item.maxLength ?? CHANNEL_TOKEN_MAX_LENGTH),
+      }));
+      return sanitizeResult({ ok: false, checks, account: null, missingScopes: [] }, scrub, m.checkLabel);
+    }
     let result: ChannelSecretsTestResult;
     try {
       result = await withTimeout(spec.test(secrets, { log }), timeoutMs);

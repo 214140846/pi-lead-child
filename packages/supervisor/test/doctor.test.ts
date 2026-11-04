@@ -62,6 +62,20 @@ describe("runDoctor", () => {
     const tavily = checks.find((c) => c.name.includes("TAVILY"))!;
     expect(tavily.ok).toBeNull(); // 可选项缺失 = "–" 不是 "✗"
   });
+  // 桌面版（docs/desktop/macos-desktop-design.md 第 4.2 节）：发布模式下 AM_API_KEY 和 aish 都是开发环境的要求，缺失只是 –。
+  it("in release mode, a missing AM_API_KEY and a missing aish are optional, not failures", async () => {
+    const checks = await runDoctor({ ...okProbes, resolveKey: () => null, aishConfigured: () => false, releaseMode: () => true });
+    const am = checks.find((c) => c.name.includes("AM_API_KEY"))!;
+    expect(am).toMatchObject({ ok: null, name: "凭证 AM_API_KEY（可选）" });
+    expect(am.fix).toBeUndefined();
+    expect(checks.find((c) => c.name.startsWith("aish"))).toMatchObject({ ok: null, name: "aish 网关（可选）" });
+    // 条目形状坏了仍然是 fail：有人写了它，写错了。
+    const broken = await runDoctor({ ...okProbes, resolveKey: (k) => (k === "AM_API_KEY" ? "broken" : null), releaseMode: () => true });
+    expect(broken.find((c) => c.name.includes("AM_API_KEY"))!.ok).toBe(false);
+    // 开发模式照旧：缺失是 fail。
+    const dev = await runDoctor({ ...okProbes, resolveKey: () => null, releaseMode: () => false });
+    expect(dev.find((c) => c.name.includes("AM_API_KEY"))!.ok).toBe(false);
+  });
   it("TYPESAFE_API_KEY 是可选项：缺失只是 –，并提示用 keychain 脚本写入；有来源时 ✓", async () => {
     const missing = (await runDoctor({ ...okProbes, resolveKey: () => null })).find((c) => c.name.includes("TYPESAFE"))!;
     expect(missing.ok).toBeNull();

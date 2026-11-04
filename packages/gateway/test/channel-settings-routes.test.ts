@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Value } from "typebox/value";
 import { tempDir } from "@pi-lead-child/core/testing";
 import {
-  ChannelSecretsTestResultSchema, ChannelSettingsResponseSchema, ChannelSourceSettingsResponseSchema, HttpErrorResponseSchema,
+  CHANNEL_SECRET_MAX_LENGTH, ChannelSecretsTestResultSchema, ChannelSettingsResponseSchema, ChannelSourceSettingsResponseSchema, HttpErrorResponseSchema,
   type ChannelSecretsTestResult,
 } from "@pi-lead-child/protocol";
 import { createCliBinding, createLoopbackBinding, listEvents, openDb, type Db } from "@pi-lead-child/store";
@@ -254,6 +254,27 @@ describe("the channel settings routes", () => {
       "test chat PLC_CHAT_ONE", "save chat PLC_CHAT_ONE,PLC_CHAT_TWO", "save chat PLC_CHAT_ONE", "save chat PLC_CHAT_TWO", "remove chat",
     ]);
     for (const value of [GOOD, BAD, OTHER]) expect(everything(responses)).not.toContain(value);
+  });
+
+  // 回归（#220）：浏览器会话的 cookie 超过 1000 个字符，以前请求体的校验拦下它。上限是协议的 CHANNEL_SECRET_MAX_LENGTH。
+  it("takes a secret longer than 1000 characters up to the protocol limit, and refuses a longer one", async () => {
+    const { call } = await start();
+    const long = `cookie-${"c".repeat(4_000)}`;
+    const ok = await call("PUT", "/v1/channels/settings/chat", { body: { secrets: { PLC_CHAT_ONE: GOOD, PLC_CHAT_TWO: long } } });
+    expect(ok.status).toBe(200);
+    expect(saved).toEqual({ PLC_CHAT_ONE: GOOD, PLC_CHAT_TWO: long });
+
+    const longest = "c".repeat(CHANNEL_SECRET_MAX_LENGTH);
+    expect((await call("POST", "/v1/channels/settings/chat/test", { body: { secrets: { PLC_CHAT_TWO: longest } } })).status).toBe(200);
+    const tooLong = await call("PUT", "/v1/channels/settings/chat", { body: { secrets: { PLC_CHAT_TWO: `${longest}c` } } });
+    expect(tooLong.status).toBe(400);
+    expect(tooLong.body.error.code).toBe("invalid_request");
+    // 报错里写的上限就是协议的上限，不是旧的 1000。
+    expect(tooLong.body.error.message).toBe(
+      `The request body must be {secrets: {name: value}}. Each value is a string of 1 to ${CHANNEL_SECRET_MAX_LENGTH} characters`,
+    );
+    expect(tooLong.body.error.message).not.toContain("1000");
+    expect(calls).toEqual(["save chat PLC_CHAT_ONE,PLC_CHAT_TWO", "test chat PLC_CHAT_TWO"]);
   });
 
   it("lets the dev web page send PUT and DELETE across origins", async () => {

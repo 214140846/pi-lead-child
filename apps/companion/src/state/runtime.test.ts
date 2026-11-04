@@ -1687,4 +1687,158 @@ describe('agent logs', () => {
       release();
     });
   });
+
+  // 2026-11-04：主会话打开时只取最近 30 轮，往上滚到头时一页一页取更早的，Lead 说完一句只取那一轮。
+  // 以前每完成一条消息整份重取最近 100 轮（约 570 KB，九成是工具调用）。
+  describe('conversation window, pages and single-turn corrections', () => {
+    const base = Date.parse('2026-11-04T08:00:00.000Z');
+    const mainTurn = (index: number, overrides: Partial<import('@pi-lead-child/protocol').ConversationTurn> = {}) => {
+      const at = new Date(base + index * 60_000).toISOString();
+      return {
+        id: `turn-${String(index).padStart(2, '0')}`, originBindingId: 7, originKind: 'paired:companion', ticketId: null,
+        state: 'completed' as const, userText: `第 ${index} 句`, assistantText: `回答 ${index}`, error: null,
+        createdAt: at, updatedAt: at, ...overrides,
+      };
+    };
+    const range = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, index) => mainTurn(from + index));
+    const shownTurnIds = (runtime: ReturnType<typeof createCompanionStateRuntime>) => {
+      const state = runtime.control.getState();
+      return [...new Set((state.messageIdsBySession['session-1'] ?? []).map((id) => state.messagesById[id]?.turnId))];
+    };
+    const event = (seq: number, type: GatewayEvent['type'], turnId: string, payload: Record<string, unknown>): GatewayEvent => ({
+      ...gatewayEvent(seq, type, payload), turnId, ticketId: null,
+    });
+
+    it('opens on the newest turns and fetches only the turn Lead just finished', async () => {
+      const clock = scheduler();
+      const getConversationTurns = vi.fn(async () => range(11, 40));
+      const getConversationTurnsById = vi.fn(async () => [mainTurn(41, { assistantText: '刚说完' })]);
+      const client = transport({ getConversationTurns, getConversationTurnsById });
+      const runtime = createCompanionStateRuntime({ client, credentials: credentialStore(), scheduler: clock });
+      await runtime.start();
+
+      expect(getConversationTurns).toHaveBeenCalledWith(undefined, expect.anything(), { limit: 30 });
+      expect(runtime.control.getState().conversationHistory).toMatchObject({ hasMore: true, oldest: { id: 'turn-11' } });
+
+      client.emit(event(1, 'lead.turn.started', 'turn-41', { messageId: 'message-41', commandId: null, originKind: 'paired:companion', mode: 'started' }));
+      client.emit(event(2, 'lead.message.completed', 'turn-41', { messageId: 'message-41', text: '刚说完' }));
+      await runtime.whenIdle();
+      clock.runAll();
+      await vi.waitFor(() => expect(getConversationTurnsById).toHaveBeenCalledWith(['turn-41'], expect.anything()));
+      await runtime.whenIdle();
+
+      expect(getConversationTurns).toHaveBeenCalledTimes(1);
+      expect(shownTurnIds(runtime)).toEqual(range(11, 41).map((turn) => turn.id));
+    });
+
+    it('pages older turns before the oldest loaded one, one page at a time, until there are no more', async () => {
+      const page = deferred<import('@pi-lead-child/protocol').ConversationTurnPage>();
+      const getOlderConversationTurns = vi.fn()
+        .mockImplementationOnce(() => page.promise)
+        .mockResolvedValueOnce({ items: range(1, 2), hasMore: false });
+      const client = transport({ getConversationTurns: vi.fn(async () => range(33, 62)), getOlderConversationTurns });
+      const runtime = createCompanionStateRuntime({ client, credentials: credentialStore(), scheduler: scheduler() });
+      await runtime.start();
+
+      const first = runtime.loadOlderConversationTurns();
+      const again = runtime.loadOlderConversationTurns();
+      expect(again).toBe(first);
+      expect(runtime.control.getState().conversationHistory.loading).toBe(true);
+      page.resolve({ items: range(3, 32), hasMore: true });
+      await first;
+
+      expect(getOlderConversationTurns).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'turn-33' }), { limit: 30 }, expect.anything(),
+      );
+      expect(runtime.control.getState().conversationHistory).toMatchObject({ hasMore: true, loading: false, oldest: { id: 'turn-03' } });
+      await runtime.loadOlderConversationTurns();
+      expect(getOlderConversationTurns).toHaveBeenLastCalledWith(expect.objectContaining({ id: 'turn-03' }), { limit: 30 }, expect.anything());
+      expect(runtime.control.getState().conversationHistory).toMatchObject({ hasMore: false, oldest: { id: 'turn-01' } });
+      expect(shownTurnIds(runtime)).toEqual(range(1, 62).map((turn) => turn.id));
+
+      await runtime.loadOlderConversationTurns();
+      expect(getOlderConversationTurns).toHaveBeenCalledTimes(2);
+    });
+
+    it('keeps the error of a failed page and tries again on the next call', async () => {
+      const getOlderConversationTurns = vi.fn()
+        .mockRejectedValueOnce(new Error('network down'))
+        .mockResolvedValueOnce({ items: range(1, 10), hasMore: false });
+      const client = transport({ getConversationTurns: vi.fn(async () => range(11, 40)), getOlderConversationTurns });
+      const runtime = createCompanionStateRuntime({ client, credentials: credentialStore(), scheduler: scheduler() });
+      await runtime.start();
+
+      await runtime.loadOlderConversationTurns();
+      expect(runtime.control.getState().conversationHistory).toMatchObject({ hasMore: true, loading: false, error: 'network down' });
+      await runtime.loadOlderConversationTurns();
+      expect(runtime.control.getState().conversationHistory).toMatchObject({ hasMore: false, error: null });
+    });
+
+    // 重连（core）：重取最近一段。往上翻加载过的历史和它接得上，留着，游标也不变。
+    it('keeps paged history when the newest window comes again after a reconnect', async () => {
+      const clock = scheduler();
+      const getConversationTurns = vi.fn()
+        .mockResolvedValueOnce(range(11, 40))
+        .mockResolvedValueOnce([...range(13, 40), mainTurn(41), mainTurn(42)]);
+      const client = transport({
+        getConversationTurns,
+        getOlderConversationTurns: vi.fn(async () => ({ items: range(1, 10), hasMore: false })),
+      });
+      const runtime = createCompanionStateRuntime({ client, credentials: credentialStore(), scheduler: clock });
+      await runtime.start();
+      await runtime.loadOlderConversationTurns();
+
+      client.emit(gatewayEvent(1, 'snapshot.required', { resource: 'something-new' }));
+      await runtime.whenIdle();
+      clock.runAll();
+      await vi.waitFor(() => expect(getConversationTurns).toHaveBeenCalledTimes(2));
+      await runtime.whenIdle();
+
+      expect(getConversationTurns).toHaveBeenLastCalledWith(undefined, expect.anything(), { limit: 30 });
+      expect(shownTurnIds(runtime)).toEqual(range(1, 42).map((turn) => turn.id));
+      expect(runtime.control.getState().conversationHistory).toMatchObject({ hasMore: false, oldest: { id: 'turn-01' } });
+    });
+
+    // 校正的一轮比还没取过的那一截还早：叠上去会在中间留一个洞，往上翻时那一截就被跳过了。
+    it('does not place a corrected turn older than the loaded history', async () => {
+      const clock = scheduler();
+      const getConversationTurnsById = vi.fn(async () => [mainTurn(2, { assistantText: '很早以前的一轮' })]);
+      const client = transport({ getConversationTurns: vi.fn(async () => range(11, 40)), getConversationTurnsById });
+      const runtime = createCompanionStateRuntime({ client, credentials: credentialStore(), scheduler: clock });
+      await runtime.start();
+
+      client.emit(event(1, 'notice.created', 'turn-02', { severity: 'error', message: 'model failed' }));
+      await runtime.whenIdle();
+      clock.runAll();
+      await vi.waitFor(() => expect(getConversationTurnsById).toHaveBeenCalled());
+      await runtime.whenIdle();
+
+      expect(shownTurnIds(runtime)[0]).toBe('turn-11');
+      expect(runtime.control.getState().conversationHistory.oldest?.id).toBe('turn-11');
+    });
+
+    // 重放了很多事件（例如新配对的设备从头重放）：攒下的轮次太多，改取最近一段。
+    it('fetches the newest window instead of many single turns', async () => {
+      const clock = clockScheduler();
+      const getConversationTurns = vi.fn(async () => range(11, 40));
+      const getConversationTurnsById = vi.fn(async () => []);
+      let handlers: ConnectionHandlers = {};
+      const client = transport({
+        getConversationTurns,
+        getConversationTurnsById,
+        connect: connectAtLatestSeq(25, (next) => { handlers = next; }),
+      });
+      const runtime = createCompanionStateRuntime({ client, credentials: credentialStore(), scheduler: clock });
+      await runtime.start();
+      for (let seq = 1; seq <= 25; seq += 1) {
+        handlers.onEvent?.(event(seq, 'lead.message.completed', `turn-${String(seq + 15).padStart(2, '0')}`, { messageId: `m-${seq}`, text: `回答 ${seq + 15}` }));
+      }
+      await runtime.whenIdle();
+      clock.advance(0);
+      await vi.waitFor(() => expect(getConversationTurns).toHaveBeenCalledTimes(2));
+      await runtime.whenIdle();
+
+      expect(getConversationTurnsById).not.toHaveBeenCalled();
+    });
+  });
 });

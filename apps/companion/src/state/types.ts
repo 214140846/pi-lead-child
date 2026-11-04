@@ -243,6 +243,16 @@ export interface ArtifactMetadata {
   size: number | null;
 }
 
+// 主会话还有没有更早的轮次没取、是不是正在取、上一次没取到的原因。
+// oldest 是往上翻的游标：主会话按顺序取到的最早一轮。不从手上的轮次推算：工单对话会单独取进更早的工单轮次，
+// 拿它当游标，中间那一截就再也取不到了。
+export interface ConversationHistoryState {
+  hasMore: boolean;
+  loading: boolean;
+  error: string | null;
+  oldest: { id: string; createdAt: string } | null;
+}
+
 export interface CursorPageState {
   hasMore: boolean;
   nextBeforeId: number | null;
@@ -381,6 +391,8 @@ export interface ControlPlaneData {
   conversationCardIds: string[];
   conversationCardKeyByDurableId: Record<number, string>;
   conversationCardPagesByResource: Record<string, CursorPageState>;
+  // 主会话往上翻（2026-11-04）：打开时只取最近一段，往上滚时一页一页取更早的。
+  conversationHistory: ConversationHistoryState;
   resourceState: Partial<Record<ResourceKey, ResourceLoadState>>;
   lastAppliedGatewaySeq: number;
 }

@@ -1,31 +1,42 @@
 import { createHash } from "node:crypto";
-import { execFileSync } from "node:child_process";
-import { lstatSync, readFileSync, readlinkSync } from "node:fs";
+import { execFile } from "node:child_process";
+import { lstat, readFile, readlink } from "node:fs/promises";
 import { join, relative } from "node:path";
+import { promisify } from "node:util";
 import type { Db } from "@pi-lead-child/store";
 import type { Workspace } from "@pi-lead-child/core";
 
 import { workspaceTreeHash } from "../pipeline/workspace-tree-hash.js";
 
-function git(cwd: string, args: string[]): string {
-  return execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", timeout: 15_000 });
+const execFileAsync = promisify(execFile);
+
+// git diff --binary of a worktree can be large; the 1 MB default of execFile would fail on it.
+const CONTENT_HASH_MAX_BUFFER = 256 * 1024 * 1024;
+
+async function git(cwd: string, args: string[]): Promise<string> {
+  const { stdout } = await execFileAsync("git", ["-C", cwd, ...args], {
+    encoding: "utf8", timeout: 15_000, maxBuffer: CONTENT_HASH_MAX_BUFFER,
+  });
+  return stdout;
 }
 
-function addFile(hash: ReturnType<typeof createHash>, root: string, path: string): void {
-  const stat = lstatSync(path);
+async function addFile(hash: ReturnType<typeof createHash>, root: string, path: string): Promise<void> {
+  const stat = await lstat(path);
   const name = relative(root, path);
   hash.update(`path:${name}\0mode:${stat.mode}\0size:${stat.size}\0`);
-  if (stat.isSymbolicLink()) hash.update(`link:${readlinkSync(path)}\0`);
-  else if (stat.isFile()) hash.update(readFileSync(path));
+  if (stat.isSymbolicLink()) hash.update(`link:${await readlink(path)}\0`);
+  else if (stat.isFile()) hash.update(await readFile(path));
 }
 
 /**
  * Stable content identity of a git worktree that plc created (release and cleanup of isolated
- * worktrees). It is synchronous and reads git's view only: tracked changes and untracked files
- * that are not ignored. Any other workspace is the user's own directory, so it throws.
+ * worktrees). It reads git's view only: tracked changes and untracked files that are not ignored.
+ * Any other workspace is the user's own directory, so it throws.
+ * It runs git and reads files asynchronously: it used to run on the daemon main thread, and a large
+ * worktree held the thread while the daemon released it (2026-11-03).
  * The reviewer check uses reviewWorkspaceFingerprint below.
  */
-export function workspaceContentHash(workspace: Workspace): string {
+export async function workspaceContentHash(workspace: Workspace): Promise<string> {
   // This function used to walk and read every file of any other workspace, node_modules included.
   // When the daemon's TTL sweep released the user's main checkout, the daemon froze.
   // Cleanup never deletes those directories, so they need no content hash (see workspace.ts).
@@ -33,13 +44,13 @@ export function workspaceContentHash(workspace: Workspace): string {
     throw new Error(`workspace #${workspace.id} is not a plc git worktree; its content is not hashed`);
   }
   const hash = createHash("sha256");
-  try { lstatSync(workspace.path); } catch { return createHash("sha256").update(`missing:${workspace.path}`).digest("hex"); }
-  hash.update(`head:${git(workspace.path, ["rev-parse", "HEAD"]).trim()}\0`);
-  hash.update(`index:${git(workspace.path, ["diff", "--cached", "--binary", "--no-ext-diff"])}\0`);
-  hash.update(`worktree:${git(workspace.path, ["diff", "--binary", "--no-ext-diff"])}\0`);
-  const untracked = new Set(git(workspace.path, ["ls-files", "--others", "--exclude-standard", "-z"])
+  try { await lstat(workspace.path); } catch { return createHash("sha256").update(`missing:${workspace.path}`).digest("hex"); }
+  hash.update(`head:${(await git(workspace.path, ["rev-parse", "HEAD"])).trim()}\0`);
+  hash.update(`index:${await git(workspace.path, ["diff", "--cached", "--binary", "--no-ext-diff"])}\0`);
+  hash.update(`worktree:${await git(workspace.path, ["diff", "--binary", "--no-ext-diff"])}\0`);
+  const untracked = new Set((await git(workspace.path, ["ls-files", "--others", "--exclude-standard", "-z"]))
     .split("\0").filter(Boolean));
-  for (const path of [...untracked].sort()) addFile(hash, workspace.path, join(workspace.path, path));
+  for (const path of [...untracked].sort()) await addFile(hash, workspace.path, join(workspace.path, path));
   return hash.digest("hex");
 }
 

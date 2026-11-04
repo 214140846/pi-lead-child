@@ -1,6 +1,6 @@
 // 网关的路由回给界面的错误、主人操作的摘要和 OAuth 回调页的文字（2026-11-01 多语言）。
 // 按请求时用户选的语言（store 的 getLocale）写。只回给 Lead 工具的错误不在这里。
-import { defineMessages } from "@pi-lead-child/protocol";
+import { CHANNEL_SECRET_MAX_LENGTH, defineMessages } from "@pi-lead-child/protocol";
 
 const error = (value: unknown) => (value instanceof Error ? value.message : String(value));
 
@@ -24,7 +24,7 @@ export const routeMessages = defineMessages({
     channelsUnavailable: "Message channels did not start yet",
     notLocalPage: "Only a web page on this computer can change channel credentials. The gateway uses plain HTTP, so secrets cannot go over the LAN",
     channelNotFound: "This channel does not exist",
-    secretsBody: "The request body must be {secrets: {name: value}}. Each value is a string of 1 to 1000 characters",
+    secretsBody: `The request body must be {secrets: {name: value}}. Each value is a string of 1 to ${CHANNEL_SECRET_MAX_LENGTH} characters`,
     unknownSecrets: (names: string) => `This channel does not know these secret names: ${names}`,
     joinNames: (names: string[]) => names.join(", "),
     checksFailed: "Not all checks passed. Nothing was saved",
@@ -87,7 +87,7 @@ export const routeMessages = defineMessages({
     channelsUnavailable: "消息通道还没有启动",
     notLocalPage: "只有这台电脑上的网页能改通道的凭据：网关是明文 HTTP，密钥不能经过局域网",
     channelNotFound: "没有这个通道",
-    secretsBody: "请求体要是 {secrets: {名字: 值}}，值是 1 到 1000 个字符的字符串",
+    secretsBody: `请求体要是 {secrets: {名字: 值}}，值是 1 到 ${CHANNEL_SECRET_MAX_LENGTH} 个字符的字符串`,
     unknownSecrets: (names) => `这个通道不认这些密钥名：${names}`,
     joinNames: (names) => names.join("、"),
     checksFailed: "检查没有全部通过，没有保存",

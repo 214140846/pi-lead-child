@@ -8,6 +8,7 @@ import {
   createTurn,
   EMPTY_ASSISTANT_REPLY_ERROR,
   failTurn,
+  getTurn,
   listConversationFeed,
   listLeadTurns,
   listTurns,
@@ -67,6 +68,32 @@ describe("channel turn projection", () => {
     expect(listTurns(db).map((row) => [row.id, row.state])).toEqual([
       ["a", "steered"], ["b", "failed"],
     ]);
+  });
+
+  // 2026-11-04：会话打开时只取最近几轮，往上翻时按游标取更早的，Lead 说完一句只取那一轮。
+  it("pages turns before a cursor turn and lists turns by id", () => {
+    const at = (second: number) => new Date(Date.parse("2026-11-04T01:00:00.000Z") + second * 1_000);
+    createTurn(db, { id: "t1", originKind: "companion", userText: "1", now: at(1) });
+    createTurn(db, { id: "t2b", originKind: "companion", itemId: 5, userText: "2b", now: at(2) });
+    createTurn(db, { id: "t2a", originKind: "companion", userText: "2a", now: at(2) });
+    createTurn(db, { id: "t3", originKind: "companion", userText: "3", now: at(3) });
+    createTurn(db, { id: "t4", originKind: "companion", itemId: 5, userText: "4", now: at(4) });
+
+    const ids = (rows: { id: string }[]) => rows.map((row) => row.id);
+    // 同一时刻的两轮按 id 排：t2a 在 t2b 前面。
+    expect(ids(listTurns(db, { limit: 2 }))).toEqual(["t3", "t4"]);
+    expect(ids(listTurns(db, { before: "t3", limit: 2 }))).toEqual(["t2a", "t2b"]);
+    expect(ids(listTurns(db, { before: "t2b", limit: 2 }))).toEqual(["t1", "t2a"]);
+    expect(ids(listTurns(db, { before: "t2a", limit: 2 }))).toEqual(["t1"]);
+    expect(ids(listTurns(db, { before: "t1", limit: 2 }))).toEqual([]);
+    expect(ids(listTurns(db, { before: "t4", itemId: 5 }))).toEqual(["t2b"]);
+    expect(listTurns(db, { before: "missing" })).toEqual([]);
+
+    expect(ids(listTurns(db, { ids: ["t4", "t1", "missing"] }))).toEqual(["t1", "t4"]);
+    expect(ids(listTurns(db, { ids: ["t1", "t4"], itemId: 5 }))).toEqual(["t4"]);
+    expect(listTurns(db, { ids: [] })).toEqual([]);
+    expect(getTurn(db, "t3")?.user_text).toBe("3");
+    expect(getTurn(db, "missing")).toBeUndefined();
   });
 
   // 插话被受理（steer 返回）可能晚于那一轮结束：已经失败或完成的轮次不能被改回 steered。

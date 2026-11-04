@@ -13,7 +13,7 @@ import {
 } from "./credential-file.js";
 import { daemonStatus, ensureDaemon } from "./daemon-link.js";
 import { adminClient, gatewayClient } from "./gateway-client.js";
-import { localRequest, plcSockPath, supervisorSockPath } from "./local-socket.js";
+import { localRequest, plcSockPath, socketListening, supervisorSockPath } from "./local-socket.js";
 import { runOps } from "./ops-entry.js";
 
 const err = (text: string) => process.stderr.write(`${text}\n`);
@@ -60,14 +60,8 @@ const deps: CliDeps = {
   }),
   runOps,
   supervisor: {
-    available: async () => {
-      try {
-        await localRequest(supervisorSockPath(), { type: "status" }, 1_000);
-        return true;
-      } catch {
-        return false;
-      }
-    },
+    // 连得上就算在跑：忙着的 supervisor 回答 status 可能要几秒（见 socketListening）。之后的请求有自己的时限。
+    available: () => socketListening(supervisorSockPath()),
     request: (command, timeoutMs) => localRequest(supervisorSockPath(), command, timeoutMs),
   },
   daemon: {

@@ -40,11 +40,17 @@ describe('gateway payload adaptation', () => {
       delta: 42,
     }));
 
+    // 带着轮次 id：只校正那一轮（2026-11-04），不整份重取会话。
     expect(result).toEqual({
       ok: false,
       type: 'lead.message.delta',
       error: 'invalid payload for lead.message.delta',
-      invalidations: ['conversation:current'],
+      invalidations: ['conversation:turn:turn-1'],
+    });
+    // 没有轮次 id 时重取最近一段，和它所在的工单对话。
+    expect(adaptGatewayEvent(event('lead.message.delta', { messageId: 'message-1', delta: 42 }, { turnId: null, ticketId: 7 }))).toMatchObject({
+      ok: false,
+      invalidations: ['conversation:current', 'conversation:ticket:7'],
     });
   });
 

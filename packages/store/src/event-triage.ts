@@ -69,6 +69,7 @@ type Applied = NonNullable<TriageBasis["applied"]>;
 // 按根因合并的目标：同一种事件、同一个根因码、级别相同、还没有处置、在时间窗里的最近一条。
 // 合并进去的事件已经记成 superseded，所以找到的总是这一组的第一条。
 // WHERE 里写全 events_undisposed 这个部分索引的条件，查询走那个索引，不扫这一类事件的全部历史。
+// +kind、+level：不让 SQLite 改用 events_kind、events_level，它们按种类或级别读全部历史。
 function rootCauseMergeTarget(db: Db, envelope: TriageEnvelope, level: EventLevel, order: StandingOrder): number | null {
   const code = envelope.rootCause?.code;
   if (!code || level === "record" || level === "conversation") return null;
@@ -78,7 +79,7 @@ function rootCauseMergeTarget(db: Db, envelope: TriageEnvelope, level: EventLeve
     const row = db.prepare(
       `SELECT seq FROM events
        WHERE disposition IS NULL AND level IS NOT NULL AND level <> 'record' AND received_at >= ?
-         AND kind = ? AND level = ? AND json_valid(root_cause) AND json_extract(root_cause, '$.code') = ?
+         AND +kind = ? AND +level = ? AND json_valid(root_cause) AND json_extract(root_cause, '$.code') = ?
        ORDER BY seq DESC LIMIT 1`,
     ).get(new Date(Date.now() - windowMs).toISOString(), envelope.kind, level, code) as { seq: number } | undefined;
     return row?.seq ?? null;

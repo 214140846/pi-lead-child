@@ -47,6 +47,8 @@ export interface DoctorProbes {
   webFresh(): boolean | null;                       // dist/web 对比 companion 源码；null=未构建
   fts5Available(): boolean;
   nodeVersion(): string;
+  // 发布模式：运行包根目录有 release.json（桌面版）。这时 AM_API_KEY 和 aish 都是可选的：它们是开发环境的要求。缺席时按开发模式算。
+  releaseMode?(): boolean;
   // 网关在回环之外的那个地址的状态（daemon 的 status 里有）。只监听回环或 daemon 没在运行时为 null。
   gatewayExposure?(): Promise<GatewayExposureStatus | null>;
 }
@@ -65,12 +67,19 @@ export async function runDoctor(p: DoctorProbes): Promise<DoctorCheck[]> {
     name: "config.json 可解析", ok: parses === true, detail: parses === true ? "可解析或不存在" : parses,
     fix: parses === true ? undefined : "修正 JSON 语法或删除后重建",
   });
+  const release = p.releaseMode?.() === true;
   const am = p.resolveKey("AM_API_KEY");
-  checks.push({
-    name: "凭证 AM_API_KEY", ok: am !== null && am !== "broken",
-    detail: am === "broken" ? "config.json 有条目但无法解析（检查 value/fromEnv 拼写）" : am ? `来源: ${am}` : "未配置",
-    fix: am !== null && am !== "broken" ? undefined : "写入 ~/.pi-lead-child/config.json 的 env 段（launchd 环境不含 shell 变量）",
-  });
+  checks.push(release
+    ? {
+      name: "凭证 AM_API_KEY（可选）", ok: am === "broken" ? false : am === null ? null : true,
+      detail: am === "broken" ? "config.json 有条目但无法解析（检查 value/fromEnv 拼写）" : am ? `来源: ${am}` : "未配置，发布模式下不需要",
+      fix: am === "broken" ? "检查 config.json 里 AM_API_KEY 条目的 value/fromEnv 拼写" : undefined,
+    }
+    : {
+      name: "凭证 AM_API_KEY", ok: am !== null && am !== "broken",
+      detail: am === "broken" ? "config.json 有条目但无法解析（检查 value/fromEnv 拼写）" : am ? `来源: ${am}` : "未配置",
+      fix: am !== null && am !== "broken" ? undefined : "写入 ~/.pi-lead-child/config.json 的 env 段（launchd 环境不含 shell 变量）",
+    });
   const tv = p.resolveKey("TAVILY_API_KEY");
   checks.push({
     name: "凭证 TAVILY_API_KEY（可选）", ok: tv !== null && tv !== "broken" ? true : tv === "broken" ? false : null,
@@ -96,7 +105,10 @@ export async function runDoctor(p: DoctorProbes): Promise<DoctorCheck[]> {
     fix: perms !== null && perms !== "600" ? "chmod 600 ~/.pi-lead-child/config.json" : undefined,
   });
   const aish = p.aishConfigured();
-  checks.push({ name: "aish 网关", ok: aish ? true : null, detail: aish ? "凭证已持久化" : "未接 Slack（可选）" });
+  checks.push({
+    name: release ? "aish 网关（可选）" : "aish 网关", ok: aish ? true : null,
+    detail: aish ? "凭证已持久化" : release ? "未接，发布模式下不需要" : "未接 Slack（可选）",
+  });
   checks.push(slackChannelCheck(p.resolveKey(SLACK_APP_TOKEN_ENV), p.resolveKey(SLACK_USER_TOKEN_ENV)));
   const connections = (p.connections?.() ?? []).filter((connection) => connection.status !== "disconnected");
   const broken = connections.filter((connection) => connection.status === "needs_reauth");

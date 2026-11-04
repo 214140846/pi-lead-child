@@ -23,7 +23,8 @@ import {
   SETUP_CHECKLIST_KEY, type SetupChecklistCard, type SetupHintCard,
 } from "@pi-lead-child/protocol";
 import {
-  findInterruptAck, getEvent, getLocale, latestCorrelatedEvent, latestEntityEvent, leadDisplayName, listInterruptEvents, listLeadActivityEvents, listReminderFires,
+  findInterruptAck, getEvent, getLocale, latestCorrelatedEvent, latestEntityEvent, leadActivityInputsVersion, leadDisplayName, listInterruptEvents,
+  listLeadActivityEvents, listReminderFires,
   maxEventSeq, reminderFireState, loadSetupChecklist, loadSetupHints, loadSetupStatus,
   type Db, type EventRecord, type PublishGatewayEventInput,
 } from "@pi-lead-child/store";
@@ -455,7 +456,9 @@ function firstSeqOf(card: LeadActivityCard): number {
  * 不推的：Lead 在 inbox 行上的处置（会话刷新时一起带回来）；因为扫描窗口截掉了前几条事件而换了键的旧卡。
  */
 export interface LeadActivityPublisher {
-  sync(publish: (event: PublishGatewayEventInput) => unknown): number;
+  // ifChanged：上一次 sync 以后「Lead 动态」的输入没有变（store 的 leadActivityInputsVersion）时不重算，返回 null。
+  // daemon 的轮询用它；卡上按钮的可用性不在这个计数里，daemon 隔一段时间不带它整份重算一次。
+  sync(publish: (event: PublishGatewayEventInput) => unknown, options?: { ifChanged?: boolean }): number | null;
 }
 
 export function createLeadActivityPublisher(db: Db): LeadActivityPublisher {
@@ -465,8 +468,13 @@ export function createLeadActivityPublisher(db: Db): LeadActivityPublisher {
   const interrupts = new Map<number, string>();
   const reminders = new Map<string, string>();
   const setupCards = new Map<string, string>();
+  let inputsVersion: number | null = null;
   return {
-    sync(publish) {
+    sync(publish, options = {}) {
+      // 先读计数再算：两者之间别的连接写进来的，下一次读到的计数会更大，再算一次。
+      const version = leadActivityInputsVersion(db);
+      if (options.ifChanged && primed && version !== null && version === inputsVersion) return null;
+      inputsVersion = version;
       const view = buildLeadActivityView(db, { leadDispositions: false, reminders: true, setup: true });
       let pushed = 0;
       const push = (item: LeadActivityPushItem) => {

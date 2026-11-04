@@ -37,7 +37,9 @@ beforeEach(() => {
 describe("deploy readiness", () => {
   it("passes a clean checkout with a clean build of a commit in its history", () => {
     const built = writeBuildProvenance(checkout, dist);
-    expect(readiness()).toMatchObject({ ready: true, reasons: [], head: built.commit, build: { commit: built.commit, dirty: false } });
+    expect(readiness()).toMatchObject({
+      ready: true, reasons: [], mode: "dev", head: built.commit, build: { commit: built.commit, dirty: false }, release: null,
+    });
   });
 
   it("refuses an uncommitted change to code, and names the file", () => {

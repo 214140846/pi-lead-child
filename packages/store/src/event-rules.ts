@@ -81,10 +81,11 @@ export function escalateOverdueEvents(
   const cutoff = new Date(now.getTime() - deadlineMs).toISOString();
   // 只看能升的级别。用户的消息（conversation）不分诊，也不升级。
   // tell 排在后面：内部来源的 tell 已经到顶，升不了，攒多了也不能挡住后面的 digest。
+  // +level：不让 SQLite 拿 events_level 找这一项。那个索引按级别读全部历史；events_undisposed 只有没处置的事件。
   const candidates = db.prepare(
     `SELECT seq FROM events
      WHERE disposition IS NULL AND level IS NOT NULL AND level <> 'record' AND received_at < ?
-       AND level IN ('digest', 'auto', 'tell')
+       AND +level IN ('digest', 'auto', 'tell')
      ORDER BY CASE level WHEN 'tell' THEN 1 ELSE 0 END, seq LIMIT 1000`,
   ).all(cutoff) as EventRow[];
   const escalated: EventEscalation[] = [];

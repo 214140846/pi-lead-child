@@ -1,0 +1,21 @@
+{
+  "name": "bytezard-lead",
+  "productName": "Bytezard Lead",
+  "version": "0.0.0",
+  "description": "Bytezard Lead for macOS",
+  "private": true,
+  "main": "dist/main.cjs",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "start": "npm run build && electron .",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "cd .. && vitest run desktop/test",
+    "dist": "npm run build && electron-builder --config electron-builder.yml"
+  },
+  "devDependencies": {
+    "electron": "45.2.1",
+    "electron-builder": "26.18.0",
+    "esbuild": "0.28.2",
+    "typescript": "7.0.2"
+  }
+}

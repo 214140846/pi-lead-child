@@ -1,10 +1,11 @@
 // 首次启动页的纯函数（2026-10-30，.scratch/onboarding/spec.md）：首次启动时还没有任何服务商，第一步按预设拼出接入请求，
 // 第二步从读到的目录里推荐一个模型。
-import type { BrainModel, ModelProvider } from '@pi-lead-child/protocol';
+import type { BrainModel, ModelProvider, RuntimeSettingsDto } from '@pi-lead-child/protocol';
 import { describe, expect, it } from 'vitest';
 
 import {
-  customProviderName, firstRunModelList, firstRunProviderFacts, firstRunProviderRequest, recommendedBrainModel,
+  customProviderName, firstRunModelList, firstRunProviderFacts, firstRunProviderRequest, firstRunRuntimeRequests, firstRunRuntimeRows,
+  firstRunStep, recommendedBrainModel, type FirstRunStepInput,
 } from './firstRunModel';
 
 function model(id: string, extra: Partial<BrainModel> = {}): BrainModel {
@@ -66,5 +67,66 @@ describe('the model choice', () => {
     });
     expect(firstRunProviderFacts(provider([]), 'zh')).toMatchObject({ connected: false, problem: 'anthropic 的目录里一个模型也没有。检查地址和接口格式。' });
     expect(firstRunProviderFacts(provider([model('claude-sonnet-5-5')]), 'en')).toMatchObject({ connected: true, modelCount: 1, problem: null });
+  });
+});
+
+// 第二步：选执行器（docs/desktop/macos-desktop-design.md 第 5.3 节，P0-6）。
+const settings: RuntimeSettingsDto = {
+  runtimes: [
+    { id: 'codex', label: 'Codex', enabled: true, installed: true, canReview: true },
+    { id: 'claude', label: 'Claude Code', enabled: true, installed: false, canReview: false },
+    { id: 'pi', label: 'pi', enabled: true, installed: false, canReview: false },
+  ],
+  reviewer: { id: 'codex', canReview: true },
+};
+
+describe('the first-run step', () => {
+  const base: FirstRunStepInput = { connected: true, brainReady: false, brainSkipped: false, brainShown: false, runtimesDone: false };
+
+  it('shows the brain step while the brain does not work, unless the user looked around first', () => {
+    expect(firstRunStep(base)).toBe('brain');
+    expect(firstRunStep({ ...base, connected: false })).toBeNull();
+    expect(firstRunStep({ ...base, brainSkipped: true })).toBeNull();
+  });
+
+  it('shows the runtimes step once, only after the brain step was finished on this page', () => {
+    expect(firstRunStep({ ...base, brainReady: true, brainShown: true })).toBe('runtimes');
+    // 大脑本来就能用（老用户、已经配过的人）：不出现。
+    expect(firstRunStep({ ...base, brainReady: true })).toBeNull();
+    // 做过或跳过一次以后不再出现，大脑又坏了再接好也一样。
+    expect(firstRunStep({ ...base, brainReady: true, brainShown: true, runtimesDone: true })).toBeNull();
+    // 跳过了第一步、后来在设置页接好大脑：不突然弹出第二步。
+    expect(firstRunStep({ ...base, brainReady: true, brainShown: true, brainSkipped: true })).toBeNull();
+  });
+});
+
+describe('the runtime choice', () => {
+  it('checks the installed runtimes and pi, and gives an install link for the ones not found', () => {
+    expect(firstRunRuntimeRows(settings, {})).toEqual([
+      { id: 'codex', label: 'Codex', status: 'installed', checked: true, installUrl: null },
+      { id: 'claude', label: 'Claude Code', status: 'not_found', checked: false, installUrl: 'https://code.claude.com/docs/en/setup' },
+      { id: 'pi', label: 'pi', status: 'built_in', checked: true, installUrl: null },
+    ]);
+    expect(firstRunRuntimeRows(null, {})).toEqual([]);
+  });
+
+  it('checks a runtime that a recheck found, unless the user turned it off', () => {
+    const found: RuntimeSettingsDto = { ...settings, runtimes: settings.runtimes.map((entry) => ({ ...entry, installed: true })) };
+    expect(firstRunRuntimeRows(found, {}).find((row) => row.id === 'claude')).toMatchObject({ status: 'installed', checked: true, installUrl: null });
+    expect(firstRunRuntimeRows(found, { claude: false }).find((row) => row.id === 'claude')?.checked).toBe(false);
+  });
+
+  it('turns off what is not checked and turns on what is checked, and sends nothing that does not change', () => {
+    expect(firstRunRuntimeRequests(settings, {})).toEqual([{ runtime: 'claude', enabled: false }]);
+    expect(firstRunRuntimeRequests(settings, { claude: true })).toEqual([]);
+    expect(firstRunRuntimeRequests(settings, { codex: false, pi: false })).toEqual([
+      { runtime: 'codex', enabled: false }, { runtime: 'claude', enabled: false }, { runtime: 'pi', enabled: false },
+    ]);
+    const claudeOff: RuntimeSettingsDto = {
+      ...settings, runtimes: settings.runtimes.map((entry) => (entry.id === 'claude' ? { ...entry, enabled: false } : entry)),
+    };
+    expect(firstRunRuntimeRequests(claudeOff, {})).toEqual([]);
+    expect(firstRunRuntimeRequests(claudeOff, { claude: true })).toEqual([{ runtime: 'claude', enabled: true }]);
+    expect(firstRunRuntimeRequests(null, {})).toEqual([]);
   });
 });

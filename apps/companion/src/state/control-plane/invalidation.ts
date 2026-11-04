@@ -1,3 +1,11 @@
+// 只说一轮的事件要校正的那一轮：`conversation:turn:<轮次 id>`。不是一个资源：runtime 把它记下来，
+// conversation:current 只取这几轮（2026-11-04，以前每完成一条消息整份重取 100 轮）。没有轮次 id 时照旧说 conversation:current。
+export const CONVERSATION_TURN_INVALIDATION = 'conversation:turn:';
+
+export function conversationTurnInvalidation(turnId: string | null): string {
+  return turnId ? `${CONVERSATION_TURN_INVALIDATION}${turnId}` : 'conversation:current';
+}
+
 export interface InvalidationScheduler {
   schedule(callback: () => void, delayMs: number): unknown;
   cancel(handle: unknown): void;

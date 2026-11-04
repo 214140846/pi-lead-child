@@ -776,8 +776,8 @@ describe('checkpoint control-plane UX integration', () => {
     expect(webWorkbench).toContain('<SlidePanel edge="right" modal');
     expect(webWorkbench).toContain('<Box flex={1} minH={0} overflow="hidden">');
     expect(workRail).toContain('<ScrollArea');
-    // 会话的滚动区是 ChatScroll（原来另一个 ScrollArea 是输入框上方的工单标签，方案 C 去掉了那一行）。
-    expect(conversation).toContain('<ChatScroll');
+    // 会话的滚动区是 ChatList（原来另一个 ScrollArea 是输入框上方的工单标签，方案 C 去掉了那一行）。
+    expect(conversation).toContain('<ChatList');
     expect(ticketThread).toContain('<ScrollArea testID="ticket-thread-scroll" fillContent onScroll={onScroll}>');
     // 进展记录不再套在详情的滚动区里自己滚（复核 P1-4）：它在「证据与记录」的页签里。
     expect(ticketThread).not.toContain('ticket-pow-scroll');

@@ -1,4 +1,7 @@
-import type { BrainModel, Locale, ModelProvider, ModelProviderApi, ModelSettingsDto } from '@pi-lead-child/protocol';
+import type {
+  BrainModel, KernelRuntimeId, Locale, ModelProvider, ModelProviderApi, ModelSettingsDto, RuntimeSettingEntry, RuntimeSettingsDto,
+  RuntimeSettingsRequest,
+} from '@pi-lead-child/protocol';
 
 import { onboardingMessages } from './onboarding.messages';
 
@@ -138,4 +141,85 @@ export function firstRunProviderFacts(provider: ModelProvider | null, locale: Lo
 /** 选中的模型的缺省推理强度（目录给的）。 */
 export function modelEffort(models: readonly BrainModel[], model: string): string | null {
   return models.find((entry) => entry.model === model)?.defaultEffort ?? null;
+}
+
+// 首次启动引导走到哪一步（docs/desktop/macos-desktop-design.md 第 5.3 节，P0-6）。
+//   brain：大脑不能用，显示第一步（FirstRunBrain）。「先进去看看」只在这次打开 App 时跳过。
+//   runtimes：这次打开 App 时在第一步接好了大脑，接着选执行器（FirstRunRuntimes）。这一步只出现一次：
+//     做完或跳过以后本机记下来（firstRunMemory），再也不出现；大脑本来就能用的人（老用户）不会看到它。
+export type FirstRunStep = 'brain' | 'runtimes' | null;
+
+export interface FirstRunStepInput {
+  // 连上了 daemon。
+  connected: boolean;
+  brainReady: boolean;
+  // 这次打开 App 时点了「先进去看看」。
+  brainSkipped: boolean;
+  // 这次打开 App 时显示过第一步。
+  brainShown: boolean;
+  // 选执行器这一步做过或跳过了（这次，或者本机以前记下的）。
+  runtimesDone: boolean;
+}
+
+export function firstRunStep(input: FirstRunStepInput): FirstRunStep {
+  if (!input.connected || input.brainSkipped) return null;
+  if (!input.brainReady) return 'brain';
+  return input.brainShown && !input.runtimesDone ? 'runtimes' : null;
+}
+
+// 第二步：选执行器。数据来自设置 → 执行器的同一个接口（GET /v1/runtimes/settings，每次 GET 都重新找可执行文件），
+// 不另写探测。提交也走同一个操作（POST /v1/runtimes/settings → 操作层 runtime 的 disable、enable），
+// Lead 用 perform_action 能做同样的事（AGENTS.md「UI Actions」）。
+
+// 没找到时给的安装说明（官方页面）。pi 由 daemon 自带，不给链接。
+export const RUNTIME_INSTALL_URLS: Partial<Record<KernelRuntimeId, string>> = {
+  codex: 'https://github.com/openai/codex',
+  claude: 'https://code.claude.com/docs/en/setup',
+};
+
+// built_in：pi，运行包自带，总是可以选。
+export type FirstRunRuntimeStatus = 'installed' | 'not_found' | 'built_in';
+
+// 用户在这一页拨过的开关。没拨过的项用缺省值。
+export type FirstRunRuntimePicks = Partial<Record<KernelRuntimeId, boolean>>;
+
+export interface FirstRunRuntimeRow {
+  id: KernelRuntimeId;
+  label: string;
+  status: FirstRunRuntimeStatus;
+  checked: boolean;
+  installUrl: string | null;
+}
+
+function runtimeStatus(entry: RuntimeSettingEntry): FirstRunRuntimeStatus {
+  if (entry.id === 'pi') return 'built_in';
+  return entry.installed ? 'installed' : 'not_found';
+}
+
+/** 缺省勾不勾：已安装的勾上，pi 总是勾上。重新检测发现刚装好的，没拨过时自动勾上。 */
+function runtimeChecked(entry: RuntimeSettingEntry, picks: FirstRunRuntimePicks): boolean {
+  return picks[entry.id] ?? runtimeStatus(entry) !== 'not_found';
+}
+
+/** 页面上的每一行。还没取到设置时为空。 */
+export function firstRunRuntimeRows(settings: RuntimeSettingsDto | null, picks: FirstRunRuntimePicks): FirstRunRuntimeRow[] {
+  if (!settings) return [];
+  return settings.runtimes.map((entry) => {
+    const status = runtimeStatus(entry);
+    return {
+      id: entry.id,
+      label: entry.label,
+      status,
+      checked: runtimeChecked(entry, picks),
+      installUrl: status === 'not_found' ? RUNTIME_INSTALL_URLS[entry.id] ?? null : null,
+    };
+  });
+}
+
+/** 提交时要拨的开关：勾选的结果和现在的设置不同的那几项，一项一个请求。没勾的停用，勾上的启用。 */
+export function firstRunRuntimeRequests(settings: RuntimeSettingsDto | null, picks: FirstRunRuntimePicks): RuntimeSettingsRequest[] {
+  if (!settings) return [];
+  return settings.runtimes
+    .filter((entry) => runtimeChecked(entry, picks) !== entry.enabled)
+    .map((entry) => ({ runtime: entry.id, enabled: runtimeChecked(entry, picks) }));
 }

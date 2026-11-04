@@ -74,7 +74,8 @@ beforeEach(() => {
   setViewportWidth(1280);
 });
 
-describe('the first-run page', () => {
+// 第一个用例要第一次渲染 RootTabs，冷启动时这台机器上要 5–8 秒，超过缺省的 5 秒（改这一步之前也一样）。
+describe('the first-run page', { timeout: 30_000 }, () => {
   it('connects a provider, recommends a model, and gives way to the app once the brain works', async () => {
     const { runtime, perform } = firstRunRuntime();
     renderWithRuntime(<RootTabs />, runtime);

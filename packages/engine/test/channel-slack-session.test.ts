@@ -5,12 +5,13 @@
 //   - Web API：改消息、回表情、读历史、下载文件都经过会话；
 //   - 设置页的检查：格式、能登录、WebSocket 能连上；
 //   - 传输：网页版的消息帧（没有 channel_type）进来和 Events API 一样；断线以后补拉，同一条消息只记一次；
+//     断线这段时间里没有道的私信和提到用户的消息也补（私信用网页版的 client.counts 找，2026-11-03）；
 //     重连地址不是 Slack 的主机时不连；会话失效时报错，不再重试。
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SLACK_SESSION_COOKIE_ENV } from "@pi-lead-child/core";
 import { tempDir } from "@pi-lead-child/core/testing";
-import { getChannelLane, listEvents, openDb, type Db } from "@pi-lead-child/store";
+import { getChannelCatchUpMark, getChannelLane, listEvents, openDb, type Db } from "@pi-lead-child/store";
 import {
   builtinChannelAdapters, ChannelHub, ChannelRegistry, createSlackChannelAdapter, liveBuiltinChannels, SLACK_SESSION_ENDED, slackConnectionOf,
   signInToSlack,
@@ -32,9 +33,10 @@ const secrets = (cookie = FAKE_SLACK_SESSION_COOKIE) => ({ [SLACK_SESSION_COOKIE
 // 「允许 Lead 代你发消息」：缺省打开（这里大多测发消息），测开关的用例把它关掉。
 let writes: boolean;
 
-function setup(): void {
+// now：适配器的时钟（断线补拉的水位用它）。
+function setup(now?: () => Date): void {
   adapter = createSlackChannelAdapter({
-    api: slack.api, connection: "session", sessionWrites: () => writes,
+    api: slack.api, connection: "session", sessionWrites: () => writes, ...(now ? { now } : {}),
     session: { network: { fetch: slack.sessionFetch, createWebSocket: slack.createSessionSocket, maxHttpRetries: 0 }, retryBaseMs: 5, retryMaxMs: 40 },
   });
   // 和 daemon 的凭据缓存一样：换不成时用上一次换好的。
@@ -215,6 +217,26 @@ describe("the session transport", () => {
     slack.sessionPush(first);
     await hub.idle();
     expect(slackEvents()).toHaveLength(2);
+  });
+
+  it("catches up direct messages and mentions from the gap in conversations without a lane, found through the web client's counts", async () => {
+    // 假的 Slack 的消息 ts 从 1760000001 起按秒往后排：时钟也从这里起。
+    setup(() => new Date(1_760_000_000_000));
+    start();
+    await connected();
+    await vi.waitFor(() => expect(getChannelCatchUpMark(db, "slack")).not.toBeNull());
+    slack.dropSession();
+    // 断线期间：李四第一次私信用户，张三在频道的 thread 里提到用户，李四在频道里说了一句没有提到用户的话。
+    slack.dm("U0LI", "断线时李四的私信");
+    slack.mention("U0ZHANG", "断线时提到你", { thread: slack.messageOf(slack.chatter("U0ZHANG", "根消息")).ts });
+    slack.chatter("U0LI", "没有提到你");
+    await vi.waitFor(() => expect(slack.sessionConnections).toBe(2));
+    await vi.waitFor(() => expect(slackEvents().map((event) => event.kind)).toEqual(["slack.dm.received", "slack.mention.received"]));
+    expect(getChannelLane(db, "slack:D0LI:main")).toBeDefined();
+    // 私信是 client.counts 找到的：没有消息的私信对话不读，也不用列出全部私信。
+    expect(slack.sessionCalls).toEqual(expect.arrayContaining(["client.counts", "search.messages"]));
+    expect(slack.sessionCalls).not.toContain("users.conversations");
+    expect(slack.calls.filter((call) => call.method === "conversations.history").map((call) => call.args.channel)).not.toContain("D0ZHANG");
   });
 
   it("does not follow a reconnect address that is not a Slack host", async () => {

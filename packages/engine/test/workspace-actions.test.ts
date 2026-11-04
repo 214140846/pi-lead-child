@@ -38,7 +38,7 @@ function shared(terminal = true): number {
 
 // 一个真的隔离 worktree，放弃改动以后已经释放：清理会删掉它的目录。
 let repos = 0;
-function releasedWorktree(): { workspaceId: number; path: string } {
+async function releasedWorktree(): Promise<{ workspaceId: number; path: string }> {
   const repo = join(dir, `repo-${++repos}`);
   execFileSync("git", ["init", "-q", repo]);
   execFileSync("git", ["-C", repo, "config", "user.email", "plc@example.test"]);
@@ -50,7 +50,7 @@ function releasedWorktree(): { workspaceId: number; path: string } {
   db.prepare("UPDATE items SET stage='done' WHERE id=?").run(owner);
   provisionWorkspace(db, { itemId: owner, mode: "shared" });
   const isolated = provisionWorkspace(db, { itemId: owner, mode: "isolated" });
-  releaseWorkspace(db, isolated.id, { mergeStatus: "abandoned" });
+  await releaseWorkspace(db, isolated.id, { mergeStatus: "abandoned" });
   return { workspaceId: isolated.id, path: isolated.path };
 }
 
@@ -89,7 +89,7 @@ describe("workspace actions through the operation layer", () => {
 
   // 审查 2026-10-26 第 2 条：清理隔离 worktree 不可逆，以前一次 POST 就删掉了，没有确认。
   it("cleans an isolated worktree only with an explicit confirmation, from the page and from Lead", async () => {
-    const clicked = releasedWorktree();
+    const clicked = await releasedWorktree();
     const notConfirmed = await refusal(run(clicked.workspaceId, "cleanup", user()));
     expect(notConfirmed.code).toBe("needs_confirmation");
     expect(notConfirmed.message).toContain(clicked.path);
@@ -98,7 +98,7 @@ describe("workspace actions through the operation layer", () => {
     expect((await run(clicked.workspaceId, "cleanup", user(), { confirm: true })).result).toMatchObject({ status: "cleaned" });
     expect(existsSync(clicked.path)).toBe(false);
 
-    const relayed = releasedWorktree();
+    const relayed = await releasedWorktree();
     createTurn(db, { id: "turn-user", originBindingId: page.id, originKind: "paired:companion", userText: "删掉它", state: "streaming" });
     // Lead 在哪一轮都能清理（2026-10-27），但没带 confirm 时什么都不做。
     expect((await refusal(run(relayed.workspaceId, "cleanup", lead()))).code).toBe("needs_confirmation");

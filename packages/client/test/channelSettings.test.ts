@@ -1,7 +1,7 @@
 // 设置页「消息通道」在客户端里的包装（契约在 packages/protocol/src/channel-settings.ts）：
 // 四个方法的路由和请求体，响应按共享协议校验，PUT 没通过时 400 的 details（检查结果）交给调用方。
 import { describe, expect, it } from 'vitest';
-import type { BindingDto, ChannelSecretsTestResult, ChannelSourceSettingsDto } from '@pi-lead-child/protocol';
+import { CHANNEL_SECRET_MAX_LENGTH, type BindingDto, type ChannelSecretsTestResult, type ChannelSourceSettingsDto } from '@pi-lead-child/protocol';
 
 import type { ControlPlaneCredentials, CredentialStore } from '../src/credentialStore.ts';
 import { ChannelSecretsRejectedError, ControlPlaneClient, ControlPlaneClientError } from '../src/controlPlaneClient.ts';
@@ -107,6 +107,14 @@ describe('testChannelSecrets', () => {
     expect(await as400.client.testChannelSecrets('slack', secrets)).toEqual(failed);
   });
 
+  // 回归（#220）：浏览器会话的「测试」不带密钥，以前客户端不发，报「密钥的格式不对：每个最多 1000 个字符」。
+  it('posts an empty set of secrets: the daemon tests the secrets it uses now', async () => {
+    const passed: ChannelSecretsTestResult = { ok: true, checks: [], account: source.account, missingScopes: [] };
+    const { calls, client: c } = client(() => response(passed));
+    expect(await c.testChannelSecrets('slack', {})).toEqual(passed);
+    expect(calls).toMatchObject([{ url: 'http://127.0.0.1:47130/v1/channels/settings/slack/test', method: 'POST', body: { secrets: {} } }]);
+  });
+
   it('passes other refusals through, for example a page that is not on this Mac', async () => {
     const { client: c } = client(() => response({ error: { code: 'forbidden', message: 'only the local web UI' } }, 403));
     const failure = await c.testChannelSecrets('slack', secrets).catch((error: unknown) => error);
@@ -146,6 +154,26 @@ describe('saveChannelSecrets', () => {
     expect(failure).toMatchObject({ status: 400, message: 'unknown secret name' });
   });
 
+  // 回归（#220）：浏览器会话的 cookie 超过 1000 个字符。协议的上限是 CHANNEL_SECRET_MAX_LENGTH（16 KB）。
+  it('sends a session cookie longer than 1000 characters, up to the protocol limit', async () => {
+    const cookie = `xoxd-${'a'.repeat(4_000)}`;
+    const { calls, client: c } = client(() => response({ source }));
+    expect(await c.saveChannelSecrets('slack', { PLC_SLACK_SESSION_COOKIE: cookie })).toEqual(source);
+    expect(calls).toMatchObject([{ method: 'PUT', body: { secrets: { PLC_SLACK_SESSION_COOKIE: cookie } } }]);
+
+    const longest = 'x'.repeat(CHANNEL_SECRET_MAX_LENGTH);
+    await expect(c.saveChannelSecrets('slack', { PLC_SLACK_SESSION_COOKIE: longest })).resolves.toEqual(source);
+    await expect(c.saveChannelSecrets('slack', { PLC_SLACK_SESSION_COOKIE: `${longest}x` }))
+      .rejects.toMatchObject({ message: 'channel secrets are invalid', code: 'invalid_request' });
+    expect(calls).toHaveLength(2);
+  });
+
+  it('still needs at least one secret to save', async () => {
+    const { calls, client: c } = client(() => response({ source }));
+    await expect(c.saveChannelSecrets('slack', {})).rejects.toMatchObject({ message: 'channel secrets are invalid' });
+    expect(calls).toEqual([]);
+  });
+
   it('refuses a response that does not match the shared protocol', async () => {
     const { client: c } = client(() => response({ source: { ...source, editable: 'yes' } }));
     await expect(c.saveChannelSecrets('slack', secrets)).rejects.toMatchObject({ code: 'invalid_response' });
@@ -171,10 +199,13 @@ describe('request checks before anything is sent', () => {
     }
     // 空的键和过长的键单独查：TypeBox 的 Record 不检查键的长度。
     const tooMany = Object.fromEntries(Array.from({ length: 9 }, (_, index) => [`NAME_${index}`, 'value']));
-    for (const bad of [{}, tooMany, { PLC_SLACK_APP_TOKEN: '' }, { PLC_SLACK_APP_TOKEN: 'x'.repeat(1_001) }, { '': 'xapp-test' }, { ['K'.repeat(101)]: 'xapp-test' }]) {
+    const tooLong = { PLC_SLACK_APP_TOKEN: 'x'.repeat(CHANNEL_SECRET_MAX_LENGTH + 1) };
+    for (const bad of [tooMany, { PLC_SLACK_APP_TOKEN: '' }, tooLong, { '': 'xapp-test' }, { ['K'.repeat(101)]: 'xapp-test' }]) {
       await expect(c.saveChannelSecrets('slack', bad)).rejects.toMatchObject({ code: 'invalid_request' });
       await expect(c.testChannelSecrets('slack', bad)).rejects.toMatchObject({ code: 'invalid_request' });
     }
+    // 保存至少要带一个密钥；「测试」可以不带（见上面 testChannelSecrets 的回归测试）。
+    await expect(c.saveChannelSecrets('slack', {})).rejects.toMatchObject({ code: 'invalid_request' });
     expect(calls).toEqual([]);
   });
 });

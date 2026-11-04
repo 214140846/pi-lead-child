@@ -52,7 +52,7 @@ import { buildOutcomeRepairPrompt } from "@pi-lead-child/engine";
 import { executionPlanText } from "@pi-lead-child/engine";
 import { acceptanceCriteriaText, recordedDeliverySnapshot } from "@pi-lead-child/engine";
 import { ACCEPTANCE_CRITERIA_LIMITS, addAcceptanceCriteria, normalizeCriterionTexts } from "@pi-lead-child/store";
-import { localIso, projectRoot } from "@pi-lead-child/core";
+import { localIso, projectRoot, readTailLines } from "@pi-lead-child/core";
 import type { RuntimeId, Item, ItemPriority, ItemStage, Run, VerificationPolicy, Workspace } from "@pi-lead-child/core";
 import type { AttachableLaunch } from "@pi-lead-child/runtime";
 import {
@@ -117,7 +117,7 @@ import {
 import { setAutoPullRequest, workspaceOfItem } from "@pi-lead-child/engine";
 import {
   integrateIsolatedWorkspace, provisionWorkspace, provisionWorkspaceAsync, requestSharedWorkspace,
-  runWorkspaceRefusal, setPullRequestReviewTarget,
+  runWorkspaceRefusal, setPullRequestReviewTarget, warmRepositoryIdentity, warmRunWorkspaceFacts, warmWorkdirFacts,
 } from "@pi-lead-child/engine";
 import { listWorkspaces, resolveWorkspace } from "@pi-lead-child/store";
 import { setReviewerSetting } from "@pi-lead-child/store";
@@ -1283,7 +1283,7 @@ function prReviewTemplate(
     deliver?: PrReviewDelivery; review_events?: string[];
   },
   external: boolean,
-): { brief: string; workdir: string | undefined; criteria: string[]; record: Record<string, unknown> } {
+): { brief: string; workdir: string | undefined; criteria: string[]; repository: string; record: Record<string, unknown> } {
   if (!params.pr_review) throw new Error("template=pr_review needs pr_review: { pr, focus, acceptance }");
   const pr = parsePullRequestRef(params.pr_review.pr);
   const repo = githubRepoRoots(db, pr.owner, pr.repo)[0];
@@ -1295,6 +1295,7 @@ function prReviewTemplate(
       pr, focus: params.pr_review.focus, acceptance: params.pr_review.acceptance, note: params.brief, deliver, reviewEvents,
     }),
     workdir: repo,
+    repository: `${pr.owner}/${pr.repo}`,
     // 结构化验收标准（工单 05）：系统把用户的原话按行抄进去，不经 Lead 改写。
     criteria: normalizeCriterionTexts(acceptanceCriteriaFromUserWords(params.pr_review.acceptance), "pr_review.acceptance"),
     record: {
@@ -1577,6 +1578,9 @@ export function createLeadTools(deps: LeadDeps): ToolDefinition<any>[] {
         item_id: number; mode: "shared" | "isolated"; reason?: string; path?: string; branch_hint?: string;
       }) => {
         if (params.mode === "shared") {
+          // 判定要的 git 事实先异步查好，requestSharedWorkspace 只读缓存（git-facts.ts）。
+          const item = getItem(db, params.item_id);
+          await warmWorkdirFacts(params.path ?? item?.workdir);
           return text(JSON.stringify(requestSharedWorkspace(db, {
             itemId: params.item_id, reason: params.reason ?? "", actor: "lead", ...(params.path ? { path: params.path } : {}),
           })));
@@ -1599,7 +1603,7 @@ export function createLeadTools(deps: LeadDeps): ToolDefinition<any>[] {
       }),
       execute: async (_id, params: { item_id: number; reason: string }) => {
         const workspace = isolatedWorktreeOf(db, params.item_id);
-        const result = integrateIsolatedWorkspace(db, workspace.id, { actor: "lead", reason: params.reason });
+        const result = await integrateIsolatedWorkspace(db, workspace.id, { actor: "lead", reason: params.reason });
         return text(JSON.stringify({
           workspaceId: workspace.id, state: result.workspace.state, merged: result.branch,
           unmergedCommits: result.changes.unmergedCommits, branchDeleted: result.branchDeleted,
@@ -1813,8 +1817,8 @@ export function createLeadTools(deps: LeadDeps): ToolDefinition<any>[] {
         if (!a.session_path || !existsSync(a.session_path)) {
           throw new Error(`run #${params.attempt_id} 无可读 session 文件`);
         }
-        const lines = readFileSync(a.session_path, "utf8").trim().split("\n");
-        const tail = lines.slice(-(params.limit ?? 30));
+        // 只从文件末尾往前读要的那几行：子 agent 的会话文件有几十 MB（2026-11-03 以前整个同步读进来）。
+        const tail = await readTailLines(a.session_path, params.limit ?? 30);
         const out: string[] = [];
         for (const line of tail) {
           let e: any;
@@ -1885,7 +1889,10 @@ export function createLeadTools(deps: LeadDeps): ToolDefinition<any>[] {
         review_pull_request: Type.Optional(Type.Integer({
           minimum: 1, description: "评审 GitHub PR 时给 PR 编号；workdir 必须是那个仓库",
         })),
-        pull_request_remote: Type.Optional(Type.String({ description: "PR 所在的 git remote，缺省 origin" })),
+        pull_request_remote: Type.Optional(Type.String({
+          description: "PR 所在的 git remote 名。可以不给：系统用地址指向 PR 所在仓库的那个 remote（按 template=pr_review 的 pr 或 repository 认仓库），"
+            + "认不出仓库时用 origin 或唯一的 remote。本地 remote 的名字和地址对不上时才给。",
+        })),
         runtime: Type.Optional(Type.Union([
           Type.Literal("pi"), Type.Literal("codex"), Type.Literal("claude"),
         ])),
@@ -2062,6 +2069,8 @@ export function createLeadTools(deps: LeadDeps): ToolDefinition<any>[] {
         // 自己的目录（数据目录下的 light-tasks/），沙箱里能写的就是这里（lead-tools-and-routing spec D9）。
         const workdir = given ?? (params.light ? lightTaskDir(deps.dataDir) : undefined);
         const relationResults: LinkTicketResult[] = [];
+        // 建单的事务里要认项目（仓库根目录、origin）、判断 PR 工单的仓库：git 的事实先异步查好，事务里只读缓存（git-facts.ts）。
+        await Promise.all([warmRepositoryIdentity(workdir), warmWorkdirFacts(workdir)]);
         const id = db.transaction(() => {
           const createdId = params.parent_ticket_id === undefined
             ? coordinator.createRootItem({
@@ -2091,9 +2100,12 @@ export function createLeadTools(deps: LeadDeps): ToolDefinition<any>[] {
             setItemTime(db, createdId, { dueAt: new Date(params.due_at).toISOString() }, leadSource());
           }
           if (params.review_pull_request !== undefined) {
+            // PR 所在的仓库一起记下：检出时按它的地址找 remote，不写死 origin（工单 #212）。
+            const pullRequestRepository = template?.repository ?? repository?.key;
             setPullRequestReviewTarget(db, {
               itemId: createdId, number: params.review_pull_request, actor: "lead",
               ...(params.pull_request_remote ? { remote: params.pull_request_remote } : {}),
+              ...(pullRequestRepository ? { repository: pullRequestRepository } : {}),
             });
           }
           if (params.dedupe_key !== undefined) {
@@ -2903,6 +2915,12 @@ export function createLeadTools(deps: LeadDeps): ToolDefinition<any>[] {
         ticket_id: number; runtime?: RuntimeId; model?: string; effort?: string; role?: "executor" | "reviewer"; reason: string;
       }) => {
         try {
+          // 开跑前的工作区判定（spawnItemChild 的 runWorkspaceRefusal）要的 git 事实先异步查好（git-facts.ts）。
+          const ticket = getItem(db, params.ticket_id);
+          if (ticket) {
+            const role = params.role ?? "executor";
+            await warmRunWorkspaceFacts(db, ticket, { role, purpose: role === "reviewer" ? "review" : ticket.purpose ?? "execution" });
+          }
           if (params.role === "reviewer") {
             return text(spawnItemChild(deps, params.ticket_id, {
               role: params.role, runtime: params.runtime, model: params.model, effort: params.effort,

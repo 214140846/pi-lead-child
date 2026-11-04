@@ -221,7 +221,7 @@ describe('normalized Lead message parts', () => {
     expect(conversation).toContain('m.composer.offline');
     expect(conversation).not.toContain('disabled={!connected}');
     expect(conversation).toContain('if (!connected || historyRequest.loading) return');
-    expect(conversation).toContain('disabled={!connected || historyRequest.loading || !conversationCardPage?.hasMore}');
+    expect(conversation).toContain('disabled={!connected || olderLoading || !olderAvailable}');
     // 状态点不再只看连接：连接正常时还要看 Lead 的模型调用（./leadPresence，渲染测试在 leadHealthHeader.test.tsx）。
     expect(identity).toContain('leadPresence({ connectionState, phase, lead, now, name, locale })');
   });

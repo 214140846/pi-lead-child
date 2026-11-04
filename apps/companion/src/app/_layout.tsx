@@ -5,6 +5,7 @@ import { StatusBar } from 'expo-status-bar';
 import { useEffect } from 'react';
 
 import { DesignPreferencesBridge } from '@/components/DesignPreferencesBridge';
+import { DocumentTitle } from '@/components/DocumentTitle';
 import { ChannelCardSlot } from '@/features/chat/ChannelMessageCard';
 import { ObjectLinkProvider } from '@/features/chat/ObjectLinkProvider';
 import { CompanionStateProvider } from '@/state/CompanionStateProvider';
@@ -25,6 +26,7 @@ export default function RootLayout() {
       <CompanionStateProvider>
         <DesignPreferencesBridge>
         <StatusBar style="dark" />
+        <DocumentTitle />
         {/* 原生上收集触摸，用来判断最近有没有人在看；web 上不加元素。 */}
         <ActivityBoundary>
           {/* 文字里外来消息卡的链接（P14.7）在这里的浮层里打开那张卡。 */}

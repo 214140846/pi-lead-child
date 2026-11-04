@@ -375,6 +375,19 @@ export function latestEntityEvent(db: Db, entityKey: string, kind: string): Even
   return row ? parseEvent(row) : undefined;
 }
 
+/**
+ * 「Lead 动态」的输入变了几次（schema.ts 的 LEAD_ACTIVITY_INPUTS_SCHEMA，触发器在写入时加 1）。
+ * 没有计数的库（不是 openDb 建的）返回 null：调用方当作「不知道」，照常重算。
+ */
+export function leadActivityInputsVersion(db: Db): number | null {
+  try {
+    const row = db.prepare("SELECT version FROM change_counters WHERE name = 'lead_activity'").get() as { version: number } | undefined;
+    return row?.version ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /** interrupt 级的事件（工单 06 的横幅）：seq 大于 afterSeq 的最新 limit 条，从旧到新。 */
 // 主人操作的提醒（工单 15，owner_action.*）也是 interrupt 级，但它有自己的会话卡和「不是我」，
 // 并且发起操作的那个客户端只显示一行记录。这里不放它们，免得横幅把同一件事再说一遍。

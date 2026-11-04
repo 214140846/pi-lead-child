@@ -15,7 +15,7 @@ import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { createBashToolDefinition, type BashOperations, type ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { sandboxPolicy, sandboxToolNote, sandboxWriteBlocker, type SandboxPolicy } from "@pi-lead-child/core";
+import { sandboxPolicy, sandboxPolicyAsync, sandboxToolNote, sandboxWriteBlocker, type SandboxPolicy } from "@pi-lead-child/core";
 import { sandboxedBashOperations } from "@pi-lead-child/engine";
 import type { Db } from "@pi-lead-child/store";
 import { credentialPathReason, resolveLikePi } from "./credential-guard.js";
@@ -47,6 +47,11 @@ export function leadWritableRoots(db: Db, dataDir: string): string[] {
 
 export function leadSandboxPolicy(db: Db, dataDir: string): SandboxPolicy {
   return sandboxPolicy({ role: "lead", writable: leadWritableRoots(db, dataDir), dataDir });
+}
+
+/** leadSandboxPolicy 的异步版：要用的 git 目录和根证书先在子进程里查好（core 的 sandboxPolicyAsync）。跑命令、写文件之前用它。 */
+export function leadSandboxPolicyAsync(db: Db, dataDir: string): Promise<SandboxPolicy> {
+  return sandboxPolicyAsync({ role: "lead", writable: leadWritableRoots(db, dataDir), dataDir });
 }
 
 /** 外部消息叫醒的一轮里不用动手工具：给模型的说明（能力缺口，写出下一条路）。 */
@@ -117,7 +122,7 @@ export function leadHandsExtension(options: LeadHandsOptions): ExtensionFactory 
   return (pi) => {
     mkdirSync(scratch, { recursive: true, mode: 0o700 });
     const bash = createBashToolDefinition(scratch, {
-      operations: withDefaultTimeout(sandboxedBashOperations(() => leadSandboxPolicy(options.db, options.dataDir)), timeoutSeconds),
+      operations: withDefaultTimeout(sandboxedBashOperations(() => leadSandboxPolicyAsync(options.db, options.dataDir)), timeoutSeconds),
     });
     pi.registerTool({
       ...bash,
@@ -136,7 +141,7 @@ export function leadHandsExtension(options: LeadHandsOptions): ExtensionFactory 
         + sandboxToolNote(leadSandboxPolicy(options.db, options.dataDir), "整个 home（挡住会在沙箱外执行的地方）、plc 的隔离 worktree")
         + "\n发评审、发消息这类写外部账号的事用连接工具：那里有你的账号和护栏。", home),
     });
-    pi.on("tool_call", (event) => {
+    pi.on("tool_call", async (event) => {
       if (!(LEAD_HAND_TOOLS as readonly string[]).includes(event.toolName)) return undefined;
       const origin = options.turnOrigin?.();
       if (origin && handsBlockedInTurn(origin, origin.external && isLiveUserTurn(
@@ -149,7 +154,7 @@ export function leadHandsExtension(options: LeadHandsOptions): ExtensionFactory 
       const input = event.input as Record<string, unknown>;
       const path = typeof input.path === "string" ? input.path : "";
       if (!path.trim()) return undefined;
-      const reason = leadWriteRefusal(path, { cwd: options.dataDir, home, policy: leadSandboxPolicy(options.db, options.dataDir) });
+      const reason = leadWriteRefusal(path, { cwd: options.dataDir, home, policy: await leadSandboxPolicyAsync(options.db, options.dataDir) });
       if (!reason) return undefined;
       options.log?.(`[lead] ${event.toolName} refused outside the writable roots`);
       return { block: true, reason };

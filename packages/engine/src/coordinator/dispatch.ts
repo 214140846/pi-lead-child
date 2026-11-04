@@ -18,7 +18,7 @@ import { runtimeProfileHash, type RuntimeProfile } from "@pi-lead-child/runtime"
 import { preflightAllowsClaim, type RuntimePreflight } from "../pipeline/preflight.js";
 import { runtimeSuspensionReason, unavailableIncident, unavailableProfileIncident } from "@pi-lead-child/store";
 import { listBlockingDependencies } from "@pi-lead-child/store";
-import { dispatchWorkspaceId } from "./workspace-policy.js";
+import { dispatchWorkspaceId, runWorkspaceFactsReady } from "./workspace-policy.js";
 import { applyReviewAutomation, noteDelegatedReviewBlocked } from "./delegated-review.js";
 import {
   staleReviewRequestReason, verificationBoundaryRunId, verificationState,
@@ -159,6 +159,9 @@ export function createDispatcher(
     // 这张工单是不是还被一个 Run 占着（宿主的 live 表）。库里的状态盖不住收尾阶段：那时 Run 已是 finished，
     // 进程还在退出。认领它会和那个 Run 撞上（发布评审：claimNext 不看在跑的表）。
     itemBusy?: (itemId: number) => boolean;
+    // 认领前先在后台异步查好工作区判定要的 git 事实（workspace-policy.ts 的 runWorkspaceFactsReady）。没查好的请求这一拍跳过，
+    // 认领的事务里就不再同步跑 git。daemon 打开它；不打开时缺的事实当场同步查（测试直接调 claimNext 用这个）。
+    asyncWorkspaceFacts?: boolean;
     log?: (line: string) => void;
   },
 ): Dispatcher {
@@ -797,6 +800,12 @@ export function createDispatcher(
     }, now());
   };
 
+  const workspaceFactsReady = (row: DispatchRequestRow): boolean => {
+    if (!options?.asyncWorkspaceFacts) return true;
+    const item = getItem(db, row.item_id);
+    return !item || runWorkspaceFactsReady(db, item, { role: row.role, purpose: row.purpose });
+  };
+
   // 内核的退避重试（工单 06）带着绝对的"不早于"时间。时间没到，claim 跳过它，也不写任何东西。
   // 时间存成绝对值，所以 daemon 重启后只等剩下的时间。
   const notBeforeReady = (row: DispatchRequestRow): boolean => notBeforeReached(row.not_before, now());
@@ -863,6 +872,7 @@ export function createDispatcher(
         continue;
       }
       if (!preflightReady(row)) continue;
+      if (!workspaceFactsReady(row)) continue;
       const claimed = db.transaction(() => {
         const current = db.prepare("SELECT state FROM dispatch_requests WHERE id=?").get(row.id) as { state: string };
         if (current.state !== "pending") return null;

@@ -170,6 +170,33 @@ describe("no deadline: the system never decides for Lead", () => {
     expect(card.handling!.lead).not.toHaveProperty("deadlineAt");
     expect(channels.cardForLead(item.cardId)!.request).not.toHaveProperty("deadlineAt");
   });
+
+  // 回归 2026-11-03：卡片列表给每张卡各查一次 Lead 请求，每次解析全部系统事件的 JSON；185 张卡时一次列表占住
+  // daemon 主线程 10–12 秒，网页刷新就断线。
+  it("reads the Lead requests of all listed cards in one query, with the same handling as one card", async () => {
+    const channels = hub(jev());
+    const first = await receive(channels, slack.dm("U0ETHAN", "帮忙 review 一下 acme/orders#12"));
+    const second = await receive(channels, slack.dm("U0KENT", "帮忙 review 一下 acme/orders#13"));
+    const one = (cardId: number) => channels.cardDto(getChannelCard(db, cardId)!).handling;
+
+    const prepare = db.prepare.bind(db);
+    let requestQueries = 0;
+    db.prepare = ((source: string) => {
+      if (source.includes("FROM events r")) requestQueries += 1;
+      return prepare(source);
+    }) as typeof db.prepare;
+    let listed: ReturnType<ChannelHub["listCards"]>;
+    try {
+      listed = channels.listCards();
+    } finally {
+      db.prepare = prepare;
+    }
+    expect(requestQueries).toBe(1);
+    const handling = new Map(listed.map((card) => [card.id, card.handling]));
+    expect(handling.get(first.cardId)!.lead).toMatchObject({ stage: "intake", decision: null });
+    expect(handling.get(first.cardId)).toEqual(one(first.cardId));
+    expect(handling.get(second.cardId)).toEqual(one(second.cardId));
+  });
 });
 
 describe("no drafter: only Lead writes drafts", () => {

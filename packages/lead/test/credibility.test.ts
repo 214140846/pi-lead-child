@@ -36,9 +36,9 @@ describe("extractCodeRefs", () => {
 });
 
 describe("verifyCodeRefs", () => {
-  it("finds files in any root, checks the line range, and stays inside the roots", () => {
+  it("finds files in any root, checks the line range, and stays inside the roots", async () => {
     const root = repoDir();
-    const checks = verifyCodeRefs(extractCodeRefs(
+    const checks = await verifyCodeRefs(extractCodeRefs(
       "src/auth/identity.ts:3 src/auth/identity.ts:4 src/auth/session.ts ../../etc/hosts.txt",
     ), [tempDir("plc-credibility-empty-"), root]);
     expect(checks.map((check) => [check.ref.raw, check.status])).toEqual([
@@ -50,13 +50,13 @@ describe("verifyCodeRefs", () => {
     expect(checks[1]!.detail).toContain("只有 3 行");
   });
 
-  it("does not open credential files, and cannot check without roots", () => {
+  it("does not open credential files, and cannot check without roots", async () => {
     const root = repoDir();
-    expect(verifyCodeRefs([{ raw: "x/.env", path: ".env", line: 1, endLine: null }], [root])[0]!.status).toBe("unverifiable");
-    expect(verifyCodeRefs(extractCodeRefs("src/auth/session.ts"), [])[0]!.status).toBe("unverifiable");
+    expect((await verifyCodeRefs([{ raw: "x/.env", path: ".env", line: 1, endLine: null }], [root]))[0]!.status).toBe("unverifiable");
+    expect((await verifyCodeRefs(extractCodeRefs("src/auth/session.ts"), []))[0]!.status).toBe("unverifiable");
   });
 
-  it("checks the file at a GitHub comment's commit, and gives up when the commit is not local", () => {
+  it("checks the file at a GitHub comment's commit, and gives up when the commit is not local", async () => {
     const root = repoDir();
     const git = (...args: string[]) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8" }).trim();
     git("init", "-q");
@@ -64,19 +64,19 @@ describe("verifyCodeRefs", () => {
     git("-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-qm", "c");
     writeFileSync(join(root, "src", "later.ts"), "x\n");
     const commit = git("rev-parse", "HEAD");
-    const at = (text: string, sha: string) => verifyCodeRefs(extractCodeRefs(text), [root], { commit: sha })[0]!.status;
-    expect(at("src/auth/identity.ts:2", commit)).toBe("ok");
+    const at = async (text: string, sha: string) => (await verifyCodeRefs(extractCodeRefs(text), [root], { commit: sha }))[0]!.status;
+    expect(await at("src/auth/identity.ts:2", commit)).toBe("ok");
     // 工作区里有、那个提交里没有：按提交算。
-    expect(at("src/later.ts", commit)).toBe("missing");
-    expect(at("src/nowhere.ts", "0123456789abcdef0123456789abcdef01234567")).toBe("unverifiable");
+    expect(await at("src/later.ts", commit)).toBe("missing");
+    expect(await at("src/nowhere.ts", "0123456789abcdef0123456789abcdef01234567")).toBe("unverifiable");
     // 2026-10-19 发布评审：本地没有那个提交时，以前改用工作区的文件数行数，PR 新增的行就被拦了。
-    expect(at("src/auth/identity.ts:9", "0123456789abcdef0123456789abcdef01234567")).toBe("unverifiable");
+    expect(await at("src/auth/identity.ts:9", "0123456789abcdef0123456789abcdef01234567")).toBe("unverifiable");
   });
 
-  it("treats a file missing from the fallback roots only as unverifiable", () => {
+  it("treats a file missing from the fallback roots only as unverifiable", async () => {
     const root = repoDir();
-    expect(verifyCodeRefs(extractCodeRefs("src/other/repo.ts"), [root], { fallbackOnly: true })[0]!.status).toBe("unverifiable");
-    expect(verifyCodeRefs(extractCodeRefs("src/auth/identity.ts:9"), [root], { fallbackOnly: true })[0]!.status).toBe("line_out_of_range");
+    expect((await verifyCodeRefs(extractCodeRefs("src/other/repo.ts"), [root], { fallbackOnly: true }))[0]!.status).toBe("unverifiable");
+    expect((await verifyCodeRefs(extractCodeRefs("src/auth/identity.ts:9"), [root], { fallbackOnly: true }))[0]!.status).toBe("line_out_of_range");
   });
 });
 
@@ -90,14 +90,14 @@ function ledger(): { db: Db; root: string; ticket: number } {
 }
 
 describe("which outgoing calls are checked, and where", () => {
-  it("checks GitHub inline comments in the repository the call names, and skips read-only connection tools", () => {
+  it("checks GitHub inline comments in the repository the call names, and skips read-only connection tools", async () => {
     const { db, root } = ledger();
     const write = outgoingCheckFor(db, "call_connection_tool", {
       connection: "github", tool: "create_pull_request_review",
       arguments: { owner: "acme", repo: "demo-repo", body: "总评", comments: [{ path: "src/auth/identity.ts", start_line: 2, line: 9, body: "x" }] },
     }, () => false)!;
     expect(write.roots).toEqual([root]);
-    expect(failedChecks(verifyCodeRefs(write.refs, write.roots)).map((check) => check.ref.raw)).toEqual(["src/auth/identity.ts:2-9"]);
+    expect(failedChecks(await verifyCodeRefs(write.refs, write.roots)).map((check) => check.ref.raw)).toEqual(["src/auth/identity.ts:2-9"]);
     expect(outgoingCheckFor(db, "call_connection_tool", {
       connection: "github", tool: "get_file_contents", arguments: { owner: "acme", repo: "demo-repo", path: "src/x.ts" },
     }, () => true)).toBeNull();
@@ -117,11 +117,11 @@ function harness(db: Db) {
 
 describe("the credibility extension", () => {
   // 2026-10-29：内部的工单批注、记录、通知不拦，只记下没核对上；写到外部账号的（GitHub 评审）照旧先拦一次。
-  it("lets an internal comment through and records the unverified refs; blocks a GitHub write once", () => {
+  it("lets an internal comment through and records the unverified refs; blocks a GitHub write once", async () => {
     const { db, ticket } = ledger();
     const { fire } = harness(db);
     const event = { type: "tool_call", toolCallId: "1", toolName: "add_comment", input: { ticket_id: ticket, content: "见 src/auth/session.ts:3" } };
-    expect(fire("tool_call", event)).toBeUndefined();
+    expect(await fire("tool_call", event)).toBeUndefined();
     expect(db.prepare("SELECT payload FROM activities WHERE item_id=? AND kind='decision'").all(ticket).map((row: any) => JSON.parse(row.payload)))
       .toEqual([{ decision: "code_refs_sent_unverified", tool: "add_comment", refs: ["src/auth/session.ts:3"] }]);
     const review = {
@@ -131,60 +131,60 @@ describe("the credibility extension", () => {
         arguments: { owner: "acme", repo: "demo-repo", body: "总评", comments: [{ path: "src/auth/session.ts", line: 3, body: "x" }] },
       },
     };
-    expect(fire("tool_call", review)).toMatchObject({ block: true, reason: expect.stringContaining("原样再调用一次") });
-    expect(fire("tool_call", review)).toBeUndefined();
+    expect(await fire("tool_call", review)).toMatchObject({ block: true, reason: expect.stringContaining("原样再调用一次") });
+    expect(await fire("tool_call", review)).toBeUndefined();
   });
 
-  it("does not check what a SourceQuote locates, nor paths the user wrote in this turn", () => {
+  it("does not check what a SourceQuote locates, nor paths the user wrote in this turn", async () => {
     const { db } = ledger();
     const { fire } = harness(db);
-    expect(fire("tool_call", {
+    expect(await fire("tool_call", {
       type: "tool_call", toolCallId: "q", toolName: "render_ui",
       input: { root: "q", fallback_text: "见原文", nodes: [{ id: "q", type: "SourceQuote", props: { ticket: 1, source: "body", contains: "src/pr-only.ts:9 有问题" } }] },
     })).toBeUndefined();
-    fire("before_agent_start", { prompt: "src/auth/session.ts 还在不在？" });
-    fire("message_end", { message: { role: "assistant", content: "src/auth/session.ts 不存在。" } });
-    expect(fire("agent_before_settle", { outcome: "completed", context: { canContinue: false } })).toBeUndefined();
+    await fire("before_agent_start", { prompt: "src/auth/session.ts 还在不在？" });
+    await fire("message_end", { message: { role: "assistant", content: "src/auth/session.ts 不存在。" } });
+    expect(await fire("agent_before_settle", { outcome: "completed", context: { canContinue: false } })).toBeUndefined();
   });
 
   // 2026-10-19 发布评审：没有相关工单时，没有登记的仓库里的相对路径以前被算成「不存在」。
-  it("does not block a reference when no related ticket or repository says where to look", () => {
+  it("does not block a reference when no related ticket or repository says where to look", async () => {
     const { db, ticket } = ledger();
     const { fire } = harness(db);
-    expect(fire("tool_call", {
+    expect(await fire("tool_call", {
       type: "tool_call", toolCallId: "n", toolName: "notify_user", input: { title: "别的仓库的 src/other/repo.ts 有问题" },
     })).toBeUndefined();
-    expect(fire("tool_call", {
+    expect(await fire("tool_call", {
       type: "tool_call", toolCallId: "t", toolName: "notify_user", input: { title: "#" + ticket + " 的 src/other/repo.ts 有问题" },
     })).toBeUndefined();
   });
 
-  it("records successful evidence reads and clears them when the run settles", () => {
+  it("records successful evidence reads and clears them when the run settles", async () => {
     const { db } = ledger();
     const { fire, evidence } = harness(db);
-    fire("tool_execution_start", { toolCallId: "a", toolName: "read", args: { path: "/r/src/a.ts" } });
-    fire("tool_execution_end", { toolCallId: "a", toolName: "read", result: {}, isError: false });
-    fire("tool_execution_start", { toolCallId: "b", toolName: "read", args: { path: "/r/missing.ts" } });
-    fire("tool_execution_end", { toolCallId: "b", toolName: "read", result: {}, isError: true });
+    await fire("tool_execution_start", { toolCallId: "a", toolName: "read", args: { path: "/r/src/a.ts" } });
+    await fire("tool_execution_end", { toolCallId: "a", toolName: "read", result: {}, isError: false });
+    await fire("tool_execution_start", { toolCallId: "b", toolName: "read", args: { path: "/r/missing.ts" } });
+    await fire("tool_execution_end", { toolCallId: "b", toolName: "read", result: {}, isError: true });
     expect(evidence.list()).toEqual([{ tool: "read", target: "/r/src/a.ts" }]);
-    fire("agent_settled", { aborted: false });
+    await fire("agent_settled", { aborted: false });
     expect(evidence.list()).toEqual([]);
   });
 
-  it("asks for one correction of a reply per run, in the tickets the run worked on", () => {
+  it("asks for one correction of a reply per run, in the tickets the run worked on", async () => {
     const { db, ticket } = ledger();
     const { fire } = harness(db);
-    fire("message_end", { message: { role: "assistant", content: [{ type: "text", text: "问题在 src/auth/session.ts:3" }] } });
+    await fire("message_end", { message: { role: "assistant", content: [{ type: "text", text: "问题在 src/auth/session.ts:3" }] } });
     // 这一轮没有碰过任何工单：只有登记的仓库兜底，不要求更正。
-    expect(fire("agent_before_settle", { outcome: "completed", context: { canContinue: false } })).toBeUndefined();
-    fire("tool_execution_start", { toolCallId: "g", toolName: "get_ticket_status", args: { ticket_id: ticket } });
-    const first = fire("agent_before_settle", { outcome: "completed", context: { canContinue: false } });
+    expect(await fire("agent_before_settle", { outcome: "completed", context: { canContinue: false } })).toBeUndefined();
+    await fire("tool_execution_start", { toolCallId: "g", toolName: "get_ticket_status", args: { ticket_id: ticket } });
+    const first = await fire("agent_before_settle", { outcome: "completed", context: { canContinue: false } });
     expect(first).toMatchObject({ continue: true, entries: [{ type: "custom_message", display: false }] });
     expect(first.entries[0].content).toContain("`src/auth/session.ts:3`：文件不存在");
-    expect(fire("agent_before_settle", { outcome: "completed", context: { canContinue: false } })).toBeUndefined();
-    fire("agent_settled", { aborted: false });
-    fire("message_end", { message: { role: "assistant", content: "NO_REPLY" } });
-    expect(fire("agent_before_settle", { outcome: "completed", context: { canContinue: false } })).toBeUndefined();
+    expect(await fire("agent_before_settle", { outcome: "completed", context: { canContinue: false } })).toBeUndefined();
+    await fire("agent_settled", { aborted: false });
+    await fire("message_end", { message: { role: "assistant", content: "NO_REPLY" } });
+    expect(await fire("agent_before_settle", { outcome: "completed", context: { canContinue: false } })).toBeUndefined();
   });
 });
 

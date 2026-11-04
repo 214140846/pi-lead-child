@@ -13,7 +13,9 @@ export interface AgentToolBridge {
   close(): Promise<void>;
 }
 
+// 调用方（子 agent）可能等不及先断开：这时不写，写进关掉的 socket 会出 EPIPE。
 function send(socket: Socket, message: unknown): void {
+  if (socket.destroyed || !socket.writable) return;
   socket.write(`${JSON.stringify(message)}\n`);
 }
 
@@ -87,6 +89,9 @@ export async function startAgentToolBridge(args: {
     checkpointPolicy: loadCheckpointPolicyConfig(args.env ?? process.env),
   });
   const server: Server = createServer((socket) => {
+    // 对方断开时写回答会出 EPIPE。没有 error 监听时它是未处理的 error 事件，整个 daemon 退出
+    // （2026-11-03 daemon 62624：负载高、回答慢，子 agent 先断开了）。断开的调用方不再需要回答。
+    socket.on("error", () => { socket.destroy(); });
     attachJsonlReader(socket, (line) => {
       if (!line.trim()) return;
       let request: any;

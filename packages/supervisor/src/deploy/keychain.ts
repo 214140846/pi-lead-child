@@ -1,5 +1,8 @@
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { userInfo } from "node:os";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
 
 // 这些 key 会进 process.env，child 都能拿到。只给 daemon 用的 key（例如决策模型的 TYPESAFE_API_KEY）不放这里：
 // daemon 用 readKeychainSecret 直接读（apps/daemon 的 memory-controller.ts）。
@@ -39,6 +42,25 @@ export function readKeychainSecret(key: string): string | null {
       "-w",
     ], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 3_000 }).trim();
     return value || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * readKeychainSecret 的异步版：security 在子进程里跑，不占住 daemon 的主线程。daemon 的 Keychain 缓存过期以后用它在后台刷新
+ * （2026-11-03）。同样最多等 3 秒；没有时、超时时返回 null。
+ */
+export async function readKeychainSecretAsync(key: string): Promise<string | null> {
+  if (process.platform !== "darwin") return null;
+  try {
+    const { stdout } = await execFileAsync("security", [
+      "find-generic-password",
+      "-a", userInfo().username,
+      "-s", keychainServiceName(key),
+      "-w",
+    ], { encoding: "utf8", timeout: 3_000 });
+    return stdout.trim() || null;
   } catch {
     return null;
   }

@@ -261,7 +261,7 @@ describe("accept and merge", () => {
     const workspaceId = (await ticketDelivery(db, itemId)).workspace!.workspaceId;
     let accepted = 0;
     const pending = mergeDelivery(db, itemId, { accept: () => { accepted++; }, reason: "r" });
-    integrateIsolatedWorkspace(db, workspaceId, { actor: "lead", reason: "用户在对话里说合并" });
+    await integrateIsolatedWorkspace(db, workspaceId, { actor: "lead", reason: "用户在对话里说合并" });
     await expect(pending).rejects.toMatchObject({ code: "unavailable", message: "改动已经合并。" });
 
     const reworked = deliveredTicketIn(join(dir, "repo2"));

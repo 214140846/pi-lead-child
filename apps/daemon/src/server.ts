@@ -69,7 +69,7 @@ import {
 import { createTicketReplyActionsJudge, type TicketReplyActionsJudge } from "./ticket-reply-actions.js";
 import {
   acceptRunningChildren, CHANNEL_TASK_CALLBACK, conversationWorkspaceChecksSettled, deliverySnapshotsSettled, detachRunningChildren, effectiveRunPurpose,
-  killIdleChildren, liveChildren, UiActionError, type DecisionModelCredentials, type FollowUpEntry, type InstallFetch, type LeadModelService, type UiActionServices,
+  killIdleChildren, liveChildren, setGitFactsLog, UiActionError, type DecisionModelCredentials, type FollowUpEntry, type InstallFetch, type LeadModelService, type UiActionServices,
 } from "@pi-lead-child/engine";
 import { attachJsonlReader, listenOwnerOnly } from "@pi-lead-child/runtime";
 import { appendBody, getItem, transition } from "@pi-lead-child/store";
@@ -95,9 +95,9 @@ import { createScheduler } from "@pi-lead-child/engine";
 import {
   createWatchRunner, createWidgetSourceRunner, sandboxedBashOperations, sandboxWatchCommand, sandboxWidgetCommand,
 } from "@pi-lead-child/engine";
-import { createWatchLightTask, leadSandboxPolicy, leadScratchDir } from "@pi-lead-child/lead";
+import { createWatchLightTask, leadSandboxPolicyAsync, leadScratchDir } from "@pi-lead-child/lead";
 import { watchAgentChoice } from "@pi-lead-child/store";
-import { envConfigPath, loadPlcConfig, localIso, projectRoot } from "@pi-lead-child/core";
+import { envConfigPath, loadPlcConfig, localIso, projectRoot, warmSandboxTrustBundle } from "@pi-lead-child/core";
 import { createConfigWatch } from "./config-watch.js";
 import {
   contextUsageRatio, createLeadModelFailover, createTurnUserActions, nextWeeklyReset, PRECIPITATE_PROMPT, PRECIPITATE_RATIO,
@@ -139,7 +139,7 @@ import {
 } from "@pi-lead-child/gateway";
 import {
   getAishAuthFailure, loadAishConn, loadLastAishOrigin, markAishAuthFailed, saveAishConn, saveLastAishOrigin,
-  upsertAishBinding,
+  setSlowStatementLog, upsertAishBinding,
 } from "@pi-lead-child/store";
 import { leadDisplayName } from "@pi-lead-child/store";
 import { listRecordedOwnerActions, maxEventSeq } from "@pi-lead-child/store";
@@ -190,7 +190,8 @@ import { repairTerminalHandoffFailures } from "@pi-lead-child/engine";
 import { repairStoppedRunCrashCheckpoints } from "@pi-lead-child/engine";
 import { repairOutcomeSnapshots } from "@pi-lead-child/engine";
 import { reregisterFinishedRuns } from "@pi-lead-child/engine";
-import { claimInstanceLock, daemonLockPath, readKeychainSecret, supervisorRequest } from "@pi-lead-child/supervisor";
+import { claimInstanceLock, daemonLockPath, hasReleaseManifest, readKeychainSecret, readKeychainSecretAsync, supervisorRequest } from "@pi-lead-child/supervisor";
+import { loadOrCreateShellPairingKey, loopbackAutoPairMode } from "./shell-pairing.js";
 import type { InstanceLock, MaintenanceRequest } from "@pi-lead-child/supervisor";
 import {
   ConnectionError,
@@ -224,10 +225,9 @@ const PAUSED_TICKET_TURN_ERROR = "Run 已暂停，这一轮回答没有完成。
 // （而不是靠正则匹配 message——message 是人话文案，不应作为控制流契约）。
 export class DaemonAlreadyRunningError extends Error {}
 
+// 开发机上的回环自动配对（不带桌面版的口令）。发布模式见 shell-pairing.ts 的 loopbackAutoPairMode。
 export function loopbackAutoPairEnabled(env: Record<string, string | undefined> = process.env): boolean {
-  const explicit = env.PLC_ALLOW_LOOPBACK_AUTO_PAIR?.trim().toLowerCase();
-  if (explicit !== undefined) return ["1", "true", "yes", "on"].includes(explicit);
-  return env.PLC_DEV === "1";
+  return loopbackAutoPairMode(env, false) !== "off";
 }
 
 export function childRuntimeControlEvent(
@@ -558,6 +558,8 @@ export interface DaemonOpts {
   aish?: { url: string; token: string; timeouts?: Partial<AishTimeouts> };
   // paired 平面端口。缺省读 PLC_GATEWAY_PORT，没配置时用 47130（被占用时退回随机端口）。网关总是开着。
   gatewayPort?: number;
+  // 按发布模式启动（测试用）。缺省看运行包根目录有没有 release.json。
+  releaseMode?: boolean;
   webRoot?: string; // paired 平面在 / 下提供的 companion web UI（缺省 dist/web，由 npm run build:web 生成）
   artifactRepairOptions?: ArtifactRepairOptions;
   // 没有客户端连着时的桌面通知（blocker、兜底通知、审批、aish 配对失效）。缺省见 defaultDesktopNotifier。
@@ -632,6 +634,8 @@ function systemTurnSpokenText(buffer: SystemTurnBuffer): string {
 
 type DaemonHandle = {
   sockPath: string; close: () => Promise<void>; pairedPort: number;
+  // 要退出进程时用它（SIGTERM、SIGINT）：close 有上限，返回它有没有做完。之后调用方退出进程。
+  closeForExit: () => Promise<boolean>;
   // 在正在运行的 Lead 会话里重新加载扩展（例如 SoL-Pi 刚装好），不重启 daemon。Lead 空闲时马上做，
   // 正在跑一轮时等这一轮结束。
   reloadLeadExtensions: (reason: string) => void;
@@ -2433,9 +2437,34 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
   }
   const testDaemon = opts.sessionFactory !== undefined;
   let connectionsGatewayPort = 0;
+  // 读 Keychain 每次起一个 security 进程，SmartModel 每次调用都要决策模型的 key，连接的 OAuth 也要读 client secret。
+  // 所以缓存起来：过了一分钟照样先用缓存的值，同时在后台异步重读（用户在 Keychain 里换了 key，一两分钟内生效）。
+  // 只有一个名字第一次用到时同步读一次（最多 3 秒）。以前每分钟在请求路径上同步读一次（2026-11-03）。
+  const keychainCache = new Map<string, { value: string | null; at: number }>();
+  const keychainRefreshing = new Set<string>();
+  const cachedKeychainSecret = (name: string): string | null => {
+    const hit = keychainCache.get(name);
+    if (hit) {
+      if (Date.now() - hit.at >= 60_000 && !keychainRefreshing.has(name)) {
+        keychainRefreshing.add(name);
+        void readKeychainSecretAsync(name)
+          .then((value) => { keychainCache.set(name, { value, at: Date.now() }); })
+          .finally(() => { keychainRefreshing.delete(name); });
+      }
+      return hit.value;
+    }
+    const value = readKeychainSecret(name);
+    keychainCache.set(name, { value, at: Date.now() });
+    return value;
+  };
+
   // 保险库：连接的令牌和记忆的密钥都用它加密（packages/connections 的 vault）。hindsight-main 用同一个密钥。
   const vault = lazyVault(opts.connections?.keySource
     ?? (testDaemon ? fileKeySource(join(opts.dataDir, "connections.key")) : defaultKeySource(join(opts.dataDir, "connections.key"))));
+  // 在后台先读好密钥：第一次用到连接时不用在请求里同步读 Keychain。
+  void vault.preload();
+  // 沙箱命令要的系统根证书也在后台先导出（core 的 sandbox-policy.ts）：第一次跑沙箱命令时不用同步跑 security。
+  void warmSandboxTrustBundle();
   // 设置页存的服务商 key（设置 → 模型）。要在建记忆服务和 Lead 的会话之前接上：它们启动时就注册服务商、拉目录（工单 #181）。
   connectLeadProviderKeys(db, vault, log);
   const connections = new ConnectionHub({
@@ -2445,7 +2474,7 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
     redirectUri: () => `http://127.0.0.1:${connectionsGatewayPort}/oauth/callback`,
     ...(opts.relaxConnectionWrites ? { newConnectionWritePolicy: "direct" as const } : {}),
     ...(opts.connections?.fetch ? { fetch: opts.connections.fetch } : {}),
-    secrets: { get: (name) => daemonOnlySecrets.get(name) ?? (testDaemon ? null : readKeychainSecret(name)) },
+    secrets: { get: (name) => daemonOnlySecrets.get(name) ?? (testDaemon ? null : cachedKeychainSecret(name)) },
     gh: opts.connections?.gh ?? (testDaemon ? { token: async () => null } : ghCliTokenSource()),
     ...(testDaemon && !opts.connections?.gh ? { ghInstalled: () => false } : {}),
     log,
@@ -2614,17 +2643,6 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
       payload: { missing: removed.slice(0, 20), count: removed.length },
     });
     log(`[ledger] ${removed.length} guard trigger(s) were removed; reinstalled`);
-  };
-
-  // 读 Keychain 每次起一个 security 进程，SmartModel 每次调用都要决策模型的 key。所以缓存一分钟：
-  // 用户在 Keychain 里换了 key，一分钟内生效。
-  const keychainCache = new Map<string, { value: string | null; at: number }>();
-  const cachedKeychainSecret = (name: string): string | null => {
-    const hit = keychainCache.get(name);
-    if (hit && Date.now() - hit.at < 60_000) return hit.value;
-    const value = readKeychainSecret(name);
-    keychainCache.set(name, { value, at: Date.now() });
-    return value;
   };
 
   // Lead 的记忆设置和 Hindsight 服务（设置页「Lead → 记忆 / 模型」）。决策模型的 key 不在保险库里时，
@@ -3208,10 +3226,14 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
     // 改日程的 Lead 工具自己发刷新事件（经过操作层的由操作层发），这里不再按工具名另发一份（ui-action-parity P04）。
     if (event.type === "message_end") {
       if (event.message?.role === "assistant") {
-        if (event.message.stopReason === "aborted" && userStopRequested) {
+        // 中断时 Lead 常在跑工具：pi 等工具做完，再开始下一次模型调用，准备请求那一步（取凭证）看到已经中断就抛
+        // "This operation was aborted"，pi-ai 的 lazyStream 把准备阶段的失败一律记成 stopReason "error"，请求根本没发到上游
+        // （2026-11-03：每次红线都记成模型失败，Lead 被判停摆，积压的事推给了用户）。daemon 自己要求的中断两种都认。
+        const stoppedByAbort = event.message.stopReason === "aborted" || event.message.stopReason === "error";
+        if (stoppedByAbort && userStopRequested) {
           // 用户用 /stop 停下的：不是错误，runTurnNow 按停下收尾。
           log("lead reply stopped by /stop");
-        } else if (event.message.stopReason === "aborted" && (redLinePhase() === "aborting" || redLinePhase() === "closing")) {
+        } else if (stoppedByAbort && (redLinePhase() === "aborting" || redLinePhase() === "closing")) {
           // 红线停下的（lead 的 red-line.ts）：不是失败，这一轮接着交接或者就此结束。
           log("lead red line: the running reply was stopped");
         } else if (event.message.stopReason === "error" || event.message.stopReason === "aborted") {
@@ -3858,7 +3880,15 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
         if (!userStopRequested) await continueAfterRedLine();
       } catch (error) {
         // 用户用 /stop 停下时，pi 也可能以错误结束这次调用：一样按停下收尾。
-        if (!userStopRequested) throw error;
+        // 红线中断时也一样：接着在同一轮里交接（2026-11-03 09:33 那一次中断以后整轮报错，没有交接）。
+        if (userStopRequested) {
+          // 按停下收尾。
+        } else if (redLinePhase() === "aborting" && !restartAbort) {
+          log(`lead red line: the stopped call ended with an error (${(error as any)?.message ?? String(error)}); handing off`);
+          await continueAfterRedLine();
+        } else {
+          throw error;
+        }
       }
       // 排空中断了这一轮：pi 不一定发出 aborted 的 message_end（例如中断时工具正在执行），按被打断收尾。
       if (restartAbort) throw new Error(LEAD_RESTART_INTERRUPTED_ERROR);
@@ -4238,9 +4268,10 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
     return times.length ? Math.min(...times) : null;
   });
   // 工作区 TTL 清扫不跟着通知轮询每一轮都跑：TTL 是 7 天和 14 天，用不着 3 秒一次，
-  // 而且清扫是同步的，耗时随工作区数量增长。启动后的第一轮清扫一次，之后每 PLC_WORKSPACE_SWEEP_MS（缺省 1 小时）一次。
+  // 而且耗时随工作区数量增长（git 和删目录在后台异步做，不占住这一拍）。启动后的第一轮清扫一次，之后每 PLC_WORKSPACE_SWEEP_MS（缺省 1 小时）一次。
   const configuredSweepMs = Number(process.env.PLC_WORKSPACE_SWEEP_MS);
   const workspaceSweepMs = Number.isFinite(configuredSweepMs) && configuredSweepMs > 0 ? configuredSweepMs : 60 * 60_000;
+  let workspaceSweepRunning = false;
   let lastWorkspaceSweepAt: number | null = null;
   // 清扫释放不了的工作区：每次清扫都会再试，每个工作区只记一行日志。
   // 不按错误文本去重：快照的临时文件名是随机的，同一个失败每一次的文本都不一样。
@@ -4470,18 +4501,24 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
     pollStep("interventions", () => coordinator.expireInterventions(new Date()));
     pollStep("workspace-sweep", () => {
       const sweepNow = Date.now();
+      // 扫描在后台跑（git 和删目录都是异步的），这一拍不等它；上一次还没跑完时不开新的。
+      if (workspaceSweepRunning) return;
       if (lastWorkspaceSweepAt === null || sweepNow - lastWorkspaceSweepAt >= workspaceSweepMs) {
         lastWorkspaceSweepAt = sweepNow;
-        const workspaceSweep = sweepWorkspaces(db, new Date(sweepNow));
-        if (workspaceSweep.released) log(`workspace TTL sweep released ${workspaceSweep.released} workspace(s)`);
-        if (workspaceSweep.cleaned) log(`workspace sweep removed ${workspaceSweep.cleaned} worktree(s) or checkout(s)`);
-        for (const failure of workspaceSweep.failed) {
-          // 孤儿目录没有工作区编号（0）：按错误文字去重。
-          const key = failure.workspaceId ? String(failure.workspaceId) : failure.error;
-          if (loggedSweepFailures.has(key)) continue;
-          loggedSweepFailures.add(key);
-          log(`workspace sweep could not handle ${failure.workspaceId ? `workspace #${failure.workspaceId}` : "an orphan"}: ${failure.error}`);
-        }
+        workspaceSweepRunning = true;
+        void sweepWorkspaces(db, new Date(sweepNow)).then((workspaceSweep) => {
+          if (workspaceSweep.released) log(`workspace TTL sweep released ${workspaceSweep.released} workspace(s)`);
+          if (workspaceSweep.cleaned) log(`workspace sweep removed ${workspaceSweep.cleaned} worktree(s) or checkout(s)`);
+          for (const failure of workspaceSweep.failed) {
+            // 孤儿目录没有工作区编号（0）：按错误文字去重。
+            const key = failure.workspaceId ? String(failure.workspaceId) : failure.error;
+            if (loggedSweepFailures.has(key)) continue;
+            loggedSweepFailures.add(key);
+            log(`workspace sweep could not handle ${failure.workspaceId ? `workspace #${failure.workspaceId}` : "an orphan"}: ${failure.error}`);
+          }
+        }, (error: unknown) => {
+          log(`workspace sweep failed: ${error instanceof Error ? error.message : String(error)}`);
+        }).finally(() => { workspaceSweepRunning = false; });
       }
     });
     pollStep("auto-pull-request", () => {
@@ -5093,7 +5130,7 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
   const leadScratch = leadScratchDir(opts.dataDir);
   mkdirSync(leadScratch, { recursive: true, mode: 0o700 });
   const watchRunner = createWatchRunner(db, {
-    runCommand: sandboxWatchCommand(sandboxedBashOperations(() => leadSandboxPolicy(db, opts.dataDir)), leadScratch),
+    runCommand: sandboxWatchCommand(sandboxedBashOperations(() => leadSandboxPolicyAsync(db, opts.dataDir)), leadScratch),
     startAgentCheck: (watch, task) => {
       const itemId = createWatchLightTask(db, { dataDir: opts.dataDir, watchId: watch.id, task, agent: watchAgentChoice(watch) });
       try {
@@ -5114,7 +5151,7 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
   tickWatches = () => { void watchRunner.tick(); };
   // 控件的数据源：命令在 Lead 的 bash 沙箱里跑（和后台检查同一个沙箱、同一个临时目录），不叫醒 Lead。
   // 操作层建、改数据源时也用它先跑一次（uiActionServices.widgetCommands）。
-  const widgetCommands = sandboxWidgetCommand(sandboxedBashOperations(() => leadSandboxPolicy(db, opts.dataDir)), leadScratch);
+  const widgetCommands = sandboxWidgetCommand(sandboxedBashOperations(() => leadSandboxPolicyAsync(db, opts.dataDir)), leadScratch);
   uiActionServices.widgetCommands = widgetCommands;
   const widgetSourceRunner = createWidgetSourceRunner(db, {
     runCommand: widgetCommands,
@@ -5131,6 +5168,10 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
   // spawnItemChild 也读它的缓存：已知会失败的目标改为排一个派发请求。
   const preflight = createRuntimePreflight(db, { runtime: (id) => childRuntimeAdapter(schedDeps, id), log });
   schedDeps.preflight = preflight;
+  // 没预热、只好同步跑 git 的路径记在日志里（engine 的 git-facts.ts），好把它们找出来改掉。
+  setGitFactsLog(log);
+  // 主线程上超过 200 毫秒的 SQL 记一行（store 的 setSlowStatementLog），看 busy_timeout 的同步等待有没有发生。
+  setSlowStatementLog(log, Number(process.env.PLC_SLOW_SQL_MS ?? 200));
   orchestrator = createOrchestrator(db, {
     reviewerRuntime: opts.childPi ? LOCAL_RUNTIME_ID : undefined,
     dataDir: opts.dataDir,
@@ -5141,6 +5182,8 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
     preflight,
     // 收尾中的 Run 还占着工单：manager 的 live 表，加上 Lead 工具看管、还没收完尾的 Run。
     itemBusy: (itemId) => liveChildren().has(itemId) || runningChildren().has(itemId),
+    // 认领前异步查好工作区的 git 事实：认领的事务里不再同步跑 git（2026-11-03 负载高时一次几秒，daemon 停住）。
+    asyncWorkspaceFacts: true,
     log,
     onDispatch: (claim) => { spawnClaimedItem(schedDeps, claim); },
   });
@@ -5259,14 +5302,22 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
   ticketSummaryOf = (id) => controlPlane.getItem(id)?.ticket;
   // 「Lead 动态」和横幅（工单 06）：digest、auto、interrupt 级的事件和常设指令的修改写进日志时，马上把变了的卡推出去
   // （spec D10：只显示的写入马上进会话，不进 Lead 的模型，不打断 Lead 正在写的回答）。
+  // 轮询（每 2 秒）只在「Lead 动态」的输入变了时重算（库里的触发器维护计数，别的进程写的也算；store 的
+  // leadActivityInputsVersion）。卡上按钮的可用性取决于各种对象的当前状态，不在计数里：每 30 秒整份重算一次兜底。
+  // 2026-11-04 以前每次轮询都整份重算，每分钟占主线程约 1.1 秒。
   const leadActivitySyncMs = Number(process.env.PLC_LEAD_ACTIVITY_SYNC_MS ?? 2_000);
+  const leadActivityFullSyncMs = Number(process.env.PLC_LEAD_ACTIVITY_FULL_SYNC_MS ?? 30_000);
   let lastLeadActivitySync = 0;
+  let lastFullLeadActivitySync = 0;
   let leadActivitySyncQueued = false;
   syncLeadActivity = (reason) => {
     const now = Date.now();
     if (reason === "poll" && now - lastLeadActivitySync < leadActivitySyncMs) return;
     lastLeadActivitySync = now;
-    const pushed = controlPlane.syncLeadActivity((event) => publishControlEvent(event));
+    const full = reason === "event" || now - lastFullLeadActivitySync >= leadActivityFullSyncMs;
+    const pushed = controlPlane.syncLeadActivity((event) => publishControlEvent(event), { ifChanged: !full });
+    if (pushed === null) return;
+    if (full) lastFullLeadActivitySync = now;
     if (pushed) log(`lead activity: pushed ${pushed} card update(s) (${reason})`);
   };
   const unsubscribeLeadActivity = subscribeCommittedEvents(db, (events) => {
@@ -5277,6 +5328,8 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
       pollStep("lead-activity", () => syncLeadActivity?.("event"));
     });
   });
+  // 桌面版的运行包（根目录有 release.json）缺省打开回环自动配对，但要带口令（shell-pairing.ts）。
+  const autoPairMode = loopbackAutoPairMode(process.env, opts.releaseMode ?? hasReleaseManifest(projectRoot()));
   const devLoopbackAutoPairOrigins = process.env.PLC_DEV === "1"
     ? ["http://localhost:8081", "http://127.0.0.1:8081"]
     : [];
@@ -5468,7 +5521,8 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
         port,
         host,
         ...(process.env.PLC_GATEWAY_HEARTBEAT_MS ? { heartbeatMs: Number(process.env.PLC_GATEWAY_HEARTBEAT_MS) } : {}),
-        allowLoopbackAutoPair: loopbackAutoPairEnabled() ? true : undefined,
+        allowLoopbackAutoPair: autoPairMode !== "off" ? true : undefined,
+        ...(autoPairMode === "shell_only" ? { loopbackAutoPairShellKey: loadOrCreateShellPairingKey(opts.dataDir) } : {}),
         loopbackAutoPairOrigins: loopbackAutoPairOrigins.length ? loopbackAutoPairOrigins : undefined,
         webRoot: opts.webRoot ?? defaultWebRoot(),
       }), gatewayPlan, log);
@@ -5536,7 +5590,7 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
         }
         case "shutdown": {
           sendTo(sock, { type: "response", id: cmd.id, success: true });
-          void close().then(() => process.exit(0));
+          void closeForExit().then(() => process.exit(0));
           break;
         }
         // 本机凭证交换：plc 在这里换一个 kind=cli 的网关凭证（CLI_CREDENTIAL_SCOPES，没有用户的决定），存进数据目录。
@@ -5684,23 +5738,57 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
     return closing;
   }
 
+  // 停机的上限（2026-11-03）：负载 35–90 时 close 在一步上卡了几分钟（07:26Z 5 分钟；10:19Z 4 分钟后被 SIGKILL），
+  // 进程闲着，只是在等。要退出进程的入口（SIGTERM、shutdown 命令）都走 closeForExit：close 超过 closeTimeoutMs
+  // 还没做完，就记下它卡在哪一步（closeStep），交给调用方退出。进程退出时，所有连接（网页、plc.sock）都断开。
+  // 结果和被 SIGKILL 一样，只是更早，而且日志里写明了原因：垫片启动的 child 照常运行，下一个 daemon 接管；
+  // 没收尾的 Run 由孤儿回收处理；SQLite 靠 WAL 保持一致。
+  // 缺省 60 秒：比排空 Lead（12 秒，中断后再等 3 秒）加一次工作区检查（30 秒）长，又让卡住的停机在一分钟左右结束。
+  const closeTimeoutMs = Number(process.env.PLC_DAEMON_CLOSE_TIMEOUT_MS ?? 60_000);
+  let closeStep = "starting the close";
+  let closingForExit: Promise<boolean> | null = null;
+
+  // 返回 close 有没有在时限内做完。
+  function closeForExit(): Promise<boolean> {
+    closingForExit ??= (async () => {
+      let timer: NodeJS.Timeout | undefined;
+      const finished = await Promise.race([
+        close().then(() => true, (error: any) => {
+          log(`daemon close failed while ${closeStep}: ${error?.message ?? String(error)}`);
+          return false;
+        }),
+        new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), closeTimeoutMs); }),
+      ]).finally(() => clearTimeout(timer));
+      if (finished !== null) return finished;
+      log(`daemon close did not finish within ${closeTimeoutMs} ms; it was ${closeStep}. `
+        + "Exiting now: shim-launched children keep running for the next daemon");
+      return false;
+    })();
+    return closingForExit;
+  }
+
   async function closeOnce(): Promise<void> {
     if (drainExpiry) clearTimeout(drainExpiry);
     leadQueueStopped = true;
     if (leadQueueTimer) clearNodeTimeout(leadQueueTimer);
     clearNodeInterval(poller); clearNodeInterval(wdTimer); clearNodeInterval(heartbeat); catalogWatch?.stop();
     // 关库之前等影子分诊这一批停下（正在进行的调用被取消），通道的传输停下、这一拍跑完。
+    closeStep = "stopping the shadow triage";
     await triageShadow?.stop();
     modelSettings.stop();
     // 先停子 agent 工单（被打断的记成失败交回 hub），再停通道：hub 停下时要等它们的回复决定做完，然后才关库。
+    closeStep = "stopping agent tasks";
     await agentTasks.close();
+    closeStep = "stopping the channels";
     await stopChannels(startedChannels);
+    closeStep = "stopping the channel memory";
     await channelMemory?.stop();
     network.stop();
     if (livenessTimer) clearTimeout(livenessTimer);
     clearNodeInterval(schedTimer); clearNodeInterval(orchestratorTimer);
     healthRecovery.stop();
     preflight.stop();
+    closeStep = "draining Lead";
     const drained = await drainLead(leadDrainMs);
     if (drained.interrupted) log("interrupted the running Lead turn; the next daemon continues it");
     unsubscribeEvents();
@@ -5709,17 +5797,24 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
     holdQueuedUserInputs();
     aishAdapter?.stop();
     if (agentConnectionHost() === connectionHost) setAgentConnectionHost(null);
+    closeStep = "closing the connections";
     await connections.close();
     // 正常停机不停止正在执行的 child（spec D7，工单 15）：垫片启动的 Run 分离出去，重启后的 daemon 接管它们。
-    // 空闲的 child 照旧中断。没有垫片的 child 仍然等它结束。
-    const detached = detachRunningChildren();
+    // 还在准备的 Run 不再等它准备完：它留在 starting，下一个 daemon 回收并重派它（engine 的 unlessShuttingDown）。
+    // 空闲的 child 照旧中断。没有垫片的 child 仍然等它结束（closeForExit 给这一步设了上限）。
+    const { detached, starting } = detachRunningChildren();
     if (detached) log(`detached ${detached} running child(ren); the next daemon adopts them`);
+    if (starting) log(`left ${starting} starting run(s) for the next daemon; it reclaims and dispatches them again`);
     killIdleChildren();
-    await Promise.allSettled([...runningChildren().values()]);
+    const settling = runningChildren();
+    closeStep = `waiting for ${settling.size} run(s) to settle (${[...settling.keys()].map((id) => `ticket #${id}`).join(", ")})`;
+    await Promise.allSettled([...settling.values()]);
     // 对话结束后的工作区检查在后台算（engine review-currency.ts），关库之前等它们算完。
     // 每个检查自己有时限（最多 30 秒）。
+    closeStep = "waiting for the conversation workspace checks";
     await conversationWorkspaceChecksSettled();
     // Run 结束后的交付快照（engine delivery-snapshot.ts）也在后台跑，关库之前等它们。每条 git 命令自己有时限。
+    closeStep = "waiting for the delivery snapshots";
     await deliverySnapshotsSettled();
     // 所有 Run 都已经分离或结束。同一进程里之后启动的 Run（例如测试）照常看管，宿主退出时照常停止。
     acceptRunningChildren();
@@ -5729,12 +5824,14 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
     if (currentTurn) await settledWithin(currentTurn, 500);
     // 先关网关（断开所有 WebSocket 客户端，包括从对外地址连进来的），再停对外地址的监听：
     // 反过来的话，对外地址的监听会等它的连接自己断开，停机就卡住了。
+    closeStep = "closing the gateway";
     await paired.close();
     await gatewayExposure?.stop();
     // server.close 会等待存量连接——必须先主动断开客户端，否则与等待关闭确认的 stop 客户端死锁
     for (const c of clients) c.destroy();
     clients.clear();
     senders.clear();
+    closeStep = "closing plc.sock";
     await new Promise<void>((r) => server.close(() => r()));
     if (existsSync(sockPath)) unlinkSync(sockPath);
     // 记忆同步读 notes，关库之前等它跑完。Hindsight 是独立的 launchd 任务，不跟着 daemon 停。
@@ -5742,17 +5839,20 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
     stopMemorySync();
     // 关机不等推完全部笔记：正在跑的同步在这一批之后停下，剩下的下次启动再推。
     memory.stop();
+    closeStep = "waiting for the memory sync";
     await memory.idle();
     // 回复按钮的判断写库：关库之前取消正在进行的，之后答完的轮次不再判断。
+    closeStep = "stopping the reply-action judge";
     await replyActionsJudge?.stop();
     runtimeSettings.close();
     db.close();
     ownership.release();
+    closeStep = "closed";
     log("daemon closed");
   }
 
   return {
-    sockPath, close, pairedPort: paired.port, reloadLeadExtensions, channels: channelHub, agentTasks,
+    sockPath, close, closeForExit, pairedPort: paired.port, reloadLeadExtensions, channels: channelHub, agentTasks,
     reloadChannelSource: (source) => startedChannels?.reloadChannelSource(source) ?? Promise.reject(new Error("没有接任何外部通道")),
   };
 }

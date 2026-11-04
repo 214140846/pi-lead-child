@@ -61,11 +61,12 @@ function kill(pid: number | undefined, child: { kill: (signal: NodeJS.Signals) =
  * pi bash 工具的执行函数：每条命令按 policy() 当时给出的范围包进沙箱。policy 每次调用重新取：Lead 能写的 worktree
  * 会变。沙箱不能用时命令失败，错误里写明原因。
  */
-export function sandboxedBashOperations(policy: () => SandboxPolicy): BashOperations {
+// policy 可以是异步的：要用的 git 目录和根证书先在子进程里查好（core 的 sandboxPolicyAsync）。
+export function sandboxedBashOperations(policy: () => SandboxPolicy | Promise<SandboxPolicy>): BashOperations {
   return {
     async exec(command, cwd, { onData, signal, timeout, env }) {
       if (!existsSync(cwd)) throw new Error(`工作目录不存在：${cwd}`);
-      const current = policy();
+      const current = await policy();
       const problem = await initSandbox(current);
       if (problem || !manager) {
         throw new Error(`${problem ?? "沙箱不能用"}。命令没有运行（没有沙箱时不跑命令）。换一条路：派子 agent，或者告诉用户。`);

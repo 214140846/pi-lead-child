@@ -34,7 +34,7 @@ describe("sandboxPolicy", () => {
     for (const path of [".ssh", ".aws", ".config/gh/hosts.yml", ".netrc", ".kube", ".config/acme"]) {
       expect(policy.denyRead).not.toContain(`${home}/${path}`);
     }
-    expect(policy.denyRead).toEqual(expect.arrayContaining(["/data/config.json", "/data/cli-credential.json", "/data/connections.key"]));
+    expect(policy.denyRead).toEqual(expect.arrayContaining(["/data/config.json", "/data/cli-credential.json", "/data/connections.key", "/data/shell-pairing.key"]));
     // 账本本身能读：Lead 排查问题要用。
     expect(policy.denyRead).not.toContain("/data/plc.db");
   });
@@ -214,5 +214,28 @@ describe.runIf(process.platform === "darwin")("sandboxTrustEnv", () => {
     expect(env).toMatchObject({ SSL_CERT_FILE: bundle, REQUESTS_CA_BUNDLE: bundle, GIT_SSL_CAINFO: bundle, NODE_EXTRA_CA_CERTS: bundle });
     expect(env).not.toHaveProperty("CURL_CA_BUNDLE");
     expect(sandboxEnv({ PATH: "/usr/bin" }).SSL_CERT_FILE).toBe(bundle);
+  });
+});
+
+// 2026-11-03：构建沙箱策略时，第一次见到的目录在 daemon 的主线程上同步跑 git（gitDirsOf，最多 5 秒）。现在先异步预热。
+describe("sandboxPolicyAsync", () => {
+  it("looks the git directories up in the background, so building the policy runs no git", async () => {
+    const { execFileSync } = await import("node:child_process");
+    const { realpathSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const { tempDir } = await import("../testing/index.js");
+    const { gitDirsOf, sandboxPolicyAsync } = await import("../src/sandbox-policy.js");
+    const repo = join(tempDir("plc-sandbox-git-"), "repo");
+    execFileSync("git", ["init", "-q", repo]);
+    const policy = await sandboxPolicyAsync({ role: "lead", writable: [repo], home: "/Users/someone", env: {} });
+    const path = process.env.PATH;
+    process.env.PATH = "";
+    try {
+      // git 找不到时还能拿到，说明用的是预热好的缓存，没有再同步跑 git。
+      expect(gitDirsOf(repo)?.commonDir).toBe(join(realpathSync(repo), ".git"));
+    } finally {
+      process.env.PATH = path;
+    }
+    expect(policy.allowWrite).toContain(join(realpathSync(repo), ".git"));
   });
 });

@@ -327,6 +327,54 @@ describe("pushing projection changes", () => {
     expect(closed).toMatchObject({ interrupt: { seq: alarm.seq, acknowledgedAt: expect.any(String) } });
     expect(closed.entityVersion as number).toBeGreaterThan(shown.entityVersion as number);
   });
+
+  // 2026-11-04：daemon 每 2 秒的轮询以前每次都整份重算（每分钟占主线程约 1.1 秒）。现在输入没变时不重算，
+  // 变了的（处置原地改写、界面语言、别的连接写进来的事件）照样在下一次轮询推出去。
+  it("skips the rebuild on a poll when nothing it reads has changed", () => {
+    const path = join(tempDir("plc-lead-activity-inputs-"), "plc.db");
+    db = openDb(path);
+    const itemId = createItem(db, { title: "迁移", brief: "b", createdBy: "lead" });
+    const old = attention(itemId, "启动之前就有的");
+    const publisher = createLeadActivityPublisher(db);
+    const sink = collect();
+    expect(publisher.sync(sink.publish)).toBe(0);
+    expect(publisher.sync(sink.publish, { ifChanged: true })).toBeNull();
+
+    // 不进「Lead 动态」的事件不算变化。
+    append({
+      source: "ticket", kind: "stage.changed", entityKey: `ticket:${itemId}`, level: "record",
+      payload: { itemId, itemKind: "task", from: "ready", to: "active", actor: "system", reason: "派发" },
+    });
+    expect(publisher.sync(sink.publish, { ifChanged: true })).toBeNull();
+
+    // 处置原地改写，没有新事件。
+    recordInboxDisposition(db, [old], { disposition: "no_action", reason: "已经过时" });
+    expect(publisher.sync(sink.publish, { ifChanged: true })).toBe(1);
+    expect(sink.pushed.at(-1)!.payload).toMatchObject({ card: { state: "handled", lead: { reason: "已经过时" } } });
+    expect(publisher.sync(sink.publish, { ifChanged: true })).toBeNull();
+
+    // 界面语言在 kv 里：卡上的说明跟着换。
+    updateDesignPreferences(db, { request: { locale: "zh" }, caller: { kind: "user" } });
+    expect(publisher.sync(sink.publish, { ifChanged: true })).not.toBeNull();
+
+    // 别的连接（child 的工具调用直接写库）写进来的事件，进程内收不到通知，计数照样变。
+    const other = openDb(path);
+    let otherItem: number;
+    try {
+      otherItem = createItem(other, { title: "文档", brief: "b", createdBy: "lead" });
+      addInbox(other, { itemId: otherItem, severity: "attention", source: "structural", summary: "文档写好了" });
+    } finally {
+      other.close();
+    }
+    expect(publisher.sync(sink.publish, { ifChanged: true })).toBe(1);
+    expect(sink.pushed.at(-1)!.payload).toMatchObject({ entityKey: `ticket:${otherItem}` });
+  });
+
+  it("finds the latest events of a level through an index, not by scanning the log", () => {
+    const plan = db.prepare("EXPLAIN QUERY PLAN SELECT * FROM events WHERE seq > ? AND level = 'interrupt' ORDER BY seq DESC LIMIT 50")
+      .all(0) as Array<{ detail: string }>;
+    expect(plan.map((row) => row.detail).join("\n")).toContain("events_level");
+  });
 });
 
 describe("HTTP", () => {

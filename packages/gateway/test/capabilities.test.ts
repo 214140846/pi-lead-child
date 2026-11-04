@@ -13,7 +13,34 @@ import { createItem } from "@pi-lead-child/store";
 import { markCapabilityDeployed } from "@pi-lead-child/store";
 
 describe("capability lifecycle", () => {
-  it("copies immutable assets and activates a safe project capability after owned evaluation", () => {
+  // 回归 2026-11-03：评估脚本在 daemon 的主线程上同步跑（最长 30 秒），这期间 daemon 什么都做不了。
+  it("keeps the event loop running while the evaluator runs", async () => {
+    const dir = tempDir("plc-capability-slow-");
+    const db = openDb(join(dir, "plc.db"));
+    const projectId = createProject(db, { name: "returns", createdBy: "lead" });
+    const itemId = createItem(db, { title: "failure", brief: "b", createdBy: "lead", project: "returns", projectId });
+    const service = createLearningService(db, { dataDir: dir, threshold: 1 });
+    const captured = service.captureFailure({ projectId, itemId, kind: "review", errorCode: "TEST_FAIL", summary: "regression" });
+    const sourceDir = join(dir, "source");
+    mkdirSync(sourceDir);
+    writeFileSync(join(sourceDir, "SKILL.md"), "# Skill\n");
+    writeFileSync(join(sourceDir, "eval.mjs"), "setTimeout(() => process.exit(0), 1000);\n");
+    const capability = await service.registerCapability({
+      candidateId: captured.candidate.id, type: "skill", name: "Slow", slug: "slow", summary: "s",
+      assetPath: join(sourceDir, "SKILL.md"), evaluatorPath: join(sourceDir, "eval.mjs"),
+    });
+    let ticks = 0;
+    const timer = setInterval(() => { ticks += 1; }, 50);
+    try {
+      expect((await service.evaluateCapability(capability.id)).outcome).toBe("passed");
+    } finally {
+      clearInterval(timer);
+    }
+    // 脚本跑了 1 秒：主线程没被占住时，50 毫秒一次的定时器这期间跑了十几次。
+    expect(ticks).toBeGreaterThanOrEqual(10);
+  });
+
+  it("copies immutable assets and activates a safe project capability after owned evaluation", async () => {
     const dir = tempDir("plc-capability-");
     const db = openDb(join(dir, "plc.db"));
     const projectId = createProject(db, { name: "returns", createdBy: "lead" });
@@ -31,7 +58,7 @@ describe("capability lifecycle", () => {
     writeFileSync(asset, "# Returns regression skill\nRun the focused test first.\n");
     writeFileSync(evaluator, "process.exit(0);\n");
 
-    const capability = service.registerCapability({
+    const capability = await service.registerCapability({
       candidateId: captured.candidate.id,
       type: "skill",
       name: "Returns regression guard",
@@ -40,7 +67,7 @@ describe("capability lifecycle", () => {
       assetPath: asset,
       evaluatorPath: evaluator,
     });
-    const run = service.evaluateCapability(capability.id);
+    const run = await service.evaluateCapability(capability.id);
     expect(run.outcome).toBe("passed");
     expect(service.getCapability(capability.id)).toMatchObject({
       status: "active",
@@ -53,7 +80,7 @@ describe("capability lifecycle", () => {
     expect(service.renderActiveCapabilities(projectId)).toContain("returns-regression-guard");
 
     writeFileSync(service.getCapability(capability.id)!.asset_path!, "tampered\n");
-    expect(() => service.evaluateCapability(capability.id)).toThrow(/hash mismatch/i);
+    await expect(service.evaluateCapability(capability.id)).rejects.toThrow(/hash mismatch/i);
   });
 
   it.each([
@@ -61,7 +88,7 @@ describe("capability lifecycle", () => {
     { project: true, type: "tool", label: "project executable tool" },
     { project: true, type: "network_action", label: "project network action" },
     { project: true, type: "policy_hook", label: "project policy hook" },
-  ])("keeps $label evaluating after a passing evaluator", ({ project, type }) => {
+  ])("keeps $label evaluating after a passing evaluator", async ({ project, type }) => {
     const dir = tempDir("plc-capability-gate-");
     const db = openDb(join(dir, "plc.db"));
     const projectId = project ? createProject(db, { name: `project-${type}`, createdBy: "lead" }) : undefined;
@@ -76,7 +103,7 @@ describe("capability lifecycle", () => {
     writeFileSync(asset, `# ${type}\n`);
     writeFileSync(evaluator, "process.exit(0);\n");
 
-    const capability = service.registerCapability({
+    const capability = await service.registerCapability({
       candidateId: captured.candidate.id,
       type,
       name: type,
@@ -85,7 +112,7 @@ describe("capability lifecycle", () => {
       assetPath: asset,
       evaluatorPath: evaluator,
     });
-    const run = service.evaluateCapability(capability.id);
+    const run = await service.evaluateCapability(capability.id);
 
     expect(run.outcome).toBe("passed");
     expect(service.getCapability(capability.id)).toMatchObject({
@@ -97,7 +124,7 @@ describe("capability lifecycle", () => {
       .get(captured.candidate.id) as any).status).toBe("drafted");
   });
 
-  it("does not activate a safe project capability before its Coordinator evaluator passes", () => {
+  it("does not activate a safe project capability before its Coordinator evaluator passes", async () => {
     const dir = tempDir("plc-capability-owned-eval-");
     const db = openDb(join(dir, "plc.db"));
     const projectId = createProject(db, { name: "returns", createdBy: "lead" });
@@ -111,7 +138,7 @@ describe("capability lifecycle", () => {
     const evaluator = join(sourceDir, "eval.mjs");
     writeFileSync(asset, "# Safe skill\n");
     writeFileSync(evaluator, "process.exit(1);\n");
-    const capability = service.registerCapability({
+    const capability = await service.registerCapability({
       candidateId: captured.candidate.id,
       type: "skill",
       name: "Safe skill",
@@ -122,7 +149,7 @@ describe("capability lifecycle", () => {
     });
 
     expect(service.getCapability(capability.id)?.status).toBe("evaluating");
-    expect(service.evaluateCapability(capability.id).outcome).toBe("failed");
+    expect((await service.evaluateCapability(capability.id)).outcome).toBe("failed");
     expect(service.getCapability(capability.id)?.status).toBe("evaluating");
   });
 });

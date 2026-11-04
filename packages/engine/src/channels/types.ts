@@ -328,10 +328,24 @@ export interface ChannelTransportContext {
   context(): Promise<ChannelAdapterContext | null>;
   // 有没结束的卡的道，最近更新的在前，最多 limit 条。
   openLanes(limit: number): ChannelOpenLane[];
+  // 补拉的水位（2026-11-03，hub 存在库里，daemon 重启以后还在）：到这个时刻为止，这个来源的消息都收到了。从来没记过时 read 是 null。
+  // hub 总是给；直接造传输上下文的测试可以不给，那样不补断线的这段时间。
+  catchUpMark?: { read(): Date | null; write(at: Date): void };
+  // 补拉没补全（超过上限、调用失败）：hub 记一条 tell 级的事件告诉 Lead。不抛错。
+  catchUpIncomplete?(report: ChannelCatchUpReport): void;
   // 日志：hub 加上来源名，去掉凭据。
   log(line: string): void;
   // 连接的状态变了。daemon 记下来给设置页看；hub 自己的 transportContext 不给。
   status?(update: ChannelTransportStatus): void;
+}
+
+/** 断线这段时间的补拉没补全（ChannelTransportContext.catchUpIncomplete）。reasons 是来源写的话，不含外部的原文。 */
+export interface ChannelCatchUpReport {
+  from: Date;
+  to: Date;
+  // 补到了几条。
+  caught: number;
+  reasons: readonly string[];
 }
 
 /** 传输把一次投递交给 hub 的进程内入口。不抛错。 */
@@ -358,7 +372,13 @@ export interface ChannelSecretSpec {
   prefix: string;
   // 在哪里生成它（给人看的一句话）。
   hint: string;
+  // 值最多多少个字符（daemon 查）。缺省是 CHANNEL_TOKEN_MAX_LENGTH（令牌）；浏览器会话的 cookie 这类长的密钥声明更大的，
+  // 但不超过协议的 CHANNEL_SECRET_MAX_LENGTH（请求体本身的上限）。
+  maxLength?: number;
 }
+
+/** 来源没有给密钥声明 maxLength 时，值最多多少个字符：应用令牌这类（Slack 的令牌远短于它）。 */
+export const CHANNEL_TOKEN_MAX_LENGTH = 1_000;
 
 /**
  * 来源的凭据设置（设置页「消息通道」，protocol 的 channel-settings.ts）。来源插件声明要哪些密钥、怎么校验、

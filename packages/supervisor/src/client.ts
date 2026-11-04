@@ -24,6 +24,28 @@ export function supervisorListening(dir: string = dataDir()): Promise<boolean> {
   return socketListening(supervisorSockPath(dir));
 }
 
+// 负载高时 daemon 启动会超过 30 秒：2026-10-19 14:54Z 负载约 37，daemon 用了 39 秒才开始监听。
+// 进程还活着就接着等，所以这个期限只用来认定启动卡住了，可以比正常启动时间长得多。
+// 2026-11-03 负载 35–90：daemon 154 秒、129 秒才开始监听，以前的 120 秒期限两次把它记成"没有就绪"，phase 变成 degraded。
+// 现在期限是 10 分钟。supervisor（server.ts）和等 ensure_running 的客户端都用这里的值。
+export const DEFAULT_DAEMON_READY_TIMEOUT_MS = 10 * 60_000;
+
+/** supervisor 等 daemon 回答第一次 status 的期限。PLC_DAEMON_READY_TIMEOUT_MS 是正整数时用它（毫秒）。 */
+export function daemonReadyTimeoutMs(env: Record<string, string | undefined> = process.env): number {
+  const configured = Number(env.PLC_DAEMON_READY_TIMEOUT_MS);
+  return Number.isSafeInteger(configured) && configured > 0 ? configured : DEFAULT_DAEMON_READY_TIMEOUT_MS;
+}
+
+/**
+ * 客户端等 ensure_running 回答的期限。supervisor 要等 daemon 就绪才回答，所以比它的期限多 30 秒：
+ * 机器忙、daemon 启动慢时，客户端不会比 supervisor 先放弃，把还在启动说成失败。
+ */
+export function ensureRunningTimeoutMs(env: Record<string, string | undefined> = process.env): number {
+  return daemonReadyTimeoutMs(env) + 30_000;
+}
+
+export const SUPERVISOR_REQUEST_TIMEOUT = "supervisor_request_timeout";
+
 export function supervisorRequest<T = unknown>(
   command: SupervisorCommand,
   opts?: { dataDir?: string; timeoutMs?: number },
@@ -32,7 +54,7 @@ export function supervisorRequest<T = unknown>(
     const socket = connect(supervisorSockPath(opts?.dataDir));
     const timeout = setTimeout(() => {
       socket.destroy();
-      reject(new Error("supervisor request timed out"));
+      reject(Object.assign(new Error("supervisor request timed out"), { code: SUPERVISOR_REQUEST_TIMEOUT }));
     }, opts?.timeoutMs ?? 15_000);
     socket.once("error", (error) => {
       clearTimeout(timeout);

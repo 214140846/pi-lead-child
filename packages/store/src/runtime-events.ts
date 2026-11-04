@@ -28,11 +28,13 @@ export function countDistinctToolStartedForItem(db: Db, itemId: number): number 
   ).get(itemId) as { n: number }).n;
 }
 
-function durableAppend(path: string, line: string): void {
+// 每条事件追加一行，不再 fsync（2026-11-03）：事实在 SQLite 里，这个文件是它的镜像。以前每条事件都 fsync 一次，
+// 子 agent 一次运行几百条事件，磁盘忙的时候每次几十毫秒，都在 daemon 的主线程上。写进系统缓存的行在进程崩溃时不会丢，
+// 只有整台机器断电才可能丢最后几行；那时文件可以从库里重建（reconcile）。
+function appendLine(path: string, line: string): void {
   const fd = openSync(path, "a");
   try {
     writeSync(fd, line);
-    fsyncSync(fd);
   } finally {
     closeSync(fd);
   }
@@ -58,7 +60,7 @@ export function createRuntimeEventStore(
 ): RuntimeEventStore {
   const eventDir = join(options.dataDir, "runtime-events");
   mkdirSync(eventDir, { recursive: true });
-  const append = options.append ?? durableAppend;
+  const append = options.append ?? appendLine;
   const pathFor = (runId: number) => join(eventDir, `run-${runId}.jsonl`);
 
   const reconcile = (runId: number): string => {

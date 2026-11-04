@@ -1,0 +1,14 @@
+{
+  // 壳自己的类型检查：主进程、preload 和安装页。壳不进根目录的 workspaces（设计第 8.1 节），Electron 的类型来自 desktop/node_modules。
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2023", "DOM"],
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "types": ["node"]
+  },
+  "include": ["src"]
+}

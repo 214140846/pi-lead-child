@@ -14,6 +14,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.test.json && tsc --noEmit -p tsconfig.ios.json && tsc --noEmit -p tsconfig.android.json"
   },
   "dependencies": {
+    "@legendapp/list": "3.7.1",
     "@tamagui/config": "3.0.3",
     "@tamagui/core": "3.0.3"
   },

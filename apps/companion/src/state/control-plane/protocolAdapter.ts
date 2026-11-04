@@ -14,6 +14,7 @@ import {
 } from '@pi-lead-child/protocol';
 
 import type { ToolDisplayProjection, ToolState } from '../types';
+import { conversationTurnInvalidation } from './invalidation';
 
 export { projectToolDisplay };
 
@@ -255,9 +256,12 @@ function invalid(event: GatewayEvent): GatewayEventAdaptation {
 }
 
 function invalidationsFor(event: GatewayEvent): string[] {
-  const ticketConversation = event.ticketId === null ? [] : [`conversation:ticket:${event.ticketId}`];
-  if (event.type.startsWith('lead.')) return ['conversation:current', ...ticketConversation];
-  if (event.type === 'notice.created') return ['conversation:current', ...ticketConversation, 'notifications', 'overview'];
+  // 带着轮次 id 的会话事件只校正那一轮（它同时校正所在的工单对话）；没有时重取最近一段和工单对话。
+  const conversation = event.turnId
+    ? [conversationTurnInvalidation(event.turnId)]
+    : ['conversation:current', ...(event.ticketId === null ? [] : [`conversation:ticket:${event.ticketId}`])];
+  if (event.type.startsWith('lead.')) return conversation;
+  if (event.type === 'notice.created') return [...conversation, 'notifications', 'overview'];
   if (event.type.startsWith('approval.')) return ['approvals'];
   if (event.type.startsWith('attempt.') || event.type.startsWith('child.tool.')) {
     return event.ticketId === null ? ['tickets'] : [`execution:${event.ticketId}`];

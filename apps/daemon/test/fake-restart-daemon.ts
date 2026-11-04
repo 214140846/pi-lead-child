@@ -53,6 +53,7 @@ const daemon = await startDaemon({
 // 测试读这一行，确认启动修复已经做完。
 process.stdout.write("ready\n");
 
-const stop = () => { void daemon.close().then(() => process.exit(0)); };
+// 和 main.ts 一样：停机有上限（PLC_DAEMON_CLOSE_TIMEOUT_MS）。
+const stop = () => { void daemon.closeForExit().then(() => process.exit(0)); };
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);

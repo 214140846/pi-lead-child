@@ -89,7 +89,7 @@ import type {
   UiActionView,
   TicketSummary,
 } from '@pi-lead-child/protocol';
-import { LEAD_AVATAR_CAPABILITY, leadActivityCardFromItem, leadModelSpec, redactSecretText, TicketSummarySchema } from '@pi-lead-child/protocol';
+import { compareConversationTurns, LEAD_AVATAR_CAPABILITY, leadActivityCardFromItem, leadModelSpec, redactSecretText, TicketSummarySchema } from '@pi-lead-child/protocol';
 import { Value } from 'typebox/value';
 
 import {
@@ -126,9 +126,11 @@ import {
 } from './control-plane/actions';
 import { reduceGatewayEvent, type StreamMutation } from './control-plane/eventReducer';
 import {
+  CONVERSATION_TURN_INVALIDATION,
   createInvalidationCoordinator,
   type InvalidationCoordinator,
 } from './control-plane/invalidation';
+import { conversationWindowJoins, type ConversationMerge } from './control-plane/normalize';
 import { adaptGatewayEvent, projectToolDisplay } from './control-plane/protocolAdapter';
 import { createControlPlaneStore } from './control-plane/store';
 import { cachedLocale } from '../i18n/localeCache';
@@ -187,6 +189,7 @@ export type CompanionTransport = Pick<
 > & Partial<Pick<
   ControlPlaneClient,
   | 'getLeadActivity' | 'getLeadActivityView' | 'acknowledgeLeadInterrupt' | 'getChannelCards' | 'actOnChannelCard'
+  | 'getOlderConversationTurns' | 'getConversationTurnsById'
   | 'getLeadQueue' | 'leadQueueAction' | 'followUpAction'
   | 'rescheduleReminder' | 'checkConnection' | 'connectionLost' | 'getOwnBinding' | 'listBindings' | 'revokeBinding'
   | 'listUiActions' | 'performUiAction'
@@ -259,6 +262,12 @@ interface AgendaResourceScope {
 // Replayed frames arrive back to back. A gap this long means the replay is over.
 const REPLAY_SETTLE_MS = 250;
 
+// 主会话打开、重连时只取最近这么多轮；往上滚到头时一页取这么多轮更早的（2026-11-04，原来每次整份取 100 轮）。
+export const CONVERSATION_WINDOW_TURNS = 30;
+export const CONVERSATION_PAGE_TURNS = 30;
+// Lead 说完一句以后只取那一轮。一次攒下的轮次比这还多（例如重连后重放了很多事件）时，改取最近一段。
+const MAX_TURN_CORRECTIONS = 20;
+
 export class CompanionStateRuntime {
   readonly control = createControlPlaneStore();
   readonly streams = createStreamStore();
@@ -273,6 +282,11 @@ export class CompanionStateRuntime {
   private credentials: ControlPlaneCredentials | null = null;
   private activeSessionId: string | null = null;
   private pendingTurns: ConversationTurn[] | null = null;
+  // 主会话里要单独校正的轮次（lead.message.completed 等只说一轮的事件），和要不要重取最近一段（重连、认不出的事件）。
+  // 都在 conversation:current 这一个资源里取：同一时间只有一个请求，取到了才清掉。
+  private pendingTurnCorrections = new Set<string>();
+  private conversationWindowStale = false;
+  private olderTurnsLoad: Promise<void> | null = null;
   private controllers = new Set<AbortController>();
   private work: Promise<void> = Promise.resolve();
   private eventQueue: Promise<void> = Promise.resolve();
@@ -1172,6 +1186,8 @@ export class CompanionStateRuntime {
     this.capabilities.clear();
     this.activeSessionId = null;
     this.pendingTurns = null;
+    this.pendingTurnCorrections.clear();
+    this.conversationWindowStale = false;
     this.currentAgendaScope = null;
     // 取消配对：发件箱里的消息属于原来那个 binding，不发给以后配对的 daemon。
     this.outbox.stop();
@@ -1758,7 +1774,7 @@ export class CompanionStateRuntime {
       void this.ensureResource(typedKey).catch(() => {});
     }
     if (this.pendingTurns) {
-      this.applyConversationSnapshot(this.activeSessionId, this.pendingTurns);
+      this.applyConversationWindow(this.activeSessionId, this.pendingTurns);
       this.pendingTurns = null;
     }
     this.showOutbox();
@@ -1897,6 +1913,8 @@ export class CompanionStateRuntime {
     this.capabilities.clear();
     this.activeSessionId = null;
     this.pendingTurns = null;
+    this.pendingTurnCorrections.clear();
+    this.conversationWindowStale = false;
     this.currentAgendaScope = null;
     this.control.getState().reset();
     this.streams.getState().reset();
@@ -1917,7 +1935,7 @@ export class CompanionStateRuntime {
         this.activeSessionId = value.sessionId;
         this.control.setState({ overview: value });
         if (this.pendingTurns) {
-          this.applyConversationSnapshot(value.sessionId, this.pendingTurns);
+          this.applyConversationWindow(value.sessionId, this.pendingTurns);
           this.pendingTurns = null;
         }
         this.showOutbox();
@@ -1950,8 +1968,8 @@ export class CompanionStateRuntime {
         (value) => this.control.getState().replaceNotifications(value));
     }
     if (scopeSet.has('chat')) {
-      add((signal) => this.dependencies.client.getConversationTurns(undefined, signal), (value) => {
-        if (this.activeSessionId) this.applyConversationSnapshot(this.activeSessionId, value);
+      add((signal) => this.dependencies.client.getConversationTurns(undefined, signal, { limit: CONVERSATION_WINDOW_TURNS }), (value) => {
+        if (this.activeSessionId) this.applyConversationWindow(this.activeSessionId, value);
         else this.pendingTurns = value;
       });
       add((signal) => this.loadLeadActivity(signal), (value) => this.control.getState().replaceLeadActivity(value));
@@ -2080,7 +2098,8 @@ export class CompanionStateRuntime {
   // 会话快照（GET /v1/conversation/turns）和流式文字对齐（2026-10-15 预览发现）：还在流的一轮，快照里已经有
   // 落库的文字，流式缓冲里也有同一段。以快照为准，只把快照之后才到的那一段留在流式缓冲里；否则同一段字显示两遍。
   // 对不上（快照更长，或者内容不同）时只用快照。
-  private applyConversationSnapshot(sessionId: string, turns: ConversationTurn[], scope?: { ticketId?: number }): void {
+  // mode：工单对话的快照（ticketId）整份替换这张工单的对话；主会话按 ConversationMerge 叠到手上的会话上。
+  private applyConversationSnapshot(sessionId: string, turns: ConversationTurn[], mode: { ticketId: number } | ConversationMerge): void {
     const before = this.control.getState();
     const carried = new Map<string, string>();
     for (const turn of turns) {
@@ -2093,12 +2112,75 @@ export class CompanionStateRuntime {
         carried.set(turn.id, shown.slice(turn.assistantText.length));
       }
     }
-    this.control.getState().replaceConversation(sessionId, turns, scope);
+    if ('ticketId' in mode) this.control.getState().replaceConversation(sessionId, turns, { ticketId: mode.ticketId });
+    else this.control.getState().mergeConversation(sessionId, turns, mode);
     const after = this.control.getState();
     for (const [turnId, text] of carried) {
       const messageId = after.assistantMessageIdByTurnId[turnId];
       if (messageId) this.streamCoordinator.appendTextDelta(messageId, text);
     }
+  }
+
+  // 主会话最近的一段（打开、重连）。和手上更早的历史接得上时，历史和游标都留着；接不上、或者 daemon 一共就这么多轮时，
+  // 按这一段重新算游标和还有没有更早的。
+  private applyConversationWindow(sessionId: string, turns: ConversationTurn[]): void {
+    const complete = turns.length < CONVERSATION_WINDOW_TURNS;
+    const before = this.control.getState();
+    const keepsHistory = !complete && conversationWindowJoins(before, sessionId, turns);
+    this.applyConversationSnapshot(sessionId, turns, { kind: 'window', complete });
+    const oldest = [...turns].sort(compareConversationTurns)[0];
+    const cursor = before.conversationHistory.oldest;
+    if (keepsHistory && cursor && oldest && compareConversationTurns(cursor, oldest) < 0) return;
+    this.control.getState().setConversationHistory({
+      hasMore: !complete,
+      error: null,
+      oldest: oldest ? { id: oldest.id, createdAt: oldest.createdAt } : null,
+    });
+  }
+
+  // 单独校正的几轮。比游标还早的不叠上去：那一截还没按顺序取过，叠上一轮会在中间留一个洞。
+  private applyConversationCorrections(sessionId: string, turns: ConversationTurn[]): void {
+    const { hasMore, oldest } = this.control.getState().conversationHistory;
+    const shown = hasMore && oldest ? turns.filter((turn) => compareConversationTurns(turn, oldest) >= 0) : turns;
+    if (shown.length) this.applyConversationSnapshot(sessionId, shown, { kind: 'merge' });
+  }
+
+  // 往上滚到头：取游标前面的一页（2026-11-04）。同一时间只取一页；daemon 不支持、没有更早的了、或者还没取到最近一段时什么都不做。
+  loadOlderConversationTurns(): Promise<void> {
+    if (this.olderTurnsLoad) return this.olderTurnsLoad;
+    const { client } = this.dependencies;
+    const sessionId = this.activeSessionId;
+    const history = this.control.getState().conversationHistory;
+    if (typeof client.getOlderConversationTurns !== 'function' || !sessionId || !history.hasMore || !history.oldest) {
+      return Promise.resolve();
+    }
+    const cursor = history.oldest;
+    const epoch = this.lifecycle;
+    const controller = this.controller();
+    this.control.getState().setConversationHistory({ loading: true, error: null });
+    const load = client.getOlderConversationTurns(cursor, { limit: CONVERSATION_PAGE_TURNS }, controller.signal).then((page) => {
+      // 取的这段时间里重连换了会话，或者最近一段重新算了游标：这一页接不上了，丢掉。
+      if (!this.isCurrent(epoch) || this.activeSessionId !== sessionId) return;
+      const current = this.control.getState().conversationHistory;
+      if (current.oldest?.id !== cursor.id) return;
+      this.applyConversationSnapshot(sessionId, page.items, { kind: 'merge' });
+      const oldest = [...page.items].sort(compareConversationTurns)[0];
+      this.control.getState().setConversationHistory({
+        hasMore: page.hasMore,
+        oldest: oldest ? { id: oldest.id, createdAt: oldest.createdAt } : current.oldest,
+      });
+    }, (error: unknown) => {
+      if (!this.isCurrent(epoch)) return;
+      this.control.getState().setConversationHistory({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }).finally(() => {
+      this.controllers.delete(controller);
+      if (this.olderTurnsLoad === load) this.olderTurnsLoad = null;
+      if (this.isCurrent(epoch)) this.control.getState().setConversationHistory({ loading: false });
+    });
+    this.olderTurnsLoad = load;
+    return load;
   }
 
   private applyStreamMutation(mutation: StreamMutation): void {
@@ -2151,6 +2233,38 @@ export class CompanionStateRuntime {
       isObserved: (key) => !isLazyResource(key) ||
         (this.control.getState().resourceState[key as ResourceKey]?.observerCount ?? 0) > 0,
     });
+  }
+
+  // conversation:current（2026-11-04）：只有要单独校正的几轮时只取那几轮；重连、认不出的事件、攒下的轮次太多时，
+  // 取最近一段和「Lead 动态」（以前每次都整份取 100 轮）。最近一段里没有的待校正轮次再单独取。
+  // 取到、而且这段时间里没有新的失效（canCommit）才清掉待办：被新事件盖掉的这一次，下一次连同新的一起取。
+  private async refreshConversation(signal: AbortSignal, canCommit: () => boolean): Promise<void> {
+    const { client } = this.dependencies;
+    const byId = typeof client.getConversationTurnsById === 'function' ? client.getConversationTurnsById.bind(client) : null;
+    const corrections = [...this.pendingTurnCorrections];
+    const window = this.conversationWindowStale || corrections.length === 0 || corrections.length > MAX_TURN_CORRECTIONS || !byId;
+    if (!window) {
+      const turns = await byId(corrections, signal);
+      if (!canCommit()) return;
+      for (const id of corrections) this.pendingTurnCorrections.delete(id);
+      if (this.activeSessionId) this.applyConversationCorrections(this.activeSessionId, turns);
+      return;
+    }
+    const [turns, activity] = await Promise.all([
+      client.getConversationTurns(undefined, signal, { limit: CONVERSATION_WINDOW_TURNS }),
+      this.loadLeadActivity(signal),
+    ]);
+    const shown = new Set(turns.map((turn) => turn.id));
+    const missing = corrections.length <= MAX_TURN_CORRECTIONS ? corrections.filter((id) => !shown.has(id)) : [];
+    const extra = missing.length && byId ? await byId(missing, signal) : [];
+    if (!canCommit()) return;
+    this.conversationWindowStale = false;
+    for (const id of corrections) this.pendingTurnCorrections.delete(id);
+    if (this.activeSessionId) {
+      this.applyConversationWindow(this.activeSessionId, turns);
+      if (extra.length) this.applyConversationCorrections(this.activeSessionId, extra);
+    }
+    this.control.getState().replaceLeadActivity(activity);
   }
 
   private async refreshResource(key: string, generation: number, signal: AbortSignal): Promise<void> {
@@ -2270,13 +2384,7 @@ export class CompanionStateRuntime {
         this.control.getState().replaceLeadQueue(value);
       }
 	      else if (key === 'conversation:current') {
-	        const [turns, activity] = await Promise.all([
-	          this.dependencies.client.getConversationTurns(undefined, signal),
-	          this.loadLeadActivity(signal),
-	        ]);
-	        if (!canCommit()) return;
-	        if (this.activeSessionId) this.applyConversationSnapshot(this.activeSessionId, turns);
-	        this.control.getState().replaceLeadActivity(activity);
+	        await this.refreshConversation(signal, canCommit);
 	      } else if (key.startsWith('conversation:ticket:')) {
 	        const ticketId = Number(key.slice('conversation:ticket:'.length));
 	        const turns = await this.dependencies.client.getConversationTurns(ticketId, signal);
@@ -2545,7 +2653,16 @@ export class CompanionStateRuntime {
   }
 
   private expandInvalidations(keys: string[]): string[] {
-    const expanded = new Set(keys.filter((key) => key !== 'core' && key !== 'agenda:current'));
+    const expanded = new Set(keys.filter((key) => key !== 'core' && key !== 'agenda:current' && !key.startsWith(CONVERSATION_TURN_INVALIDATION)));
+    // 只说一轮的事件（Lead 说完一句、这一轮失败了）：记下这一轮，conversation:current 只取它（refreshConversation）。
+    // 直接说 conversation:current 的（重连、认不出的事件）要取最近一段。
+    for (const key of keys) {
+      if (key.startsWith(CONVERSATION_TURN_INVALIDATION)) {
+        this.pendingTurnCorrections.add(key.slice(CONVERSATION_TURN_INVALIDATION.length));
+        expanded.add('conversation:current');
+      }
+    }
+    if (keys.includes('conversation:current') || keys.includes('core')) this.conversationWindowStale = true;
     // 收件箱的事实（为什么在等你、Lead 已处理）跟着工单和通知变。
     if (keys.some((key) => key === 'tickets' || key === 'notifications' || key.startsWith('ticket:'))) {
       expanded.add(RESOURCE_KEYS.inbox);

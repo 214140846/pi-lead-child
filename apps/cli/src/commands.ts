@@ -44,6 +44,7 @@ export interface CliDeps {
   chat(session: GatewaySession): Promise<void>;
   runOps: RunOps;
   supervisor: {
+    // 有 supervisor 在监听 supervisor.sock。正忙、回答得慢的也算。
     available(): Promise<boolean>;
     request<T>(command: SupervisorCommand, timeoutMs?: number): Promise<T>;
   };

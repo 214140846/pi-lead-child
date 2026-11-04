@@ -9,9 +9,11 @@
 // 「没提交的改动」只看会进构建的代码：packages/、apps/ 下的改动和没被忽略的新文件，以及仓库根目录下的文件
 // （package.json、package-lock.json、tsconfig.json 这类）。不算的：docs/、artifacts/、.scratch/、.claude/（它们不进 dist，
 // 而且有的测试会改写 artifacts/ 里的证据文件），以及测试文件（test/ 目录下的、*.test.* 和 *.spec.*）。
+// 根目录有 release.json 时是发布模式（桌面版的运行包，deploy/release.ts）：不看 git，按版本、架构、文件哈希判断。
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
+import { hasReleaseManifest, releaseReadiness, type ReleaseSummary } from "./release.js";
 
 export const BUILD_INFO_FILE = "build-info.json";
 
@@ -28,8 +30,19 @@ export interface DeployReadiness {
   ready: boolean;
   // 不能部署的原因，每条一句。ready 时为空。
   reasons: string[];
+  // dev：checkout 加 git（没有 release.json）；release：桌面版的运行包（有 release.json）。
+  mode: "dev" | "release";
+  // 下面两项只在开发模式下有，发布模式下为 null。
   head: string | null;
   build: BuildProvenance | null;
+  // 只在发布模式下有；release.json 读不了时也为 null。
+  release: ReleaseSummary | null;
+}
+
+// 发布模式要的两样东西：安装根（<数据目录>/runtime）和库的路径（降级检查）。开发模式用不到。
+export interface ReleaseContext {
+  installRoot?: string | null;
+  dbPath?: string | null;
 }
 
 const SOURCE_DIRS = ["packages/", "apps/"];
@@ -93,8 +106,11 @@ export function readBuildProvenance(distDir: string): BuildProvenance | null {
   }
 }
 
-/** 现在能不能从 root 的 dist 部署。只读：不改 checkout，不构建。 */
-export function deployReadiness(root: string, distDir: string): DeployReadiness {
+/** 现在能不能从 root 的 dist 部署。只读：不改 checkout，不构建。root 有 release.json 时走发布模式，不调用 git。 */
+export function deployReadiness(root: string, distDir: string, release: ReleaseContext = {}): DeployReadiness {
+  if (hasReleaseManifest(root)) {
+    return { mode: "release", head: null, build: null, ...releaseReadiness(root, release.installRoot, release.dbPath) };
+  }
   const reasons: string[] = [];
   let head: string | null = null;
   try {
@@ -124,5 +140,5 @@ export function deployReadiness(root: string, distDir: string): DeployReadiness 
       reasons.push(`dist 的构建 commit ${build.commit} 不在这个仓库里。`);
     }
   }
-  return { ready: reasons.length === 0, reasons, head, build };
+  return { ready: reasons.length === 0, reasons, mode: "dev", head, build, release: null };
 }

@@ -8,7 +8,9 @@
 // 结果里的文字不含令牌：先把这次的两个令牌原样换掉，再按通用的规则脱敏。
 // 浏览器会话方式（2026-11-02）另有一份：只要会话 cookie，检查见 createSlackSessionSettings。
 import { SLACK_APP_TOKEN_ENV, SLACK_SESSION_COOKIE_ENV, SLACK_USER_TOKEN_ENV } from "@pi-lead-child/core";
-import type { ChannelSecretCheck, ChannelSecretsTestResult, ChannelSourceAccount } from "@pi-lead-child/protocol";
+import {
+  CHANNEL_SECRET_MAX_LENGTH, type ChannelSecretCheck, type ChannelSecretsTestResult, type ChannelSourceAccount,
+} from "@pi-lead-child/protocol";
 import type { ChannelSecretSpec, ChannelSettingsSpec } from "../types.js";
 import { ASSISTANT_NAME_DEFAULT } from "../disclosure.js";
 import { createGabrielCore, gabrielErrorOf, type SlackSessionNetwork } from "./slack-gabriel.js";
@@ -28,8 +30,9 @@ export const SLACK_USER_SCOPES = [
  * 可选的用户权限：只写进建应用的清单，设置页的检查不要求它们（缺了不算失败）。
  * emoji:read：设置页「形象」预览署名 emoji 时查工作区的自定义 emoji（emoji.list，2026-10-28）。没有时只是看不到预览。
  * files:read：Lead 看消息附带的文件，例如别人发来的截图（files.info 和下载，2026-11-02）。没有时只是看不到文件。
+ * search:read：断线、daemon 重启以后补拉这段时间里提到用户的消息（search.messages，2026-11-03）。没有时只补私信，并且告诉 Lead。
  */
-export const SLACK_OPTIONAL_USER_SCOPES = ["emoji:read", "files:read"] as const;
+export const SLACK_OPTIONAL_USER_SCOPES = ["emoji:read", "files:read", "search:read"] as const;
 
 /** Slack 通道订阅的用户事件（清单的 event_subscriptions.user_events）。 */
 export const SLACK_USER_EVENTS = ["message.channels", "message.groups", "message.im", "message.mpim"] as const;
@@ -254,6 +257,8 @@ const SESSION_SECRETS: readonly ChannelSecretSpec[] = [
     label: "Slack 会话",
     prefix: SLACK_SESSION_COOKIE_PREFIX,
     hint: "在设置 → 消息通道 → Slack 里点「登录 Slack」，在弹出的窗口里登录。它等于你整个 Slack 账号的权限，只存在这台 Mac 上。",
+    // 网页版的 d cookie 可能超过 1000 个字符（#220）：用协议的上限。
+    maxLength: CHANNEL_SECRET_MAX_LENGTH,
   },
 ];
 

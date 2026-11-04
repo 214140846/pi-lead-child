@@ -1,5 +1,5 @@
 // Paired control-plane: authenticated HTTP snapshots + WebSocket channel transport.
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { WebSocketServer, type WebSocket as WsSocket } from "ws";
 import { createServer as createNetServer, type AddressInfo, type Server as NetServer } from "node:net";
@@ -99,6 +99,7 @@ import {
   BY_USER, createCoordinator, DelegationBlockedError, DeliveryError, grantItemDelegation, ReviewerChangeError,
   listUiActions, memoryPreferences, TicketActionError, uiActionDefinition, type DelegateInput, type DelegationGrant, type TicketActionOutcome,
   type UiActionOutcome, type UiActionServices, type UiActionTarget, type WorkspaceActionResult,
+  warmRepositoryIdentity,
 } from "@pi-lead-child/engine";
 import type { UserActionService } from "./user-actions.js";
 import { isApiPath, serveWebFile } from "./web-static.js";
@@ -256,6 +257,9 @@ export interface PairedBridge {
   log: (line: string) => void;
 }
 
+// 桌面版的窗口带着回环自动配对口令的请求头（小写）。desktop/src/main.ts 写同一个名字，desktop/test 里核对两边一致。
+export const SHELL_PAIRING_HEADER = "x-bytezard-shell-pairing";
+
 export interface PairedServerOptions {
   port: number;
   host?: string;
@@ -266,6 +270,10 @@ export interface PairedServerOptions {
   corsOrigins?: string[];
   allowLoopbackAutoPair?: boolean;
   loopbackAutoPairOrigins?: string[];
+  // 桌面版的发布模式（docs/desktop/macos-desktop-design.md 第 1.2 节）：回环自动配对缺省打开，但请求还要在
+  // SHELL_PAIRING_HEADER 里带上这个口令。口令在数据目录的 0600 文件里，只有本机这个用户（Bytezard Lead 的窗口）读得到，
+  // 所以同一台 Mac 上别的系统用户伪造 Origin 也配不上（docs/ARCHITECTURE.md 的回环自动配对一节）。
+  loopbackAutoPairShellKey?: string;
   // companion web UI 的静态导出目录（npm run build:web → dist/web）。设置后网关在 / 下提供它，
   // 并且信任自己的回环 origin 来做 loopback 自动配对。未设置时没有任何非 /v1 路由。
   webRoot?: string;
@@ -399,6 +407,18 @@ function integerParam(
     throw new HttpError(400, "invalid_request", `${name} is out of range`);
   }
   return value;
+}
+
+// 会话快照按 id 取轮次时，一次最多要这么多轮。
+const MAX_CONVERSATION_TURN_IDS = 50;
+
+// 一轮的 id：不透明的字符串（turn_…、系统通知自己定的 id），只限长度、不许控制字符。查询都是参数化的。
+function turnIdParam(raw: string | null, name: string): string | undefined {
+  if (raw === null) return undefined;
+  if (raw.length === 0 || raw.length > 256 || /[\u0000-\u001f\u007f]/.test(raw)) {
+    throw new HttpError(400, "invalid_request", `${name} is not a turn id`);
+  }
+  return raw;
 }
 
 function assertQueryKeys(url: URL, allowed: readonly string[]): void {
@@ -706,6 +726,7 @@ export async function startPairedServer(
       .map((origin) => origin.trim())
       .filter(Boolean),
   );
+  const shellKey = opts.loopbackAutoPairShellKey ? Buffer.from(opts.loopbackAutoPairShellKey) : null;
   const failedRedeems = new Map<string, { count: number; resetAt: number }>();
   // listenAlso 开的其他地址上的监听，和关掉它的函数（会断开它接进来的连接）。
   const extraListeners = new Map<NetServer, () => Promise<void>>();
@@ -816,10 +837,19 @@ export async function startPairedServer(
       origin === `http://[::1]:${port}`;
   }
 
+  // 设了桌面版的口令时，请求要带着它（loopbackAutoPairShellKey）。没设时不查。
+  function fromShell(req: IncomingMessage): boolean {
+    if (!shellKey) return true;
+    const header = req.headers[SHELL_PAIRING_HEADER];
+    if (typeof header !== "string") return false;
+    const given = Buffer.from(header);
+    return given.length === shellKey.length && timingSafeEqual(given, shellKey);
+  }
+
   // 本机网页的请求：socket 来自回环地址，有 Origin 并且是回环 origin，它还是网关自己的网页或在允许列表里。
   // 回环自动配对、给手机发配对邀请、改外部通道的凭据都用这一条规则。
   function isLoopbackPage(req: IncomingMessage): boolean {
-    if (!allowLoopbackAutoPair) return false;
+    if (!allowLoopbackAutoPair || !fromShell(req)) return false;
     const origin = req.headers.origin;
     return isLoopbackAddress(req.socket.remoteAddress) &&
       Boolean(origin) &&
@@ -831,7 +861,7 @@ export async function startPairedServer(
   // 所以没有 Origin 时按调用方判断：从本机回环地址来、是本机网页自动配对的 binding（origin loopback_web）、并且有 tickets:create。
   // 这只决定页面怎么画；test、PUT、DELETE 浏览器会带 Origin，照样要 isLoopbackPage（requireLoopbackPage）。
   function editableHere(req: IncomingMessage): boolean {
-    if (!allowLoopbackAutoPair) return false;
+    if (!allowLoopbackAutoPair || !fromShell(req)) return false;
     let caller: { binding: Binding; scopes: Scope[] };
     try {
       caller = requireAuth(req);
@@ -916,7 +946,7 @@ export async function startPairedServer(
   async function sendArtifactContent(
     req: IncomingMessage,
     res: ServerResponse,
-    content: ReturnType<ControlPlaneService["openKernelArtifactContent"]>,
+    content: Awaited<ReturnType<ControlPlaneService["openKernelArtifactContent"]>>,
   ): Promise<void> {
     res.writeHead(200, {
       ...responseHeaders(req),
@@ -1665,6 +1695,8 @@ export async function startPairedServer(
         if (input.model !== undefined && !input.model.trim()) {
           throw new HttpError(400, "invalid_request", "model must not be blank");
         }
+        // 建单时认项目要的 git 事实先异步查好，createRootItem 只读缓存（engine 的 git-facts.ts）。
+        if (input.workdir !== undefined) await warmRepositoryIdentity(input.workdir.trim());
         let itemId: number;
         try {
           itemId = createCoordinator({ db: bridge.db }).createRootItem({
@@ -2494,7 +2526,7 @@ export async function startPairedServer(
         if (include.some((value) => !known.has(value))) {
           throw new HttpError(400, "invalid_request", "invalid include");
         }
-        json(req, res, 200, { items: service().listConversationTurns({
+        const query = {
           ...(itemId === undefined ? {} : { itemId }),
           limit,
           ...(include.includes("tool_calls") ? { toolCallScopes: scopes } : {}),
@@ -2502,7 +2534,24 @@ export async function startPairedServer(
           ...(include.includes("placement") ? { placement: true } : {}),
           ...(include.includes(TICKET_REPLY_ACTIONS_INCLUDE) ? { replyActions: true } : {}),
           ...(include.includes(CHAT_IMAGES_INCLUDE) ? { images: true } : {}),
-        }) });
+        };
+        // 会话打开时只取最近几轮，往上翻时取更早的，Lead 说完一句只取那一轮（2026-11-04）。旧客户端两个都不带，回答不变。
+        // ?before=<一轮的 id>：排在它前面的最多 limit 轮，另带 hasMore。这一轮不存在时 404。
+        // ?turn_id=<id>（可以重复，也可以用逗号连起来，最多 50 个）：只要这几轮，不存在的不回。
+        const before = turnIdParam(url.searchParams.get("before"), "before");
+        const turnIds = url.searchParams.getAll("turn_id").flatMap((value) => value.split(",")).filter(Boolean)
+          .map((value) => turnIdParam(value, "turn_id")!);
+        if (before !== undefined && turnIds.length) {
+          throw new HttpError(400, "invalid_request", "before and turn_id cannot be combined");
+        }
+        if (turnIds.length > MAX_CONVERSATION_TURN_IDS) throw new HttpError(400, "invalid_request", "too many turn_id values");
+        if (before !== undefined) {
+          const page = service().listOlderConversationTurns(before, query);
+          if (!page) throw new HttpError(404, "not_found", "turn not found");
+          json(req, res, 200, page);
+          return;
+        }
+        json(req, res, 200, { items: service().listConversationTurns({ ...query, ...(turnIds.length ? { ids: turnIds } : {}) }) });
         return;
       }
 
@@ -2764,7 +2813,7 @@ export async function startPairedServer(
         requireAuth(req, "tickets:view");
         assertQueryKeys(url, []);
         try {
-          const content = service().openKernelArtifactContent(
+          const content = await service().openKernelArtifactContent(
             Number(kernelArtifactContentMatch[1]),
             Number(kernelArtifactContentMatch[2]),
           );

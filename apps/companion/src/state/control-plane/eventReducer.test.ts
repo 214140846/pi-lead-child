@@ -51,7 +51,9 @@ describe('pure gateway event reduction', () => {
       type: 'message.clear-transient',
       turnId: 'turn-1',
     }]);
-    expect(reduction.invalidations).toContain('conversation:current');
+    // 只校正这一轮（2026-11-04）：以前每完成一条消息整份重取最近 100 轮。
+    expect(reduction.invalidations).toContain('conversation:turn:turn-1');
+    expect(reduction.invalidations).not.toContain('conversation:current');
   });
 
   it('creates one composite tool part and orders canonical terminal state before stream drain', () => {
@@ -190,7 +192,8 @@ describe('pure gateway event reduction', () => {
       expect.objectContaining({ type: 'lead.ensure-shell', turnId: 'turn-1' }),
       expect.objectContaining({ type: 'lead.fail-turn', message: 'model failed' }),
     ]);
-    expect(reduction.invalidations).toContain('conversation:current');
+    expect(reduction.invalidations).toContain('conversation:turn:turn-1');
+    expect(reduction.invalidations).not.toContain('conversation:current');
   });
 
   // 2026-10-19：工单回复的动作按钮有了判断结果。只重取这张工单的对话（按钮跟着快照里的 replyActions 出来），

@@ -28,7 +28,11 @@ import {
   type ProvisionWorkspaceInput,
 } from "./workspace.js";
 
-import { cloneTicketRepository, ticketRepositoryToClone, type RepositorySpec } from "./repository-checkout.js";
+import {
+  cloneTicketRepository, parseRepositorySpec, ticketRepository, ticketRepositoryToClone, type RepositorySpec,
+} from "./repository-checkout.js";
+import { normalizeRemoteUrl } from "./project-resolver.js";
+import { forgetGitFacts, gitFacts, gitFactsReady, warmGitFacts, type GitFactSource } from "./git-facts.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -41,7 +45,10 @@ export const PULL_REQUEST_TARGET_SET = "workspace_pull_request_target";
 
 export interface PullRequestTarget {
   number: number;
-  remote: string;
+  // 建单时指定的远端（create_task 的 pull_request_remote）。没指定时为 undefined：检出时按仓库的地址找远端。
+  remote?: string;
+  // PR 所在的仓库（规范化的 host/owner/name）。没记下时检出时再从工单的记录里找。
+  repository?: string;
 }
 
 export interface RunWorkspaceFacts {
@@ -86,7 +93,8 @@ function realpathLoose(path: string): string {
   return join(realpathOr(existing), ...rest);
 }
 
-function gitTop(path: string | null): string | null {
+// git 的事实从 facts 来（git-facts.ts）：缺省是缓存优先、缺了同步查；派发和 Lead 的预检先异步预热，这里只读缓存。
+function gitTop(path: string | null, facts: GitFactSource = gitFacts): string | null {
   if (!path) return null;
   let existing = resolve(path);
   while (!existsSync(existing)) {
@@ -94,48 +102,41 @@ function gitTop(path: string | null): string | null {
     if (parent === existing) return null;
     existing = parent;
   }
-  try {
-    const root = execFileSync("git", ["-C", existing, "rev-parse", "--show-toplevel"], {
-      encoding: "utf8", timeout: 3_000, stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-    return root ? realpathSync(root) : null;
-  } catch {
-    return null;
-  }
+  const root = facts.get({ kind: "top", dir: existing });
+  return root ? realpathOr(root) : null;
 }
 
-function gitCommonDir(path: string): string | null {
-  try {
-    const common = execFileSync("git", ["-C", path, "rev-parse", "--path-format=absolute", "--git-common-dir"], {
-      encoding: "utf8", timeout: 3_000, stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-    return common ? realpathSync(common) : null;
-  } catch {
-    return null;
-  }
+function gitCommonDir(path: string, facts: GitFactSource = gitFacts): string | null {
+  const common = facts.get({ kind: "commonDir", dir: path });
+  return common ? realpathOr(common) : null;
 }
 
 // daemon 跑在哪个 checkout 上（projectRoot：dist 和源码都在主 checkout 里）。按 git 的公共目录比较：
 // 这个仓库的任何 worktree 都算同一个仓库。
 let deploymentOverride: string[] | null = null;
-let deploymentCommonDirs: string[] | null = null;
 
 /** 测试用：把这些仓库当成 daemon 的部署仓库。传 null 恢复缺省（projectRoot）。 */
 export function setDeploymentRepositoriesForTesting(paths: string[] | null): void {
   deploymentOverride = paths;
-  deploymentCommonDirs = null;
+  forgetGitFacts();
 }
 
-function deploymentRepositoryDirs(): string[] {
-  if (deploymentCommonDirs) return deploymentCommonDirs;
+function deploymentRepositoryDirs(facts: GitFactSource): string[] {
   const roots = deploymentOverride ?? [projectRoot()];
-  deploymentCommonDirs = roots.map(gitCommonDir).filter((dir): dir is string => dir !== null);
-  return deploymentCommonDirs;
+  return roots.map((root) => gitCommonDir(root, facts)).filter((dir): dir is string => dir !== null);
 }
 
-export function isDeploymentRepository(path: string): boolean {
-  const common = gitCommonDir(path);
-  return common !== null && deploymentRepositoryDirs().includes(common);
+export function isDeploymentRepository(path: string, facts: GitFactSource = gitFacts): boolean {
+  const common = gitCommonDir(path, facts);
+  return common !== null && deploymentRepositoryDirs(facts).includes(common);
+}
+
+/** 异步备好一个 workdir 的仓库事实（根目录、是不是部署仓库）：建 PR 工单、申请共享工作区之前用。 */
+export function warmWorkdirFacts(workdir: string | null | undefined): Promise<void> {
+  return warmGitFacts((facts) => {
+    const top = gitTop(workdir ?? null, facts);
+    if (top) isDeploymentRepository(top, facts);
+  });
 }
 
 function latestDecision(db: Db, itemId: number, decision: string): Record<string, unknown> | null {
@@ -160,77 +161,77 @@ export function sharedWorkspaceReason(db: Db, workspace: Workspace): string | nu
 
 export function pullRequestReviewTarget(db: Db, itemId: number): PullRequestTarget | null {
   const payload = latestDecision(db, itemId, PULL_REQUEST_TARGET_SET);
-  if (!payload || typeof payload.number !== "number" || typeof payload.remote !== "string") return null;
-  return { number: payload.number, remote: payload.remote };
+  if (!payload || typeof payload.number !== "number") return null;
+  return {
+    number: payload.number,
+    ...(typeof payload.remote === "string" ? { remote: payload.remote } : {}),
+    ...(typeof payload.repository === "string" ? { repository: payload.repository } : {}),
+  };
 }
 
 /** 判定这次 Run 用哪个工作区。只读：不建工作区，不写库。派发认领时用它决定把 Run 绑到哪个工作区上。 */
 export function planRunWorkspace(
-  db: Db, item: Item, input: { role: "executor" | "reviewer"; purpose: RunPurpose },
+  db: Db, item: Item, input: { role: "executor" | "reviewer"; purpose: RunPurpose }, facts: GitFactSource = gitFacts,
 ): RunWorkspacePlan {
   const resolved = resolveWorkspace(db, item.id)?.workspace ?? null;
   const writes = input.role === "executor" && WRITING_PURPOSES.includes(input.purpose);
   const workdir = resolved?.path ?? item.workdir ?? null;
   const repository = !resolved && writes ? ticketRepositoryToClone(db, item) : null;
   if (repository) {
-    const facts: RunWorkspaceFacts = { role: input.role, purpose: input.purpose, writes, workdir, gitRepository: null, deploymentRepository: false };
-    return { coding: true, mode: "isolated", facts, workspace: null, ready: false, repository };
+    const cloneFacts: RunWorkspaceFacts = { role: input.role, purpose: input.purpose, writes, workdir, gitRepository: null, deploymentRepository: false };
+    return { coding: true, mode: "isolated", facts: cloneFacts, workspace: null, ready: false, repository };
   }
-  const gitRepository = resolved?.repo_root ? realpathOr(resolved.repo_root) : gitTop(workdir);
-  const facts: RunWorkspaceFacts = {
+  const gitRepository = resolved?.repo_root ? realpathOr(resolved.repo_root) : gitTop(workdir, facts);
+  const runFacts: RunWorkspaceFacts = {
     role: input.role, purpose: input.purpose, writes, workdir, gitRepository,
-    deploymentRepository: gitRepository !== null && isDeploymentRepository(gitRepository),
+    deploymentRepository: gitRepository !== null && isDeploymentRepository(gitRepository, facts),
   };
   const pullRequest = gitRepository ? pullRequestReviewTarget(db, item.id) : null;
   // PR 工单的核查者也看 PR head：给它一个同样的临时检出，不让它对着用户的 checkout 下结论（审查 2026-10-19 第 6 条）。
   if (pullRequest && input.role === "reviewer" && input.purpose === "review") {
-    return { coding: false, mode: "pull_request", facts, workspace: null, ready: false, pullRequest };
+    return { coding: false, mode: "pull_request", facts: runFacts, workspace: null, ready: false, pullRequest };
   }
   if (!writes) {
-    return { coding: false, mode: resolved ? resolved.mode : "none", facts, workspace: resolved, ready: true };
+    return { coding: false, mode: resolved ? resolved.mode : "none", facts: runFacts, workspace: resolved, ready: true };
   }
   if (!gitRepository) {
-    return { coding: false, mode: workdir ? "shared" : "none", facts, workspace: resolved, ready: true };
+    return { coding: false, mode: workdir ? "shared" : "none", facts: runFacts, workspace: resolved, ready: true };
   }
   if (pullRequest) {
     // 每个 Run 用自己的临时检出：上一个 Run 留下的（还没清理掉的）不再用。
-    return { coding: true, mode: "pull_request", facts, workspace: null, ready: false, pullRequest };
+    return { coding: true, mode: "pull_request", facts: runFacts, workspace: null, ready: false, pullRequest };
   }
   if (resolved && resolved.mode === "isolated" && !isDisposableCheckout(resolved)) {
     // 没建成的 worktree（failed，磁盘上什么都没留下）要重新准备，不能让工单卡在它上面。
-    const ready = !(resolved.state === "failed" && discardableFailedWorktree(resolved));
-    return { coding: true, mode: "isolated", facts, workspace: ready ? resolved : null, ready };
+    const ready = !(resolved.state === "failed" && discardableFailedWorktree(resolved, facts));
+    return { coding: true, mode: "isolated", facts: runFacts, workspace: ready ? resolved : null, ready };
   }
-  const sharedReason = resolved && resolved.mode === "shared" && !facts.deploymentRepository
+  const sharedReason = resolved && resolved.mode === "shared" && !runFacts.deploymentRepository
     ? sharedWorkspaceReason(db, resolved)
     : null;
   if (resolved && sharedReason) {
-    return { coding: true, mode: "shared", facts, workspace: resolved, ready: true, sharedReason };
+    return { coding: true, mode: "shared", facts: runFacts, workspace: resolved, ready: true, sharedReason };
   }
-  if (workdirOutsideHead(gitRepository, workdir)) {
+  if (workdirOutsideHead(gitRepository, workdir, facts)) {
     return {
-      coding: true, mode: "unavailable", facts, workspace: null, ready: false,
+      coding: true, mode: "unavailable", facts: runFacts, workspace: null, ready: false,
       refusal: `workdir ${workdir} is inside the git repository ${gitRepository} but is not in its HEAD `
         + "(untracked or ignored), so an isolated worktree would not contain its files. Commit the files the ticket needs, "
         + "or move the workdir outside the repository"
-        + (facts.deploymentRepository ? "." : ", or ask for the shared checkout with provision_workspace(mode='shared', reason)."),
+        + (runFacts.deploymentRepository ? "." : ", or ask for the shared checkout with provision_workspace(mode='shared', reason)."),
     };
   }
-  return { coding: true, mode: "isolated", facts, workspace: null, ready: false };
+  return { coding: true, mode: "isolated", facts: runFacts, workspace: null, ready: false };
 }
 
 // 隔离 worktree 只有 HEAD 里的内容。工单的 workdir 是仓库里一个没有跟踪、又已经有文件的目录（例如 .scratch/ 下放了材料）时，
 // worktree 里只会建出一个空目录：child 看不到材料，产出也留在 worktree 里。还不存在的目录照常隔离，child 会在 worktree 里新建它。
-function workdirOutsideHead(repository: string, workdir: string | null): boolean {
+function workdirOutsideHead(repository: string, workdir: string | null, facts: GitFactSource): boolean {
   if (!workdir || !existsSync(workdir)) return false;
   const subdirectory = relative(repository, realpathOr(workdir));
   if (!subdirectory || subdirectory.startsWith("..") || isAbsolute(subdirectory)) return false;
-  try {
-    execFileSync("git", ["-C", repository, "cat-file", "-e", `HEAD:${subdirectory}`], { stdio: "ignore", timeout: 3_000 });
-    return false;
-  } catch {
-    try { return readdirSync(workdir).length > 0; } catch { return false; }
-  }
+  if (facts.get({ kind: "headHas", repository, path: subdirectory })) return false;
+  try { return readdirSync(workdir).length > 0; } catch { return false; }
 }
 
 /** 派发前的检查（spawn_child 用）：这次 Run 没有合适的工作区时，返回原因。只读。 */
@@ -241,6 +242,20 @@ export function runWorkspaceRefusal(
   return plan.mode === "unavailable" ? plan.refusal ?? "no workspace is available for this run" : null;
 }
 
+/** 派发的门槛：这次判定要的 git 事实都在缓存里时为 true；缺的在后台异步去查，这一拍先跳过（不在事务里跑 git）。 */
+export function runWorkspaceFactsReady(
+  db: Db, item: Item, input: { role: "executor" | "reviewer"; purpose: RunPurpose },
+): boolean {
+  return gitFactsReady((facts) => planRunWorkspace(db, item, input, facts));
+}
+
+/** 异步备好这次判定要的 git 事实（Lead 的 spawn_child 预检之前）。之后的 planRunWorkspace 只读缓存。 */
+export function warmRunWorkspaceFacts(
+  db: Db, item: Item, input: { role: "executor" | "reviewer"; purpose: RunPurpose },
+): Promise<void> {
+  return warmGitFacts((facts) => planRunWorkspace(db, item, input, facts));
+}
+
 function realpathOr(path: string): string {
   try { return realpathSync(path); } catch { return path; }
 }
@@ -249,32 +264,9 @@ function realpathOr(path: string): string {
 //   · 目录不在；或者
 //   · 目录是 git 登记过的 worktree，干净，HEAD 还在起点；或者
 //   · 目录在 <repo>.plc-workspaces 里、git 没有登记，里面最多只有一个 .git 文件（git 建到一半）。
-function discardableFailedWorktree(workspace: Workspace): boolean {
+function discardableFailedWorktree(workspace: Workspace, facts: GitFactSource): boolean {
   if (!workspace.repo_root) return false;
-  const repo = workspace.repo_root;
-  const quiet = { encoding: "utf8" as const, stdio: ["ignore", "pipe", "ignore"] as ["ignore", "pipe", "ignore"], timeout: 5_000 };
-  if (workspace.branch) {
-    try {
-      const head = execFileSync("git", ["-C", repo, "rev-parse", "--verify", "--quiet", `refs/heads/${workspace.branch}`], quiet).trim();
-      if (head !== workspace.base_ref) return false;
-    } catch { /* 分支不在 */ }
-  }
-  if (!existsSync(workspace.path)) return true;
-  const path = realpathOr(workspace.path);
-  let registered = false;
-  try {
-    registered = execFileSync("git", ["-C", repo, "worktree", "list", "--porcelain"], quiet).split("\n")
-      .some((line) => line.startsWith("worktree ") && realpathOr(line.slice("worktree ".length)) === path);
-  } catch { return false; }
-  if (registered) {
-    try {
-      const dirty = execFileSync("git", ["-C", path, "status", "--porcelain", "--untracked-files=normal"], quiet).trim();
-      const head = execFileSync("git", ["-C", path, "rev-parse", "HEAD"], quiet).trim();
-      return dirty === "" && head === workspace.base_ref;
-    } catch { return false; }
-  }
-  if (dirname(path) !== realpathOr(workspaceRootFor(repo))) return false;
-  try { return readdirSync(path).every((name) => name === ".git"); } catch { return false; }
+  return facts.get({ kind: "discardable", workspace, worktreeRoot: workspaceRootFor(workspace.repo_root) });
 }
 
 async function removeFailedWorktree(workspace: Workspace): Promise<void> {
@@ -380,8 +372,8 @@ function prepareRunWorkspaceWith(
     return {
       workspace: null,
       checkout: async (runId) => {
-        const workspace = await createPullRequestCheckout(db, item, plan.facts.gitRepository!, plan.pullRequest!, runId);
-        recordDecision(db, item, plan, workspace, input.runId);
+        const { workspace, remote } = await createPullRequestCheckout(db, item, plan.facts.gitRepository!, plan.pullRequest!, runId);
+        recordDecision(db, item, { ...plan, pullRequest: { ...plan.pullRequest!, remote } }, workspace, input.runId);
         return workspace;
       },
     };
@@ -395,6 +387,9 @@ function prepareRunWorkspaceWith(
         let decided = plan;
         if (plan.repository) {
           ticket = await cloneTicketRepository(db, item, plan.repository);
+          // clone 以前查过的「这里不是仓库」还在缓存里：忘掉，异步重新查好再判定。
+          forgetGitFacts();
+          await warmRunWorkspaceFacts(db, ticket, input);
           decided = planRunWorkspace(db, ticket, input);
           if (decided.mode !== "isolated" || decided.ready || decided.repository) {
             recordDecision(db, ticket, decided, null, input.runId);
@@ -497,15 +492,22 @@ const REMOTE_NAME = /^[A-Za-z0-9._-]{1,100}$/;
 
 /** 记下这张工单要评审的 PR。之后它的每个 Run 都在这个 PR head 的临时检出里跑。 */
 export function setPullRequestReviewTarget(
-  db: Db, input: { itemId: number; number: number; remote?: string; actor: Extract<Actor, "lead" | "user"> },
+  db: Db,
+  input: { itemId: number; number: number; remote?: string; repository?: string; actor: Extract<Actor, "lead" | "user"> },
 ): PullRequestTarget {
   if (!Number.isSafeInteger(input.number) || input.number <= 0) throw new Error("pull request number must be a positive integer");
-  const remote = input.remote?.trim() || "origin";
-  if (!REMOTE_NAME.test(remote) || remote.startsWith("-")) throw new Error("remote must be a git remote name, for example origin");
+  const remote = input.remote?.trim() || undefined;
+  if (remote !== undefined && (!REMOTE_NAME.test(remote) || remote.startsWith("-"))) {
+    throw new Error("remote must be a git remote name, for example origin");
+  }
+  const repository = input.repository ? parseRepositorySpec(input.repository) : null;
+  if (input.repository && !repository) throw new Error(`repository must be owner/name, for example acme/x; got ${input.repository.slice(0, 80)}`);
   const item = getItem(db, input.itemId);
   if (!item) throw new Error(`item ${input.itemId} not found`);
   if (!gitTop(item.workdir)) throw new Error(`item #${input.itemId} workdir is not a git repository; set workdir to the repository of the pull request`);
-  const target = { number: input.number, remote };
+  const target: PullRequestTarget = {
+    number: input.number, ...(remote ? { remote } : {}), ...(repository ? { repository: repository.key } : {}),
+  };
   addActivity(db, {
     itemId: input.itemId, actor: input.actor, kind: "decision",
     payload: { decision: PULL_REQUEST_TARGET_SET, ...target },
@@ -521,16 +523,105 @@ async function gitAsync(args: string[], timeoutMs: number): Promise<string> {
 const PULL_REQUEST_FETCH_TIMEOUT_MS = 120_000;
 
 /**
+ * 准备工作区时碰到的、用户自己能修的问题，例如本地仓库没有 PR 所在的远端。runItem 把它记成这次 Run 的失败，
+ * 写明缺什么、怎么修，不记成宿主代码的未捕获异常（工单 #212：fetch 写死了 origin，三张 PR 评审单一开跑就记成了宿主异常）。
+ */
+export class RunWorkspaceSetupError extends Error {
+  constructor(readonly title: string, message: string, readonly nextStep: string) {
+    super(message);
+    this.name = "RunWorkspaceSetupError";
+  }
+}
+
+interface GitRemote {
+  name: string;
+  // 规范化的地址（host/owner/name，小写），和 RepositorySpec.key 一样。
+  repository: string;
+}
+
+// 读配置里的原样地址：remote get-url 会套用 insteadOf 改写，认不出本来是哪个仓库（repository-checkout.ts 的 originOf 也这样读）。
+async function gitRemotes(repository: string): Promise<GitRemote[]> {
+  let listed: string;
+  try {
+    listed = await gitAsync(["-C", repository, "config", "--get-regexp", "^remote\\..*\\.url$"], 10_000);
+  } catch {
+    return []; // 一个远端都没有时 git config 以 1 退出
+  }
+  return listed.split("\n").flatMap((line) => {
+    const match = /^remote\.(.+)\.url\s+(.+)$/.exec(line.trim());
+    return match ? [{ name: match[1]!, repository: normalizeRemoteUrl(match[2]!).toLowerCase() }] : [];
+  });
+}
+
+// PR 所在的仓库：建单时记下的，否则是工单写明要改的仓库，再否则是 PR 评审模板记下的 PR（owner/repo#N，在 GitHub 上）。
+function pullRequestRepository(db: Db, itemId: number, target: PullRequestTarget): string | null {
+  if (target.repository) return target.repository;
+  const recorded = ticketRepository(db, itemId);
+  if (recorded) return recorded;
+  const template = latestDecision(db, itemId, "ticket_template");
+  const match = typeof template?.pr === "string" ? /^([\w.-]+)\/([\w.-]+)#\d+$/.exec(template.pr) : null;
+  return match ? `github.com/${match[1]}/${match[2]}`.toLowerCase() : null;
+}
+
+function describeRemotes(remotes: GitRemote[]): string {
+  if (!remotes.length) return "这个仓库一个 git 远端都没有。";
+  return `现有的远端：${remotes.map((remote) => `${remote.name}（${remote.repository}）`).join("、")}。`;
+}
+
+/**
+ * 从哪个远端取 PR head。建单时指定了远端（pull_request_remote）就用它；没指定时，用地址指向 PR 所在仓库的那个远端，
+ * 有几个时优先 origin；不知道 PR 在哪个仓库时，用 origin，没有 origin 就用唯一的那个远端。
+ * 找不到时抛 RunWorkspaceSetupError，写明缺哪个远端、怎么配。
+ */
+async function pullRequestRemote(db: Db, item: Item, repository: string, target: PullRequestTarget): Promise<string> {
+  const remotes = await gitRemotes(repository);
+  const names = [...new Set(remotes.map((remote) => remote.name))];
+  const retry = "然后重试这张工单。";
+  // 指定的 origin 不在时照常按地址找：工单 #212 以前，没指定远端时也记成 origin。
+  if (target.remote && (names.includes(target.remote) || target.remote !== "origin")) {
+    if (names.includes(target.remote)) return target.remote;
+    throw new RunWorkspaceSetupError(
+      `PR #${target.number} 检出失败：没有远端 ${target.remote}`,
+      `本地仓库 ${repository} 没有名为 ${target.remote} 的 git 远端（建单时 pull_request_remote 指定的），取不到 PR #${target.number} 的代码。`
+        + describeRemotes(remotes),
+      `在 ${repository} 里加上这个远端：git -C ${repository} remote add ${target.remote} <PR 所在仓库的地址>。`
+        + `或者建单时把 pull_request_remote 改成上面列出的一个远端名。${retry}`,
+    );
+  }
+  const expected = pullRequestRepository(db, item.id, target);
+  if (expected) {
+    const matching = [...new Set(remotes.filter((remote) => remote.repository === expected).map((remote) => remote.name))];
+    if (matching.length) return matching.includes("origin") ? "origin" : matching[0]!;
+    throw new RunWorkspaceSetupError(
+      `PR #${target.number} 检出失败：没有指向 ${expected} 的远端`,
+      `本地仓库 ${repository} 没有指向 ${expected} 的 git 远端，取不到 PR #${target.number} 的代码。${describeRemotes(remotes)}`,
+      `在 ${repository} 里加一个指向它的远端：git -C ${repository} remote add <远端名> https://${expected}.git。`
+        + `已经有这个仓库的远端、只是地址的写法不同时，建单时用 pull_request_remote 写明远端名。${retry}`,
+    );
+  }
+  if (names.includes("origin")) return "origin";
+  if (names.length === 1) return names[0]!;
+  throw new RunWorkspaceSetupError(
+    `PR #${target.number} 检出失败：不知道用哪个远端`,
+    names.length
+      ? `本地仓库 ${repository} 没有 origin，有 ${names.length} 个别的远端，系统不知道 PR #${target.number} 在哪一个上。${describeRemotes(remotes)}`
+      : `本地仓库 ${repository} 一个 git 远端都没有，取不到 PR #${target.number} 的代码。`,
+    `建单时用 pull_request_remote 写明 PR 所在的远端名，或者用 repository 写明 PR 所在的仓库（owner/name）。`
+      + `没有远端时先加一个：git -C ${repository} remote add <远端名> <仓库地址>。${retry}`,
+  );
+}
+
+/**
  * PR head 的临时检出：fetch 到 refs/plc/review/ 下的临时引用（不是分支），再在 <repo>.plc-workspaces 下建
  * detached worktree。用户的工作副本、当前分支和未提交的改动都不动。Run 结束后 disposeCheckout 删掉 worktree 和引用。
  */
 async function createPullRequestCheckout(
   db: Db, item: Item, repository: string, target: PullRequestTarget, runId: number,
-): Promise<Workspace> {
+): Promise<{ workspace: Workspace; remote: string }> {
   // 上一个 Run 留下的检出（daemon 在它结束前停了）先清掉：同一张工单同一种工作区只能有一个。
   for (const leftover of listWorkspaces(db, { ownerItemId: item.id })) {
     if (isDisposableCheckout(leftover) && !["cleaned", "archived"].includes(leftover.state)) {
-      disposeCheckout(db, leftover.id, "replaced by the checkout of a new run");
+      await disposeCheckout(db, leftover.id, "replaced by the checkout of a new run");
     }
   }
   const token = randomUUID().slice(0, 8);
@@ -545,22 +636,39 @@ async function createPullRequestCheckout(
   attachWorkspaceToRun(db, { runId, workspaceId: workspace.id });
   workspace = transitionWorkspace(db, workspace.id, "provisioning");
   try {
-    await gitAsync([
-      "-C", repository, "fetch", "--no-tags", "--no-write-fetch-head", target.remote,
-      `+refs/pull/${target.number}/head:${ref}`,
-    ], PULL_REQUEST_FETCH_TIMEOUT_MS);
+    const remote = await pullRequestRemote(db, item, repository, target);
+    try {
+      await gitAsync([
+        "-C", repository, "fetch", "--no-tags", "--no-write-fetch-head", remote,
+        `+refs/pull/${target.number}/head:${ref}`,
+      ], PULL_REQUEST_FETCH_TIMEOUT_MS);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new RunWorkspaceSetupError(
+        `PR #${target.number} 检出失败：从远端 ${remote} 取不到`,
+        `从远端 ${remote} 取 PR #${target.number} 的代码失败：${lastLine(message)}`,
+        `确认 PR #${target.number} 在远端 ${remote} 的仓库里，并且本机连得上、有读这个仓库的权限。`
+          + "PR 在别的远端上时，建单时用 pull_request_remote 写明远端名。然后重试这张工单。",
+      );
+    }
     const head = await gitAsync(["-C", repository, "rev-parse", "--verify", `${ref}^{commit}`], 10_000);
     db.prepare("UPDATE workspaces SET base_ref=? WHERE id=?").run(head, workspace.id);
     await gitAsync(["-C", repository, "worktree", "add", "--detach", path, head], 120_000);
-    return transitionWorkspace(db, workspace.id, "active");
+    return { workspace: transitionWorkspace(db, workspace.id, "active"), remote };
   } catch (error) {
-    // 这个 Run 会按宿主出错收尾，runItem 随后删掉这一行（disposeEndedRunCheckout）。这里先把磁盘上的东西清掉。
-    try { removeCheckoutFiles(getWorkspace(db, workspace.id)!); } catch { /* 清理扫描会再试 */ }
+    // 这个 Run 会记成失败，runItem 随后删掉这一行（disposeEndedRunCheckout）。这里先把磁盘上的东西清掉。
+    try { await removeCheckoutFiles(getWorkspace(db, workspace.id)!); } catch { /* 清理扫描会再试 */ }
     const current = getWorkspace(db, workspace.id);
     if (current?.state === "provisioning") transitionWorkspace(db, workspace.id, "failed");
+    if (error instanceof RunWorkspaceSetupError) throw error;
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`pull request #${target.number} checkout failed for item #${item.id}: ${message}`);
   }
+}
+
+// git 报错的最后一行（fatal: …）。前面是 "Command failed: git …" 这类命令行。
+function lastLine(text: string): string {
+  return text.trim().split("\n").filter(Boolean).at(-1)?.slice(0, 500) ?? "";
 }
 
 /**
@@ -586,15 +694,18 @@ export function dispatchWorkspaceId(
   return plan.workspace?.id;
 }
 
-/** 一个已结束的 Run 的临时检出：删掉。Run 还会继续（暂停）时保留。不抛错：清不掉的由 sweepWorkspaces 再试。 */
-export function disposeEndedRunCheckout(db: Db, runId: number): void {
+/**
+ * 一个已结束的 Run 的临时检出：删掉。Run 还会继续（暂停）时保留。不抛错：清不掉的由 sweepWorkspaces 再试。
+ * 删目录在子进程和 fs.promises 里做，调用方不用等它（2026-11-03：以前同步删，一个检出要几秒，daemon 停住）。
+ */
+export async function disposeEndedRunCheckout(db: Db, runId: number): Promise<void> {
   try {
     const run = db.prepare("SELECT workspace_id, state FROM runs WHERE id=?").get(runId) as
       { workspace_id: number | null; state: string } | undefined;
     if (!run?.workspace_id || ["starting", "running", "paused"].includes(run.state)) return;
     const workspace = getWorkspace(db, run.workspace_id);
     if (!workspace || !isDisposableCheckout(workspace) || ["cleaned", "archived"].includes(workspace.state)) return;
-    disposeCheckout(db, workspace.id, `run #${runId} ${run.state}`);
+    await disposeCheckout(db, workspace.id, `run #${runId} ${run.state}`);
   } catch {
     // sweepWorkspaces 会再清一次。
   }

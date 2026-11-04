@@ -11,6 +11,19 @@ export const supervisorSockPath = (dir: string = dataDir()) => join(dir, "superv
 // 连不上（没有 socket 文件，或者没有进程在听）。调用方据此判断 daemon 或 supervisor 没在运行。
 export class LocalSocketUnavailableError extends Error {}
 
+// 有没有进程在这个 socket 上监听：只看连接能不能建立。进程活着但正忙时，内核照样接受连接，回答却可能要几秒
+// （2026-11-03 负载 35–90：supervisor 的 status 先问忙着的 daemon，最多 1.5 秒）。以前 plc 用 1 秒的 status 判断，
+// 就以为 supervisor 没在跑，plc daemon restart 去运维入口再起一个，最后报「supervisor 启动失败」。
+// 连接一直没有结果时按「在监听」算：宁可把请求交给它，也不起第二个实例。
+export function socketListening(path: string, timeoutMs = 2_000): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = connect(path);
+    const timer = setTimeout(() => { socket.destroy(); resolve(true); }, timeoutMs);
+    socket.once("connect", () => { clearTimeout(timer); socket.destroy(); resolve(true); });
+    socket.once("error", () => { clearTimeout(timer); resolve(false); });
+  });
+}
+
 export type LocalRequest = <T>(path: string, command: object, timeoutMs?: number) => Promise<T>;
 
 export const localRequest: LocalRequest = <T>(path: string, command: object, timeoutMs = 15_000) =>

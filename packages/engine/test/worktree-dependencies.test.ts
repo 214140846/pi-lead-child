@@ -40,9 +40,9 @@ function monorepo(): { repo: string; worktree: string } {
 afterEach(() => forgetWorktreeDependenciesForTests());
 
 describe("findNodeModulesDirs", () => {
-  it("finds the root and workspace packages' node_modules, not nested ones", () => {
+  it("finds the root and workspace packages' node_modules, not nested ones", async () => {
     const { repo } = monorepo();
-    expect(findNodeModulesDirs(repo)).toEqual(["node_modules", join("packages", "lib", "node_modules")]);
+    expect(await findNodeModulesDirs(repo)).toEqual(["node_modules", join("packages", "lib", "node_modules")]);
   });
 });
 

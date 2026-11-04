@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { tempDir } from "@pi-lead-child/core/testing";
 import { createLoopbackBinding, openDb, type Db } from "@pi-lead-child/store";
 import { startDaemon } from "../src/server.js";
-import { deferred, fakePiLead, type FakeCall, type FakeReply } from "./fake-pi-session.js";
+import { deferred, fakePiLead, type FakeCall, type FakePiLeadOptions, type FakeReply } from "./fake-pi-session.js";
 
 let dir: string;
 let dbPath: string;
@@ -48,10 +48,10 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const has = (call: FakeCall, text: string) => call.inputs.some((input) => input.includes(text));
 const RED = 'kind="red_line"';
 
-async function boot(script: (call: FakeCall, deps: () => any) => FakeReply | Promise<FakeReply>) {
+async function boot(script: (call: FakeCall, deps: () => any) => FakeReply | Promise<FakeReply>, options: FakePiLeadOptions = {}) {
   const logs: string[] = [];
   let lead!: ReturnType<typeof fakePiLead>;
-  lead = fakePiLead((call) => script(call, () => lead.deps()));
+  lead = fakePiLead((call) => script(call, () => lead.deps()), options);
   daemon = await startDaemon({
     dataDir: dir, dbPath, log: (line: string) => { logs.push(line); }, notifyDesktop: () => {}, triageShadow: false,
     sessionFactory: lead.factory as never,
@@ -141,6 +141,30 @@ describe("the 2026-11-03 queue, replayed", () => {
     expect(gates[0]?.has("bash")).toBe(false);
     expect(gates[1]).toBeNull();
   }, 20_000);
+
+  // 回归 2026-11-03：中断落在准备请求那一步时，pi-ai 的 lazyStream 记成 stopReason=error、「This operation was aborted」。每次红线都记成
+  // 模型调用失败，Lead 被判停摆，积压的事推给了用户；这次 prompt 也以这个错误失败时，这一轮报错，没有交接。
+  for (const abortedAs of ["error", "throws"] as const) {
+    it(`does not count the red-line stop as a failed model call when the abort ends as ${abortedAs}`, async () => {
+      lights(150, 300);
+      const { say, lead, turn, logs } = await boot((call) => {
+        if (has(call, RED)) return { tools: ["create_task", "spawn_child"] };
+        if (has(call, "核对一下 acme/a")) return { tools: [github] };
+        if (call.index === 1) return { say: [never] };
+        return { say: "派给轻子 agent 了，大约 5 分钟有结果。" };
+      }, { abortedAs });
+
+      const first = await say("c1", "核对一下 acme/a 的修复对不对");
+      await vi.waitFor(() => expect(lead.calls.length).toBe(2), { timeout: 5_000 });
+      const queued = await say("c2", "顺便看一下 acme/b", "followUp");
+
+      await vi.waitFor(() => expect(lead.aborts()).toBe(1), { timeout: 5_000 });
+      await vi.waitFor(() => expect(turn(queued.turnId).state).toBe("completed"), { timeout: 5_000 });
+      expect(turn(first.turnId)).toEqual({ state: "completed", error: null });
+      expect(lead.calls.some((call) => has(call, RED))).toBe(true);
+      expect(logs.filter((line) => line.startsWith("lead model error") || line.startsWith("turn error"))).toEqual([]);
+    }, 20_000);
+  }
 
   it("only reminds when nobody is waiting", async () => {
     lights(150, 300);

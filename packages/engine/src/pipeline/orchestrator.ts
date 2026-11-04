@@ -38,11 +38,14 @@ export function createOrchestrator(
     itemBusy?: (itemId: number) => boolean;
     // claim 之前的 preflight（工单 05）。tick 先跑过期的安装检查，claim 再读缓存。
     preflight?: RuntimePreflight;
+    // 认领前先异步查好工作区的 git 事实（dispatch.ts 的 asyncWorkspaceFacts）。daemon 打开它。
+    asyncWorkspaceFacts?: boolean;
     log?: (line: string) => void;
   },
 ): Orchestrator {
   const dispatcher = createDispatcher(db, {
     now: options.now, runtimeProfile: options.runtimeProfile, preflight: options.preflight,
+    ...(options.asyncWorkspaceFacts ? { asyncWorkspaceFacts: true } : {}),
     ...(options.runtimeDisabledBy ? { runtimeDisabledBy: options.runtimeDisabledBy } : {}),
     itemBusy: options.itemBusy ?? ((itemId) => liveChildren().has(itemId)),
     log: options.log,

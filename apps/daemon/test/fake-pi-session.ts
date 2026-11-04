@@ -72,6 +72,9 @@ export interface FakePiLeadOptions {
   compact?: (instructions: string | undefined) => void | Promise<void>;
   // 会话的上下文窗口和最近一次回答用了多少 token（daemon 的 leadContextUsage 读 model.contextWindow 和最后一条回答的 usage）。
   contextUsage?: { window: number; tokens: number };
+  // 中断怎样结束（2026-11-03）：error 时发 stopReason=error、errorMessage「This operation was aborted」，和 pi-ai 的
+  // lazyStream 在准备请求时被中断一样；throws 时再让这次 prompt 以这个错误失败。不给时是 stopReason=aborted。
+  abortedAs?: "error" | "throws";
 }
 
 export function fakePiLead(script: FakeScript, options: FakePiLeadOptions = {}) {
@@ -121,6 +124,11 @@ export function fakePiLead(script: FakeScript, options: FakePiLeadOptions = {}) 
       type: "message_end",
       message: { role: "assistant", stopReason, ...(errorMessage ? { errorMessage } : {}), content: [] },
     });
+    const endAborted = () => {
+      if (!options.abortedAs) { end("aborted"); return; }
+      end("error", "This operation was aborted");
+      if (options.abortedAs === "throws") throw new Error("This operation was aborted");
+    };
     deliver([text]);
     deliver(takeSteering());
     for (;;) {
@@ -133,7 +141,7 @@ export function fakePiLead(script: FakeScript, options: FakePiLeadOptions = {}) 
       pendingImages = [];
       calls.push(call);
       const answer = Promise.resolve(script(call));
-      if (await waitOrAbort(answer, aborted) === "aborted") { end("aborted"); return; }
+      if (await waitOrAbort(answer, aborted) === "aborted") { endAborted(); return; }
       const reply = await answer;
       if (reply.error) { end("error", reply.error); return; }
       if (reply.cutOff !== undefined) {
@@ -149,7 +157,7 @@ export function fakePiLead(script: FakeScript, options: FakePiLeadOptions = {}) 
           said += part;
           emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: part } });
         } else if (await waitOrAbort(part, aborted) === "aborted") {
-          end("aborted");
+          endAborted();
           return;
         }
       }
@@ -171,7 +179,7 @@ export function fakePiLead(script: FakeScript, options: FakePiLeadOptions = {}) 
         if (tool.until) await tool.until;
         emit({ type: "tool_execution_end", toolCallId, toolName: tool.name, args, result: { content: [{ type: "text", text: "ok" }] }, isError: false });
       }
-      if (abortedNow) { end("aborted"); return; }
+      if (abortedNow) { endAborted(); return; }
       const steered = takeSteering();
       if (steered.length) { deliver(steered); continue; }
       if (tools.length) continue;

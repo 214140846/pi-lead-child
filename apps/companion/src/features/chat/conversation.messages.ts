@@ -15,11 +15,11 @@ export const conversationMessages = defineMessages({
       showViews: 'Open custom views',
     },
     history: {
-      unavailable: 'Cannot read earlier conversation cards now.',
-      failed: (error: string) => `Earlier conversation cards did not load: ${error}`,
-      loading: 'Loading earlier conversation cards…',
-      retry: 'Retry loading earlier conversation cards',
-      load: 'Load earlier conversation cards',
+      unavailable: 'Cannot read earlier messages now.',
+      failed: (error: string) => `Earlier messages did not load: ${error}`,
+      loading: 'Loading earlier messages…',
+      retry: 'Retry loading earlier messages',
+      load: 'Load earlier messages',
     },
     cached: 'Cached conversation · waiting to reconnect',
     empty: {
@@ -93,11 +93,11 @@ export const conversationMessages = defineMessages({
       showViews: '打开自定义视图',
     },
     history: {
-      unavailable: '暂时无法读取更早的会话卡片。',
-      failed: (error) => `更早的会话卡片加载失败：${error}`,
-      loading: '正在加载更早的会话卡片…',
-      retry: '重试加载更早的会话卡片',
-      load: '加载更早的会话卡片',
+      unavailable: '暂时无法读取更早的消息。',
+      failed: (error) => `更早的消息加载失败：${error}`,
+      loading: '正在加载更早的消息…',
+      retry: '重试加载更早的消息',
+      load: '加载更早的消息',
     },
     cached: '显示已缓存会话 · 等待重新连接',
     empty: {

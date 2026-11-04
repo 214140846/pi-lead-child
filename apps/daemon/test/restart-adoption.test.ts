@@ -1,8 +1,8 @@
 // 工单 15 的 Seam 3：真实的 daemon 进程、真实的 SQLite、真实的垫片和 fake Codex 进程。
 // 测试停止 daemon（SIGKILL 或正常停机），在同一个数据目录上启动新的 daemon，再看它怎样处理还在跑的 child。
 // 回归：旧代码在重启时杀掉还活着的 child，把 Run 标成失败。
-import { spawn, type ChildProcess } from "node:child_process";
-import { appendFileSync, existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { appendFileSync, existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -115,6 +115,9 @@ function daemonEnv(extra: Record<string, string>): Record<string, string | undef
 }
 
 // daemon 有自己的进程组，测试结束时停止整个组。命令行带上数据目录，测试结束时的检查据此认出它。
+// 每个 daemon 进程的 stderr：fake daemon 把日志行写在这里。
+const daemonLogs = new WeakMap<ChildProcess, { text: string }>();
+
 async function startDaemonProcess(extra: Record<string, string> = {}): Promise<ChildProcess> {
   const child = spawn(process.execPath, ["--import", "tsx", resolve("apps/daemon/test/fake-restart-daemon.ts"), dir], {
     env: daemonEnv(extra) as NodeJS.ProcessEnv,
@@ -122,15 +125,16 @@ async function startDaemonProcess(extra: Record<string, string> = {}): Promise<C
     detached: true,
   });
   daemons.push(child);
-  let log = "";
-  child.stderr!.setEncoding("utf8").on("data", (text: string) => { log += text; });
+  const log = { text: "" };
+  daemonLogs.set(child, log);
+  child.stderr!.setEncoding("utf8").on("data", (text: string) => { log.text += text; });
   await new Promise<void>((done, fail) => {
     let text = "";
     child.stdout!.setEncoding("utf8").on("data", (chunk: string) => {
       text += chunk;
       if (text.includes("ready\n")) done();
     });
-    child.once("exit", (code, signal) => fail(new Error(`daemon exited (${code ?? signal}) before it was ready:\n${log}`)));
+    child.once("exit", (code, signal) => fail(new Error(`daemon exited (${code ?? signal}) before it was ready:\n${log.text}`)));
   });
   return child;
 }
@@ -394,6 +398,75 @@ describe("a daemon killed while it is starting a run", () => {
     expect(alive(left!.pid)).toBe(false);
     expect(Math.max(...counts)).toBe(1);
   }, 60_000);
+});
+
+// 2026-11-03 07:26Z 和 10:19Z：负载 35–90，停机前几秒开始的执行 Run（#249、#273）停机时还在准备：检出隔离 worktree、
+// fetch origin、克隆依赖。它还没有垫片，分离不了。旧代码的 close 等它：daemon 打出 "detached N running child(ren)"
+// 以后，第一次 5 分钟才退出，第二次 4 分钟后被 SIGKILL。这里让 origin 的 fetch 卡住来复现：假的 ssh 一直等 gate 文件。
+describe("a normal shutdown while a run is still preparing", () => {
+  let fetchGate = "";
+  afterEach(() => {
+    // 放开卡住的 fetch：假的 ssh 退出，git 也跟着退出。
+    if (fetchGate) appendFileSync(fetchGate, "");
+    fetchGate = "";
+  });
+
+  function repositoryWithHangingOrigin(): { repo: string; fetching: string; env: Record<string, string> } {
+    const repo = join(workdir, "repo");
+    const git = (...args: string[]) => execFileSync("git", args, { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["init", "-q", repo]);
+    writeFileSync(join(repo, "README.md"), "x\n");
+    git("add", ".");
+    git("-c", "user.name=Ethan", "-c", "user.email=ethan@example.com", "commit", "-qm", "base");
+    git("remote", "add", "origin", "ssh://git.example.invalid/acme/x.git");
+    fetchGate = join(dir, "fetch-gate");
+    const fetching = join(dir, "fetching");
+    const ssh = join(dir, "fake-ssh.sh");
+    writeFileSync(ssh, `touch "${fetching}"\nwhile [ ! -f "${fetchGate}" ]; do sleep 0.05; done\nexit 1\n`);
+    return { repo, fetching, env: { GIT_SSH_COMMAND: `sh ${ssh}` } };
+  }
+
+  it("does not wait for the run, and the next daemon reclaims it and dispatches the ticket again", async () => {
+    const { repo, fetching, env } = repositoryWithHangingOrigin();
+    const itemId = createItem(db, { title: "build it", brief: "change the code", createdBy: "user", workdir: repo });
+    createDispatcher(db).request({
+      itemId, role: "executor", purpose: "execution", runtime: "codex",
+      trigger: "test", idempotencyKey: "restart-adoption:preparing",
+    });
+    let daemon = await startDaemonProcess(env);
+    await vi.waitFor(() => expect(existsSync(fetching)).toBe(true), { timeout: 20_000, interval: 50 });
+    const [run] = runsOf(itemId);
+    expect(run).toMatchObject({ state: "starting", launcher: null });
+
+    // 旧代码：daemon 一直等这个 Run 准备完，不退出。
+    await stopDaemonProcess(daemon, "SIGTERM", 10_000);
+    expect(daemonLogs.get(daemon)!.text).toContain("left 1 starting run(s) for the next daemon");
+    expect(runRow(run!.id)).toMatchObject({ state: "starting", launcher: null });
+
+    appendFileSync(fetchGate, "");
+    daemon = await startDaemonProcess(env);
+    // 和 daemon 被强杀时一样：Run 记为被重启打断，派发请求回到队列，工单再派一次。
+    await vi.waitFor(() => expect(runRow(run!.id)).toMatchObject({ state: "failed", failure_code: "run_interrupted" }),
+      { timeout: 15_000 });
+    await vi.waitFor(() => expect(runsOf(itemId)).toHaveLength(2), { timeout: 15_000 });
+  }, 60_000);
+});
+
+// 停机的上限：close 卡在某一步时（这里是一个 runtime 启动不返回的 Run），daemon 过了 PLC_DAEMON_CLOSE_TIMEOUT_MS
+// 自己退出，并记下它卡在哪一步。旧代码一直不退出，只能被 SIGKILL。
+describe("a normal shutdown that does not finish", () => {
+  it("exits after the close deadline and says where the close was waiting", async () => {
+    const itemId = dispatchGatedRun("close-deadline");
+    const daemon = await startDaemonProcess({ FAKE_DAEMON_HOLD_START: "1", PLC_DAEMON_CLOSE_TIMEOUT_MS: "2000" });
+    await vi.waitFor(() => expect(launchOutputs()).toContain("thread.started"), { timeout: 15_000 });
+    expect(runsOf(itemId)).toMatchObject([{ state: "starting", launcher: null }]);
+
+    await stopDaemonProcess(daemon, "SIGTERM", 10_000);
+    const log = daemonLogs.get(daemon)!.text;
+    expect(log).toContain("daemon close did not finish within 2000 ms");
+    expect(log).toContain(`waiting for 1 run(s) to settle (ticket #${itemId})`);
+    expect(log).not.toContain("daemon closed");
+  }, 40_000);
 });
 
 describe("the crash-loop budget", () => {

@@ -123,18 +123,22 @@ function conversationText(): string {
 // 2026-10-16 用户要求：失败卡按内容定宽、Lead 动态占满一栏、正文限在 560，三种宽度混在一起。
 // 现在 Lead 一侧所有的块都在同一个内容列里，各自占满这一列。
 describe('the width of the Lead side', () => {
-  it('puts every block in the one conversation column, each filling it', () => {
+  // 虚拟列表（2026-11-04）里每一块各有一个内容列：它们和输入框的列一样宽、一样居中。
+  it('puts every block in a conversation column of the same width, each filling it', () => {
     setup();
     const columns = screen.getAllByTestId('conversation-column');
-    expect(columns).toHaveLength(1);
-    const column = columns[0]!;
     // 底栏（执行中 · 需要处理）和输入框用同一个居中的列，和上面的内容对齐（2026-10-16）。
     const footer = screen.getByTestId('conversation-footer-column');
-    expect(getComputedStyle(footer).maxWidth).toBe(getComputedStyle(column).maxWidth);
+    for (const column of columns) {
+      expect(getComputedStyle(column).maxWidth).toBe(getComputedStyle(footer).maxWidth);
+      expect(getComputedStyle(column).alignSelf).toBe('center');
+    }
     expect(getComputedStyle(footer).alignSelf).toBe('center');
     expect(footer.querySelector('[placeholder]')).toBeTruthy();
     for (const block of [...screen.getAllByTestId('failure-card'), ...screen.queryAllByTestId('markdown-message')]) {
-      expect(column.contains(block)).toBe(true);
+      const column = columns.find((candidate) => candidate.contains(block));
+      expect(column).toBeTruthy();
+      if (!column) continue;
       expect(getComputedStyle(block).maxWidth).not.toBe('var(--t-size-prose)');
       const shrinking: string[] = [];
       for (let node: HTMLElement | null = block; node && node !== column; node = node.parentElement) {

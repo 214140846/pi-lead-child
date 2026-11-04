@@ -61,6 +61,9 @@ export const FAILURE_CLASSES = {
   session_not_found: { scope: "attempt", retry: "never", needs: "none", category: "session_expired" },
   host_registration_failed: { scope: "host", retry: "never", needs: "code_fix", category: "host_defect" },
   host_exception: { scope: "host", retry: "never", needs: "code_fix", category: "host_defect" },
+  // 宿主准备工作区时碰到用户自己能修的问题，例如本地仓库没有 PR 所在的远端（工单 #212）。没到 runtime，不算 runtime 的故障，
+  // 也不扣工单的重试额度：修好设置以前重试也一样失败。
+  workspace_setup_failed: { scope: "host", retry: "never", needs: "config", category: "host_defect" },
   // daemon 反复重启，同一份工作被接管或重派超过崩溃循环额度（工单 15）。多半是宿主的缺陷让 daemon 崩溃。
   restart_crash_loop: { scope: "host", retry: "never", needs: "code_fix", category: "host_defect" },
   task_failed: { scope: "task", retry: "never", needs: "none", category: "task_failure" },
@@ -192,6 +195,7 @@ export function classifyHostFailure(evidence: FailureEvidence): TypedFailure | n
     return typedFailure("host_registration_failed", evidence);
   }
   if (evidence.errorCode === "unhandled_run_exception") return typedFailure("host_exception", evidence);
+  if (evidence.errorCode === "workspace_setup_failed") return typedFailure("workspace_setup_failed", evidence);
   if (evidence.errorCode === "lease_expired") return typedFailure("run_interrupted", evidence);
   return null;
 }

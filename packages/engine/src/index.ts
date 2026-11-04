@@ -39,6 +39,8 @@ export * from "./handbook-propose.js";
 export * from "./design-preferences.js";
 export * from "./coordinator/workspace.js";
 export * from "./coordinator/workspace-policy.js";
+export * from "./coordinator/git-facts.js";
+export { warmRepositoryIdentity } from "./coordinator/project-resolver.js";
 export * from "./pipeline/automatic-review.js";
 export * from "./pipeline/delivery-run.js";
 export * from "./pipeline/expired-session.js";

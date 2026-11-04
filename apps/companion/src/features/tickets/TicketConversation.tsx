@@ -1,5 +1,5 @@
 import { Box, Button, Column, MessageBubble, Text } from '@pi-lead-child/components';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 
 import { AssistantTurnView } from '@/features/chat/AssistantTurnView';
@@ -18,11 +18,12 @@ import { ticketChatMessages } from './ticketChat.messages';
 
 // 工单对话：你和这张工单的执行 agent 之间的消息。和主会话一样：你的消息是浅灰气泡，agent 的回复直接排在白底上，
 // 跨天时插日期分隔线，失败用白话的失败卡（原文在展开以后）。
+// 对话坞里是虚拟列表（ChatList），一条消息一块（ticketConversationBlocks、TicketConversationBlockView）；这里把所有块画在一起。
 export function TicketConversation({
   ticketId,
   messageIds,
   onResend,
-  now = new Date(),
+  now,
 }: {
   ticketId: number;
   messageIds: readonly string[];
@@ -30,27 +31,52 @@ export function TicketConversation({
   onResend?: (text: string) => void;
   now?: Date;
 }) {
-  const locale = useLocale();
-  const dates = useControlPlaneStore(useShallow((state) => messageIds.map((id) => state.messagesById[id]?.createdAt ?? '')));
-  let previousDay = '';
+  const blocks = useTicketConversationBlocks(messageIds, now);
   return (
     <Column testID="ticket-conversation" gap="conversation-block">
-      {messageIds.map((messageId, index) => {
-        const day = dates[index] ? formatConversationDate(dates[index]!, now, locale) : '';
-        const divider = day && day !== previousDay ? day : null;
-        if (day) previousDay = day;
-        return (
-          <Column key={messageId} gap="conversation-block">
-            {divider ? <ConversationDateDivider label={divider} /> : null}
-            <TicketConversationMessage
-              ticketId={ticketId}
-              messageId={messageId}
-              onResend={onResend}
-              latest={index === messageIds.length - 1}
-            />
-          </Column>
-        );
-      })}
+      {blocks.map((block) => <TicketConversationBlockView key={block.key} ticketId={ticketId} block={block} onResend={onResend} />)}
+    </Column>
+  );
+}
+
+// 对话里的一块：一条消息，跨天时它上面带一条日期分隔线。key 是消息的 id。
+export type TicketConversationBlock = { key: string; messageId: string; divider: string | null; latest: boolean };
+
+export function ticketConversationBlocks(
+  messageIds: readonly string[],
+  dates: readonly string[],
+  now: Date,
+  locale: Locale,
+): TicketConversationBlock[] {
+  let previousDay = '';
+  return messageIds.map((messageId, index) => {
+    const day = dates[index] ? formatConversationDate(dates[index]!, now, locale) : '';
+    const divider = day && day !== previousDay ? day : null;
+    if (day) previousDay = day;
+    return { key: messageId, messageId, divider, latest: index === messageIds.length - 1 };
+  });
+}
+
+// now 不给时按现在算「今天」「昨天」（测试给一个固定的时间）。块只在消息或日期变了时重算，虚拟列表据此只重画变了的块。
+export function useTicketConversationBlocks(messageIds: readonly string[], now?: Date): TicketConversationBlock[] {
+  const locale = useLocale();
+  const dates = useControlPlaneStore(useShallow((state) => messageIds.map((id) => state.messagesById[id]?.createdAt ?? '')));
+  const at = now?.getTime();
+  return useMemo(
+    () => ticketConversationBlocks(messageIds, dates, at === undefined ? new Date() : new Date(at), locale),
+    [messageIds, dates, at, locale],
+  );
+}
+
+export function TicketConversationBlockView({ ticketId, block, onResend }: {
+  ticketId: number;
+  block: TicketConversationBlock;
+  onResend?: (text: string) => void;
+}) {
+  return (
+    <Column gap="conversation-block">
+      {block.divider ? <ConversationDateDivider label={block.divider} /> : null}
+      <TicketConversationMessage ticketId={ticketId} messageId={block.messageId} onResend={onResend} latest={block.latest} />
     </Column>
   );
 }

@@ -10,7 +10,7 @@
 // 打开交付视图不再跑 git diff。分支现在指向哪、用户仓库在哪个分支、能不能合并，仍然现读 git：这些是操作的前提。
 // 读 git 都用异步的 execFile（delivery-source.ts）。文件路径先校验（相对路径、没有 ..、在交付列表里），再交给 git。
 // 可能含密钥的文件（.env、*.pem、id_rsa……）列出来，但不显示内容。
-import { readFileSync, realpathSync, statSync } from "node:fs";
+import { realpathSync, statSync } from "node:fs";
 import { extname, relative, resolve, sep } from "node:path";
 import type {
   Db, DeliveryGeneratedKind, DeliverySnapshot, DeliverySnapshotCommit, DeliverySnapshotFile, DeliverySnapshotTriggerKind,
@@ -21,8 +21,9 @@ import {
   getWorkspace, leadDisplayName, listDeliverySnapshotHeaders,
 } from "@pi-lead-child/store";
 import type { Item, ItemStage, Workspace } from "@pi-lead-child/core";
+import { readHead } from "@pi-lead-child/core";
 import { redactSecretText } from "@pi-lead-child/protocol";
-import { abandonIsolatedWorkspace, integrateIsolatedWorkspace } from "./workspace.js";
+import { abandonIsolatedWorkspace, integrateIsolatedWorkspace, withWorkspaceLock } from "./workspace.js";
 import { worktreeBaseBranch } from "./workspace-remote.js";
 import {
   activeRuns, deliveryFileHiddenReason, deliveryWorkspace, execFileAsync, firstLine, git, gitRun, hasGitSegment, latestDecision,
@@ -402,9 +403,13 @@ export async function ticketDeliveryFile(
     if (!real) throw new DeliveryError("not_found", "找不到这个文件。");
     const hidden = realFileHiddenReason(item.workdir!, real);
     if (hidden) throw new DeliveryError("unavailable", hidden);
-    const raw = readFileSync(real);
-    if (raw.subarray(0, 8000).includes(0)) throw new DeliveryError("unavailable", "二进制文件，不能在这里预览。");
-    return { path, view, language, ...clip(raw.toString("utf8")) };
+    // 只读预览要的开头一段（和判断二进制要的前 8000 个字节）。以前整个文件同步读进来再截断（2026-11-03）。
+    const { head, size } = await readHead(real, Math.max(DELIVERY_FILE_MAX_BYTES, 8000));
+    if (head.subarray(0, 8000).includes(0)) throw new DeliveryError("unavailable", "二进制文件，不能在这里预览。");
+    return {
+      path, view, language,
+      text: head.subarray(0, DELIVERY_FILE_MAX_BYTES).toString("utf8"), truncated: size > DELIVERY_FILE_MAX_BYTES, byteLength: size,
+    };
   }
 
   // 读交付时的那个提交（快照的 head），不是分支现在的位置：分支删了以后，提交还在仓库里时照样能看。
@@ -579,8 +584,9 @@ function assertAsSeen(delivery: TicketDelivery, expected: DeliveryExpectation | 
   }
 }
 
-// 读交付要等 git。这段时间里 Lead 的 integrate_workspace、release_workspace（同步）可能已经合并或放弃了它，返工可能已经开始。
-// await 之后、动手之前同步再查一次，不在过时的检查上验收或合并。
+// 读交付要等 git。这段时间里 Lead 的 integrate_workspace、release_workspace 可能已经合并或放弃了它，返工可能已经开始。
+// 拿到这个工作区的锁（workspace.ts 的 withWorkspaceLock）以后、动手之前再查一次，不在过时的检查上验收或合并：
+// 合并、放弃自己也要等 git，锁保证查过的状态在动手时还是那样。
 function recheckBeforeActing(
   db: Db, itemId: number, workspaceId: number, stages: readonly ItemStage[], stageReason: string,
 ): Item {
@@ -614,23 +620,26 @@ export async function mergeDelivery(
   return oneAtATime(itemId, async () => {
     const workspace = requireIsolated(db, itemId);
     const delivery = await ticketDelivery(db, itemId);
-    // 从这里到合并结束都是同步的：查过的状态不会再变。先按库里现在的状态查，再看读交付时算出的能不能合并。
-    const item = recheckBeforeActing(db, itemId, workspace.id, ["review", "done"], "交付以后才能合并。");
-    if (!delivery.actions.merge.available) throw new DeliveryError("unavailable", delivery.actions.merge.reason ?? "现在不能合并。");
-    assertAsSeen(delivery, input.expected);
-    const accepts = item.stage === "review";
-    if (accepts) input.accept();
-    try {
-      integrateIsolatedWorkspace(db, workspace.id, { ...workspaceBy(input.by), reason: input.reason });
-    } catch {
-      // 合并已经完成，只是清理工作区失败（#188）：不说「合并没有成功」。
-      if (getWorkspace(db, workspace.id)?.merge_status === "merged") {
-        const done = "改动已经合进你的仓库，但清理工作区没有完成，系统的定期清理会再试。";
-        throw new DeliveryError("failed", accepts ? `工单已经验收。${done}` : done);
+    // 同一张工单的交付操作排队（oneAtATime）。Lead 的合并、放弃不走这里：拿到工作区的锁以后再查（recheckBeforeActing）。
+    // 先按库里现在的状态查，再看读交付时算出的能不能合并。
+    await withWorkspaceLock(workspace.id, async () => {
+      const item = recheckBeforeActing(db, itemId, workspace.id, ["review", "done"], "交付以后才能合并。");
+      if (!delivery.actions.merge.available) throw new DeliveryError("unavailable", delivery.actions.merge.reason ?? "现在不能合并。");
+      assertAsSeen(delivery, input.expected);
+      const accepts = item.stage === "review";
+      if (accepts) input.accept();
+      try {
+        await integrateIsolatedWorkspace(db, workspace.id, { ...workspaceBy(input.by), reason: input.reason });
+      } catch {
+        // 合并已经完成，只是清理工作区失败（#188）：不说「合并没有成功」。
+        if (getWorkspace(db, workspace.id)?.merge_status === "merged") {
+          const done = "改动已经合进你的仓库，但清理工作区没有完成，系统的定期清理会再试。";
+          throw new DeliveryError("failed", accepts ? `工单已经验收。${done}` : done);
+        }
+        const detail = mergeFailureText(db, workspace);
+        throw new DeliveryError("failed", accepts ? `工单已经验收，但合并没有成功：${detail}` : `合并没有成功：${detail}`);
       }
-      const detail = mergeFailureText(db, workspace);
-      throw new DeliveryError("failed", accepts ? `工单已经验收，但合并没有成功：${detail}` : `合并没有成功：${detail}`);
-    }
+    });
     return ticketDelivery(db, itemId);
   });
 }
@@ -644,12 +653,14 @@ export async function abandonDelivery(
   return oneAtATime(itemId, async () => {
     const workspace = requireIsolated(db, itemId);
     const delivery = await ticketDelivery(db, itemId);
-    recheckBeforeActing(db, itemId, workspace.id, ["done", "cancelled"], "工单还没结束。不要这些改动时，取消工单。");
-    if (!delivery.actions.abandon.available) throw new DeliveryError("unavailable", delivery.actions.abandon.reason ?? "现在不能放弃。");
-    assertAsSeen(delivery, input.expected);
-    abandonIsolatedWorkspace(db, workspace.id, {
-      ...workspaceBy(input.by), reason: input.reason,
-      userConfirmation: (input.by?.actor ?? "user") === "user" ? "用户在工单详情里确认放弃这些改动" : input.reason,
+    await withWorkspaceLock(workspace.id, async () => {
+      recheckBeforeActing(db, itemId, workspace.id, ["done", "cancelled"], "工单还没结束。不要这些改动时，取消工单。");
+      if (!delivery.actions.abandon.available) throw new DeliveryError("unavailable", delivery.actions.abandon.reason ?? "现在不能放弃。");
+      assertAsSeen(delivery, input.expected);
+      await abandonIsolatedWorkspace(db, workspace.id, {
+        ...workspaceBy(input.by), reason: input.reason,
+        userConfirmation: (input.by?.actor ?? "user") === "user" ? "用户在工单详情里确认放弃这些改动" : input.reason,
+      });
     });
     return ticketDelivery(db, itemId);
   });

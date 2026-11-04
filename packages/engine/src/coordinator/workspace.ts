@@ -1,7 +1,7 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { execFile, execFileSync } from "node:child_process";
-import {
-  existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmdirSync, rmSync, statSync, writeFileSync,
-} from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, renameSync } from "node:fs";
+import { mkdtemp, readFile, rm, rmdir, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
@@ -12,12 +12,12 @@ import type { Actor, Workspace, WorkspaceKind, WorkspaceMode, WorkspaceState } f
 import {
   createWorkspace, getWorkspace, listWorkspaces, resolveWorkspace, transitionWorkspace,
 } from "@pi-lead-child/store";
-import { repositoryIdentity } from "./project-resolver.js";
-import { chooseWorktreeBase, recordWorktreeBase } from "./workspace-remote.js";
+import { repositoryIdentity, warmRepositoryIdentity } from "./project-resolver.js";
+import { chooseWorktreeBase, chooseWorktreeBaseAsync, recordWorktreeBase, type WorktreeBase } from "./workspace-remote.js";
 import { workspaceContentHash } from "./workspace-integrity.js";
 import { startWorktreeDependencies } from "./worktree-dependencies.js";
 import { createCheckpointDomainService } from "./checkpoints.js";
-import { MAX_ARTIFACT_BYTES, openArtifactContent, stageArtifact } from "@pi-lead-child/store";
+import { MAX_ARTIFACT_BYTES, openArtifactContentAsync, stageArtifact } from "@pi-lead-child/store";
 
 const execFileAsync = promisify(execFile);
 
@@ -69,7 +69,7 @@ function databaseDataDir(db: Db): string | null {
 // Nothing reads the bundle back. When there is no new commit, or the bundle would exceed the
 // limit, or git cannot make it, the snapshot keeps only the metadata. Abandon keeps the branch
 // and merge puts its commits into the user's branch, so no change depends on the bundle.
-function buildWorkspaceSnapshot(db: Db, workspace: Workspace, contentHash: string): Buffer {
+async function buildWorkspaceSnapshot(db: Db, workspace: Workspace, contentHash: string): Promise<Buffer> {
   if (!workspace.git_worktree || !workspace.repo_root || !workspace.base_ref) {
     return Buffer.from(JSON.stringify({ version: 1, workspaceId: workspace.id, contentHash }), "utf8");
   }
@@ -77,41 +77,41 @@ function buildWorkspaceSnapshot(db: Db, workspace: Workspace, contentHash: strin
     version: 1,
     workspaceId: workspace.id,
     contentHash,
-    head: git(["rev-parse", "HEAD"], workspace.path),
+    head: await git(["rev-parse", "HEAD"], workspace.path),
     baseRef: workspace.base_ref,
     branch: workspace.branch,
   };
   const withoutBundle = (bundleOmitted: "no_new_commits" | "too_large" | "unavailable", detail: Record<string, unknown> = {}) =>
     Buffer.from(JSON.stringify({ ...metadata, bundle: null, bundleOmitted, ...detail }), "utf8");
-  const bundleDir = mkdtempSync(join(tmpdir(), "plc-workspace-bundle-"));
+  const bundleDir = await mkdtemp(join(tmpdir(), "plc-workspace-bundle-"));
   const bundlePath = join(bundleDir, "workspace.bundle");
   try {
     let commits: number;
     try {
-      commits = Number(git(["rev-list", "--count", `${workspace.base_ref}..HEAD`], workspace.path));
-      if (commits > 0) git(["bundle", "create", bundlePath, "HEAD", `^${workspace.base_ref}`], workspace.path);
+      commits = Number(await git(["rev-list", "--count", `${workspace.base_ref}..HEAD`], workspace.path));
+      if (commits > 0) await git(["bundle", "create", bundlePath, "HEAD", `^${workspace.base_ref}`], workspace.path);
     } catch (error) {
       return withoutBundle("unavailable", { error: error instanceof Error ? error.message.slice(0, 500) : String(error) });
     }
     if (commits === 0) return withoutBundle("no_new_commits");
     // base64 makes the bundle 4/3 as large. Check the size before reading a large file into memory.
-    const bundleBytes = statSync(bundlePath).size;
+    const bundleBytes = (await stat(bundlePath)).size;
     if (Math.ceil(bundleBytes / 3) * 4 > MAX_ARTIFACT_BYTES) return withoutBundle("too_large", { commits, bundleBytes });
-    const content = Buffer.from(JSON.stringify({ ...metadata, commits, bundle: readFileSync(bundlePath).toString("base64") }), "utf8");
+    const content = Buffer.from(JSON.stringify({ ...metadata, commits, bundle: (await readFile(bundlePath)).toString("base64") }), "utf8");
     return content.length > MAX_ARTIFACT_BYTES ? withoutBundle("too_large", { commits, bundleBytes }) : content;
   } finally {
-    rmSync(bundleDir, { recursive: true, force: true });
+    await rm(bundleDir, { recursive: true, force: true });
   }
 }
 
-function persistWorkspaceSnapshot(db: Db, workspace: Workspace, contentHash: string, dataDir: string | null): number | null {
+async function persistWorkspaceSnapshot(db: Db, workspace: Workspace, contentHash: string, dataDir: string | null): Promise<number | null> {
   if (!dataDir) return null;
   const item = getItem(db, workspace.owner_item_id);
   if (!item?.workdir || !existsSync(item.workdir)) return null;
   const relativePath = `.plc-workspace-snapshot-${workspace.id}-${randomUUID()}.json`;
   const temporaryPath = join(item.workdir, relativePath);
-  const content = buildWorkspaceSnapshot(db, workspace, contentHash);
-  writeFileSync(temporaryPath, content, { flag: "wx", mode: 0o600 });
+  const content = await buildWorkspaceSnapshot(db, workspace, contentHash);
+  await writeFile(temporaryPath, content, { flag: "wx", mode: 0o600 });
   let staged;
   try {
     staged = stageArtifact(db, {
@@ -130,14 +130,38 @@ function persistWorkspaceSnapshot(db: Db, workspace: Workspace, contentHash: str
     return (db.prepare("SELECT id FROM artifacts WHERE checkpoint_id=? AND ref=?")
       .get(result.checkpoint.id, staged.ref) as { id: number }).id;
   } finally {
-    rmSync(temporaryPath, { force: true });
+    await rm(temporaryPath, { force: true });
   }
 }
 
-function git(args: string[], cwd?: string, timeout = 10_000): string {
-  return execFileSync("git", cwd ? ["-C", cwd, ...args] : args, {
-    encoding: "utf8", timeout, stdio: ["ignore", "pipe", "pipe"],
-  }).trim();
+// 工作区的收尾（合并、放弃、释放、清理、删临时检出、清理扫描）里的 git 都在子进程里跑，不占住 daemon 的主线程。
+// 以前同步跑：删一个 1.4 GB 的 worktree、合并、打包快照时 daemon 停住，网页断线（2026-11-03）。
+async function git(args: string[], cwd?: string, timeout = 10_000): Promise<string> {
+  const { stdout } = await execFileAsync("git", cwd ? ["-C", cwd, ...args] : args, { encoding: "utf8", timeout });
+  return stdout.trim();
+}
+
+// 同一个工作区的收尾一次只做一件：改成异步以后，等 git 的时候清理扫描、用户的合并、Run 结束时删检出可能同时来。
+// 已经拿着这个工作区的调用（例如合并里面的释放）直接接着做，不再排队。
+const workspaceQueues = new Map<number, Promise<unknown>>();
+const heldWorkspaces = new AsyncLocalStorage<ReadonlySet<number>>();
+
+export async function withWorkspaceLock<T>(id: number, work: () => Promise<T>): Promise<T> {
+  const held = heldWorkspaces.getStore();
+  if (held?.has(id)) return work();
+  const previous = workspaceQueues.get(id) ?? Promise.resolve();
+  const current = previous.catch(() => undefined)
+    .then(() => heldWorkspaces.run(new Set([...(held ?? []), id]), work));
+  workspaceQueues.set(id, current);
+  try {
+    return await current;
+  } finally {
+    if (workspaceQueues.get(id) === current) workspaceQueues.delete(id);
+  }
+}
+
+function assertNoActiveRuns(db: Db, id: number): void {
+  if (activeRunCount(db, id) !== 0) throw new Error(`workspace #${id} still has active runs`);
 }
 
 // git worktree remove deletes the whole directory, ignored files such as node_modules included.
@@ -148,37 +172,94 @@ export const WORKTREE_REMOVE_TIMEOUT_MS = 10 * 60_000;
 // A killed git worktree remove leaves only deletions of tracked files (" D" in git status), or a
 // directory whose .git file is already gone. Those files are in HEAD, which is on the branch, so
 // removing the rest loses nothing. Only plc's removal deletes the .git file of a plc worktree.
-function removalInterrupted(workspace: Workspace): boolean {
+async function removalInterrupted(workspace: Workspace): Promise<boolean> {
   if (!existsSync(join(workspace.path, ".git"))) return true;
   // Not git(): its trim() would eat the leading space of the first " D" line.
-  const lines = execFileSync("git", ["-C", workspace.path, "status", "--porcelain", "--untracked-files=normal"], {
-    encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "pipe"],
-  }).split("\n").filter(Boolean);
+  const { stdout } = await execFileAsync("git", ["-C", workspace.path, "status", "--porcelain", "--untracked-files=normal"], {
+    encoding: "utf8", timeout: 10_000,
+  });
+  const lines = stdout.split("\n").filter(Boolean);
   return lines.length > 0 && lines.every((line) => line.startsWith(" D "));
+}
+
+// Deleting a worktree takes minutes when it holds node_modules (2026-11-03: about 9 minutes for #190 and
+// #191). plc does not delete in place, so the merge or cleanup that asked for it does not wait: it renames
+// the directory into <repo>.plc-workspaces/.trash (same disk, so the rename is instant), removes git's
+// registration, and deletes the renamed directory in the background. A daemon that stops half way
+// leaves the rest in .trash; the next sweep deletes it (deleteWorktreeTrash).
+export const WORKTREE_TRASH_DIR = ".trash";
+const pendingDeletions = new Map<string, Promise<void>>();
+
+function deleteInBackground(path: string): void {
+  if (pendingDeletions.has(path)) return;
+  const deletion = rm(path, { recursive: true, force: true })
+    .catch(() => { /* the next sweep tries again */ })
+    .finally(() => { pendingDeletions.delete(path); });
+  pendingDeletions.set(path, deletion);
+}
+
+/** Resolves when the background deletions that have started are done. The daemon does not wait for them. */
+export async function worktreeDeletionsSettled(): Promise<void> {
+  while (pendingDeletions.size) await Promise.allSettled([...pendingDeletions.values()]);
+}
+
+// Moves a plc worktree out of its place into the trash of its container, removes git's registration and
+// deletes it in the background. The caller has checked that the content is recorded or not needed.
+// Returns false when the rename fails (for example another disk is mounted there): the caller then
+// deletes in place, as before.
+async function retireWorktree(path: string, repoRoot: string): Promise<boolean> {
+  const trash = join(workspaceRootFor(repoRoot), WORKTREE_TRASH_DIR);
+  const target = join(trash, `${basename(path)}-${Date.now()}-${randomUUID().slice(0, 8)}`);
+  try {
+    mkdirSync(trash, { recursive: true });
+    renameSync(path, target);
+  } catch {
+    return false;
+  }
+  // The directory is gone from its place: git worktree remove --force deletes only the registration.
+  try {
+    await git(["worktree", "remove", "--force", path], repoRoot);
+  } catch {
+    try { await git(["worktree", "prune"], repoRoot); } catch { /* the next sweep prunes */ }
+  }
+  deleteInBackground(target);
+  return true;
+}
+
+/** Starts deleting what a stopped daemon left in a container's trash. */
+function deleteWorktreeTrash(container: string): void {
+  const trash = join(container, WORKTREE_TRASH_DIR);
+  if (!existsSync(trash)) return;
+  for (const name of readdirSync(trash)) deleteInBackground(join(trash, name));
 }
 
 // Deletes the worktree directory and git's registration of it. The caller has checked that the
 // content is recorded. A worktree whose removal was interrupted is removed with --force: git's own
-// check would refuse the half-deleted tree.
-function removeWorktreeDirectory(workspace: Workspace): void {
+// check would refuse the half-deleted tree. beforeRemove runs right before anything is deleted: the
+// checks above awaited git, and a Run may have started on the worktree in the meantime.
+async function removeWorktreeDirectory(workspace: Workspace, beforeRemove: () => void): Promise<void> {
   const repoRoot = workspace.repo_root ?? undefined;
   if (!existsSync(workspace.path)) {
     // When the directory is gone, git worktree remove --force deletes only the registration.
-    try { git(["worktree", "remove", "--force", workspace.path], repoRoot); } catch { /* not registered */ }
+    beforeRemove();
+    try { await git(["worktree", "remove", "--force", workspace.path], repoRoot); } catch { /* not registered */ }
     return;
   }
-  const interrupted = removalInterrupted(workspace);
-  if (!interrupted && git(["status", "--porcelain"], workspace.path)) {
+  const interrupted = await removalInterrupted(workspace);
+  if (!interrupted && await git(["status", "--porcelain"], workspace.path)) {
     throw new Error("workspace has unrecorded changes; snapshot or merge before cleanup");
   }
+  beforeRemove();
+  if (insideWorkspaceRoot(workspace) && await retireWorktree(workspace.path, workspace.repo_root!)) return;
+  // A worktree outside plc's container (older rows), or one that could not be moved: git deletes it in place.
   try {
-    git(["worktree", "remove", ...(interrupted ? ["--force"] : []), workspace.path], repoRoot, WORKTREE_REMOVE_TIMEOUT_MS);
+    await git(["worktree", "remove", ...(interrupted ? ["--force"] : []), workspace.path], repoRoot, WORKTREE_REMOVE_TIMEOUT_MS);
   } catch (error) {
     // git stopped half way, or does not accept a directory whose .git file is gone. What is left is
     // part of the content checked above, so delete the rest here instead of failing on every retry.
-    if (!insideWorkspaceRoot(workspace) || (existsSync(workspace.path) && !removalInterrupted(workspace))) throw error;
-    rmSync(workspace.path, { recursive: true, force: true });
-    git(["worktree", "prune"], repoRoot);
+    if (!insideWorkspaceRoot(workspace) || (existsSync(workspace.path) && !(await removalInterrupted(workspace)))) throw error;
+    await rm(workspace.path, { recursive: true, force: true });
+    await git(["worktree", "prune"], repoRoot);
   }
 }
 
@@ -288,7 +369,7 @@ export async function provisionWorkspaceAsync(db: Db, input: ProvisionWorkspaceI
   const key = `${input.itemId}:${kind}`;
   const previous = provisioningByOwner.get(key);
   const current = (previous ? previous.catch(() => undefined) : Promise.resolve()).then(async () => {
-    const started = startIsolatedWorkspace(db, input, kind);
+    const started = await startIsolatedWorkspaceAsync(db, input, kind);
     if (!started.checkout) return started.workspace;
     try {
       await execFileAsync("git", worktreeAddArgs(started), { encoding: "utf8", timeout: WORKTREE_ADD_TIMEOUT_MS });
@@ -317,8 +398,27 @@ interface StartedIsolatedWorkspace {
   checkout: boolean;
 }
 
+// startIsolatedWorkspace 的异步版：仓库身份和新 worktree 的基线先在子进程里查好（git-facts.ts、workspace-remote.ts），
+// 库里的那一半照旧同步做。调用方（provisionWorkspaceAsync）按工作区的主人排了队，查好以后到建行之间不会有别的准备插进来。
+async function startIsolatedWorkspaceAsync(
+  db: Db, input: ProvisionWorkspaceInput, kind: WorkspaceKind,
+): Promise<StartedIsolatedWorkspace> {
+  const source = sourceWorkspace(db, input);
+  const sourceDir = existingAncestor(source.path);
+  let base: WorktreeBase | undefined;
+  if (!source.repo_root) await warmRepositoryIdentity(sourceDir);
+  const repoRoot = source.repo_root ?? repositoryIdentity(sourceDir)?.root;
+  if (repoRoot && !source.base_ref && !existingWorkspaceForOwner(db, input.itemId, kind)) {
+    base = await chooseWorktreeBaseAsync(repoRoot, sourceDir);
+  }
+  return startIsolatedWorkspace(db, input, kind, base);
+}
+
 // 隔离 worktree 在库里的那一半：找到或建好工作区的行，停在 provisioning。检出（git worktree add）由调用方做。
-function startIsolatedWorkspace(db: Db, input: ProvisionWorkspaceInput, kind: WorkspaceKind): StartedIsolatedWorkspace {
+// chosen：异步版已经选好的基线。没给时在这里同步选（只有测试用的同步 provisionWorkspace 走这条路）。
+function startIsolatedWorkspace(
+  db: Db, input: ProvisionWorkspaceInput, kind: WorkspaceKind, chosen?: WorktreeBase,
+): StartedIsolatedWorkspace {
   const source = sourceWorkspace(db, input);
   // 来源路径可以是 child 要新建的目录（还不存在）：按它最近的已存在的上级目录找仓库。
   const sourceDir = existingAncestor(source.path);
@@ -330,7 +430,9 @@ function startIsolatedWorkspace(db: Db, input: ProvisionWorkspaceInput, kind: Wo
   const existing = existingWorkspaceForOwner(db, input.itemId, kind);
   // 新切的 worktree 基于 origin 的默认分支（workspace-remote.ts，2026-10-29），不是用户 checkout 当前停的分支。
   // 已经有的 worktree 沿用它原来的基线：只在来源明确写了基线、又和它不一样时才算不对。
-  const chosenBase = existing ? null : source.base_ref ? { ref: source.base_ref, branch: null } : chooseWorktreeBase(repoRoot, sourceDir);
+  const chosenBase = existing
+    ? null
+    : source.base_ref ? { ref: source.base_ref, branch: null } : chosen ?? chooseWorktreeBase(repoRoot, sourceDir);
   const baseRef = chosenBase?.ref ?? existing!.base_ref;
   let workspace: Workspace;
   if (existing) {
@@ -418,7 +520,15 @@ function activeRunCount(db: Db, workspaceId: number): number {
   ).get(workspaceId) as { n: number }).n;
 }
 
-export function releaseWorkspace(db: Db, id: number, options: { mergeStatus?: "merged" | "abandoned"; dataDir?: string } = {}): Workspace {
+export function releaseWorkspace(
+  db: Db, id: number, options: { mergeStatus?: "merged" | "abandoned"; dataDir?: string } = {},
+): Promise<Workspace> {
+  return withWorkspaceLock(id, () => releaseWorkspaceNow(db, id, options));
+}
+
+async function releaseWorkspaceNow(
+  db: Db, id: number, options: { mergeStatus?: "merged" | "abandoned"; dataDir?: string },
+): Promise<Workspace> {
   const workspace = getWorkspace(db, id);
   if (!workspace) throw new Error(`workspace ${id} not found`);
   if (activeRunCount(db, id) !== 0) throw new Error(`workspace #${id} still has active runs`);
@@ -445,9 +555,11 @@ export function releaseWorkspace(db: Db, id: number, options: { mergeStatus?: "m
   // The snapshot comes first. When it fails, nothing below is written: merge_status and state stay
   // as they were, and the same call can run again (#188: a failed snapshot left merge_status=abandoned
   // with the workspace not released).
-  const contentHash = hashesContent(workspace) ? workspaceContentHash(workspace) : CONTENT_NOT_HASHED;
-  const artifactId = persistWorkspaceSnapshot(db, workspace, contentHash, options.dataDir ?? databaseDataDir(db));
+  const contentHash = hashesContent(workspace) ? await workspaceContentHash(workspace) : CONTENT_NOT_HASHED;
+  const artifactId = await persistWorkspaceSnapshot(db, workspace, contentHash, options.dataDir ?? databaseDataDir(db));
   return db.transaction(() => {
+    // 快照是异步做的：这期间可能有 Run 用上了这个工作区（例如工单对话）。那样不释放，下一次再试。
+    assertNoActiveRuns(db, id);
     if (mergeStatus) db.prepare("UPDATE workspaces SET merge_status=? WHERE id=?").run(mergeStatus, id);
     db.prepare(`INSERT INTO workspace_cleanup_snapshots (workspace_id, content_hash, artifact_id) VALUES (?, ?, ?)
       ON CONFLICT(workspace_id) DO UPDATE SET content_hash=excluded.content_hash, artifact_id=excluded.artifact_id, captured_at=datetime('now')`)
@@ -456,7 +568,7 @@ export function releaseWorkspace(db: Db, id: number, options: { mergeStatus?: "m
   })();
 }
 
-export function workspaceCleanupChecks(db: Db, id: number, now = new Date()): WorkspaceCleanupChecks {
+export async function workspaceCleanupChecks(db: Db, id: number, now = new Date()): Promise<WorkspaceCleanupChecks> {
   const workspace = getWorkspace(db, id);
   if (!workspace) throw new Error(`workspace ${id} not found`);
   const owner = getItem(db, workspace.owner_item_id);
@@ -465,7 +577,7 @@ export function workspaceCleanupChecks(db: Db, id: number, now = new Date()): Wo
   let artifactAvailable = snapshot?.artifact_id === null || snapshot?.artifact_id === undefined;
   if (snapshot?.artifact_id) {
     try {
-      const content = openArtifactContent(db, databaseDataDir(db) ?? "", workspace.owner_item_id, snapshot.artifact_id);
+      const content = await openArtifactContentAsync(db, databaseDataDir(db) ?? "", workspace.owner_item_id, snapshot.artifact_id);
       content.stream.destroy();
       artifactAvailable = true;
     } catch {
@@ -479,7 +591,11 @@ export function workspaceCleanupChecks(db: Db, id: number, now = new Date()): Wo
   if (snapshot && (!hashesContent(workspace) || !existsSync(workspace.path))) {
     matches = true;
   } else if (snapshot) {
-    try { matches = removalInterrupted(workspace) || workspaceContentHash(workspace) === snapshot.content_hash; } catch { matches = false; }
+    try {
+      matches = await removalInterrupted(workspace) || await workspaceContentHash(workspace) === snapshot.content_hash;
+    } catch {
+      matches = false;
+    }
   }
   return {
     ownerTerminal: Boolean(owner && ["done", "cancelled"].includes(owner.stage)),
@@ -491,7 +607,11 @@ export function workspaceCleanupChecks(db: Db, id: number, now = new Date()): Wo
   };
 }
 
-export function cleanupWorkspace(db: Db, id: number): Workspace {
+export function cleanupWorkspace(db: Db, id: number): Promise<Workspace> {
+  return withWorkspaceLock(id, () => cleanupWorkspaceNow(db, id));
+}
+
+async function cleanupWorkspaceNow(db: Db, id: number): Promise<Workspace> {
   let workspace = getWorkspace(db, id);
   if (!workspace) throw new Error(`workspace ${id} not found`);
   if (activeRunCount(db, id) !== 0) throw new Error(`workspace #${id} still has active runs`);
@@ -500,13 +620,13 @@ export function cleanupWorkspace(db: Db, id: number): Workspace {
   }
   workspace = transitionWorkspace(db, id, "cleaning");
   try {
-    const checks = workspaceCleanupChecks(db, id);
+    const checks = await workspaceCleanupChecks(db, id);
     if (!checks.ownerTerminal || !checks.noActiveRuns || !checks.snapshotPersisted ||
         !checks.contentMatchesSnapshot || !checks.commitsCovered || !checks.retentionElapsed) {
       if (!checks.contentMatchesSnapshot) throw new Error("workspace has unrecorded changes; snapshot or merge before cleanup");
       throw new Error(`workspace cleanup preconditions failed: ${JSON.stringify(checks)}`);
     }
-    if (workspace.git_worktree) removeWorktreeDirectory(workspace);
+    if (workspace.git_worktree) await removeWorktreeDirectory(workspace, () => assertNoActiveRuns(db, id));
     workspace = transitionWorkspace(db, id, "cleaned");
     return transitionWorkspace(db, id, "archived");
   } catch (error) {
@@ -542,21 +662,25 @@ export function reconcileWorkspaces(db: Db): WorkspaceReconcileResult {
   return { checked: candidates.length, recovered, failed };
 }
 
-export function integrateWorkspace(db: Db, id: number, targetBranch?: string): Workspace {
+export function integrateWorkspace(db: Db, id: number, targetBranch?: string): Promise<Workspace> {
+  return withWorkspaceLock(id, () => integrateWorkspaceNow(db, id, targetBranch));
+}
+
+async function integrateWorkspaceNow(db: Db, id: number, targetBranch?: string): Promise<Workspace> {
   const workspace = getWorkspace(db, id);
   if (!workspace) throw new Error(`workspace ${id} not found`);
   if (workspace.mode !== "isolated" || !workspace.repo_root || !workspace.branch) {
     throw new Error(`workspace #${id} is not an isolated git workspace`);
   }
-  const target = targetBranch ?? git(["branch", "--show-current"], workspace.repo_root);
-  const currentBranch = git(["branch", "--show-current"], workspace.repo_root);
+  const target = targetBranch ?? await git(["branch", "--show-current"], workspace.repo_root);
+  const currentBranch = await git(["branch", "--show-current"], workspace.repo_root);
   if (!target || target !== currentBranch) {
     throw new Error(`workspace integration target ${target || "(detached)"} is not the current branch ${currentBranch || "(detached)"}`);
   }
   try {
-    git(["merge", "--no-edit", workspace.branch], workspace.repo_root);
+    await git(["merge", "--no-edit", workspace.branch], workspace.repo_root);
   } catch (error) {
-    try { git(["merge", "--abort"], workspace.repo_root); } catch { /* best effort */ }
+    try { await git(["merge", "--abort"], workspace.repo_root); } catch { /* best effort */ }
     db.prepare("UPDATE workspaces SET merge_status='conflict' WHERE id=?").run(id);
     const current = getWorkspace(db, id)!;
     if (current.state === "pending_integration") transitionWorkspace(db, id, "blocked");
@@ -566,7 +690,7 @@ export function integrateWorkspace(db: Db, id: number, targetBranch?: string): W
   // conflict (#188): merge_status stays merged, the state stays, and the sweep releases it later.
   db.prepare("UPDATE workspaces SET merge_status='merged' WHERE id=?").run(id);
   try {
-    return releaseWorkspace(db, id, { mergeStatus: "merged", dataDir: databaseDataDir(db) ?? undefined });
+    return await releaseWorkspace(db, id, { mergeStatus: "merged", dataDir: databaseDataDir(db) ?? undefined });
   } catch (error) {
     throw new Error(`workspace #${id} merged into ${target}, but releasing it failed: ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -576,25 +700,32 @@ export function integrateWorkspace(db: Db, id: number, targetBranch?: string): W
 // ── PR 评审的临时检出 ─────────────────────────────────────────────────────────────
 
 /** 删掉临时检出在磁盘和 git 里的东西：worktree、它的登记、临时引用。数据库的行不动。 */
-export function removeCheckoutFiles(workspace: Workspace): void {
+export async function removeCheckoutFiles(workspace: Workspace): Promise<void> {
   const repoRoot = workspace.repo_root!;
+  // 在 plc 的容器里：挪进回收目录，在后台删（retireWorktree），不在 daemon 的线程上删整个检出。
+  if (existsSync(workspace.path) && insideWorkspaceRoot(workspace)) await retireWorktree(workspace.path, repoRoot);
   // 目录已经不在时，git worktree remove --force 也删掉 git 里登记的这一条。
-  try { git(["worktree", "remove", "--force", workspace.path], repoRoot); } catch { /* 下面再看目录还在不在 */ }
-  if (existsSync(workspace.path) && insideWorkspaceRoot(workspace)) rmSync(workspace.path, { recursive: true, force: true });
+  try { await git(["worktree", "remove", "--force", workspace.path], repoRoot); } catch { /* 下面再看目录还在不在 */ }
+  if (existsSync(workspace.path) && insideWorkspaceRoot(workspace)) await rm(workspace.path, { recursive: true, force: true });
   if (existsSync(workspace.path)) throw new Error(`checkout ${workspace.path} could not be removed`);
   if (workspace.branch?.startsWith("refs/plc/")) {
-    try { git(["update-ref", "-d", workspace.branch], repoRoot); } catch { /* 引用已经不在 */ }
+    try { await git(["update-ref", "-d", workspace.branch], repoRoot); } catch { /* 引用已经不在 */ }
   }
 }
 
 /** 删掉一个临时检出：worktree、它在 git 里的登记和临时引用。数据库里的行走到 archived，不删。 */
-export function disposeCheckout(db: Db, id: number, reason: string): Workspace {
+export function disposeCheckout(db: Db, id: number, reason: string): Promise<Workspace> {
+  return withWorkspaceLock(id, () => disposeCheckoutNow(db, id, reason));
+}
+
+async function disposeCheckoutNow(db: Db, id: number, reason: string): Promise<Workspace> {
   let workspace = getWorkspace(db, id);
   if (!workspace) throw new Error(`workspace ${id} not found`);
   if (!isDisposableCheckout(workspace)) throw new Error(`workspace #${id} is not a disposable checkout`);
   if (workspace.state === "cleaned" || workspace.state === "archived") return workspace;
-  if (activeRunCount(db, id) !== 0) throw new Error(`workspace #${id} still has active runs`);
-  removeCheckoutFiles(workspace);
+  assertNoActiveRuns(db, id);
+  await removeCheckoutFiles(workspace);
+  workspace = getWorkspace(db, id)!;
   if (workspace.state === "requested" || workspace.state === "provisioning") workspace = transitionWorkspace(db, id, "failed");
   if (workspace.state === "review_hold") workspace = transitionWorkspace(db, id, "idle");
   if (workspace.state !== "released" && workspace.state !== "cleaning") workspace = transitionWorkspace(db, id, "released");
@@ -621,18 +752,18 @@ export interface WorktreeChanges {
   unmergedCommits: number;
 }
 
-export function worktreeChanges(workspace: Workspace): WorktreeChanges {
+export async function worktreeChanges(workspace: Workspace): Promise<WorktreeChanges> {
   if (!workspace.git_worktree || !workspace.repo_root) throw new Error(`workspace #${workspace.id} is not a plc git worktree`);
   const present = existsSync(workspace.path);
   const head = present
-    ? git(["rev-parse", "HEAD"], workspace.path)
+    ? await git(["rev-parse", "HEAD"], workspace.path)
     : workspace.branch && !workspace.branch.startsWith("refs/")
-      ? git(["rev-parse", "--verify", `refs/heads/${workspace.branch}^{commit}`], workspace.repo_root)
+      ? await git(["rev-parse", "--verify", `refs/heads/${workspace.branch}^{commit}`], workspace.repo_root)
       : null;
   const dirtyFiles = present
-    ? git(["status", "--porcelain", "--untracked-files=normal"], workspace.path).split("\n").filter(Boolean).slice(0, 20)
+    ? (await git(["status", "--porcelain", "--untracked-files=normal"], workspace.path)).split("\n").filter(Boolean).slice(0, 20)
     : [];
-  const unmergedCommits = head ? Number(git(["rev-list", "--count", `HEAD..${head}`], workspace.repo_root)) : 0;
+  const unmergedCommits = head ? Number(await git(["rev-list", "--count", `HEAD..${head}`], workspace.repo_root)) : 0;
   return { head, dirtyFiles, unmergedCommits };
 }
 
@@ -663,29 +794,30 @@ function restoreItemWorkdir(db: Db, workspace: Workspace): void {
 }
 
 // plc 自己建的分支（plc/…）已经全部合并进用户仓库的当前分支时删掉。git branch -d 自己会拒绝删没合并的分支。
-function deleteMergedBranch(workspace: Workspace): boolean {
+async function deleteMergedBranch(workspace: Workspace): Promise<boolean> {
   if (!workspace.repo_root || !workspace.branch?.startsWith("plc/")) return false;
   try {
-    git(["branch", "-d", workspace.branch], workspace.repo_root);
+    await git(["branch", "-d", workspace.branch], workspace.repo_root);
     return true;
   } catch {
     return false;
   }
 }
 
-function removeReleasedWorktree(db: Db, id: number): { workspace: Workspace; branchDeleted: boolean } {
-  const archived = cleanupWorkspace(db, id);
-  const branchDeleted = deleteMergedBranch(archived);
+async function removeReleasedWorktree(db: Db, id: number): Promise<{ workspace: Workspace; branchDeleted: boolean }> {
+  const archived = await cleanupWorkspace(db, id);
+  const branchDeleted = await deleteMergedBranch(archived);
   restoreItemWorkdir(db, archived);
   return { workspace: archived, branchDeleted };
 }
 
 // 目录已经不在的 worktree：没有文件可以快照或删除。收拾 git 的登记和已合并的分支，行走到 archived。
-function archiveMissingWorktree(
+async function archiveMissingWorktree(
   db: Db, workspace: Workspace, mergeStatus: "merged" | "abandoned", now = new Date(),
-): { workspace: Workspace; branchDeleted: boolean } {
-  try { git(["worktree", "remove", "--force", workspace.path], workspace.repo_root!); } catch { /* 没有登记 */ }
-  const branchDeleted = deleteMergedBranch(workspace);
+): Promise<{ workspace: Workspace; branchDeleted: boolean }> {
+  assertNoActiveRuns(db, workspace.id);
+  try { await git(["worktree", "remove", "--force", workspace.path], workspace.repo_root!); } catch { /* 没有登记 */ }
+  const branchDeleted = await deleteMergedBranch(workspace);
   db.prepare("UPDATE workspaces SET merge_status=? WHERE id=?").run(mergeStatus, workspace.id);
   let current = getWorkspace(db, workspace.id)!;
   if (current.state === "review_hold") current = transitionWorkspace(db, current.id, "idle", now);
@@ -717,33 +849,39 @@ function behalfPayload(input: WorktreeDecisionBehalf): Record<string, unknown> {
 
 export function integrateIsolatedWorkspace(
   db: Db, id: number, input: { actor: Extract<Actor, "lead" | "user">; reason: string } & WorktreeDecisionBehalf,
-): WorktreeDecisionResult {
+): Promise<WorktreeDecisionResult> {
+  return withWorkspaceLock(id, () => integrateIsolatedWorkspaceNow(db, id, input));
+}
+
+async function integrateIsolatedWorkspaceNow(
+  db: Db, id: number, input: { actor: Extract<Actor, "lead" | "user">; reason: string } & WorktreeDecisionBehalf,
+): Promise<WorktreeDecisionResult> {
   const workspace = assertOwnedWorktree(db, id);
-  const changes = worktreeChanges(workspace);
+  const changes = await worktreeChanges(workspace);
   if (changes.dirtyFiles.length) {
     throw new Error(`worktree #${id} has uncommitted changes (${changes.dirtyFiles.join(", ")}); `
       + "ask the ticket agent to commit them, or abandon the worktree");
   }
-  const userChanges = git(["status", "--porcelain", "--untracked-files=no"], workspace.repo_root!);
+  const userChanges = await git(["status", "--porcelain", "--untracked-files=no"], workspace.repo_root!);
   if (userChanges) {
     throw new Error(`the checkout ${workspace.repo_root} has uncommitted changes; merging now would mix them with the user's work. `
       + "Ask the user to commit or stash them first");
   }
-  const target = git(["branch", "--show-current"], workspace.repo_root!);
+  const target = await git(["branch", "--show-current"], workspace.repo_root!);
   let outcome: { workspace: Workspace; branchDeleted: boolean };
   if (existsSync(workspace.path)) {
-    integrateWorkspace(db, id);
-    outcome = removeReleasedWorktree(db, id);
+    await integrateWorkspace(db, id);
+    outcome = await removeReleasedWorktree(db, id);
   } else {
     // 目录不在了，分支还在：直接在用户的仓库里合并分支。
     try {
-      git(["merge", "--no-edit", workspace.branch!], workspace.repo_root!);
+      await git(["merge", "--no-edit", workspace.branch!], workspace.repo_root!);
     } catch (error) {
-      try { git(["merge", "--abort"], workspace.repo_root!); } catch { /* best effort */ }
+      try { await git(["merge", "--abort"], workspace.repo_root!); } catch { /* best effort */ }
       db.prepare("UPDATE workspaces SET merge_status='conflict' WHERE id=?").run(id);
       throw new Error(`workspace integration conflict for #${id} into ${target}: ${String(error)}`);
     }
-    outcome = archiveMissingWorktree(db, workspace, "merged");
+    outcome = await archiveMissingWorktree(db, workspace, "merged");
   }
   const { workspace: archived, branchDeleted } = outcome;
   addActivity(db, {
@@ -763,9 +901,16 @@ export function integrateIsolatedWorkspace(
 export function abandonIsolatedWorkspace(
   db: Db, id: number,
   input: { actor: Extract<Actor, "lead" | "user" | "system">; reason: string; userConfirmation?: string } & WorktreeDecisionBehalf,
-): WorktreeDecisionResult {
+): Promise<WorktreeDecisionResult> {
+  return withWorkspaceLock(id, () => abandonIsolatedWorkspaceNow(db, id, input));
+}
+
+async function abandonIsolatedWorkspaceNow(
+  db: Db, id: number,
+  input: { actor: Extract<Actor, "lead" | "user" | "system">; reason: string; userConfirmation?: string } & WorktreeDecisionBehalf,
+): Promise<WorktreeDecisionResult> {
   const workspace = assertOwnedWorktree(db, id);
-  const changes = worktreeChanges(workspace);
+  const changes = await worktreeChanges(workspace);
   const confirmation = input.userConfirmation?.trim() ?? "";
   if (hasUnmergedChanges(changes) && !confirmation) {
     throw new Error(`worktree #${id} has unmerged changes (${changes.unmergedCommits} commit(s), `
@@ -773,13 +918,18 @@ export function abandonIsolatedWorkspace(
       + "ask the user, then pass user_confirmation with the user's words");
   }
   if (changes.dirtyFiles.length && existsSync(workspace.path)) {
-    git(["add", "-A"], workspace.path);
-    git(["-c", "user.name=plc", "-c", "user.email=plc@localhost", "commit", "-q", "--no-verify",
+    await git(["add", "-A"], workspace.path);
+    await git(["-c", "user.name=plc", "-c", "user.email=plc@localhost", "commit", "-q", "--no-verify",
       "-m", `plc: uncommitted changes when workspace #${id} was abandoned`], workspace.path);
   }
-  const { workspace: archived, branchDeleted } = existsSync(workspace.path)
-    ? (releaseWorkspace(db, id, { mergeStatus: "abandoned" }), removeReleasedWorktree(db, id))
-    : archiveMissingWorktree(db, workspace, "abandoned");
+  let outcome: { workspace: Workspace; branchDeleted: boolean };
+  if (existsSync(workspace.path)) {
+    await releaseWorkspace(db, id, { mergeStatus: "abandoned" });
+    outcome = await removeReleasedWorktree(db, id);
+  } else {
+    outcome = await archiveMissingWorktree(db, workspace, "abandoned");
+  }
+  const { workspace: archived, branchDeleted } = outcome;
   addActivity(db, {
     itemId: workspace.owner_item_id, actor: input.actor, kind: "decision",
     payload: {
@@ -877,13 +1027,16 @@ function idleFor(workspace: Workspace, now: Date): number {
   return now.getTime() - at;
 }
 
-function sweepIsolatedWorktree(
-  db: Db, workspace: Workspace, now: Date, ttlMs: number,
-): "cleaned" | "awaiting" | null {
+async function sweepIsolatedWorktree(
+  db: Db, listed: Workspace, now: Date, ttlMs: number,
+): Promise<"cleaned" | "awaiting" | null> {
+  // 排到它的时候再读一次：前面排着的合并、放弃可能已经改了它。
+  const workspace = getWorkspace(db, listed.id);
+  if (!workspace) return null;
   const owner = getItem(db, workspace.owner_item_id);
   if (!owner || !["done", "cancelled"].includes(owner.stage) || activeRunCount(db, workspace.id) !== 0) return null;
   if (workspace.state === "released") {
-    removeReleasedWorktree(db, workspace.id);
+    await removeReleasedWorktree(db, workspace.id);
     return "cleaned";
   }
   if (!["active", "idle", "pending_integration", "blocked", "failed"].includes(workspace.state)) return null;
@@ -892,15 +1045,15 @@ function sweepIsolatedWorktree(
   // 删了一半的目录可能已经没有 .git 文件，所以在 worktreeChanges 之前判断。
   if (workspace.state === "failed" && existsSync(workspace.path)) {
     const snapshotted = db.prepare("SELECT 1 FROM workspace_cleanup_snapshots WHERE workspace_id=?").get(workspace.id);
-    if (!snapshotted || !removalInterrupted(workspace)) return null;
-    removeReleasedWorktree(db, workspace.id);
+    if (!snapshotted || !(await removalInterrupted(workspace))) return null;
+    await removeReleasedWorktree(db, workspace.id);
     addActivity(db, {
       itemId: workspace.owner_item_id, actor: "system", kind: "decision",
       payload: { decision: "workspace_cleaned", workspaceId: workspace.id, branch: workspace.branch, removalResumed: true },
     });
     return "cleaned";
   }
-  const changes = worktreeChanges(workspace);
+  const changes = await worktreeChanges(workspace);
   // 目录已经不在了（有人手动删了它，或者 daemon 重启时把它标成了 failed）：没有没合并的 commit 时，只收拾 git 的登记和分支。
   // 已经放弃的（abandon 删目录时中断，#191）不再问合并决定：用户已经决定了，分支保留。
   if (!existsSync(workspace.path)) {
@@ -909,7 +1062,7 @@ function sweepIsolatedWorktree(
       return "awaiting";
     }
     const merged = !abandoned && changes.head !== null && changes.head !== workspace.base_ref;
-    const { branchDeleted } = archiveMissingWorktree(db, workspace, merged ? "merged" : "abandoned", now);
+    const { branchDeleted } = await archiveMissingWorktree(db, workspace, merged ? "merged" : "abandoned", now);
     addActivity(db, {
       itemId: workspace.owner_item_id, actor: "system", kind: "decision",
       payload: { decision: "workspace_cleaned", workspaceId: workspace.id, branch: workspace.branch, directoryMissing: true, branchDeleted },
@@ -932,8 +1085,8 @@ function sweepIsolatedWorktree(
   if (!awaitedMerge && idleFor(workspace, now) < ttlMs) return null;
   const merged = changes.head !== null && changes.head !== workspace.base_ref;
   if (merged) db.prepare("UPDATE workspaces SET merge_status='merged' WHERE id=?").run(workspace.id);
-  releaseWorkspace(db, workspace.id, { mergeStatus: merged ? "merged" : "abandoned" });
-  const { branchDeleted } = removeReleasedWorktree(db, workspace.id);
+  await releaseWorkspace(db, workspace.id, { mergeStatus: merged ? "merged" : "abandoned" });
+  const { branchDeleted } = await removeReleasedWorktree(db, workspace.id);
   addActivity(db, {
     itemId: workspace.owner_item_id, actor: "system", kind: "decision",
     payload: { decision: "workspace_cleaned", workspaceId: workspace.id, branch: workspace.branch, merged, branchDeleted },
@@ -949,10 +1102,10 @@ function sweepIsolatedWorktree(
 
 interface ListedWorktree { path: string; head: string | null; branch: string | null }
 
-function listWorktrees(repoRoot: string): ListedWorktree[] {
+async function listWorktrees(repoRoot: string): Promise<ListedWorktree[]> {
   const listed: ListedWorktree[] = [];
   let current: ListedWorktree | null = null;
-  for (const line of git(["worktree", "list", "--porcelain"], repoRoot).split("\n")) {
+  for (const line of (await git(["worktree", "list", "--porcelain"], repoRoot)).split("\n")) {
     if (line.startsWith("worktree ")) {
       current = { path: line.slice("worktree ".length), head: null, branch: null };
       listed.push(current);
@@ -971,9 +1124,9 @@ function realpathOr(path: string): string {
 
 // <repo>.plc-workspaces 下、数据库里没有登记（或者登记已经结束）的目录。闲置满 TTL 以后：
 // 干净、没有没合并 commit 的 worktree 删掉；空目录删掉；其余的问用户一次，不删。
-function sweepOrphans(
+async function sweepOrphans(
   db: Db, now: Date, ttlMs: number, failed: WorkspaceSweepResult["failed"],
-): { cleaned: number; awaiting: number } {
+): Promise<{ cleaned: number; awaiting: number }> {
   const roots = new Set<string>();
   for (const row of db.prepare(
     `SELECT repo_root FROM workspaces WHERE git_worktree=1 AND repo_root IS NOT NULL
@@ -990,9 +1143,9 @@ function sweepOrphans(
     if (!existsSync(repoRoot)) continue;
     // PR 检出的临时引用：fetch 以后 daemon 停了，引用就没人管了。行在 fetch 之前就建好，所以没有活着的行的引用都是孤儿。
     try {
-      const orphanRefs = git(["for-each-ref", "--format=%(refname)", "refs/plc/review/"], repoRoot)
+      const orphanRefs = (await git(["for-each-ref", "--format=%(refname)", "refs/plc/review/"], repoRoot))
         .split("\n").filter((ref) => ref && !liveRefs.has(ref));
-      for (const ref of orphanRefs) git(["update-ref", "-d", ref], repoRoot);
+      for (const ref of orphanRefs) await git(["update-ref", "-d", ref], repoRoot);
       if (orphanRefs.length) {
         tellLead(db, {
           summary: `清理扫描删掉了 ${repoRoot} 里 ${orphanRefs.length} 个没有登记的 PR 临时引用`,
@@ -1005,13 +1158,16 @@ function sweepOrphans(
     const container = workspaceRootFor(repoRoot);
     if (!existsSync(container)) continue;
     const containerPath = realpathOr(container);
+    deleteWorktreeTrash(containerPath);
     let worktrees: Map<string, ListedWorktree>;
     try {
-      worktrees = new Map(listWorktrees(repoRoot).map((entry) => [realpathOr(entry.path), entry]));
+      worktrees = new Map((await listWorktrees(repoRoot)).map((entry) => [realpathOr(entry.path), entry]));
     } catch {
       continue;
     }
     for (const name of readdirSync(container)) {
+      // 回收目录里是正在后台删的 worktree（retireWorktree），不是孤儿。
+      if (name === WORKTREE_TRASH_DIR) continue;
       // 不跟随符号链接：链接指向的可能是容器外面用户自己的 worktree（审查 2026-10-19 第 8 条）。plc 只在这里建真目录。
       const path = join(containerPath, name);
       if (registered.has(path)) continue;
@@ -1023,18 +1179,18 @@ function sweepOrphans(
         let removable = false;
         let detail: Record<string, unknown> = {};
         if (worktree) {
-          const dirtyFiles = git(["status", "--porcelain", "--untracked-files=normal"], path).split("\n").filter(Boolean).slice(0, 20);
-          const unmergedCommits = worktree.head ? Number(git(["rev-list", "--count", `HEAD..${worktree.head}`], repoRoot)) : 0;
+          const dirtyFiles = (await git(["status", "--porcelain", "--untracked-files=normal"], path)).split("\n").filter(Boolean).slice(0, 20);
+          const unmergedCommits = worktree.head ? Number(await git(["rev-list", "--count", `HEAD..${worktree.head}`], repoRoot)) : 0;
           removable = dirtyFiles.length === 0 && unmergedCommits === 0;
           detail = { branch: worktree.branch, dirtyFiles, unmergedCommits };
           if (removable) {
-            git(["worktree", "remove", path], repoRoot);
+            if (!(await retireWorktree(path, repoRoot))) await git(["worktree", "remove", path], repoRoot, WORKTREE_REMOVE_TIMEOUT_MS);
             const branch = worktree.branch?.replace(/^refs\/heads\//, "");
-            if (branch?.startsWith("plc/")) { try { git(["branch", "-d", branch], repoRoot); } catch { /* 保留 */ } }
+            if (branch?.startsWith("plc/")) { try { await git(["branch", "-d", branch], repoRoot); } catch { /* 保留 */ } }
           }
         } else if (readdirSync(path).length === 0) {
           removable = true;
-          rmdirSync(path);
+          await rmdir(path);
         }
         const scope = `workspace-orphan:${createHash("sha256").update(path).digest("hex").slice(0, 16)}`;
         if (removable) {
@@ -1075,7 +1231,7 @@ function sweepOrphans(
  *   · 共享工作区：工单结束满 TTL 后释放。不删文件。
  *   · <repo>.plc-workspaces 下没有登记的孤儿目录（sweepOrphans）。
  */
-export function sweepWorkspaces(db: Db, now = new Date(), options: WorkspaceSweepOptions = {}): WorkspaceSweepResult {
+export async function sweepWorkspaces(db: Db, now = new Date(), options: WorkspaceSweepOptions = {}): Promise<WorkspaceSweepResult> {
   const isolatedTtlMs = options.isolatedTtlMs ?? 7 * DAY_MS;
   const sharedTtlMs = options.sharedTtlMs ?? 14 * DAY_MS;
   const orphanTtlMs = options.orphanTtlMs ?? 7 * DAY_MS;
@@ -1089,7 +1245,7 @@ export function sweepWorkspaces(db: Db, now = new Date(), options: WorkspaceSwee
         // 还在准备中的检出属于一个刚开始的 Run（runItem 建行时就绑定了它）。daemon 重启时 reconcileWorkspaces 会把
         // 停在 provisioning 的行改成 active 或 failed，所以这里跳过它们不会留下永远不清理的行。
         if (activeRunCount(db, workspace.id) !== 0 || ["requested", "provisioning"].includes(workspace.state)) continue;
-        disposeCheckout(db, workspace.id, "its runs have ended");
+        await disposeCheckout(db, workspace.id, "its runs have ended");
         result.cleaned += 1;
         tellLead(db, {
           itemId: workspace.owner_item_id,
@@ -1100,7 +1256,7 @@ export function sweepWorkspaces(db: Db, now = new Date(), options: WorkspaceSwee
         continue;
       }
       if (workspace.git_worktree && workspace.kind === "isolated_child") {
-        const outcome = sweepIsolatedWorktree(db, workspace, now, isolatedTtlMs);
+        const outcome = await withWorkspaceLock(workspace.id, () => sweepIsolatedWorktree(db, workspace, now, isolatedTtlMs));
         if (outcome === "cleaned") result.cleaned += 1;
         if (outcome === "awaiting") result.awaitingDecision += 1;
         continue;
@@ -1109,13 +1265,13 @@ export function sweepWorkspaces(db: Db, now = new Date(), options: WorkspaceSwee
       const owner = getItem(db, workspace.owner_item_id);
       if (!owner || !["done", "cancelled"].includes(owner.stage) || activeRunCount(db, workspace.id) !== 0) continue;
       if (idleFor(workspace, now) < sharedTtlMs) continue;
-      releaseWorkspace(db, workspace.id);
+      await releaseWorkspace(db, workspace.id);
       result.released += 1;
     } catch (error) {
       result.failed.push({ workspaceId: workspace.id, error: error instanceof Error ? error.message : String(error) });
     }
   }
-  const orphans = sweepOrphans(db, now, orphanTtlMs, result.failed);
+  const orphans = await sweepOrphans(db, now, orphanTtlMs, result.failed);
   result.cleaned += orphans.cleaned;
   result.awaitingDecision += orphans.awaiting;
   return result;

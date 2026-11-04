@@ -141,8 +141,8 @@ export function outgoingCheckFor(
   return { refs, roots: [...related, ...knownRoots(db)], fallbackOnly: related.length === 0, commit, ticketId };
 }
 
-export function checkOutgoing(check: OutgoingCheck): CodeRefCheck[] {
-  return failedChecks(verifyCodeRefs(check.refs, check.roots, { commit: check.commit, fallbackOnly: check.fallbackOnly }));
+export async function checkOutgoing(check: OutgoingCheck): Promise<CodeRefCheck[]> {
+  return failedChecks(await verifyCodeRefs(check.refs, check.roots, { commit: check.commit, fallbackOnly: check.fallbackOnly }));
 }
 
 function blockReason(toolName: string, failures: readonly CodeRefCheck[]): string {
@@ -216,7 +216,7 @@ export function createCredibilityExtension(options: CredibilityOptions): Extensi
       if (event.message.role === "assistant") texts.push(assistantText(event.message));
     });
 
-    pi.on("tool_call", (event) => {
+    pi.on("tool_call", async (event) => {
       let check: OutgoingCheck | null;
       try {
         check = outgoingCheckFor(options.db, event.toolName, event.input as Record<string, unknown>, options.connectionToolReadOnly);
@@ -225,7 +225,7 @@ export function createCredibilityExtension(options: CredibilityOptions): Extensi
         return undefined;
       }
       if (!check) return undefined;
-      const failures = checkOutgoing(check);
+      const failures = await checkOutgoing(check);
       if (failures.length === 0) return undefined;
       const signature = `${event.toolName}\u0000${JSON.stringify(event.input)}`;
       const refs = failures.map((failure) => failure.ref.raw);
@@ -249,7 +249,7 @@ export function createCredibilityExtension(options: CredibilityOptions): Extensi
       return { block: true, reason: blockReason(event.toolName, failures) };
     });
 
-    pi.on("agent_before_settle", (event) => {
+    pi.on("agent_before_settle", async (event) => {
       // 不看 event.context.canContinue：它是追加条目之前的预览，最后一条还是 Lead 的回答，所以总是 false。
       // pi 提交了这里追加的说明以后再判断一次能不能续写（agent-session.js 的 _runBeforeSettleBoundary）。
       if (corrected || event.outcome !== "completed") return undefined;
@@ -264,7 +264,7 @@ export function createCredibilityExtension(options: CredibilityOptions): Extensi
         // 找不到的文件算核对不了（用户可能在说一个没有登记的仓库）。
         const tickets = new Set([...ticketIdsInText(`${text}\n${asked}`), ...touched]);
         const related = [...tickets].flatMap((id) => ticketRoots(options.db, id));
-        failures = failedChecks(verifyCodeRefs(refs, [...related, ...knownRoots(options.db)], { fallbackOnly: related.length === 0 }));
+        failures = failedChecks(await verifyCodeRefs(refs, [...related, ...knownRoots(options.db)], { fallbackOnly: related.length === 0 }));
       } catch (error) {
         options.log?.(`code refs: reply not checked: ${(error as Error).message}`);
         return undefined;

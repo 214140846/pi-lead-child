@@ -104,7 +104,8 @@ describe("the Socket Mode transport", () => {
     slack.push(missedTwo);
     slack.dropConnection();
     await vi.waitFor(() => expect(slack.connections).toBe(3));
-    await vi.waitFor(() => expect(slack.calls.filter((call) => call.method === "conversations.history")).toHaveLength(2));
+    // 第三次连上的补拉补完了道，进到断线这段时间的补拉（第一次连上时还没有水位，不补这段）。
+    await vi.waitFor(() => expect(slack.calls.filter((call) => call.method === "client.counts")).toHaveLength(2));
     await adapter.transport!.stop();
     expect(kinds()).toHaveLength(3);
   });

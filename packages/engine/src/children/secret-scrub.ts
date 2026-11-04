@@ -6,7 +6,7 @@
 //   - runtime 事件：进 ingest、落库、写 runtime-events 之前（redactRuntimeEvent）。
 //   - pi 的会话文件（在数据目录的 sessions/item-N 下）：Run 结束后清一遍这个 Run 写过的文件（scrubSessionFiles）。
 //     Codex、Claude Code 的会话记录在它们自己的目录（~/.codex、~/.claude），和独立运行时一样，这里不动。
-import { chmodSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmod, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { redactKnownValues } from "@pi-lead-child/protocol";
 import type { RuntimeEvent } from "@pi-lead-child/runtime";
@@ -22,13 +22,13 @@ export function redactRuntimeEvent<T extends RuntimeEvent>(event: T, values: rea
 /**
  * 清一遍一个目录里的会话文件（*.jsonl，不递归）：只看 sinceMs 之后改过的。
  * 写回之前再看一次文件的大小和修改时间：变了说明另一个进程正在往里写（例如同一个会话被续接），这次跳过，不冒丢行的险。
- * 返回改写了几个文件。
+ * 返回改写了几个文件。读写都是异步的：会话文件有几十 MB，以前同步读写，每个 Run 结束时占住 daemon 的主线程（2026-11-03）。
  */
-export function scrubSessionFiles(dir: string, values: readonly string[], sinceMs: number): number {
+export async function scrubSessionFiles(dir: string, values: readonly string[], sinceMs: number): Promise<number> {
   if (!values.length) return 0;
   let names: string[];
   try {
-    names = readdirSync(dir).filter((name) => name.endsWith(".jsonl"));
+    names = (await readdir(dir)).filter((name) => name.endsWith(".jsonl"));
   } catch {
     return 0;
   }
@@ -36,20 +36,20 @@ export function scrubSessionFiles(dir: string, values: readonly string[], sinceM
   for (const name of names) {
     const path = join(dir, name);
     try {
-      const before = statSync(path);
+      const before = await stat(path);
       if (!before.isFile() || before.mtimeMs < sinceMs - 1_000) continue;
-      const text = readFileSync(path, "utf8");
+      const text = await readFile(path, "utf8");
       const clean = redactKnownValues(text, values);
       if (clean === text) continue;
       const temporary = `${path}.scrub-${process.pid}`;
-      writeFileSync(temporary, clean, { mode: before.mode & 0o777 });
-      chmodSync(temporary, before.mode & 0o777);
-      const now = statSync(path);
+      await writeFile(temporary, clean, { mode: before.mode & 0o777 });
+      await chmod(temporary, before.mode & 0o777);
+      const now = await stat(path);
       if (now.size !== before.size || now.mtimeMs !== before.mtimeMs) {
-        unlinkSync(temporary);
+        await unlink(temporary);
         continue;
       }
-      renameSync(temporary, path);
+      await rename(temporary, path);
       rewritten += 1;
     } catch {
       // 读不到、写不了的文件跳过：清理是尽力而为，不影响 Run 的收尾。

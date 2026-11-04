@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import {
-  existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, utimesSync, writeFileSync,
+  existsSync, mkdirSync, readFileSync, rmSync, statSync, unlinkSync, utimesSync, writeFileSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
 import { connect, createServer, type Socket } from "node:net";
@@ -2170,6 +2170,37 @@ describe("daemon dev companion gateway", () => {
       else process.env.PLC_ALLOW_LOOPBACK_AUTO_PAIR = previousAllow;
       if (previousOrigins === undefined) delete process.env.PLC_LOOPBACK_AUTO_PAIR_ORIGINS;
       else process.env.PLC_LOOPBACK_AUTO_PAIR_ORIGINS = previousOrigins;
+    }
+  }, 15000);
+});
+
+describe("daemon in desktop release mode", () => {
+  // P0-4 返工：Bytezard Lead 的窗口靠回环自动配对拿凭证。发布模式缺省打开它，但要带数据目录里口令文件的口令。
+  it("pairs its own web page only with the token from the data folder", async () => {
+    const previousDev = process.env.PLC_DEV;
+    const previousAllow = process.env.PLC_ALLOW_LOOPBACK_AUTO_PAIR;
+    delete process.env.PLC_DEV;
+    delete process.env.PLC_ALLOW_LOOPBACK_AUTO_PAIR;
+    const { factory } = stubSessionFactory();
+    const daemon = await startDaemon({
+      dataDir: dir, dbPath, sessionFactory: factory as any, log: () => {}, gatewayPort: 0, releaseMode: true,
+    });
+    try {
+      const key = readFileSync(join(dir, "shell-pairing.key"), "utf8").trim();
+      expect(statSync(join(dir, "shell-pairing.key")).mode & 0o777).toBe(0o600);
+      const pair = (headers: Record<string, string>) => fetch(`http://127.0.0.1:${daemon.pairedPort}/v1/paired/loopback`, {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: `http://127.0.0.1:${daemon.pairedPort}`, ...headers },
+        body: JSON.stringify({ name: "localhost-web" }),
+      });
+      expect((await pair({})).status).toBe(403);
+      expect((await pair({ "x-bytezard-shell-pairing": key })).status).toBe(201);
+    } finally {
+      await daemon.close();
+      if (previousDev === undefined) delete process.env.PLC_DEV;
+      else process.env.PLC_DEV = previousDev;
+      if (previousAllow === undefined) delete process.env.PLC_ALLOW_LOOPBACK_AUTO_PAIR;
+      else process.env.PLC_ALLOW_LOOPBACK_AUTO_PAIR = previousAllow;
     }
   }, 15000);
 });

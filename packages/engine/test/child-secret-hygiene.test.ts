@@ -162,12 +162,12 @@ describe("scrubbing", () => {
     expect(redactRuntimeEvent(event, [SECRET])).toBe(event);
   });
 
-  it("rewrites only the session files written since the run started", () => {
+  it("rewrites only the session files written since the run started", async () => {
     const dir = tempDir("plc-session-scrub-");
     writeFileSync(join(dir, "a.jsonl"), `{"x":"${SECRET}"}\n`);
     writeFileSync(join(dir, "notes.txt"), SECRET);
-    expect(scrubSessionFiles(dir, [SECRET], Date.now() + 60_000)).toBe(0);
-    expect(scrubSessionFiles(dir, [SECRET], Date.now() - 60_000)).toBe(1);
+    expect(await scrubSessionFiles(dir, [SECRET], Date.now() + 60_000)).toBe(0);
+    expect(await scrubSessionFiles(dir, [SECRET], Date.now() - 60_000)).toBe(1);
     expect(readFileSync(join(dir, "a.jsonl"), "utf8")).toBe("{\"x\":\"[REDACTED]\"}\n");
     expect(readFileSync(join(dir, "notes.txt"), "utf8")).toBe(SECRET);
   });

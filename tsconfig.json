@@ -13,7 +13,8 @@
     "packages/gateway",
     "packages/lead",
     "apps/daemon",
-    "apps/cli"
+    "apps/cli",
+    "scripts"
   ],
   "exclude": ["**/node_modules", "**/dist"]
 }

@@ -73,9 +73,18 @@ export const ChannelSettingsResponseSchema = StrictObject({
 });
 export type ChannelSettingsResponse = Static<typeof ChannelSettingsResponseSchema>;
 
-/** test、PUT 的请求体：密钥名 → 值。只能是这个来源声明过的名字。 */
+/**
+ * 一个密钥的值最多多少个字符：线上契约的上限，客户端、网关和设置页都按它查。浏览器会话的 cookie 比令牌长得多
+ * （Slack 网页版的 d cookie 可能超过 1000 个字符，2026-11-04），所以按 16 KB 留足余量。来源插件可以给自己的密钥
+ * 声明更小的上限（engine 的 ChannelSecretSpec.maxLength，daemon 查），应用令牌仍是 1000 个字符。
+ */
+export const CHANNEL_SECRET_MAX_LENGTH = 16_384;
+
+/** test、PUT 的请求体：密钥名 → 值。只能是这个来源声明过的名字。test 可以是空的：用现在生效的密钥试。 */
 export const ChannelSecretsRequestSchema = StrictObject({
-  secrets: Type.Record(Type.String({ minLength: 1, maxLength: 100 }), Type.String({ minLength: 1, maxLength: 1_000 })),
+  secrets: Type.Record(
+    Type.String({ minLength: 1, maxLength: 100 }), Type.String({ minLength: 1, maxLength: CHANNEL_SECRET_MAX_LENGTH }),
+  ),
 });
 export type ChannelSecretsRequest = Static<typeof ChannelSecretsRequestSchema>;
 

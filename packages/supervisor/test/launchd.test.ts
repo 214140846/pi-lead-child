@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { plistContent, LAUNCHD_LABEL } from "../src/deploy/launchd.js";
+import {
+  desktopPlistOptions, LAUNCHD_LABEL, plistContent, plistWorkingDirectory, PRE_RENAME_LAUNCHD_LABEL, preRenamePlistPaths,
+} from "../src/deploy/launchd.js";
 
 describe("plistContent", () => {
   const xml = plistContent({
@@ -30,5 +32,28 @@ describe("plistContent", () => {
     });
     expect(escaped).toContain("<string>/repo &amp; co</string>");
     expect(escaped).not.toMatch(/&(?!amp;|lt;|gt;)/);
+  });
+});
+
+// 桌面版（docs/desktop/macos-desktop-design.md 第 1.1 节、第 10 节 P0-3）。
+describe("desktop plist", () => {
+  const root = "/Users/alice/Library/Application Support/Bytezard Lead/runtime/current";
+  const xml = plistContent(desktopPlistOptions(root, "/Users/alice/Library/Application Support/Bytezard Lead/logs"));
+
+  it("runs lead-agent and supervisor.mjs from current, not from a version folder", () => {
+    expect(xml).toContain(`<string>${root}/bin/lead-agent</string>`);
+    expect(xml).toContain(`<string>${root}/apps/daemon/dist/supervisor.mjs</string>`);
+    expect(plistWorkingDirectory(xml)).toBe(root);
+    expect(xml).toContain(`<key>Label</key><string>${LAUNCHD_LABEL}</string>`);
+  });
+
+  it("reads back a working directory that needed XML escaping", () => {
+    const escaped = plistContent({ nodeBin: "/n", entry: "/e", cwd: "/a & <b>", logDir: "/l" });
+    expect(plistWorkingDirectory(escaped)).toBe("/a & <b>");
+    expect(plistWorkingDirectory("<plist/>")).toBeNull();
+  });
+
+  it("has no pre-rename plist to look for while the label still has the old name", () => {
+    expect(preRenamePlistPaths()).toEqual(PRE_RENAME_LAUNCHD_LABEL === LAUNCHD_LABEL ? [] : [expect.stringContaining(PRE_RENAME_LAUNCHD_LABEL)]);
   });
 });

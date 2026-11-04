@@ -50,7 +50,7 @@ import { resolveRuntimeModel, runtimeProfileHash } from "@pi-lead-child/runtime"
 import { raiseBlocker, recordRuntimeHealthFailure } from "@pi-lead-child/store";
 import { startAgentToolBridge, type AgentToolBridge } from "../agent-tools/host-bridge.js";
 import { agentConnectionHost } from "../agent-tools/connection-host.js";
-import { recordUnhandledRunFailure } from "../pipeline/run-failure.js";
+import { recordRunSetupFailure, recordUnhandledRunFailure } from "../pipeline/run-failure.js";
 import { parseMetadata, recordRegistrationPending, type RegistrationStep } from "../pipeline/run-registration.js";
 import { handoffCheckStep, outcomeRecoveryStep } from "../pipeline/registration-steps.js";
 import {
@@ -72,7 +72,7 @@ import {
 import { isDeliveryRun } from "../pipeline/delivery-run.js";
 import { scheduleDeliveryRefreshAfterRun } from "../coordinator/delivery-snapshot.js";
 import {
-  disposeEndedRunCheckout, prepareRunWorkspace, pullRequestReviewTarget, runDirectory, sameWorkdirOwner,
+  disposeEndedRunCheckout, prepareRunWorkspace, pullRequestReviewTarget, RunWorkspaceSetupError, runDirectory, sameWorkdirOwner,
   sharedWorkspaceReason, type RunWorkspacePreparation,
 } from "../coordinator/workspace-policy.js";
 import { isDisposableCheckout } from "../coordinator/workspace.js";
@@ -182,9 +182,10 @@ export function killIdleChildren(): void {
 // daemon 正常停机（spec D7，工单 15）：垫片启动、还没结束的 Run 不停止。daemon 只是不再读它们，
 // 重启后的 daemon 接管它们。之后才启动好的 Run 也一样分离，直到 acceptRunningChildren。
 // 没有垫片的 Run 无法接管，仍按原来的方式处理：空闲的被中断，正在执行的等它结束。
+// 还在准备的 Run（runtime 还没启动）不再等它准备完，见 unlessShuttingDown。
 let detaching = false;
 
-export function detachRunningChildren(): number {
+export function detachRunningChildren(): { detached: number; starting: number } {
   detaching = true;
   let detached = 0;
   for (const child of [...live.values()]) {
@@ -192,7 +193,30 @@ export function detachRunningChildren(): number {
     child.detach();
     detached += 1;
   }
-  return detached;
+  const starting = preparing.size;
+  for (const stop of [...preparing]) stop();
+  return { detached, starting };
+}
+
+// 2026-11-03 07:26Z 和 10:19Z：停机前几秒开始的执行 Run（#249、#273）在停机时还在准备：检出 worktree、fetch origin、
+// 克隆依赖，负载 35–90 时要几分钟（克隆依赖最长等 20 分钟）。它还没有垫片，分离不了，close 却等它：daemon 第一次
+// 5 分钟后才退出，第二次被 SIGKILL。现在停机时 Run 不再等准备的这一步：runItem 马上返回（detached），Run 留在 starting，
+// 下一个 daemon 按孤儿回收它（记为被重启打断，派发请求回到队列），和 daemon 被强杀时一样。
+// 这一步自己的工作（git、克隆）在后台继续，没有人再等它的结果。runtime.start 不在其内：进程起来了就要有人看管，
+// 它启动好以后照常分离（见 runItemLifecycle 里的 detaching）。
+class RunStartLeftForNextDaemon extends Error {}
+const preparing = new Set<() => void>();
+
+function unlessShuttingDown<T>(work: Promise<T>): Promise<T> {
+  if (detaching) {
+    work.catch(() => {});
+    return Promise.reject(new RunStartLeftForNextDaemon("the daemon is stopping"));
+  }
+  return new Promise<T>((resolve, reject) => {
+    const stop = () => reject(new RunStartLeftForNextDaemon("the daemon is stopping"));
+    preparing.add(stop);
+    work.then(resolve, reject).finally(() => preparing.delete(stop));
+  });
 }
 
 // daemon 启动时调用：之后启动的 Run 照常看管。
@@ -345,14 +369,21 @@ export async function runItem(
   try {
     const result = await runItemLifecycle(db, itemId, opts, (runId) => { trackedRunId = runId; });
     // PR 评审的临时检出只属于这个 Run：Run 结束（成功、失败、停止）就删。分离的 Run 还在跑，不删。
-    if (!result.detached) disposeEndedRunCheckout(db, result.runId);
+    if (!result.detached) await disposeEndedRunCheckout(db, result.runId);
     return result;
   } catch (error) {
+    // 停机时还在准备（unlessShuttingDown）：不是失败。Run 留在 starting 给下一个 daemon，它的检出也留着。
+    if (error instanceof RunStartLeftForNextDaemon && trackedRunId !== undefined) return { runId: trackedRunId, detached: true };
     if (error instanceof RunStartRefusedError && !opts.adopt) {
       if (trackedRunId !== undefined) settleRefusedStart(db, { itemId, runId: trackedRunId, reason: error.message });
       throw error;
     }
-    if (trackedRunId !== undefined) {
+    if (trackedRunId !== undefined && error instanceof RunWorkspaceSetupError) {
+      // 工作区没准备好（例如本地仓库没有 PR 所在的远端）：按原因和修法记下，不是宿主代码的异常。
+      recordRunSetupFailure(db, {
+        itemId, runId: trackedRunId, title: error.title, reason: error.message, nextStep: error.nextStep,
+      });
+    } else if (trackedRunId !== undefined) {
       recordUnhandledRunFailure(db, { itemId, runId: trackedRunId, error });
     }
     // 只清理这个 Run 自己的 live 条目。live 表里别的 Run（例如这次启动撞上的那个）不能删，更不能中断。
@@ -364,7 +395,7 @@ export async function runItem(
     try { await child?.toolBridge?.close(); } catch { /* best effort */ }
     // 接管在开始看管之前就出错时，Run 已经记为失败。CLI 不能没人看管地继续跑。
     if (opts.adopt?.launch.state === "alive" && !child?.handle) stopReattachedLauncher(opts.adopt.launch);
-    if (trackedRunId !== undefined) disposeEndedRunCheckout(db, trackedRunId);
+    if (trackedRunId !== undefined) await disposeEndedRunCheckout(db, trackedRunId);
     throw error;
   }
 }
@@ -466,7 +497,7 @@ async function runItemLifecycle(
   if (!adopt) recordEffectiveRunPurpose(db, { itemId, runId, purpose, stored: run.purpose });
   // PR 评审的临时检出要 fetch，新的隔离 worktree 要检出：Run 建好以后再等它（workspace-policy.ts），检出时 daemon 照常干别的。
   // 失败时这个 Run 按宿主出错记下。
-  if (preparation.checkout) workspace = await preparation.checkout(runId);
+  if (preparation.checkout) workspace = await unlessShuttingDown(preparation.checkout(runId));
   if (workspace && run.workspace_id === null) {
     attachWorkspaceToRun(db, { runId, workspaceId: workspace.id });
     run = getRun(db, runId)!;
@@ -479,8 +510,8 @@ async function runItemLifecycle(
   // 放在建 Run 之后：启动闸门、建 Run、工单从 blocked 回到 active 要同步做完。daemon 重启接管孤儿时，紧接着的补发
   // blocker 按工单状态判断；这之前 await 一次，它会把正在重派的工单当成阻塞，多补一条 blocker。
   if (!adopt && purpose !== "lookup") {
-    const fetched = await fetchOrigin(workspace?.path ?? item.workdir);
-    if (fetched.fetched && workspace) workspace = (await refreshFreshWorktree(db, workspace)) ?? workspace;
+    const fetched = await unlessShuttingDown(fetchOrigin(workspace?.path ?? item.workdir));
+    if (fetched.fetched && workspace) workspace = (await unlessShuttingDown(refreshFreshWorktree(db, workspace))) ?? workspace;
   }
   const dataDir = opts.dataDir ?? dirname(dirname(opts.sessionDir));
   // 已知密钥的值（2026-10-19 审查）：child 继承 daemon 的全部环境，`env | grep` 会把它们打进事件。
@@ -832,21 +863,21 @@ async function runItemLifecycle(
         transitionWorkspace(db, runWorkspace.id, "active");
       }
       if (["active", "idle"].includes(runWorkspace.state)) transitionWorkspace(db, runWorkspace.id, "review_hold");
-      await beginReviewWorkspaceCheck(db, runId, getWorkspace(db, runWorkspace.id)!);
+      await unlessShuttingDown(beginReviewWorkspaceCheck(db, runId, getWorkspace(db, runWorkspace.id)!));
     }
-    if (!adopt && role === "reviewer") packetSection = await reviewPacketPromptSection(db, { itemId, runId, purpose });
+    if (!adopt && role === "reviewer") packetSection = await unlessShuttingDown(reviewPacketPromptSection(db, { itemId, runId, purpose }));
     mkdirSync(workdir, { recursive: true });
     // 工单对话自己改了工作区，核查结论才过期（review-currency.ts）：runtime 启动之前，先在这个 Run
     // 自己的工作区上记下指纹。接管的 Run 早已开始：读回它启动时记下的指纹。
     conversationCheck = adopt
       ? loadConversationWorkspaceCheck(db, { itemId, runId, purpose })
-      : await beginConversationWorkspaceCheck(db, {
+      : await unlessShuttingDown(beginConversationWorkspaceCheck(db, {
           itemId, runId, purpose,
           // PR 的临时检出在 Run 结束时就删了，它的指纹说明不了什么。
           path: runWorkspace && isDisposableCheckout(runWorkspace)
             ? null
             : runWorkspace?.path ?? (item.workdir && isAbsolute(item.workdir) ? item.workdir : null),
-        });
+        }));
     if (adopt) {
       toolBridge = await restoreToolBridge(db, { itemId, runId, workdir, dataDir, env: opts.env, launch: adopt.launch });
     } else if (purpose !== "lookup" && (opts.mcpServer || agentConnectionHost())) {
@@ -863,7 +894,7 @@ async function runItemLifecycle(
     }
     if (toolBridge) secretValues = secretEnvValues({ ...process.env, ...opts.env, PLC_AGENT_TOOL_TOKEN: toolBridge.token });
     // 新建的隔离 worktree 在后台克隆依赖（coordinator/worktree-dependencies.ts）：先等它做完，执行者一开始就能跑测试。
-    if (!adopt) await awaitWorktreeDependencies(workdir);
+    if (!adopt) await unlessShuttingDown(awaitWorktreeDependencies(workdir));
     runtimeStarting = true;
     handle = adopt ? await runtime.attach!({
       itemId, runId, role, purpose, workdir, model,
@@ -874,7 +905,8 @@ async function runItemLifecycle(
   } catch (error) {
     await toolBridge?.close();
     // 接管出错时，不把它当成启动失败：交给 runItem 的兜底边界，Run 记为宿主出错，CLI 被停止。
-    if (adopt) throw error;
+    // 停机时还在准备的 Run 也交给它：不记失败，留给下一个 daemon。
+    if (adopt || error instanceof RunStartLeftForNextDaemon) throw error;
     // Run 没有启动时，requested 的工作区保持原样：它是用户自己的目录，内核没有为它准备任何东西。
     // 标成 failed 会让这张工单再也启动不了 Run，故障恢复后的重试也一样（工单 79）。
     const currentWorkspace = workspace ? getWorkspace(db, workspace.id) : undefined;
@@ -1275,7 +1307,7 @@ async function runItemLifecycle(
   }
   await toolBridge?.close();
   // pi 的会话文件在数据目录里：盖掉这个 Run 期间写进去的密钥值。
-  scrubSessionFiles(opts.sessionDir, secretValues, runStartedAtMs);
+  await scrubSessionFiles(opts.sessionDir, secretValues, runStartedAtMs);
   addActivity(db, {
     itemId, runId, actor: "system", kind: "attempt_end",
     payload: { finalItemStage: getItem(db, itemId)?.stage, runtime: runtime.id },

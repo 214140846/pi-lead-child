@@ -6,6 +6,7 @@ import {
 import { Value } from 'typebox/value';
 import type { ToolCallUpdate } from '@pi-lead-child/protocol';
 
+import { conversationTurnInvalidation } from './invalidation';
 import { toolStateFor, type ValidatedGatewayEvent } from './protocolAdapter';
 import type { ToolDisplayProjection, ToolState, TransientConversationCard } from '../types';
 
@@ -87,8 +88,9 @@ export function reduceGatewayEvent(event: ValidatedGatewayEvent): GatewayEventRe
 	      ensureShell();
 	      control.push({ type: 'lead.complete-message', turnId: event.turnId, text: event.payload.text, occurredAt: event.occurredAt });
 	      streams.push({ type: 'message.clear-transient', turnId: event.turnId });
-	      invalidations.push('conversation:current');
-	      if (event.ticketId !== null) invalidations.push(`conversation:ticket:${event.ticketId}`);
+	      // 只取这一轮：它同时校正主会话和它所在的工单对话。
+	      invalidations.push(conversationTurnInvalidation(event.turnId));
+	      if (event.ticketId !== null && !event.turnId) invalidations.push(`conversation:ticket:${event.ticketId}`);
 	      break;
     case 'lead.tool.started':
     case 'lead.tool.updated':
@@ -292,8 +294,8 @@ export function reduceGatewayEvent(event: ValidatedGatewayEvent): GatewayEventRe
           ? { waitingFor: event.payload.waitingFor === 'network' ? 'network' as const : 'model' as const }
           : {}),
       });
-	      invalidations.push('conversation:current', 'notifications', 'overview');
-	      if (event.ticketId !== null) invalidations.push(`conversation:ticket:${event.ticketId}`);
+	      invalidations.push(conversationTurnInvalidation(event.turnId), 'notifications', 'overview');
+	      if (event.ticketId !== null && !event.turnId) invalidations.push(`conversation:ticket:${event.ticketId}`);
 	      break;
     case 'daemon.status.changed':
       control.push({ type: 'overview.patch', payload: event.payload });

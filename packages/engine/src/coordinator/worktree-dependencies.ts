@@ -10,7 +10,8 @@
 // 克隆在后台异步做：大仓库在本机要几分钟（有 Sophos 时更久），同步做会卡住 daemon（2026-10-14 的停摆）。
 // 只克隆 git 忽略的 node_modules；克隆失败不影响 Run，执行者可以在沙箱里自己装。
 import { spawn } from "node:child_process";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, type Dirent } from "node:fs";
+import { readdir } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 export interface DependencyPreparation {
@@ -29,13 +30,16 @@ const pending = new Map<string, Promise<DependencyPreparation>>();
 // 不往下找的目录：依赖本身、git 的数据、plc 的 worktree 目录。
 const SKIP_DIRS = new Set(["node_modules", ".git", ".pi-sessions", "dist", "build", ".next", ".turbo", ".cache"]);
 
-/** 仓库里的 node_modules 目录（相对 root），最多往下找 maxDepth 层。 */
-export function findNodeModulesDirs(root: string, maxDepth = 3): string[] {
+/**
+ * 仓库里的 node_modules 目录（相对 root），最多往下找 maxDepth 层。异步读目录：用户的 checkout 目录很多时，
+ * 以前同步遍历会占住 daemon 的主线程（2026-11-03）。
+ */
+export async function findNodeModulesDirs(root: string, maxDepth = 3): Promise<string[]> {
   const found: string[] = [];
-  const walk = (dir: string, depth: number) => {
-    let entries: import("node:fs").Dirent[];
+  const walk = async (dir: string, depth: number): Promise<void> => {
+    let entries: Dirent[];
     try {
-      entries = readdirSync(dir, { withFileTypes: true });
+      entries = await readdir(dir, { withFileTypes: true });
     } catch {
       return;
     }
@@ -47,10 +51,10 @@ export function findNodeModulesDirs(root: string, maxDepth = 3): string[] {
         continue;
       }
       if (depth >= maxDepth || SKIP_DIRS.has(entry.name) || entry.name.startsWith(".") || entry.name.endsWith(".plc-workspaces")) continue;
-      walk(path, depth + 1);
+      await walk(path, depth + 1);
     }
   };
-  walk(root, 0);
+  await walk(root, 0);
   return found.sort();
 }
 
@@ -106,7 +110,7 @@ async function prepare(source: string, worktree: string): Promise<DependencyPrep
   if (existsSync(join(worktree, "node_modules"))) return { cloned: [], skipped: "worktree 里已经有 node_modules", error: null };
   const installed = await pnpmInstall(worktree);
   if (installed) return installed;
-  const dirs = findNodeModulesDirs(source).filter((dir) => existsSync(join(worktree, dirname(dir), "package.json")));
+  const dirs = (await findNodeModulesDirs(source)).filter((dir) => existsSync(join(worktree, dirname(dir), "package.json")));
   if (!dirs.length) return { cloned: [], skipped: "用户的 checkout 里没有装好的依赖", error: null };
   const cloned: string[] = [];
   for (const dir of dirs) {

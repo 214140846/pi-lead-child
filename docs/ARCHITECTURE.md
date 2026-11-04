@@ -89,6 +89,8 @@ supervisor 在维护途中停掉时，下次启动把那条维护记录记成 `i
 
 loopback 自动配对（`PLC_ALLOW_LOOPBACK_AUTO_PAIR=1`，`PLC_DEV=1` 时缺省打开）会越过这个边界。它只检查远端地址是回环、`Origin` 是网关自己的回环 origin。回环 TCP 端口不分系统用户，`Origin` 也可以伪造，所以同一台机器上的别的系统用户也能用它拿到一个带缺省 scope 的 binding。只在单用户的开发机上打开它。
 
+桌面版的发布模式（运行包根目录有 `release.json`）缺省打开回环自动配对，但多一道口令：daemon 在数据目录写 `shell-pairing.key`（0600），Bytezard Lead 的窗口读它，在发往网关的请求里加 `x-bytezard-shell-pairing` 头。网关只给带对口令的请求配对。别的系统用户读不到这个文件，所以伪造 `Origin` 也配不上。执行器的沙箱禁读这个文件（`packages/core/src/sandbox-policy.ts`）。显式设了 `PLC_ALLOW_LOOPBACK_AUTO_PAIR` 时以它为准，不要口令。
+
 `plc` 第一次需要网关时，在 `plc.sock` 上换一个 `kind=cli` 的凭证，存进 `cli-credential.json`。`plc auth status` 显示它对应的 binding。这个凭证被拒绝时，运行 `plc auth login` 重新签发。`plc auth login` 先用旧 token 向网关证明它是哪个 binding，确认是那个 `kind=cli` 的 binding 之后才撤销它。账本重置过时，binding 编号可能被别的设备复用，这时不撤销任何 binding。
 
 ### lead 自己发起的回合

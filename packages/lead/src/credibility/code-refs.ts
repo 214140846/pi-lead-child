@@ -7,8 +7,9 @@
 // 这里只认机器文本的写法（路径是显式的语法，不是自然语言）：带目录、扩展名在白名单里的文件路径，后面可以带
 // `:行号` 或 `:起-止`。不认 URL 里的路径、没有目录的裸文件名、模型名（vibeproxy/gemini-3.8-flash-high 没有白名单扩展名）。
 // 敏感文件（.env、密钥、凭证）不核对，也不打开（组织的安全规范）。
-import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { execFile } from "node:child_process";
+import { readFile, stat } from "node:fs/promises";
+import { promisify } from "node:util";
 import { homedir } from "node:os";
 import { basename, isAbsolute, relative, resolve } from "node:path";
 
@@ -45,6 +46,7 @@ const REF_PATTERN = new RegExp(
 export const MAX_REFS_PER_TEXT = 40;
 // 超过这个大小的文件不数行数，行号算「核对不了」。
 const MAX_LINE_COUNT_BYTES = 4 * 1024 * 1024;
+const execFileAsync = promisify(execFile);
 
 const SENSITIVE_NAMES = [
   /^\.env(?:\..*)?$/i, /\.(?:pem|key|p12|pfx)$/i, /^id_(?:rsa|ed25519|ecdsa)(?:\..*)?$/i, /^credentials/i, /^secrets\./i,
@@ -83,20 +85,28 @@ function countLines(text: string): number {
 
 // git 里某个提交的文件内容。提交号和路径都先核对格式，参数用数组传（不经过 shell）。
 // 返回 null：这个仓库里没有这个提交（核对不了）；返回 undefined：提交在，文件不在。
-function gitBlob(root: string, commit: string, path: string): string | null | undefined {
+async function gitBlob(root: string, commit: string, path: string): Promise<string | null | undefined> {
   if (!/^[0-9a-f]{7,40}$/i.test(commit) || path.startsWith("-") || path.includes("\0")) return null;
-  const git = (args: string[]): string => execFileSync("git", ["-C", root, ...args], {
-    encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5_000, maxBuffer: MAX_LINE_COUNT_BYTES,
-  });
+  const git = async (args: string[]): Promise<string> => (await execFileAsync("git", ["-C", root, ...args], {
+    encoding: "utf8", timeout: 5_000, maxBuffer: MAX_LINE_COUNT_BYTES,
+  })).stdout;
   try {
-    git(["cat-file", "-e", `${commit}^{commit}`]);
+    await git(["cat-file", "-e", `${commit}^{commit}`]);
   } catch {
     return null;
   }
   try {
-    return git(["show", `${commit}:${path}`]);
+    return await git(["show", `${commit}:${path}`]);
   } catch {
     return undefined;
+  }
+}
+
+async function statOrNull(path: string): Promise<Awaited<ReturnType<typeof stat>> | null> {
+  try {
+    return await stat(path);
+  } catch {
+    return null;
   }
 }
 
@@ -116,54 +126,58 @@ export interface VerifyOptions {
   fallbackOnly?: boolean;
 }
 
-/** 在根目录里核对一组引用。roots 为空时全部算「核对不了」。 */
-export function verifyCodeRefs(refs: readonly CodeRef[], roots: readonly string[], options: VerifyOptions = {}): CodeRefCheck[] {
-  const usable = [...new Set(roots.map((root) => resolve(root)))].filter((root) => {
-    try {
-      return statSync(root).isDirectory();
-    } catch {
-      return false;
+/**
+ * 在根目录里核对一组引用。roots 为空时全部算「核对不了」。git 和读文件都是异步的：Lead 每次回答、每次往外发文字时都核对，
+ * 以前在 daemon 的主线程上同步跑（2026-11-03）。
+ */
+export async function verifyCodeRefs(
+  refs: readonly CodeRef[], roots: readonly string[], options: VerifyOptions = {},
+): Promise<CodeRefCheck[]> {
+  const unique = [...new Set(roots.map((root) => resolve(root)))];
+  const directories = await Promise.all(unique.map(async (root) => (await statOrNull(root))?.isDirectory() ?? false));
+  const usable = unique.filter((_, index) => directories[index]);
+  const checks: CodeRefCheck[] = [];
+  for (const ref of refs) checks.push(await verifyCodeRef(ref, usable, options));
+  return checks;
+}
+
+async function verifyCodeRef(ref: CodeRef, usable: readonly string[], options: VerifyOptions): Promise<CodeRefCheck> {
+  if (isSensitivePath(ref.path)) return { ref, status: "unverifiable", detail: "敏感文件，不核对" };
+  const expanded = ref.path.startsWith("~/") ? resolve(homedir(), ref.path.slice(2)) : ref.path;
+  const candidates = isAbsolute(expanded)
+    ? usable.filter((root) => within(root, expanded)).map((root) => ({ root, file: expanded }))
+    : usable.map((root) => ({ root, file: resolve(root, expanded) })).filter(({ root, file }) => within(root, file));
+  if (candidates.length === 0) {
+    return { ref, status: "unverifiable", detail: usable.length ? "不在已知的仓库和工作目录里" : "不知道该在哪个目录里核对" };
+  }
+  let lengthProblem: string | null = null;
+  let unknown = false;
+  for (const { root, file } of candidates) {
+    let content: string;
+    // 给了提交号：只看那个提交。提交在、文件不在，这个目录里就是没有；这个仓库里没有那个提交时，这个目录核对不了。
+    const blob = options.commit ? await gitBlob(root, options.commit, relative(root, file)) : null;
+    if (blob === undefined) continue;
+    if (options.commit && blob === null) {
+      unknown = true;
+      continue;
     }
-  });
-  return refs.map((ref): CodeRefCheck => {
-    if (isSensitivePath(ref.path)) return { ref, status: "unverifiable", detail: "敏感文件，不核对" };
-    const expanded = ref.path.startsWith("~/") ? resolve(homedir(), ref.path.slice(2)) : ref.path;
-    const candidates = isAbsolute(expanded)
-      ? usable.filter((root) => within(root, expanded)).map((root) => ({ root, file: expanded }))
-      : usable.map((root) => ({ root, file: resolve(root, expanded) })).filter(({ root, file }) => within(root, file));
-    if (candidates.length === 0) {
-      return { ref, status: "unverifiable", detail: usable.length ? "不在已知的仓库和工作目录里" : "不知道该在哪个目录里核对" };
+    if (typeof blob === "string") {
+      content = blob;
+    } else {
+      const found = await statOrNull(file);
+      if (!found?.isFile()) continue;
+      if (ref.line === null) return { ref, status: "ok", detail: file };
+      if (found.size > MAX_LINE_COUNT_BYTES) return { ref, status: "unverifiable", detail: "文件太大，没有数行数" };
+      content = await readFile(file, "utf8");
     }
-    let lengthProblem: string | null = null;
-    let unknown = false;
-    for (const { root, file } of candidates) {
-      let content: string;
-      // 给了提交号：只看那个提交。提交在、文件不在，这个目录里就是没有；这个仓库里没有那个提交时，这个目录核对不了。
-      const blob = options.commit ? gitBlob(root, options.commit, relative(root, file)) : null;
-      if (blob === undefined) continue;
-      if (options.commit && blob === null) {
-        unknown = true;
-        continue;
-      }
-      if (typeof blob === "string") {
-        content = blob;
-      } else {
-        if (!existsSync(file)) continue;
-        const stat = statSync(file);
-        if (!stat.isFile()) continue;
-        if (ref.line === null) return { ref, status: "ok", detail: file };
-        if (stat.size > MAX_LINE_COUNT_BYTES) return { ref, status: "unverifiable", detail: "文件太大，没有数行数" };
-        content = readFileSync(file, "utf8");
-      }
-      const problem = lineProblem(ref, countLines(content));
-      if (!problem) return { ref, status: "ok", detail: file };
-      lengthProblem ??= `${file} ${problem}`;
-    }
-    if (lengthProblem) return { ref, status: "line_out_of_range", detail: lengthProblem };
-    if (unknown) return { ref, status: "unverifiable", detail: `本地仓库里没有提交 ${options.commit}` };
-    if (options.fallbackOnly) return { ref, status: "unverifiable", detail: "没有和这件事相关的工作目录，登记的仓库里也没有这个文件" };
-    return { ref, status: "missing", detail: `在这些目录里都没有找到：${usable.join("、")}` };
-  });
+    const problem = lineProblem(ref, countLines(content));
+    if (!problem) return { ref, status: "ok", detail: file };
+    lengthProblem ??= `${file} ${problem}`;
+  }
+  if (lengthProblem) return { ref, status: "line_out_of_range", detail: lengthProblem };
+  if (unknown) return { ref, status: "unverifiable", detail: `本地仓库里没有提交 ${options.commit}` };
+  if (options.fallbackOnly) return { ref, status: "unverifiable", detail: "没有和这件事相关的工作目录，登记的仓库里也没有这个文件" };
+  return { ref, status: "missing", detail: `在这些目录里都没有找到：${usable.join("、")}` };
 }
 
 /** 核对失败的条目（找不到文件、行号超出）。核对不了的不算失败。 */

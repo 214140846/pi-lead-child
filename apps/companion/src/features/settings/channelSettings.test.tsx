@@ -3,7 +3,7 @@
 // 不回显的输入框、「测试」「保存」（没过时逐项显示检查）、只对设置页存的密钥给「断开」、可展开可复制的应用清单。
 // 不是这台 Mac 的网页（editable=false）只显示状态。契约在 packages/protocol/src/channel-settings.ts；后端是 S1，这里用假的 client。
 import { ChannelSecretsRejectedError, ControlPlaneClientError } from '@pi-lead-child/client';
-import type { ChannelSecretsTestResult, ChannelSourceSettingsDto } from '@pi-lead-child/protocol';
+import { CHANNEL_SECRET_MAX_LENGTH, type ChannelSecretsTestResult, type ChannelSourceSettingsDto } from '@pi-lead-child/protocol';
 import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -151,6 +151,21 @@ describe('the channel settings view model', () => {
     expect(secretRequest(saved(['vault', 'keychain']), empty, 'en')).toEqual({ problem: 'First paste the secret that you want to replace.' });
     expect(secretRequest(saved(['vault', 'keychain']), { ...empty, PLC_SLACK_USER_TOKEN: 'xoxp-new' }, 'en'))
       .toEqual({ secrets: { PLC_SLACK_USER_TOKEN: 'xoxp-new' } });
+  });
+
+  // 回归（#220）：上限和客户端、网关是同一个数（协议的 CHANNEL_SECRET_MAX_LENGTH），浏览器会话的 cookie 超过 1000 个字符也能发。
+  it('sends a secret longer than 1000 characters, and stops one over the protocol limit', () => {
+    const session = slack({ secrets: [{ name: 'PLC_SLACK_SESSION_COOKIE', label: 'Session', prefix: 'xoxd-', hint: '', present: false, origin: null }] });
+    const cookie = `xoxd-${'a'.repeat(4_000)}`;
+    expect(secretRequest(session, { PLC_SLACK_SESSION_COOKIE: cookie }, 'en')).toEqual({ secrets: { PLC_SLACK_SESSION_COOKIE: cookie } });
+    const longest = 'a'.repeat(CHANNEL_SECRET_MAX_LENGTH);
+    expect(secretRequest(session, { PLC_SLACK_SESSION_COOKIE: longest }, 'en')).toEqual({ secrets: { PLC_SLACK_SESSION_COOKIE: longest } });
+    expect(secretRequest(session, { PLC_SLACK_SESSION_COOKIE: `${longest}a` }, 'en'))
+      .toEqual({ problem: `A secret is too long. Each secret can have at most ${CHANNEL_SECRET_MAX_LENGTH} characters.` });
+    expect(secretRequest(session, { PLC_SLACK_SESSION_COOKIE: `${longest}a` }, 'zh'))
+      .toEqual({ problem: `密钥太长：每个最多 ${CHANNEL_SECRET_MAX_LENGTH} 个字符。` });
+    expect(channelErrorText(new Error('channel secrets are invalid'), 'Paimon', 'en'))
+      .toBe(`The secret format is not correct. Each secret can have at most ${CHANNEL_SECRET_MAX_LENGTH} characters.`);
   });
 
   it('writes the test summary and the errors in the interface language', () => {

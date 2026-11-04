@@ -503,7 +503,17 @@ export function createWorkbenchDomainService(args: {
   const { db, interventions } = args;
   const now = args.now ?? (() => new Date());
 
-  const workItem = (item: Item): KernelTicketWorkItem => {
+  // 列表一次查出所有待处理的介入，按工单数好。以前每张工单各查一遍全部审批和决策（工单数 × 决策数次查询），
+  // 2026-11-03 202 张工单时一次列表占住 daemon 主线程 2–5 秒，网页每刷新、每来一次 ticket.updated 就来一遍。
+  const pendingInterventionCounts = (): Map<number, number> => {
+    const counts = new Map<number, number>();
+    for (const ref of interventions.listInterventionRefs({ state: "pending" })) {
+      counts.set(ref.ticketId, (counts.get(ref.ticketId) ?? 0) + 1);
+    }
+    return counts;
+  };
+
+  const workItem = (item: Item, pendingCounts?: Map<number, number>): KernelTicketWorkItem => {
     const run = activeRun(db, item.id);
     const latestCheckpoint = db.prepare(
       "SELECT id FROM checkpoints WHERE item_id=? ORDER BY id DESC LIMIT 1",
@@ -517,16 +527,15 @@ export function createWorkbenchDomainService(args: {
         ? { timing: getItemTiming(db, item.id, now()) }
         : {}),
       activeExecution: activeExecution(run),
-      pendingInterventionCount: interventions.listInterventionRefs({
-        itemId: item.id,
-        state: "pending",
-      }).length,
+      pendingInterventionCount: pendingCounts
+        ? pendingCounts.get(item.id) ?? 0
+        : interventions.listInterventionRefs({ itemId: item.id, state: "pending" }).length,
       latestCheckpointId: latestCheckpoint?.id ?? null,
     };
   };
 
-  const workItemV2 = (item: Item): KernelTicketWorkItemV2 => ({
-    ...workItem(item),
+  const workItemV2 = (item: Item, pendingCounts?: Map<number, number>): KernelTicketWorkItemV2 => ({
+    ...workItem(item, pendingCounts),
     progress: projectItemProgress(db, item),
   });
 
@@ -577,12 +586,14 @@ export function createWorkbenchDomainService(args: {
 
     listTicketWorkItems(query): KernelTicketWorkItem[] {
       const ids = query?.itemIds ? new Set(query.itemIds) : null;
-      return listItems(db).filter((item) => !ids || ids.has(item.id)).map(workItem);
+      const pendingCounts = pendingInterventionCounts();
+      return listItems(db).filter((item) => !ids || ids.has(item.id)).map((item) => workItem(item, pendingCounts));
     },
 
     listTicketWorkItemsV2(query): KernelTicketWorkItemV2[] {
       const ids = query?.itemIds ? new Set(query.itemIds) : null;
-      return listItems(db).filter((item) => !ids || ids.has(item.id)).map(workItemV2);
+      const pendingCounts = pendingInterventionCounts();
+      return listItems(db).filter((item) => !ids || ids.has(item.id)).map((item) => workItemV2(item, pendingCounts));
     },
 
     listTicketCheckpointsV2(itemId, query) {

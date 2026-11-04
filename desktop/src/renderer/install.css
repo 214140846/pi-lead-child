@@ -1,0 +1,83 @@
+/* 安装页的样子。颜色、字号取清爽主题（docs/design/themes/default.md）的值；间距用 4 的倍数。 */
+:root {
+  --surface: #ffffff;
+  --surface-muted: #f2f4f7;
+  --text: #10131a;
+  --text-strong: #475467;
+  --text-secondary: #667085;
+  --text-muted: #98a2b3;
+  --border: #e8eaef;
+  --border-strong: #e1e4ea;
+  --accent: #2f6aff;
+  --success: #12b76a;
+  --success-dark: #087443;
+  --danger: #f04438;
+  --danger-dark: #d92d20;
+  --warning-dark: #b54708;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--surface-muted);
+  color: var(--text);
+  font-family: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+  font-size: 14px;
+  line-height: 24px;
+  -webkit-font-smoothing: antialiased;
+}
+
+#root {
+  min-height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.card {
+  width: 100%;
+  max-width: 480px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px;
+}
+
+.lead-name { margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 16px; }
+.heading { margin: 4px 0 16px; font-size: 20px; line-height: 28px; font-weight: 700; }
+.body { margin: 0 0 16px; color: var(--text-strong); }
+
+.steps { list-style: none; margin: 0 0 16px; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.step { display: flex; align-items: center; gap: 8px; color: var(--text-muted); }
+.step .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex: none; }
+.step .step-label { flex: 1; color: var(--text); }
+.step .step-state { font-size: 12px; }
+.step-pending .step-label, .step-skipped .step-label { color: var(--text-secondary); }
+.step-running { color: var(--accent); }
+.step-done { color: var(--success-dark); }
+.step-done .dot { background: var(--success); }
+.step-failed { color: var(--danger-dark); }
+.step-failed .dot { background: var(--danger); }
+
+.detail { margin: 0 0 12px; color: var(--text-secondary); font-size: 13px; }
+.notice { margin: 0 0 12px; color: var(--warning-dark); font-size: 13px; }
+.error { margin: 0 0 16px; color: var(--danger-dark); }
+
+.actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.button {
+  font: inherit;
+  font-size: 13px;
+  line-height: 20px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+}
+.button.primary { background: var(--accent); border-color: var(--accent); color: #ffffff; }
+.button:disabled { opacity: 0.5; cursor: default; }
+.status { margin: 12px 0 0; color: var(--text-secondary); font-size: 12px; }

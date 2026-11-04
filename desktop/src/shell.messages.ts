@@ -1,0 +1,82 @@
+// 壳的界面文字（docs/desktop/macos-desktop-design.md 第 4、8.3 节）。对外只用产品名 Bytezard Lead；Lead 的名字只出现在窗口标题里，
+// 由调用方传进来。desktop-install 每一步的说明来自运行包（packages/supervisor/src/deploy/desktop-install.messages.ts），这里不重复。
+import { defineMessages } from "./locale.js";
+
+export const shellMessages = defineMessages({
+  en: {
+    heading: "Preparing Bytezard Lead",
+    steps: {
+      unpack: "Copy the program files",
+      service: "Set up the background service",
+      start: "Start the service (on a busy Mac, this can take several minutes)",
+    },
+    stepStates: {
+      pending: "Waiting",
+      running: "In progress",
+      done: "Done",
+      skipped: "Skipped",
+      failed: "Failed",
+    },
+    backgroundNotice: "Next, macOS shows that Bytezard Lead added a background item. This is normal: the background item lets Bytezard Lead continue to work after you close the window.",
+    move: {
+      heading: "Move Bytezard Lead to Applications",
+      body: "Move Bytezard Lead to the Applications folder. Then it can run in the background all the time.",
+      failed: (reason: string) => `Bytezard Lead could not move itself to the Applications folder: ${reason}. Drag it to Applications in Finder, then open it again.`,
+    },
+    actions: {
+      move: "Move and Reopen",
+      retry: "Try Again",
+      logs: "Show Logs",
+      diagnostics: "Copy Diagnostics",
+    },
+    diagnosticsCopied: "The diagnostics are on the clipboard.",
+    errors: {
+      runtimeMissing: "The program files are not in this copy of Bytezard Lead. Download Bytezard Lead again.",
+      runtimeInvalid: (reason: string) => `The program files in this copy of Bytezard Lead are damaged. Download Bytezard Lead again. Details: ${reason}`,
+      diskFull: "There is not enough disk space. Free at least 1 GB, then try again.",
+      unpackFailed: (reason: string) => `Bytezard Lead could not copy the program files: ${reason}`,
+      devNotRunning: "A developer copy of Bytezard Lead is on this Mac, but it does not run. Start it, then try again.",
+      installStopped: (reason: string) => `The installation stopped: ${reason}`,
+      noReason: "no details",
+    },
+  },
+  zh: {
+    heading: "正在准备 Bytezard Lead",
+    steps: {
+      unpack: "复制程序文件",
+      service: "设置后台服务",
+      start: "启动服务（电脑忙的时候可能要几分钟）",
+    },
+    stepStates: {
+      pending: "等待",
+      running: "进行中",
+      done: "完成",
+      skipped: "跳过",
+      failed: "失败",
+    },
+    backgroundNotice: "接下来 macOS 会提示 Bytezard Lead 添加了后台项目。这是正常的：它让 Bytezard Lead 在你关掉窗口后继续工作。",
+    move: {
+      heading: "把 Bytezard Lead 移到「应用程序」",
+      body: "把 Bytezard Lead 移到「应用程序」文件夹，这样它才能在后台一直运行。",
+      failed: (reason) => `Bytezard Lead 没能把自己移到「应用程序」文件夹：${reason}。请在访达里把它拖到「应用程序」，再重新打开。`,
+    },
+    actions: {
+      move: "移动并重新打开",
+      retry: "重试",
+      logs: "查看日志",
+      diagnostics: "复制诊断信息",
+    },
+    diagnosticsCopied: "诊断信息已经复制到剪贴板。",
+    errors: {
+      runtimeMissing: "这份 Bytezard Lead 里没有程序文件。请重新下载 Bytezard Lead。",
+      runtimeInvalid: (reason) => `这份 Bytezard Lead 里的程序文件损坏了。请重新下载 Bytezard Lead。详情：${reason}`,
+      diskFull: "磁盘空间不够。至少腾出 1 GB，再点重试。",
+      unpackFailed: (reason) => `Bytezard Lead 没能复制程序文件：${reason}`,
+      devNotRunning: "这台电脑上有一份开发版 Bytezard Lead，但它没有在运行。先启动它，再点重试。",
+      installStopped: (reason) => `安装停下了：${reason}`,
+      noReason: "没有详情",
+    },
+  },
+});
+
+export type ShellMessages = ReturnType<typeof shellMessages>;

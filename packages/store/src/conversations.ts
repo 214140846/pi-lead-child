@@ -440,20 +440,41 @@ function setTurnState(db: Db, id: string, state: "completed" | "failed", error: 
 }
 
 // 最近的 limit 轮（缺省 100），按时间从旧到新排。超过上限时丢掉最老的：会话快照要的是最近的对话。
+// 一轮，没有时是 undefined（会话快照往前翻页时，先确认游标那一轮在）。
+export function getTurn(db: Db, id: string): ChannelTurnRow | undefined {
+  return turnRow(db, id);
+}
+
+// 会话快照：最近的 limit 轮，从旧到新，按 (created_at, id) 排。
+// before 是一轮的 id：只要排在它前面的（往前翻页，2026-11-04）；这一轮不存在时没有结果。
+// ids：只要这几轮（Lead 说完一句以后只校正那一轮）。
 export function listTurns(
   db: Db,
-  opts?: { itemId?: number; limit?: number },
+  opts?: { itemId?: number; limit?: number; before?: string; ids?: readonly string[] },
 ): ChannelTurnRow[] {
-  const where = opts?.itemId === undefined ? "" : " WHERE item_id = ?";
-  const params: unknown[] = [
-    ...(opts?.itemId === undefined ? [] : [opts.itemId]),
-    opts?.limit ?? 100,
-  ];
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+  if (opts?.itemId !== undefined) {
+    conditions.push("item_id = ?");
+    params.push(opts.itemId);
+  }
+  if (opts?.before !== undefined) {
+    const cursor = turnRow(db, opts.before);
+    if (!cursor) return [];
+    conditions.push("(created_at < ? OR (created_at = ? AND id < ?))");
+    params.push(cursor.created_at, cursor.created_at, cursor.id);
+  }
+  if (opts?.ids !== undefined) {
+    if (opts.ids.length === 0) return [];
+    conditions.push(`id IN (${opts.ids.map(() => "?").join(", ")})`);
+    params.push(...opts.ids);
+  }
+  const where = conditions.length ? ` WHERE ${conditions.join(" AND ")}` : "";
   return db.prepare(
     `SELECT * FROM (
        SELECT * FROM channel_turns${where} ORDER BY created_at DESC, id DESC LIMIT ?
      ) ORDER BY created_at, id`,
-  ).all(...params) as ChannelTurnRow[];
+  ).all(...params, opts?.limit ?? 100) as ChannelTurnRow[];
 }
 
 // Lead 自己最近的 limit 轮，从新到旧（工单 03 的 read_lead_turns）。用户发给 Lead 的轮次和 Lead 自己发起的轮次

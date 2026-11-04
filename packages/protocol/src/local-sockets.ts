@@ -202,5 +202,13 @@ export interface SupervisorStatus {
   // 这个 supervisor 支持的可选功能，例如 SUPERVISOR_FEATURE_MAINTENANCE_BACKUP。
   features?: string[];
   // 部署闸门现在的判断（supervisor 知道 daemon 从哪个 checkout 启动时才有）。
-  deploy?: { ready: boolean; reasons: string[]; head: string | null; build: { commit: string; dirty: boolean } | null };
+  // mode 和 release 是发布模式（桌面版，根目录有 release.json）加的；旧 supervisor 不带它们。
+  deploy?: {
+    ready: boolean;
+    reasons: string[];
+    mode?: "dev" | "release";
+    head: string | null;
+    build: { commit: string; dirty: boolean } | null;
+    release?: { version: string; arch: string; schemaVersion: number } | null;
+  };
 }

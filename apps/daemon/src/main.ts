@@ -1,9 +1,13 @@
 // coordinatord 入口：plc daemon start（或 plc chat 自动拉起）经 tsx 运行本文件。
 import { join } from "node:path";
-import { dataDir, dbPath, loadEnvConfig, loginShellEnv, mergeLoginShellEnv } from "@pi-lead-child/core";
+import { dataDir, dbPath, loadEnvConfig, loginShellEnv, mergeLoginShellEnv, readLoginShellPath } from "@pi-lead-child/core";
+import { runtimeSearchPath } from "@pi-lead-child/runtime";
 import { solPiPackage } from "@pi-lead-child/engine";
 import { userSkillDirs } from "@pi-lead-child/lead";
 import { DaemonAlreadyRunningError, startDaemon } from "./server.js";
+
+// 桌面版安装时记下的登录 shell PATH（login-shell-path.json）和已知的用户目录。下面现读的登录 shell 环境读不到时，靠它找到执行器。
+process.env.PATH = runtimeSearchPath(process.env.PATH, { loginShellPath: readLoginShellPath(dataDir()) });
 
 const applied = loadEnvConfig();
 if (applied.length) console.log(`[config] env keys applied: ${applied.join(", ")}`);
@@ -39,7 +43,8 @@ try {
   void solPi.sync().then((activated) => {
     if (activated) d.reloadLeadExtensions("SoL-Pi installed");
   });
-  const stop = () => { void d.close().then(() => process.exit(0)); };
+  // 停机有上限（closeForExit）：卡在某一步时到时退出，日志写明卡在哪里。
+  const stop = () => { void d.closeForExit().then(() => process.exit(0)); };
   process.on("SIGTERM", stop);
   process.on("SIGINT", stop);
 } catch (e) {

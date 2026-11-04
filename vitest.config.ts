@@ -25,7 +25,9 @@ import { configDefaults, defineConfig } from "vitest/config";
 // vitest 默认在整个仓库里找测试文件，于是会把每个 worktree 的整套测试也跑一遍。
 // 所以这里把 .claude/ 排除在外。
 //
-// 根配置只跑后端各包、apps/daemon 和 apps/cli 的测试。apps/companion 和 packages/components 是 React Native 代码，各自有 vitest 配置。
+// 根配置只跑后端各包、apps/daemon、apps/cli、scripts/（桌面版的打包脚本）和 desktop/（桌面版的 Electron 壳）的测试。
+// desktop/ 的测试只 import 壳的源码，不加载 electron：主进程拿到的 electron 是测试传的假对象。
+// apps/companion 和 packages/components 是 React Native 代码，各自有 vitest 配置。
 // 测试用例按仓库根解析路径（例如 node_modules/.bin/tsx），所以各包的 test 脚本也先回到仓库根再跑。
 //
 // 测试会起真实的 daemon，有的在测试进程里，有的在子进程里。没有客户端连着时，daemon 会用
@@ -51,7 +53,7 @@ export default defineConfig({
   test: {
     env: { PLC_DESKTOP_NOTIFY: "off", PLC_GATEWAY_PORT: "0", PLC_LEAD_DRAIN_MS: "50", PLC_OPEN_FILES: "off" },
     setupFiles: ["./vitest.setup.ts"],
-    include: ["packages/*/test/**/*.test.ts", "apps/daemon/test/**/*.test.ts", "apps/cli/test/**/*.test.ts"],
+    include: ["packages/*/test/**/*.test.ts", "apps/daemon/test/**/*.test.ts", "apps/cli/test/**/*.test.ts", "scripts/*/test/**/*.test.ts", "desktop/test/**/*.test.ts"],
     exclude: [...configDefaults.exclude, ".claude/**", "packages/components/**"],
     testTimeout: 15_000,
     hookTimeout: 15_000,

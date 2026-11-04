@@ -13,8 +13,10 @@
 //     credentials.envVars mask）。没绑定主机的密钥沙箱里没有：不知道该发给谁，就不发。
 // 这里只有边界，不调沙箱：Claude Code 用它自带的 sandbox 设置（claudeSandboxSettings），pi 和 Lead 用
 // @anthropic-ai/sandbox-runtime（engine 的 sandbox/bash.ts）。
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { readFile, writeFile } from "node:fs/promises";
+import { promisify } from "node:util";
 import { homedir, tmpdir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { isSecretEnvName, KNOWN_SECRET_ENV_NAMES } from "@pi-lead-child/protocol";
@@ -52,9 +54,9 @@ export const SANDBOX_DENY_READ_HOME: readonly string[] = [
   ".ssh/id_*", ".ssh/*.pem", ".ssh/*.key", ".gnupg", "Library/Keychains",
 ];
 
-// 数据目录里不能读的：config.json（env 段里可能有密钥）、plc 的 CLI 凭证、保险库的密钥、Lead 自己的 pi 授权文件。
-// 账本（plc.db）能读：Lead 排查问题要用。
-const DATA_DIR_DENY_READ: readonly string[] = ["config.json", "cli-credential.json", "connections.key", "agent/auth.json"];
+// 数据目录里不能读的：config.json（env 段里可能有密钥）、plc 的 CLI 凭证、保险库的密钥、Lead 自己的 pi 授权文件、
+// 桌面版窗口回环自动配对的口令（读到它就能给自己配一个 binding）。账本（plc.db）能读：Lead 排查问题要用。
+const DATA_DIR_DENY_READ: readonly string[] = ["config.json", "cli-credential.json", "connections.key", "shell-pairing.key", "agent/auth.json"];
 
 // 能写整个 home（见文件头），挡住写进去就能在沙箱外执行的地方，等于逃出沙箱：shell 的启动文件、git 的全局配置、
 // 编辑器和终端会执行的配置、LaunchAgents、Claude Code / pi / Codex / Gemini 的配置（里面有 hooks 和扩展）、
@@ -75,7 +77,7 @@ export const SANDBOX_DENY_WRITE_HOME: readonly string[] = [
 // 数据目录里命令能写的：Lead 的临时目录和轻子 agent 的目录。别的（账本、配置、密钥、会话、备份）都不能写。
 const DATA_DIR_WRITABLE: readonly string[] = ["lead-scratch", "light-tasks"];
 const DATA_DIR_ALWAYS_DENY_WRITE: readonly string[] = [
-  "plc.db", "plc.db-wal", "plc.db-shm", "config.json", "cli-credential.json", "connections.key", "agent", "backups",
+  "plc.db", "plc.db-wal", "plc.db-shm", "config.json", "cli-credential.json", "connections.key", "shell-pairing.key", "agent", "backups",
 ];
 
 // 数据目录里不能写的：已经有的条目里除了 DATA_DIR_WRITABLE 的都算，再加上一定要挡的（还没建也挡）。
@@ -182,17 +184,40 @@ export interface SandboxPolicy {
 // 但 hooks 和 config 不能写：沙箱里写一个钩子，用户下次在沙箱外跑 git 时它就会执行，等于逃出沙箱；config 能设
 // core.hooksPath、core.fsmonitor 这类会执行命令的选项。不是 git 仓库时为 null。结果按目录缓存（git 的目录不会变）。
 const gitDirsCache = new Map<string, { gitDir: string; commonDir: string } | null>();
+const execFileAsync = promisify(execFile);
+const GIT_DIRS_ARGS = ["rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"];
+
+function parseGitDirs(stdout: string): { gitDir: string; commonDir: string } | null {
+  const [gitDir, commonDir] = stdout.trim().split("\n");
+  return gitDir && commonDir && isAbsolute(gitDir) && isAbsolute(commonDir) ? { gitDir, commonDir } : null;
+}
+
+/**
+ * gitDirsOf 的异步版：在子进程里查好，写进同一份缓存。构建沙箱策略之前用（sandboxPolicyAsync），
+ * 策略里的 gitDirsOf 就只读缓存，不在 daemon 的主线程上同步跑 git（2026-11-03）。
+ */
+export async function warmGitDirs(dirs: readonly string[]): Promise<void> {
+  await Promise.all(dirs.filter((dir) => isAbsolute(dir)).map(async (dir) => {
+    const key = resolve(dir);
+    if (gitDirsCache.has(key)) return;
+    let found: { gitDir: string; commonDir: string } | null = null;
+    try {
+      found = parseGitDirs((await execFileAsync("git", ["-C", key, ...GIT_DIRS_ARGS], { encoding: "utf8", timeout: 5_000 })).stdout);
+    } catch {
+      found = null;
+    }
+    if (!gitDirsCache.has(key)) gitDirsCache.set(key, found);
+  }));
+}
 
 export function gitDirsOf(dir: string): { gitDir: string; commonDir: string } | null {
   const key = resolve(dir);
   if (gitDirsCache.has(key)) return gitDirsCache.get(key)!;
   let found: { gitDir: string; commonDir: string } | null = null;
   try {
-    const [gitDir, commonDir] = execFileSync(
-      "git", ["-C", key, "rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"],
-      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5_000 },
-    ).trim().split("\n");
-    if (gitDir && commonDir && isAbsolute(gitDir) && isAbsolute(commonDir)) found = { gitDir, commonDir };
+    found = parseGitDirs(execFileSync("git", ["-C", key, ...GIT_DIRS_ARGS], {
+      encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5_000,
+    }));
   } catch {
     found = null;
   }
@@ -364,6 +389,40 @@ function tlsTerminateConfig(policy: SandboxPolicy): { excludeDomains: string[] }
 // 钥匙串的，例如公司的根），用环境变量指给 curl、Python、git、Node。每个进程导出一次，放在系统临时目录。
 const TRUST_KEYCHAINS = ["/System/Library/Keychains/SystemRootCertificates.keychain", "/Library/Keychains/System.keychain"];
 let trustBundle: string | null | undefined;
+
+/**
+ * sandboxTrustBundle 的异步版：daemon 启动后在后台导出一次，之后 sandboxTrustBundle 只读结果（2026-11-03 以前
+ * 第一次用到时在 daemon 的主线程上同步跑 security，最多 10 秒）。
+ */
+export async function warmSandboxTrustBundle(): Promise<void> {
+  if (trustBundle !== undefined) return;
+  if (process.platform !== "darwin") {
+    trustBundle = null;
+    return;
+  }
+  let path: string | null = null;
+  try {
+    const { stdout: pem } = await execFileAsync("security", ["find-certificate", "-a", "-p", ...TRUST_KEYCHAINS.filter((file) => existsSync(file))], {
+      encoding: "utf8", timeout: 10_000, maxBuffer: 16 * 1024 * 1024,
+    });
+    if (pem.includes("BEGIN CERTIFICATE")) {
+      const target = join(tmpdir(), "plc-sandbox-ca.pem");
+      const current = await readFile(target, "utf8").catch(() => null);
+      if (current !== pem) await writeFile(target, pem, { mode: 0o644 });
+      path = target;
+    }
+  } catch {
+    path = null;
+  }
+  // 同步的那条路可能已经先导出了：用它的结果。
+  if (trustBundle === undefined) trustBundle = path;
+}
+
+/** 构建沙箱策略之前先异步备好它要的 git 目录和根证书，再构建（sandboxPolicy 读的都是缓存）。 */
+export async function sandboxPolicyAsync(input: SandboxPolicyInput): Promise<SandboxPolicy> {
+  await Promise.all([warmGitDirs(input.writable), warmSandboxTrustBundle()]);
+  return sandboxPolicy(input);
+}
 
 /** 系统根证书的 PEM 文件。不是 macOS、或者导不出来时为 null。 */
 export function sandboxTrustBundle(): string | null {

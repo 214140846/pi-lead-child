@@ -8,6 +8,7 @@
 //   - 会话已连接：会话那一块（没有粘贴的入口），「代你发消息」开关缺省关，打开调 allow_writes。
 //   - 会话失效：「重新登录」是主按钮，旁边「改用 Slack 应用」调 use_mode。
 //   - 中文。
+import { ControlPlaneClient } from '@pi-lead-child/client';
 import { DEFAULT_DESIGN_PREFERENCES, type ChannelConnectionDto, type ChannelSourceSettingsDto } from '@pi-lead-child/protocol';
 import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -149,6 +150,35 @@ describe('the Slack connection on the settings page', () => {
     expect(screen.getByTestId('channel-slack-connection-writes').textContent).toContain('only reads');
     await act(async () => { fireEvent.click(toggle); });
     expect(client.performUiAction).toHaveBeenCalledWith('channel_connection', 'slack', 'allow_writes', { input: {} });
+  });
+
+  // 回归（#220）：会话那一块的「测试」不带密钥（daemon 用现在存的会话试）。以前客户端不发这个请求，
+  // 页面报「The secret format is not correct. Each secret can have at most 1000 characters.」。这里用真的客户端。
+  it('tests the saved session through the real client, without a secret format error', async () => {
+    const requests: Array<{ url: string; body: unknown }> = [];
+    const real = new ControlPlaneClient({
+      fetch: (async (input: string | URL | Request, init?: RequestInit) => {
+        requests.push({ url: String(input), body: JSON.parse(String(init?.body)) });
+        return new Response(JSON.stringify({ ok: true, checks: [], account: null, missingScopes: [] }), {
+          status: 200, headers: { 'content-type': 'application/json' },
+        });
+      }) as typeof fetch,
+      credentials: {
+        load: async () => ({
+          baseUrl: 'http://127.0.0.1:47130', accessToken: 'web-token', lastSeq: 0,
+          binding: { id: 7, kind: 'companion', name: 'localhost-web', scopes: ['chat', 'tickets:view', 'tickets:create'] },
+        }),
+        save: async () => {}, clear: async () => {},
+      },
+    });
+    const { client } = setup(sessionSource(), connection({ mode: 'session', writes: false }));
+    client.testChannelSecrets.mockImplementation((...args: unknown[]) =>
+      real.testChannelSecrets(args[0] as string, args[1] as Record<string, string>));
+    const test = await screen.findByTestId('channel-slack-session-test');
+    await act(async () => { fireEvent.click(test); });
+    await waitFor(() => expect(requests).toEqual([{ url: 'http://127.0.0.1:47130/v1/channels/settings/slack/test', body: { secrets: {} } }]));
+    expect(screen.getByTestId('channel-slack-session').textContent).not.toContain('secret format');
+    expect(await screen.findByText('All checks passed. The secrets are not saved yet.')).toBeTruthy();
   });
 
   it('offers to sign in again, or to go back to the Slack app, when the session ended', async () => {

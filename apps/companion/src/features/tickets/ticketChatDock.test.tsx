@@ -229,9 +229,15 @@ describe('the expanded ticket chat', () => {
     renderDock({ expanded: true });
     const scroll = screen.getByTestId('ticket-chat-scroll');
     const collapsing: string[] = [];
-    for (let node = screen.getByTestId('ticket-conversation').parentElement; node && node !== scroll; node = node.parentElement) {
-      const style = getComputedStyle(node);
-      if (style.flexShrink === '1' && /^0(%|px)?$/.test(style.flexBasis)) collapsing.push(node.outerHTML.slice(0, 80));
+    // 一条消息一块（ChatList，2026-11-04）：每一块到滚动区之间都不能有会被压成 0 高的容器。
+    // 测试里量不出行高，ChatList 不虚拟化：每一块都在一个普通的滚动区里（ticket-chat-scroll-scroller）。
+    const scroller = screen.getByTestId('ticket-chat-scroll-scroller');
+    for (const column of screen.getAllByTestId('ticket-chat-column')) {
+      expect(scroll.contains(column)).toBe(true);
+      for (let node = column.parentElement; node && node !== scroller; node = node.parentElement) {
+        const style = getComputedStyle(node);
+        if (style.flexShrink === '1' && /^0(%|px)?$/.test(style.flexBasis)) collapsing.push(node.outerHTML.slice(0, 80));
+      }
     }
     expect(collapsing).toEqual([]);
   });
@@ -241,15 +247,18 @@ describe('the expanded ticket chat', () => {
 describe('the ticket chat column', () => {
   it('puts the conversation and the composer in the same centered column', () => {
     renderDock({ expanded: true });
-    const column = screen.getByTestId('ticket-chat-column');
+    // 一条消息一块（ChatList，2026-11-04），每一块一个同样的内容列。
+    const columns = screen.getAllByTestId('ticket-chat-column');
     const composer = screen.getByTestId('ticket-chat-composer-column');
-    expect(column.contains(screen.getByTestId('ticket-conversation'))).toBe(true);
-    expect(getComputedStyle(column).alignSelf).toBe('center');
-    expect(getComputedStyle(composer).maxWidth).toBe(getComputedStyle(column).maxWidth);
+    for (const column of columns) {
+      expect(getComputedStyle(column).alignSelf).toBe('center');
+      expect(getComputedStyle(composer).maxWidth).toBe(getComputedStyle(column).maxWidth);
+    }
     expect(getComputedStyle(composer).alignSelf).toBe('center');
     // 你的气泡靠这一列的右边，最宽 70%，和主会话一样。
     const bubble = screen.getByTestId('ticket-user-message');
-    expect(column.contains(bubble)).toBe(true);
+    const column = columns.find((candidate) => candidate.contains(bubble));
+    expect(column).toBeTruthy();
     expect(getComputedStyle(bubble).alignSelf).toBe('flex-end');
     expect(getComputedStyle(bubble).maxWidth).toBe('70%');
   });

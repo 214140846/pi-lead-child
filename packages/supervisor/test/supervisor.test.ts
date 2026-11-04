@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -240,7 +241,7 @@ describe("the deploy gate at the maintenance entry", () => {
   }
 
   async function start(
-    dir: string, deployment: { root: string; distDir: string },
+    dir: string, deployment: { root: string; distDir: string; installRoot?: string },
     backupDatabase?: (source: string, destination: string) => Promise<void>,
   ) {
     const dbFile = join(dir, "plc.db");
@@ -361,6 +362,33 @@ describe("the deploy gate at the maintenance entry", () => {
     expect(refusal).toMatchObject({ code: "deploy_refused" });
   }, 30_000);
 
+  // 桌面版（P0-1）：运行包根目录有 release.json，supervisor 把安装根传给闸门。status 报发布模式；运行包里的文件坏了，
+  // 维护请求照样被拒绝，daemon 不停。
+  it("gates a desktop runtime package by its release.json, without git", async () => {
+    const dir = tempDir("plc-supervisor-release-gate-");
+    const installRoot = join(dir, "runtime");
+    const versionDir = join(installRoot, "versions", "1.3.0");
+    const distDir = join(versionDir, "apps", "daemon", "dist");
+    mkdirSync(distDir, { recursive: true });
+    writeFileSync(join(distDir, "coordinatord.mjs"), "export {};\n");
+    const hash = createHash("sha256").update("export {};\n").digest("hex");
+    writeFileSync(join(versionDir, "release.json"), JSON.stringify({
+      schema: 1, product: "bytezard-lead", version: "1.3.0", arch: process.arch, schemaVersion: LATEST_SCHEMA_VERSION,
+      files: { "apps/daemon/dist/coordinatord.mjs": hash },
+    }));
+    symlinkSync(join("versions", "1.3.0"), join(installRoot, "current"));
+    const root = join(installRoot, "current");
+    const pid = await start(dir, { root, distDir: join(root, "apps", "daemon", "dist"), installRoot });
+    expect((await supervisorRequest<SupervisorStatus>({ type: "status" }, { dataDir: dir })).deploy)
+      .toMatchObject({ ready: true, mode: "release", head: null, build: null, release: { version: "1.3.0" } });
+
+    writeFileSync(join(distDir, "coordinatord.mjs"), "export const half = 1;\n");
+    const refusal = await supervisorRequest({ type: "request_maintenance", action: "restart", reason: "deploy" }, { dataDir: dir })
+      .then(() => null, (error: Error & { code?: string }) => error);
+    expect(refusal).toMatchObject({ code: "deploy_refused", message: expect.stringContaining("apps/daemon/dist/coordinatord.mjs") });
+    expect(Number((await supervisorRequest<SupervisorStatus>({ type: "status" }, { dataDir: dir })).daemon?.pid)).toBe(pid);
+  }, 30_000);
+
   it("checks the checkout again right before the stop, after waiting for Lead", async () => {
     const dir = tempDir("plc-supervisor-recheck-");
     const deployment = deployCheckout(dir);
@@ -426,6 +454,92 @@ describe("stopping the daemon while Lead is answering", () => {
   }, 30_000);
 });
 
+// 2026-11-03 07:25Z：负载约 40，Lead 正在跑一轮，daemon 1.5 秒内没回答 status。supervisor 当它不在，跳过排空直接发
+// SIGTERM，只等 10 秒；daemon 的停机先排空 Lead，之后又用了约 5 分钟。升级记成失败，daemon 退出后被巡检用旧的 dist 拉起。
+describe("a daemon that is busy or slow to stop during maintenance", () => {
+  async function supervise(
+    dir: string,
+    options: { daemonStatusPatienceMs?: number; daemonStopTimeoutMs?: number; log?: (line: string) => void } = {},
+  ): Promise<number> {
+    const dbFile = join(dir, "plc.db");
+    openDb(dbFile).close();
+    writeFileSync(join(dir, "fake-active-items.json"), JSON.stringify([]));
+    handle = await startSupervisor({
+      ...options,
+      dataDir: dir,
+      dbPath: dbFile,
+      // 和生产一样直接用 node 启动 daemon：tsx 的命令行是一个包装进程，SIGKILL 只杀掉它，fake daemon 还活着。
+      daemonCommand: {
+        bin: process.execPath, args: ["--import", "tsx", resolve("packages/supervisor/test/fake-supervised-daemon.ts")],
+      },
+      cwd: process.cwd(),
+      env: { PLC_DATA_DIR: dir },
+      restartBaseMs: 50,
+      restartMaxMs: 200,
+      log: options.log ?? (() => {}),
+    });
+    await supervisorRequest({ type: "ensure_running" }, { dataDir: dir, timeoutMs: 15_000 });
+    return Number((await waitStatus(dir, (status) => Boolean(status.daemon?.pid))).daemon?.pid);
+  }
+  const commands = (dir: string) => {
+    const path = join(dir, "fake-commands.log");
+    return existsSync(path) ? readFileSync(path, "utf8").split("\n").filter((type) => type && type !== "status") : [];
+  };
+
+  it("keeps asking a daemon that does not answer status at once, and drains it before the stop", async () => {
+    const dir = tempDir("plc-supervisor-busy-");
+    const pid = await supervise(dir);
+    writeFileSync(join(dir, "fake-busy-until"), JSON.stringify({ pid, until: Date.now() + 3_500 }));
+
+    await supervisorRequest({ type: "request_maintenance", action: "restart", reason: "deploy under load" }, { dataDir: dir });
+
+    const done = await waitStatus(dir, (status) =>
+      status.supervisor.maintenance?.state === "succeeded" && Number(status.daemon?.pid) !== pid);
+    expect(done.supervisor.phase).toBe("running");
+    expect(commands(dir)).toEqual(["drain", "shutdown"]);
+  }, 45_000);
+
+  it("waits for a daemon whose stop takes longer than 10 s, and records the maintenance as succeeded", async () => {
+    const dir = tempDir("plc-supervisor-slow-stop-");
+    const pid = await supervise(dir, { daemonStatusPatienceMs: 1_000 });
+    // It never answers status, so the supervisor sends SIGTERM; its own stop then takes 12 s.
+    writeFileSync(join(dir, "fake-busy-until"), JSON.stringify({ pid, until: Date.now() + 120_000 }));
+    writeFileSync(join(dir, "fake-slow-close"), JSON.stringify({ pid, ms: 12_000 }));
+
+    await supervisorRequest({ type: "request_maintenance", action: "restart", reason: "deploy under load" }, { dataDir: dir });
+
+    await vi.waitFor(async () => {
+      const status = await supervisorRequest<SupervisorStatus>({ type: "status" }, { dataDir: dir });
+      expect(["succeeded", "failed"]).toContain(status.supervisor.maintenance?.state);
+    }, { timeout: 40_000, interval: 200 });
+    const done = await waitStatus(dir, (status) => Number(status.daemon?.pid) > 0);
+    expect(done.supervisor.maintenance).toMatchObject({ state: "succeeded", error: null });
+    expect(Number(done.daemon?.pid)).not.toBe(pid);
+  }, 60_000);
+
+  // daemon 自己的停机有上限（PLC_DAEMON_CLOSE_TIMEOUT_MS，缺省 60 秒）。过了 supervisor 的期限还没退出，说明它的事件循环
+  // 卡死了，自己的计时器也走不动。合并进来的 8170ce68 这时只记一个错误：卡死的 daemon 留着，维护记成失败。现在强杀它。
+  it("kills a daemon that is still not gone after the stop deadline, and starts the new one", async () => {
+    const dir = tempDir("plc-supervisor-stuck-stop-");
+    const lines: string[] = [];
+    const pid = await supervise(dir, { daemonStatusPatienceMs: 1_000, daemonStopTimeoutMs: 2_000, log: (line) => lines.push(line) });
+    writeFileSync(join(dir, "fake-busy-until"), JSON.stringify({ pid, until: Date.now() + 120_000 }));
+    writeFileSync(join(dir, "fake-slow-close"), JSON.stringify({ pid, ms: 120_000 }));
+
+    await supervisorRequest({ type: "request_maintenance", action: "restart", reason: "deploy under load" }, { dataDir: dir });
+
+    await vi.waitFor(async () => {
+      const status = await supervisorRequest<SupervisorStatus>({ type: "status" }, { dataDir: dir });
+      expect(["succeeded", "failed"]).toContain(status.supervisor.maintenance?.state);
+    }, { timeout: 30_000, interval: 200 });
+    const done = await waitStatus(dir, (status) => Number(status.daemon?.pid) > 0);
+    expect(done.supervisor.maintenance).toMatchObject({ state: "succeeded", error: null });
+    expect(Number(done.daemon?.pid)).not.toBe(pid);
+    expect(() => process.kill(pid, 0)).toThrow();
+    expect(lines.join("\n")).toContain(`daemon ${pid} did not exit within 2 s after the stop; sending SIGKILL`);
+  }, 60_000);
+});
+
 // 2026-10-19 14:53Z 部署 f87d743：机器负载约 37，新 daemon 14:54:01Z 启动，14:54:40Z 才开始监听。
 // 维护在 14:54:31Z 记成失败（等就绪的期限固定 30 秒）。之后 phase 一直是 degraded，daemon 好了也没回到 running。
 // 测试不真等 30 秒：fake daemon 拿到 daemon.lock 以后先不监听，测试把 supervisor 看到的时钟（Date）往前拨。
@@ -433,7 +547,7 @@ describe("stopping the daemon while Lead is answering", () => {
 describe("a daemon that starts slower than the ready deadline", () => {
   afterEach(() => { vi.useRealTimers(); });
 
-  async function supervise(dir: string): Promise<number> {
+  async function supervise(dir: string, log: (line: string) => void = () => {}): Promise<number> {
     const dbFile = join(dir, "plc.db");
     openDb(dbFile).close();
     writeFileSync(join(dir, "fake-active-items.json"), JSON.stringify([]));
@@ -445,7 +559,7 @@ describe("a daemon that starts slower than the ready deadline", () => {
       env: { PLC_DATA_DIR: dir },
       restartBaseMs: 50,
       restartMaxMs: 200,
-      log: () => {},
+      log,
     });
     await supervisorRequest({ type: "ensure_running" }, { dataDir: dir, timeoutMs: 15_000 });
     return Number((await waitStatus(dir, (status) => Boolean(status.daemon?.pid))).daemon?.pid);
@@ -477,6 +591,29 @@ describe("a daemon that starts slower than the ready deadline", () => {
     expect(done.supervisor.maintenance).toMatchObject({ state: "succeeded", error: null });
     expect(done.supervisor.phase).toBe("running");
     expect(Number(done.daemon?.pid)).toBe(slowPid);
+  }, 45_000);
+
+  // 2026-11-03 10:15Z：负载 35–90，新 daemon 129 秒才开始监听（10:11Z 那次 154 秒）。supervisor 在第 120 秒记下
+  // "daemon did not become ready"，phase 变成 degraded，虽然 daemon 几秒后就好了。进程活着就是还在启动：
+  // 过了 120 秒只记一条"启动慢"的日志，接着等。
+  it("keeps waiting for a live daemon past 120 s, logs that it is slow, and the maintenance succeeds", async () => {
+    const dir = tempDir("plc-supervisor-slow-load-");
+    const lines: string[] = [];
+    await supervise(dir, (line) => lines.push(line));
+    const slowPid = await restartIntoSlowStart(dir);
+
+    vi.setSystemTime(Date.now() + 155_000);
+    await new Promise((done) => setTimeout(done, 1_000));
+    const waiting = await supervisorRequest<SupervisorStatus>({ type: "status" }, { dataDir: dir });
+    expect(waiting.supervisor.maintenance).toMatchObject({ state: "running", error: null });
+    expect(waiting.supervisor.phase).toBe("starting");
+    expect(lines.join("\n")).toMatch(/daemon pid \d+ is still starting after 15\d s; waiting up to 600 s/);
+
+    unlinkSync(join(dir, "fake-hold-start"));
+    const done = await waitStatus(dir, (status) => status.supervisor.maintenance?.state !== "running");
+    expect(done.supervisor.maintenance).toMatchObject({ state: "succeeded", error: null });
+    expect(Number(done.daemon?.pid)).toBe(slowPid);
+    expect(lines.join("\n")).not.toContain("did not become ready");
   }, 45_000);
 
   it("returns to running once the daemon answers, even after the maintenance gave up on it", async () => {
@@ -518,6 +655,8 @@ describe("waiting for a daemon that is starting", () => {
       startingDaemonVerdict({ answered, exited, waitedMs, timeoutMs: DEFAULT_DAEMON_READY_TIMEOUT_MS });
     // 2026-10-19 14:54Z：负载约 37，daemon 39 秒才开始监听。进程活着，它还在启动。
     expect(verdict(false, false, 39_000)).toBe("starting");
+    // 2026-11-03 10:11Z 和 10:15Z：负载 35–90，daemon 154 秒、129 秒才开始监听。
+    expect(verdict(false, false, 154_000)).toBe("starting");
     expect(verdict(true, false, 39_000)).toBe("ready");
     expect(verdict(false, true, 1_000)).toBe("exited");
     expect(verdict(false, false, DEFAULT_DAEMON_READY_TIMEOUT_MS)).toBe("timed_out");

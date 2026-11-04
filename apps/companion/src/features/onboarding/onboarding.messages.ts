@@ -1,4 +1,4 @@
-// 首次启动页的文案。服务商的品牌名（Anthropic、OpenAI、Google）不翻译。
+// 首次启动页的文案（第一步大脑，第二步执行器）。服务商的品牌名（Anthropic、OpenAI、Google）不翻译。
 import { defineMessages } from '@/i18n';
 
 export const onboardingMessages = defineMessages({
@@ -47,6 +47,24 @@ export const onboardingMessages = defineMessages({
     skipQuestion: 'Do not want to set it up now?',
     skip: 'Look around first',
     staysOffline: (leadName: string) => `${leadName} stays offline.`,
+    runtimesTitle: (leadName: string) => `Choose the runtimes for ${leadName}`,
+    runtimesIntro: (leadName: string) => `${leadName} gives the work on tickets to these runtimes. `
+      + `Turn off the ones that you do not want ${leadName} to use. You can change this later in Settings → Runtimes.`,
+    runtimesList: 'Runtimes',
+    runtimeInstalled: 'Installed',
+    runtimeNotFound: 'Not found',
+    runtimeBuiltIn: 'Built in',
+    runtimeBuiltInNote: 'Built in. It uses the model provider that you just set up.',
+    runtimeNotFoundNote: 'Install it, then click Check again.',
+    runtimeInstall: (label: string) => `How to install ${label}`,
+    recheck: 'Check again',
+    rechecking: 'Checking…',
+    runtimesLoading: 'Loading the runtimes…',
+    runtimesLoadFailed: (reason: string) => `Could not load the runtimes: ${reason}`,
+    runtimesSave: 'Save and continue',
+    runtimesSaving: 'Saving…',
+    runtimesSkip: 'Skip',
+    runtimesSkipNote: 'If you skip, no setting changes.',
   },
   zh: {
     presets: {
@@ -91,5 +109,22 @@ export const onboardingMessages = defineMessages({
     skipQuestion: '不想现在配？',
     skip: '先进去看看',
     staysOffline: (leadName) => `${leadName} 会保持离线。`,
+    runtimesTitle: (leadName) => `选 ${leadName} 用哪些执行器`,
+    runtimesIntro: (leadName) => `${leadName} 把工单交给这些执行器去做。不想让它用的，关掉就行。以后可以在「设置 → 执行器」里改。`,
+    runtimesList: '执行器',
+    runtimeInstalled: '已安装',
+    runtimeNotFound: '没找到',
+    runtimeBuiltIn: '内置',
+    runtimeBuiltInNote: '内置，用你刚才设置的模型服务。',
+    runtimeNotFoundNote: '装好以后点「重新检测」。',
+    runtimeInstall: (label) => `怎样安装 ${label}`,
+    recheck: '重新检测',
+    rechecking: '正在检测…',
+    runtimesLoading: '正在读取执行器…',
+    runtimesLoadFailed: (reason) => `读不到执行器：${reason}`,
+    runtimesSave: '保存并继续',
+    runtimesSaving: '正在保存…',
+    runtimesSkip: '跳过',
+    runtimesSkipNote: '跳过就不改任何设置。',
   },
 });

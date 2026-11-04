@@ -34,6 +34,20 @@
 //     conversations.replies（thread）和 conversations.history（整段对话），只当上下文用。
 //   - 重连以后补拉：对还有没结束的卡的道，从这条道记下的最后一个 ts 往后，用 conversations.replies / conversations.history 补，
 //     有数量上限，靠投递编号去重。
+//   - 断线这段时间的补拉（2026-11-03：断了 14 分钟，没有开着卡的会话里的消息永远收不到）：只补别人发给用户的私信（im、mpim）
+//     和提到用户的消息（用户 2026-11-03：「拉 mention 我的和 DM 我的就好」）。从水位（hub 存在库里，到这个时刻为止都收到了）往后，
+//     先找出可能有漏掉消息的对话，再读这些对话。找的办法：
+//       私信：client.counts（网页版客户端连上时自己调的方法，一次给出每个私信最新一条的 ts；gabriel-slack 的补拉也用它）。
+//         只有会话令牌能调；Slack 应用的用户令牌调不了时，用 users.conversations 列出私信，一个一个读（有上限）。
+//         Slack 没有公开的方法能一次查出「哪些私信有新消息」，搜索也没有只搜私信的写法。
+//       提到用户的消息：search.messages 搜 <@用户编号>（按时间倒序，after: 只精确到天，再按 ts 筛）。这是唯一能跨频道、
+//         连 thread 里的回复一起找到提到用户的消息的公开方法；Slack 应用方式要 search:read（清单里是可选的权限，缺了就告诉 Lead）。
+//         搜索只用来找对话：挨得近的几条匹配 Slack 只回一条，结果里也没有 thread_ts、metadata，所以再用 conversations.history /
+//         conversations.replies 读那个对话，频道里只留提到用户的。
+//     读到的消息和实时收到的一样交给 hub 的进程内入口，按投递编号去重。有上限（时间窗、条数、对话数），超过或者调用失败时记日志，
+//     并且记一条 channel.catch_up.incomplete 告诉 Lead。从来没记过水位（第一次启动）时不补，只记下现在。
+//     水位：连着、并且这次连上以后的补拉做完时，每分钟记一次；断了（状态不是 connected）就不推。记的时刻往回留两分钟：
+//     会话方式快速重连时状态可能不变，搜索的索引也有延迟，余量盖住这一小段，重复的靠投递编号去重。
 //   - 默认常设指令：打断阈值很高（只有你信任的人发来的私信、并且系统判断你需要马上看到时才推送）；私信和同事的提及进会话卡；
 //     外部的提及进摘要；订阅频道的消息、改和删只记录。模板代回、代查和按信心代回（channel.slack.delegate、.lookup、.reply）
 //     已经退役（落地计划 A5、D1），停用不删；能替你做什么由授权表（channel.authority）决定。
@@ -262,6 +276,8 @@ export interface SlackChannelOptions {
   conversationTtlMs?: number;
   // 订阅：这个频道下多久以内有过道就算订阅。缺省 14 天（spec D12）。
   subscribeWindowMs?: number;
+  // 断线这段时间的补拉的上限（测试改小）。windowMs：最多往回补多久，缺省 3 天；messages：最多补几条，缺省 100。
+  catchUp?: { windowMs?: number; messages?: number };
   // 记忆沉淀（spec D12，工单 07）。exclude：不订阅、不沉淀的频道，写频道编号（C0123ABCD）或者频道名（proj-x 或 #proj-x，
   // 不分大小写）。来自 config.json 的 channels.slack.memory.exclude（builtin.ts）。
   memory?: { exclude?: readonly string[] };
@@ -334,6 +350,19 @@ const SLACK_EDIT_GONE = new Set(["message_not_found", "cant_update_message", "ed
 // 重连以后补拉：最多看几条道，每条道最多补几条消息。
 const BACKFILL_LANES = 20;
 const BACKFILL_MESSAGES = 50;
+// 断线这段时间的补拉：最多往回补多久、最多补几条（缺省，SlackChannelOptions.catchUp 可以改）；最多读几个对话；
+// 读一个对话每页几条、最多几页；搜索每页几条、最多几页；列出私信时最多读几个（client.counts 调不了时）。
+const GAP_WINDOW_MS = 3 * DAY;
+const GAP_MESSAGES = 100;
+const GAP_PLACES = 50;
+const GAP_PAGE = 200;
+const GAP_PAGES = 5;
+const GAP_SEARCH_COUNT = 100;
+const GAP_SEARCH_PAGES = 3;
+const GAP_DM_SCAN = 200;
+// 水位：连着时每隔多久记一次；记的时刻往回留多少余量。
+const MARK_EVERY_MS = MINUTE;
+const MARK_MARGIN_MS = 2 * MINUTE;
 // 别人也装了这个应用时，查一个事件的完整名单（apps.event.authorizations.list）：每页几个人，最多翻几页。
 const AUTHORIZATION_PAGE_SIZE = 100;
 const AUTHORIZATION_PAGES = 10;
@@ -562,8 +591,9 @@ interface SlackMessage {
   files?: unknown[];
   ts?: string;
   thread_ts?: string;
-  // conversations.history 里 thread 的根消息带回复的条数。
+  // conversations.history 里 thread 的根消息带回复的条数和最后一条回复的 ts。
   reply_count?: number;
+  latest_reply?: string;
   metadata?: { event_type?: string; event_payload?: Record<string, unknown> };
 }
 
@@ -741,6 +771,33 @@ export function compareSlackTs(a: string, b: string): number {
   return left === right ? 0 : left < right ? -1 : 1;
 }
 
+/** 一个时刻在 Slack 里的写法（消息的 ts：秒，小数点后六位）。 */
+export function slackTsOf(at: Date): string {
+  const ms = at.getTime();
+  return `${Math.floor(ms / 1000)}.${String(ms % 1000).padStart(3, "0")}000`;
+}
+
+/**
+ * 断线这段时间从哪里补起（纯函数）：从水位起，最早到时间窗的起点（clipped：更早的不补）。
+ * 从来没记过水位时是 null：不补以前的消息（第一次启动不能一下子开出一堆卡）。
+ */
+export function slackCatchUpWindow(mark: Date | null, now: Date, windowMs: number): { from: Date; clipped: boolean } | null {
+  if (!mark) return null;
+  const earliest = now.getTime() - windowMs;
+  return mark.getTime() < earliest ? { from: new Date(earliest), clipped: true } : { from: mark, clipped: false };
+}
+
+// 搜索结果的 permalink 里的 thread_ts（thread 里的回复才有）。
+function threadOfPermalink(permalink: unknown): string | null {
+  if (typeof permalink !== "string") return null;
+  try {
+    const value = new URL(permalink).searchParams.get("thread_ts");
+    return value && /^\d+\.\d+$/.test(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * 一条消息属于哪个对话：对象键和回复的目标。私信里不在线程中的是整段私信；频道里不在线程中的是以它开头的线程。
  * 回复都进 thread（用户 2026-11-02）：私信的根消息也回在它下面的 thread 里，整段私信还是一个道。
@@ -771,6 +828,23 @@ export function createSlackChannelAdapter(options: SlackChannelOptions): Channel
   const conversations = new Map<string, ConversationInfo>();
   // 用户本人所在的工作区：auth.test（会话方式是换好的会话）或者投递的 team_id 告诉我们。补拉的消息靠它认出外部的人。
   let homeTeam: string | null = null;
+  // 断线这段时间的补拉的上限。
+  const gapWindowMs = Math.max(options.catchUp?.windowMs ?? GAP_WINDOW_MS, MINUTE);
+  const gapMessages = Math.max(Math.trunc(options.catchUp?.messages ?? GAP_MESSAGES), 1);
+  // 水位要的连接状态（见文件开头）：现在的传输上下文、连没连着、这次连上以后补完了没有、第几次断开（补拉开始以后又断过就不算补完）。
+  const link: {
+    host: ChannelTransportContext | null; connected: boolean; caughtUp: boolean; epoch: number; timer: ReturnType<typeof setInterval> | null;
+  } = { host: null, connected: false, caughtUp: false, epoch: 0, timer: null };
+  // 连着、并且补完了：记下「到 MARK_MARGIN_MS 以前为止都收到了」。
+  function markNow(): void {
+    const marks = link.host?.catchUpMark;
+    if (!marks || !link.connected || !link.caughtUp) return;
+    try {
+      marks.write(new Date(now().getTime() - MARK_MARGIN_MS));
+    } catch (error) {
+      link.host?.log(`could not save the catch-up mark: ${errorText(error)}`);
+    }
+  }
   // 连接方式。浏览器会话方式下，Web API 经过会话（SlackSessions），其余的代码两种方式一样。
   const mode = (): SlackConnection => ((typeof options.connection === "function" ? options.connection() : options.connection) === "session"
     ? "session" : "app");
@@ -1236,17 +1310,49 @@ export function createSlackChannelAdapter(options: SlackChannelOptions): Channel
     };
   }
 
-  // 重新连上以后补拉：还有没结束的卡的道，从记下的最后一个 ts 往后补。补到的消息照常经 hub 的进程内入口，按投递编号去重。
+  // 补到的一条消息换成和 Events API 一样的投递，交给 hub 的进程内入口（按投递编号去重）。
+  async function redeliver(deliver: ChannelTransportDeliver, channel: string, channelType: string, message: SlackMessage): Promise<void> {
+    const event: SlackMessageEvent = {
+      type: "message", channel, channel_type: channelType, ...message,
+      ...(message.user_team ?? message.team ? { user_team: message.user_team ?? message.team } : {}),
+    };
+    await deliver({ headers: {}, body: JSON.stringify({ type: "event_callback", team_id: homeTeam, event }), transport: "socket" });
+  }
+
+  // 重新连上以后补拉（每次连上都补，第一次也补）：先补还有没结束的卡的道，再补断线这段时间里的私信和提到用户的消息。
+  // 补完以后水位才接着往前推（link.caughtUp）。
   async function catchUp(input: {
     context: ChannelAdapterContext; transport: ChannelTransportContext; deliver: ChannelTransportDeliver; active: () => boolean;
   }): Promise<void> {
-    const { context, transport, deliver } = input;
+    const { transport } = input;
+    // 补到的消息靠用户本人的工作区认出外部的人：还不知道时问一次 auth.test。
+    if (!homeTeam) {
+      try {
+        const auth = await api("auth.test", {}, input.context);
+        if (isString(auth.team_id)) homeTeam = auth.team_id;
+      } catch (error) {
+        transport.log(`auth.test failed before the catch-up: ${errorText(error)}`);
+      }
+    }
     if (!homeTeam) {
       transport.log("catch-up skipped: the home workspace is not known yet");
       return;
     }
+    const epoch = link.epoch;
+    link.caughtUp = false;
+    const startedAt = now();
+    if (!await catchUpLanes(input)) return;
+    if (!await catchUpGap(input, startedAt)) return;
+    if (link.epoch === epoch) link.caughtUp = true;
+  }
+
+  // 还有没结束的卡的道，从记下的最后一个 ts 往后补。传输停了时返回 false。
+  async function catchUpLanes(input: {
+    context: ChannelAdapterContext; transport: ChannelTransportContext; deliver: ChannelTransportDeliver; active: () => boolean;
+  }): Promise<boolean> {
+    const { context, transport, deliver } = input;
     for (const lane of transport.openLanes(BACKFILL_LANES)) {
-      if (!input.active()) return;
+      if (!input.active()) return false;
       const parts = /^slack:([A-Z0-9]+):(main|\d+\.\d+)$/.exec(lane.objectKey);
       const last = lane.lastPayload ?? {};
       const lastTs = last.ts;
@@ -1268,15 +1374,182 @@ export function createSlackChannelAdapter(options: SlackChannelOptions): Channel
         .sort((a, b) => compareSlackTs(a.ts!, b.ts!))
         .slice(0, BACKFILL_MESSAGES);
       for (const message of missed) {
-        if (!input.active()) return;
-        const event: SlackMessageEvent = {
-          type: "message", channel, channel_type: channelType, ...message,
-          ...(message.user_team ?? message.team ? { user_team: message.user_team ?? message.team } : {}),
-        };
-        await deliver({ headers: {}, body: JSON.stringify({ type: "event_callback", team_id: homeTeam, event }), transport: "socket" });
+        if (!input.active()) return false;
+        await redeliver(deliver, channel, channelType, message);
       }
       if (missed.length) context.log(`caught up ${missed.length} message(s) in ${lane.objectKey}`);
     }
+    return true;
+  }
+
+  // 一个对话（整段对话或者一个 thread）里 ts 在 oldest 以后的消息，翻页读，最多 GAP_PAGES 页。more：还有没读到的。
+  async function readSince(place: { channel: string; root: string | null }, oldest: string, context: ChannelAdapterContext) {
+    const messages: SlackMessage[] = [];
+    let cursor = "";
+    for (let page = 0; page < GAP_PAGES; page++) {
+      const args = { channel: place.channel, oldest, limit: GAP_PAGE, include_all_metadata: true, ...(cursor ? { cursor } : {}) };
+      const result = place.root
+        ? await api("conversations.replies", { ...args, ts: place.root }, context)
+        : await api("conversations.history", args, context);
+      if (Array.isArray(result.messages)) messages.push(...(result.messages as unknown[]).filter(isRecord) as SlackMessage[]);
+      const next = (result.response_metadata as { next_cursor?: unknown } | undefined)?.next_cursor;
+      if (result.has_more !== true || !isString(next)) return { messages, more: false };
+      cursor = next;
+    }
+    return { messages, more: true };
+  }
+
+  // 断线这段时间里别人发给用户的私信、提到用户的消息（见文件开头）。传输停了时返回 false（不推水位）。
+  async function catchUpGap(input: {
+    context: ChannelAdapterContext; transport: ChannelTransportContext; deliver: ChannelTransportDeliver; active: () => boolean;
+  }, startedAt: Date): Promise<boolean> {
+    const { context, transport, deliver } = input;
+    const marks = transport.catchUpMark;
+    if (!marks) return true;
+    const save = () => {
+      try {
+        marks.write(new Date(startedAt.getTime() - MARK_MARGIN_MS));
+      } catch (error) {
+        transport.log(`could not save the catch-up mark: ${errorText(error)}`);
+      }
+    };
+    let mark: Date | null;
+    try {
+      mark = marks.read();
+    } catch (error) {
+      transport.log(`catch-up of the gap skipped: could not read the catch-up mark: ${errorText(error)}`);
+      return true;
+    }
+    const window = slackCatchUpWindow(mark, startedAt, gapWindowMs);
+    if (!mark || !window) {
+      transport.log("catch-up of the gap skipped: no catch-up mark yet, so messages from before this start are not pulled");
+      save();
+      return true;
+    }
+    const self = context.credential.account;
+    const from = window.from;
+    const fromTs = slackTsOf(from);
+    const reasons: string[] = [];
+    const days = Math.round(gapWindowMs / DAY * 10) / 10;
+    if (window.clipped) reasons.push(`断线超过 ${days} 天，只补了最近 ${days} 天的`);
+    // 可能有漏掉的消息的对话。direct：私信（整段读，都要）；不是私信的只要提到用户的。
+    const places = new Map<string, { channel: string; root: string | null }>();
+    const add = (channel: string, root: string | null) => {
+      const key = `${channel}:${root ?? "main"}`;
+      if (!places.has(key)) places.set(key, { channel, root });
+    };
+    const newer = (ts: unknown): ts is string => isString(ts) && compareSlackTs(ts, fromTs) > 0;
+
+    // 私信：client.counts 给出每个私信最新一条的 ts（还有提到用户的频道）。调不了时列出私信，一个一个读。
+    let counted = false;
+    try {
+      const counts = await api("client.counts", {}, context);
+      counted = true;
+      for (const row of [counts.ims, counts.mpims].flatMap((group) => (Array.isArray(group) ? group.filter(isRecord) : []))) {
+        if (isString(row.id) && newer(row.latest)) add(row.id, null);
+      }
+      for (const row of Array.isArray(counts.channels) ? counts.channels.filter(isRecord) : []) {
+        if (isString(row.id) && newer(row.latest) && Number(row.mention_count) > 0) add(row.id, null);
+      }
+    } catch (error) {
+      transport.log(`client.counts is not available (${errorText(error)}); listing the direct messages instead`);
+    }
+    if (!counted) {
+      try {
+        // 不用 membership 的缓存：断线期间别人第一次私信用户时，新的私信对话不在缓存里。Slack 给的 priority 高的先读。
+        const direct = (await allPages("users.conversations", { types: "im,mpim", exclude_archived: true }, "channels", context))
+          .filter((row) => isString(row.id))
+          .sort((a, b) => (Number(b.priority) || 0) - (Number(a.priority) || 0));
+        if (direct.length > GAP_DM_SCAN) reasons.push(`私信对话有 ${direct.length} 个，只查了 ${GAP_DM_SCAN} 个`);
+        for (const row of direct.slice(0, GAP_DM_SCAN)) add(row.id as string, null);
+      } catch (error) {
+        reasons.push(`列不出私信对话（${errorText(error)}）`);
+      }
+    }
+
+    // 提到用户的消息：按时间倒序搜，搜到水位以前的就停。after: 只精确到天（还可能按用户的时区算），往前多放两天，再按 ts 筛。
+    if (self) {
+      try {
+        const query = `<@${self}> after:${new Date(from.getTime() - 2 * DAY).toISOString().slice(0, 10)}`;
+        let reached = false;
+        for (let page = 1; page <= GAP_SEARCH_PAGES && !reached; page++) {
+          const result = await api("search.messages", { query, sort: "timestamp", sort_dir: "desc", count: GAP_SEARCH_COUNT, page }, context);
+          const found = isRecord(result.messages) ? result.messages : {};
+          const matches = Array.isArray(found.matches) ? found.matches.filter(isRecord) : [];
+          for (const match of matches) {
+            const channel = isRecord(match.channel) ? match.channel.id : undefined;
+            if (!isString(channel) || !isString(match.ts)) continue;
+            if (!newer(match.ts)) {
+              reached = true;
+              break;
+            }
+            const thread = threadOfPermalink(match.permalink);
+            add(channel, thread && thread !== match.ts ? thread : null);
+          }
+          const paging = isRecord(found.paging) ? found.paging : {};
+          if (!matches.length || page >= (Number(paging.pages) || 1)) reached = true;
+        }
+        if (!reached) reasons.push(`提到你的消息搜到超过 ${GAP_SEARCH_PAGES * GAP_SEARCH_COUNT} 条，更早的没有查`);
+      } catch (error) {
+        const text = errorText(error);
+        reasons.push(text.includes("missing_scope")
+          ? "Slack 应用没有搜索权限（search:read），提到你的消息没有补；在应用的 User Token Scopes 里加上它，再重新安装"
+          : `搜索提到你的消息失败（${text}）`);
+      }
+    }
+
+    // 读这些对话。私信里 thread 的回复不在整段对话里：根消息在这段时间里、有新回复的，再读它的回复。
+    const wanted = new Map<string, { channel: string; channelType: string; message: SlackMessage }>();
+    const list = [...places.values()];
+    if (list.length > GAP_PLACES) reasons.push(`要读的对话有 ${list.length} 个，只读了 ${GAP_PLACES} 个`);
+    let failed = 0;
+    let firstFailure = "";
+    let truncated = false;
+    for (const place of list.slice(0, GAP_PLACES)) {
+      if (!input.active()) return false;
+      try {
+        const channelType = await channelTypeOf(place.channel, context);
+        const direct = channelType === "im" || channelType === "mpim";
+        const keep = (messages: readonly SlackMessage[]) => {
+          for (const message of messages) {
+            if (!newer(message.ts)) continue;
+            if (!direct && !(self && slackMessageText(message).includes(`<@${self}>`))) continue;
+            wanted.set(`${place.channel}:${message.ts}`, { channel: place.channel, channelType, message });
+          }
+        };
+        const read = await readSince(place, fromTs, context);
+        truncated ||= read.more;
+        keep(read.messages);
+        if (direct && !place.root) {
+          for (const root of read.messages) {
+            if (!isString(root.ts) || !(root.reply_count ?? 0) || (isString(root.latest_reply) && !newer(root.latest_reply))) continue;
+            const replies = await readSince({ channel: place.channel, root: root.ts }, fromTs, context);
+            truncated ||= replies.more;
+            keep(replies.messages);
+          }
+        }
+      } catch (error) {
+        failed += 1;
+        firstFailure ||= errorText(error);
+      }
+    }
+    if (truncated) reasons.push(`有的对话这段时间的消息超过 ${GAP_PAGE * GAP_PAGES} 条，只读了最新的`);
+    if (failed) reasons.push(`${failed} 个对话读不出来（${firstFailure}）`);
+
+    const missed = [...wanted.values()].sort((a, b) => compareSlackTs(a.message.ts!, b.message.ts!));
+    if (missed.length > gapMessages) reasons.push(`这段时间的私信和提到你的消息有 ${missed.length} 条，只补了最新的 ${gapMessages} 条`);
+    const kept = missed.slice(-gapMessages);
+    for (const item of kept) {
+      if (!input.active()) return false;
+      await redeliver(deliver, item.channel, item.channelType, item.message);
+    }
+    if (kept.length) transport.log(`caught up ${kept.length} message(s) from the gap since ${mark.toISOString()}`);
+    if (reasons.length) {
+      transport.log(`catch-up of the gap ${mark.toISOString()} to ${startedAt.toISOString()} is incomplete: ${reasons.join("; ")}`);
+      transport.catchUpIncomplete?.({ from: mark, to: startedAt, caught: kept.length, reasons });
+    }
+    save();
+    return true;
   }
 
   // 网页版的消息帧换成和 Events API 一样的投递，交给同一个 parse。帧里没有 channel_type：按频道编号和 conversations.info 补；
@@ -1307,12 +1580,39 @@ export function createSlackChannelAdapter(options: SlackChannelOptions): Channel
     ? {
       start(host, deliver) {
         activeTransport = mode() === "session" ? sessionTransport : socketTransport;
-        if (activeTransport) activeTransport.start(host, deliver);
-        else host.status?.({ state: "error", error: "这种连接方式在这里没有接上传输" });
+        // 看着连接的状态推水位：不是 connected 时不推，直到重新连上、补完。
+        const watched: ChannelTransportContext = {
+          ...host,
+          status: (update) => {
+            if (update.state === "connected") link.connected = true;
+            else {
+              link.connected = false;
+              link.caughtUp = false;
+              link.epoch += 1;
+            }
+            host.status?.(update);
+          },
+        };
+        link.host = watched;
+        link.connected = false;
+        link.caughtUp = false;
+        link.epoch += 1;
+        if (link.timer) clearInterval(link.timer);
+        link.timer = setInterval(markNow, MARK_EVERY_MS);
+        link.timer.unref?.();
+        if (activeTransport) activeTransport.start(watched, deliver);
+        else watched.status?.({ state: "error", error: "这种连接方式在这里没有接上传输" });
       },
       async stop() {
         const stopping = activeTransport;
         activeTransport = undefined;
+        // 停下以前记一次：停着的这段时间，下次启动时从这里补。
+        markNow();
+        if (link.timer) clearInterval(link.timer);
+        link.timer = null;
+        link.connected = false;
+        link.caughtUp = false;
+        link.epoch += 1;
         await stopping?.stop();
       },
     }

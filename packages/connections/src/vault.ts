@@ -7,10 +7,17 @@
 // 密钥是 32 个随机字节。macOS 上存在 Keychain，写入时命令走 `security -i` 的标准输入，密钥不进 argv。
 // 其他系统上退回到数据目录里一个 0600 的文件。密钥不进 process.env：child 继承 daemon 的全部环境。
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFile, execFileSync, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { userInfo } from "node:os";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
+// Keychain 锁着、弹出授权框时 security 会一直等：最多等这么久，不让 daemon 停住（2026-11-03 以前没有上限）。
+const KEYCHAIN_TIMEOUT_MS = 10_000;
+// security find-generic-password 找不到这一项时的退出码。
+const KEYCHAIN_ITEM_NOT_FOUND = 44;
 
 const FORMAT = 1;
 const NONCE_BYTES = 12;
@@ -20,6 +27,8 @@ const KEY_BYTES = 32;
 export interface VaultKeySource {
   // 返回 32 字节的密钥。没有时创建一个并保存。
   load(): Buffer;
+  // 只读不建：在后台异步读已有的密钥，没有时返回 null（创建留给 load，免得两边各建一个、互相覆盖）。
+  read?(): Promise<Buffer | null>;
 }
 
 // hub 只需要这两个操作。lazyVault 在第一次用到时才读密钥：没用过连接的 daemon 不碰 Keychain。
@@ -28,12 +37,18 @@ export interface SecretVault {
   open<T>(sealed: Buffer, aad: string): T;
 }
 
-export function lazyVault(source: VaultKeySource): SecretVault {
+export function lazyVault(source: VaultKeySource): SecretVault & { preload(): Promise<void> } {
   let vault: Vault | null = null;
   const get = () => (vault ??= new Vault(source.load()));
   return {
     seal: (value, aad) => get().seal(value, aad),
     open: <T>(sealed: Buffer, aad: string) => get().open<T>(sealed, aad),
+    // daemon 启动后在后台读一次密钥：第一次用到连接时就不用在请求里同步读 Keychain。读不到时什么也不做。
+    async preload() {
+      if (vault || !source.read) return;
+      const key = await source.read().catch(() => null);
+      if (key && !vault) vault = new Vault(key);
+    },
   };
 }
 
@@ -92,12 +107,16 @@ export function keychainKeySource(account = userInfo().username, service = KEYCH
     load() {
       try {
         const hex = execFileSync("security", ["find-generic-password", "-a", account, "-s", service, "-w"], {
-          encoding: "utf8", stdio: ["ignore", "pipe", "ignore"],
+          encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: KEYCHAIN_TIMEOUT_MS,
         }).trim();
         const key = Buffer.from(hex, "hex");
         if (key.length === KEY_BYTES) return key;
-      } catch {
-        // 还没有密钥：下面创建一个。
+      } catch (error) {
+        // 只有「没有这一项」（security 的退出码 44）才是还没有密钥：下面创建一个。超时（Keychain 锁着）或别的错误时
+        // 不能新建：新建会用 -U 覆盖已有的密钥，保险库里加密过的令牌就再也打不开了。
+        if ((error as { status?: number | null }).status !== KEYCHAIN_ITEM_NOT_FOUND) {
+          throw new Error("vault: could not read the key from the Keychain (is it locked?)");
+        }
       }
       // 账号名和服务名会拼进 `security -i` 的命令行，所以只接受不需要转义的字符。密钥是十六进制。
       if (!SAFE_KEYCHAIN_NAME.test(account) || !SAFE_KEYCHAIN_NAME.test(service)) {
@@ -107,10 +126,21 @@ export function keychainKeySource(account = userInfo().username, service = KEYCH
       // 命令走标准输入，不进 argv。
       const result = spawnSync("security", ["-i"], {
         input: `add-generic-password -U -a "${account}" -s "${service}" -w ${key.toString("hex")}\n`,
-        stdio: ["pipe", "ignore", "ignore"],
+        stdio: ["pipe", "ignore", "ignore"], timeout: KEYCHAIN_TIMEOUT_MS,
       });
       if (result.status !== 0) throw new Error("vault: could not save the key to the Keychain");
       return key;
+    },
+    async read() {
+      try {
+        const { stdout } = await execFileAsync("security", ["find-generic-password", "-a", account, "-s", service, "-w"], {
+          encoding: "utf8", timeout: KEYCHAIN_TIMEOUT_MS,
+        });
+        const key = Buffer.from(stdout.trim(), "hex");
+        return key.length === KEY_BYTES ? key : null;
+      } catch {
+        return null;
+      }
     },
   };
 }

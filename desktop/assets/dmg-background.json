@@ -1,0 +1,36 @@
+{
+  "width": 540,
+  "height": 380,
+  "background": "#FFFFFF",
+  "arrow": {
+    "fromX": 212,
+    "toX": 328,
+    "y": 150,
+    "color": "#98A2B3",
+    "lineWidth": 2,
+    "head": 8
+  },
+  "divider": {
+    "y": 268,
+    "inset": 40,
+    "color": "#EEF0F4"
+  },
+  "lines": [
+    {
+      "text": "First open: System Settings → Privacy & Security → Open Anyway",
+      "font": "Plus Jakarta Sans",
+      "weight": "medium",
+      "size": 13,
+      "y": 300,
+      "color": "#475467"
+    },
+    {
+      "text": "首次打开：系统设置 → 隐私与安全性 → 仍要打开",
+      "font": "PingFang SC",
+      "weight": "regular",
+      "size": 13,
+      "y": 326,
+      "color": "#475467"
+    }
+  ]
+}

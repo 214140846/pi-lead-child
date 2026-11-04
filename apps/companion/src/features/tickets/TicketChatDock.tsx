@@ -1,8 +1,8 @@
-import { Button, ChatDock, ChatScroll, Column, ConversationColumn, Dot, Row, Spinner, Text } from '@pi-lead-child/components';
+import { Box, Button, ChatDock, ChatList, Column, ConversationColumn, Dot, Row, Spinner, Text } from '@pi-lead-child/components';
 import type { TicketChatResume, TicketReplyActionId } from '@pi-lead-child/protocol';
-import { useEffect, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, type ReactNode } from 'react';
 
-import { formatConversationTime } from '@/features/chat/LeadConversation';
+import { formatConversationTime, latestSentMessageKey } from '@/features/chat/LeadConversation';
 import { presentTurnFailure } from '@/features/chat/failurePresentation';
 import { MessageComposer } from '@/features/chat/MessageComposer';
 import { useControlPlaneStore } from '@/state/CompanionStateProvider';
@@ -10,7 +10,9 @@ import { useLocale, useMessages } from '@/i18n';
 import { useLeadName, useMessage, useMessagePart, useMessageParts, useTurn } from '@/state/hooks';
 
 import { replyActionButtons } from './replyActions';
-import { TicketConversation, ticketConversationSenderLabel } from './TicketConversation';
+import {
+  TicketConversationBlockView, ticketConversationSenderLabel, useTicketConversationBlocks, type TicketConversationBlock,
+} from './TicketConversation';
 import { ticketChatMessages } from './ticketChat.messages';
 import {
   elapsedText, ticketChatDestination, type TicketActionReceipt, type TicketRunProgress,
@@ -243,8 +245,8 @@ function LiveRunRow({ progress }: { progress: TicketRunProgress }) {
   );
 }
 
-// 展开后的对话（ChatScroll）：打开或切换工单时落在最底下；贴底时跟随新消息和流式输出；你往上翻时不拽回来，
-// 只给「新消息 ↓」；你发了消息就回到底部。换一张工单就是一个新列表（key）。
+// 展开后的对话（ChatList，2026-11-04 换成 Legend List）：打开或切换工单时落在最底下；贴底时跟随新消息和流式输出；
+// 你往上翻时不拽回来，只给「新消息 ↓」；你发了消息就回到底部。换一张工单就是一个新列表（key）。一条消息一块。
 function ExpandedConversation({
   ticketId,
   messageIds,
@@ -260,29 +262,57 @@ function ExpandedConversation({
   replyFooter: ReactNode;
 }) {
   const m = useMessages(ticketChatMessages);
-  // 你发的最后一条消息。它变了，说明你刚发了消息。
-  const lastUserMessageId = useControlPlaneStore((state) => {
-    for (let index = messageIds.length - 1; index >= 0; index -= 1) {
-      if (state.messagesById[messageIds[index]!]?.role === 'user') return messageIds[index]!;
-    }
-    return null;
-  });
+  // 你在这台设备上发的最后一条消息。它变了，说明你刚发了消息（和主会话同一个规则，latestSentMessageKey）。
+  const lastUserMessageId = useControlPlaneStore((state) => latestSentMessageKey(
+    messageIds.flatMap((id) => state.messagesById[id] ? [state.messagesById[id]!] : []),
+  ));
+  const blocks = useTicketConversationBlocks(messageIds);
+  const blockContext = useMemo(() => ({ ticketId, onResend }), [onResend, ticketId]);
+  // 和主会话同一个规则（2026-10-16）：面板窄时占满减 16 的留白；宽时（手机和平板上全屏打开）最宽 700、居中。
+  const renderBlock = useCallback((block: TicketConversationBlock) => (
+    <Box px="page-x">
+      <ConversationColumn testID="ticket-chat-column">
+        <TicketConversationBlockView ticketId={blockContext.ticketId} block={block} onResend={blockContext.onResend} />
+      </ConversationColumn>
+    </Box>
+  ), [blockContext]);
+  const tail = replyFooter || liveRun;
   return (
-    <ChatScroll key={ticketId} testID="ticket-chat-scroll" followKey={lastUserMessageId}>
-      {/* 和主会话同一个规则（2026-10-16）：面板窄时占满减 16 的留白；宽时（手机和平板上全屏打开）最宽 700、居中。 */}
-      {/* spacing-exempt: 对话坞自己的规格 */}
-      <Column px="page-x" pt={8} pb={14}>
-        <ConversationColumn testID="ticket-chat-column" gap="conversation-block">
-          {messageIds.length > 0
-            ? <TicketConversation ticketId={ticketId} messageIds={messageIds} onResend={onResend} />
-            : <Text size="secondary" tone="secondary" align="center">{m.empty}</Text>}
-          {replyFooter}
-          {liveRun ? <LiveRunRow progress={liveRun} /> : null}
-        </ConversationColumn>
-      </Column>
-    </ChatScroll>
+    <ChatList
+      key={ticketId}
+      testID="ticket-chat-scroll"
+      data={blocks}
+      keyExtractor={ticketBlockKey}
+      renderItem={renderBlock}
+      extraData={blockContext}
+      followKey={lastUserMessageId}
+      // spacing-exempt: 对话坞自己的规格
+      header={<Box pt={8} />}
+      footer={(
+        // spacing-exempt: 对话坞自己的规格
+        <Box px="page-x" pb={14}>
+          {tail ? (
+            <Box pt={messageIds.length ? 'conversation-block' : 0}>
+              <ConversationColumn testID="ticket-chat-tail" gap="conversation-block">
+                {replyFooter}
+                {liveRun ? <LiveRunRow progress={liveRun} /> : null}
+              </ConversationColumn>
+            </Box>
+          ) : null}
+        </Box>
+      )}
+      empty={(
+        <Box px="page-x">
+          <ConversationColumn testID="ticket-chat-column">
+            <Text size="secondary" tone="secondary" align="center">{m.empty}</Text>
+          </ConversationColumn>
+        </Box>
+      )}
+    />
   );
 }
+
+const ticketBlockKey = (block: TicketConversationBlock) => block.key;
 
 // 回复问到的动作。推荐的那个用强调色，有风险的用红色，和决策卡一致。
 function ReplyActionRow({ actions, onAction }: { actions: readonly TicketChatAction[]; onAction: (id: TicketReplyActionId) => void }) {
