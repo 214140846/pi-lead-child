@@ -1,5 +1,6 @@
 // 冒烟脚本的完整流程：假的运行包。bin/lead-agent 是测试用的 Node 的硬链接（或副本），
 // supervisor.mjs 和 daemon.mjs 是假的：daemon 按同样的 socket 协议回答 status，supervisor 收到 SIGTERM 时先停 daemon 再退出。
+import { spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, linkSync, mkdirSync, readFileSync, symlinkSync, writeFileSync, chmodSync } from "node:fs";
 import { createServer } from "node:net";
 import { homedir } from "node:os";
@@ -7,7 +8,7 @@ import { delimiter, dirname, join } from "node:path";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { tempDir } from "@pi-lead-child/core/testing";
 import { PLC_WRAPPER } from "../lib/pack.js";
-import { commandName, smokeEnv, smokeRuntime, stubScript } from "../lib/smoke.js";
+import { commandName, keychainWrites, smokeEnv, smokeRuntime, stubScript } from "../lib/smoke.js";
 
 const FAKE_SUPERVISOR = `
 import { execFileSync, spawn } from "node:child_process";
@@ -19,6 +20,7 @@ const mode = readFileSync(join(runtime, "mode"), "utf8").trim();
 const data = process.env.PLC_DATA_DIR;
 writeFileSync(join(runtime, "seen-env.json"), JSON.stringify({
   HOME: process.env.HOME, PLC_DATA_DIR: data, PLC_DEV: process.env.PLC_DEV ?? null, PLC_MEMORY_BACKEND: process.env.PLC_MEMORY_BACKEND,
+  PLC_VAULT_KEY_SOURCE: process.env.PLC_VAULT_KEY_SOURCE, NODE_USE_SYSTEM_CA: process.env.NODE_USE_SYSTEM_CA ?? null,
 }));
 // 和真的 daemon 一样按名字调用 launchctl：冒烟环境里拿到的应该是假命令。
 try { execFileSync("launchctl", ["bootout", "gui/0/com.example.hindsight"], { stdio: "ignore" }); } catch {}
@@ -35,12 +37,17 @@ setInterval(() => {}, 1_000);
 `;
 
 const FAKE_DAEMON = `
+import { execFileSync } from "node:child_process";
 import { createServer } from "node:net";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 const runtime = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const mode = readFileSync(join(runtime, "mode"), "utf8").trim();
+// 按名字往钥匙串里写一个密钥，和以前的保险库一样走 security -i 的标准输入：冒烟环境里拿到的是假命令，冒烟要判失败。
+if (mode === "keychain-write") {
+  try { execFileSync("security", ["-i"], { input: "add-generic-password -a alice -s plc:test -w 00\\n", stdio: ["pipe", "ignore", "ignore"] }); } catch {}
+}
 const server = createServer((socket) => {
   socket.setEncoding("utf8");
   socket.on("data", (line) => {
@@ -111,7 +118,10 @@ afterEach(() => {
 describe("smokeEnv", () => {
   it("drops the caller's PLC_* variables, isolates HOME and the data dir, and puts the stubs first on PATH", () => {
     const env = smokeEnv(
-      { PATH: `/usr/bin${delimiter}/bin`, HOME: "/Users/alice", PLC_DEV: "1", PLC_GATEWAY_PORT: "47130", NODE_OPTIONS: "--import tsx", LANG: "en_US.UTF-8" },
+      {
+        PATH: `/usr/bin${delimiter}/bin`, HOME: "/Users/alice", PLC_DEV: "1", PLC_GATEWAY_PORT: "47130", PLC_VAULT_KEY_SOURCE: "keychain",
+        NODE_OPTIONS: "--import tsx", NODE_USE_SYSTEM_CA: "1", LANG: "en_US.UTF-8",
+      },
       { home: "/tmp/s/home", dataDir: "/tmp/s/data", stubBin: "/tmp/s/stub-bin", stubLog: "/tmp/s/stub.log" },
     );
     expect(env).toMatchObject({
@@ -120,6 +130,42 @@ describe("smokeEnv", () => {
     });
     expect(env.PLC_DEV).toBeUndefined();
     expect(env.NODE_OPTIONS).toBeUndefined();
+  });
+
+  // 工单 #243：冒烟进程不能碰真钥匙串。保险库用文件密钥；Node 不读系统钥匙串里的根证书。
+  it("keeps the smoke processes away from the real Keychain", () => {
+    const env = smokeEnv(
+      { PATH: "/usr/bin", HOME: "/Users/alice", PLC_VAULT_KEY_SOURCE: "keychain", NODE_USE_SYSTEM_CA: "1" },
+      { home: "/tmp/s/home", dataDir: "/tmp/s/data", stubBin: "/tmp/s/stub-bin", stubLog: "/tmp/s/stub.log" },
+    );
+    expect(env.PLC_VAULT_KEY_SOURCE).toBe("file");
+    expect("NODE_USE_SYSTEM_CA" in env).toBe(false);
+  });
+
+  it("finds Keychain writes in the stub calls, also when they come through security -i", () => {
+    expect(keychainWrites([
+      "launchctl bootout gui/0/com.example.hindsight",
+      "security find-generic-password -a alice -s plc:test -w",
+      "security -i",
+      "security -i add-generic-password",
+    ])).toEqual(["security -i add-generic-password"]);
+    expect(keychainWrites(["security add-generic-password -a alice -s plc:test -w 00"])).toHaveLength(1);
+    expect(keychainWrites(["security find-generic-password -a alice"])).toEqual([]);
+  });
+
+  it("records the commands that the fake security reads from stdin, without their arguments", () => {
+    const dir = tempDir("plc-dsm-stub-");
+    const stub = join(dir, "security");
+    const log = join(dir, "stub.log");
+    writeFileSync(stub, stubScript("security", 44));
+    chmodSync(stub, 0o755);
+    const result = spawnSync(stub, ["-i"], {
+      input: "add-generic-password -a alice -s plc:test -w 00\n", env: { ...process.env, PLC_SMOKE_STUB_LOG: log },
+    });
+    expect(result.status).toBe(44);
+    const lines = readFileSync(log, "utf8").split("\n").filter(Boolean);
+    expect(lines).toEqual(["security -i", "security -i add-generic-password"]);
+    expect(keychainWrites(lines)).toEqual(["security -i add-generic-password"]);
   });
 
   it("reads process names from ps and writes stubs that only record their arguments", () => {
@@ -148,7 +194,17 @@ describe("smokeRuntime", () => {
     expect(seen.PLC_DATA_DIR).toMatch(/bl-smoke-.*\/data$/);
     expect(seen.PLC_DEV).toBeNull();
     expect(seen.PLC_MEMORY_BACKEND).toBe("sqlite");
+    expect(seen.PLC_VAULT_KEY_SOURCE).toBe("file");
+    expect(seen.NODE_USE_SYSTEM_CA).toBeNull();
     expect(existsSync(dirname(seen.HOME))).toBe(false);
+  });
+
+  it.skipIf(!sockets)("fails when a smoke process writes a key to the Keychain, and stops both anyway", async () => {
+    write(join(runtime, "mode"), "keychain-write");
+    await expect(smokeRuntime({ runtimeDir: runtime, workDir: tempDir("plc-dsm-") }))
+      .rejects.toThrow(/冒烟进程想往钥匙串里写密钥：security -i add-generic-password/);
+    const pids = JSON.parse(readFileSync(join(runtime, "pids.json"), "utf8")) as { supervisor: number; daemon: number };
+    await expect.poll(() => alive(pids.supervisor) || alive(pids.daemon), { timeout: 5_000 }).toBe(false);
   });
 
   it.skipIf(!sockets)("fails when the daemon process is not called lead-agent, and stops it anyway", async () => {

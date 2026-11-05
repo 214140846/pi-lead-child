@@ -368,7 +368,7 @@ sub-tickets per phase in §8.
   1. 请 daemon 排空 Lead（drain）。
   2. 在线备份数据库到 `~/.pi-lead-child/backups/`：一步复制全部页面，最多 60 秒。超时或者失败时删掉半成品，不停 daemon，这次维护记成失败；排空了的 daemon 过一会儿自己恢复 Lead 的回合。
   3. 停 daemon、启动、验证 schema。
-  重启备份只保留最近 10 份。备份期间 daemon 崩溃时照常拉起：只有维护真正让 daemon 停下以后，它的退出才不算崩溃。
+  维护备份按种类各保留最新 1 份：restart 1 份，upgrade 1 份（2026-11-05）。备份期间 daemon 崩溃时照常拉起：只有维护真正让 daemon 停下以后，它的退出才不算崩溃。
 - 用户的 `plc daemon start` 要启动新的 daemon 时也过闸门。拒绝时 desiredState 不改，巡检不会把它当成崩溃再拉起。`plc daemon start --force` 越过闸门启动，Supervisor 的日志里记一笔，命令的输出也写明越过了哪些原因。
 - 崩溃以后的自动拉起、开机启动不拦截（拦截就等于停服），Supervisor 只在日志里记下闸门会拒绝的原因。`status` 里的 `deploy` 一项给出闸门的判断，缓存 30 秒；维护请求和 `plc daemon start` 当场再查。
 - daemon 直接跑源码（`PLC_DEV`，没有 dist）时没有闸门。

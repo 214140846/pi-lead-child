@@ -7,7 +7,7 @@ import { connect, createServer, type Socket } from "node:net";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
-import { tempDir } from "@pi-lead-child/core/testing";
+import { reservedTestPorts, tempDir } from "@pi-lead-child/core/testing";
 import { plcClient } from "./plc-client.js";
 import { openDb, type Db } from "@pi-lead-child/store";
 import { createItem, getItem, transition } from "@pi-lead-child/store";
@@ -39,6 +39,7 @@ import {
   repairDaemonStartupState,
   startDaemon,
 } from "../src/server.js";
+import { DEFAULT_GATEWAY_PORT } from "../src/gateway-listen.js";
 import { attachJsonlReader, ClaudeRuntime, RuntimeRegistry } from "@pi-lead-child/runtime";
 import { ReplayRuntime, expectNoTestProcesses, testProcesses } from "@pi-lead-child/runtime/testing";
 import { runningChildren } from "@pi-lead-child/lead";
@@ -54,7 +55,8 @@ beforeEach(() => {
   process.env.PLC_DATA_DIR = dir;
   delete process.env.PLC_ARTIFACT_ORPHAN_GRACE_MS;
   delete process.env.PLC_NOTICE_POLL_MS;
-  delete process.env.PLC_GATEWAY_PORT;
+  // 网关用随机端口。不能删除这个变量：删除以后网关监听缺省的 47130，那是用户真实 daemon 的端口（见下面的回归测试）。
+  process.env.PLC_GATEWAY_PORT = "0";
   delete process.env.PLC_GATEWAY_HOST;
   dbPath = join(dir, "plc.db");
   db = openDb(dbPath);
@@ -71,6 +73,23 @@ afterEach(async () => {
   rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   if (launched) await expectNoTestProcesses([dir], { tracked: leftovers });
 }, 30_000);
+
+// 回归测试（2026-11-05）：这个文件里不传 gatewayPort 的 daemon 绑上了 127.0.0.1:47130，那是用户 App 里真实 daemon 的端口。
+// 原因：上面的 beforeEach 以前删除 PLC_GATEWAY_PORT，去掉了根 vitest 配置给的 "0"，网关就用了缺省端口。
+// 真实 daemon 监听 *:47130，macOS 允许再绑更具体的 127.0.0.1:47130，所以 App 的本机连接都到了测试 daemon 上。
+// 根 setup 文件（vitest.setup.ts）拒绝测试进程监听 47130，所以端口出错时这个用例启动失败，不会真的占用端口。
+describe("the gateway of a test daemon", () => {
+  it("listens on a random port, not on the real daemon's port", async () => {
+    expect(reservedTestPorts()).toContain(DEFAULT_GATEWAY_PORT);
+    const daemon = await startDaemon({ dataDir: dir, dbPath, sessionFactory: stubSessionFactory().factory as any, log: () => {} });
+    try {
+      expect(daemon.pairedPort).not.toBe(DEFAULT_GATEWAY_PORT);
+      expect((await fetch(`http://127.0.0.1:${daemon.pairedPort}/v1/health`)).status).toBe(200);
+    } finally {
+      await daemon.close();
+    }
+  });
+});
 
 describe("recoverOrphans", () => {
   it("reclaims dead-pid running runs: failed + blocked + blocker inbox", () => {

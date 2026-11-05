@@ -8,6 +8,10 @@
 // - PATH 最前面放一个假的 launchctl（还有 security、osascript、open），它只记下调用、返回失败。launchctl 的 label 不分数据目录，
 //   真的 bootout 会停掉用户的服务。supervisor 和 daemon 都按名字调用这些命令，PATH 里排在系统目录前面的先被找到；
 // - 不继承调用者的 PLC_* 变量（例如 PLC_DEV 会让 supervisor 改跑源码）。
+// - 不碰真钥匙串（工单 #243）。假的 security 只接住按名字调用的命令；进程自己通过 Security.framework 发出的调用照样会碰到
+//   真钥匙串，HOME 换掉以后还可能弹窗请用户新建登录钥匙串。所以保险库改用数据目录里的密钥文件（PLC_VAULT_KEY_SOURCE=file），
+//   也不让 Node 去读系统钥匙串里的根证书（去掉 NODE_USE_SYSTEM_CA）。冒烟结束时，假 security 只要收到过 add-generic-password
+//   就判失败。
 import { spawn, execFile, type ChildProcess } from "node:child_process";
 import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
@@ -23,6 +27,7 @@ export const PROCESS_NAME = "lead-agent";
 // macOS 的 sockaddr_un.sun_path 是 104 字节，含结尾的 0。
 export const MAX_SOCKET_PATH_BYTES = 103;
 // 假命令：记下参数，返回失败。security 的 44 是「钥匙串里没有这一项」。
+// security -i 的命令在标准输入里：假的 security 记下每一行的第一个词（命令名），不记后面的参数，密钥不进记录。
 export const STUB_COMMANDS: Record<string, number> = { launchctl: 1, security: 44, osascript: 1, open: 1 };
 
 export interface SmokeDirs {
@@ -32,11 +37,17 @@ export interface SmokeDirs {
   stubLog: string;
 }
 
-/** 冒烟进程的环境：去掉调用者的 PLC_* 和 NODE_OPTIONS，HOME 和数据目录换成临时目录，假命令排在 PATH 最前面。 */
+// 冒烟进程的环境里要去掉的变量：PLC_* 以外的。
+const DROPPED_ENV = new Set(["NODE_OPTIONS", "NODE_USE_SYSTEM_CA"]);
+
+/**
+ * 冒烟进程的环境：去掉调用者的 PLC_*、NODE_OPTIONS 和 NODE_USE_SYSTEM_CA，HOME 和数据目录换成临时目录，假命令排在 PATH 最前面，
+ * 保险库用文件密钥。
+ */
 export function smokeEnv(base: NodeJS.ProcessEnv, dirs: SmokeDirs): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(base)) {
-    if (key.startsWith("PLC_") || key === "NODE_OPTIONS") continue;
+    if (key.startsWith("PLC_") || DROPPED_ENV.has(key)) continue;
     env[key] = value;
   }
   return {
@@ -50,11 +61,20 @@ export function smokeEnv(base: NodeJS.ProcessEnv, dirs: SmokeDirs): NodeJS.Proce
     PLC_DESKTOP_NOTIFY: "off",
     PLC_OPEN_FILES: "off",
     PLC_MEMORY_BACKEND: "sqlite",
+    PLC_VAULT_KEY_SOURCE: "file",
   };
 }
 
 export function stubScript(name: string, exitCode: number): string {
-  return `#!/bin/sh\nprintf '%s %s\\n' ${name} "$*" >> "$PLC_SMOKE_STUB_LOG"\nexit ${exitCode}\n`;
+  const stdinCommands = name === "security"
+    ? `if [ "$1" = -i ]; then while read -r command rest; do printf '%s -i %s\\n' ${name} "$command" >> "$PLC_SMOKE_STUB_LOG"; done; fi\n`
+    : "";
+  return `#!/bin/sh\nprintf '%s %s\\n' ${name} "$*" >> "$PLC_SMOKE_STUB_LOG"\n${stdinCommands}exit ${exitCode}\n`;
+}
+
+/** 假 security 的调用记录里写钥匙串的那些行。冒烟不能写真钥匙串，有一行就判失败。 */
+export function keychainWrites(stubCalls: string[]): string[] {
+  return stubCalls.filter((line) => line.startsWith("security ") && line.includes("add-generic-password"));
 }
 
 function writeStubs(dirs: SmokeDirs): void {
@@ -238,8 +258,10 @@ export async function smokeRuntime(o: SmokeOptions): Promise<SmokeResult> {
     await until(15_000, async () => (alive(stoppedDaemon) ? null : true), " daemon 退出");
     log("supervisor 和 daemon 都已停止");
 
-    succeeded = true;
     const stubCalls = readFileSync(dirs.stubLog, "utf8").split("\n").filter(Boolean);
+    const writes = keychainWrites(stubCalls);
+    if (writes.length) throw new Error(`冒烟进程想往钥匙串里写密钥：${writes.join("；")}`);
+    succeeded = true;
     return {
       ok: true, version: release.version ?? "", supervisorPid, daemonPid, processNames, piVersion, statusAfterMs, stubCalls,
     };

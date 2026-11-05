@@ -25,7 +25,7 @@ const TAG_BYTES = 16;
 const KEY_BYTES = 32;
 
 export interface VaultKeySource {
-  // 返回 32 字节的密钥。没有时创建一个并保存。
+  // 返回 32 字节的密钥。没有、并且这个来源允许新建时，创建一个并保存。
   load(): Buffer;
   // 只读不建：在后台异步读已有的密钥，没有时返回 null（创建留给 load，免得两边各建一个、互相覆盖）。
   read?(): Promise<Buffer | null>;
@@ -102,34 +102,89 @@ const SAFE_KEYCHAIN_NAME = /^[A-Za-z0-9._:@-]{1,128}$/;
 
 // macOS Keychain 里的密钥。读和写都用 /usr/bin/security，和 supervisor 的 keychain.ts 一样，
 // 所以读的时候不弹授权框。
-export function keychainKeySource(account = userInfo().username, service = KEYCHAIN_VAULT_SERVICE): VaultKeySource {
+//
+// 「读不到」不等于「没有」（工单 #242、#243）：在沙箱里、或者 HOME 被换成别的目录时，已有的条目也会返回 44。
+// 这时新建一个密钥会盖掉真密钥，保险库里加密过的令牌就再也解不开了；找不到默认钥匙串时，系统还会弹窗请用户新建登录钥匙串。
+// 所以新建要过三道关：调用方许可新建并且保险库里还没有任何密文、进程不在沙箱里且 HOME 是真实的 home、
+// `security default-keychain -d user` 能找到默认钥匙串。任一项不过就报错。写入不带 -U：条目已存在时 security 返回 45，
+// 不覆盖，再读一次已有的。
+export interface KeychainKeyOptions {
+  // 新建密钥的许可。不给时只读：钥匙串里没有密钥也只报错。给了时，返回 true 表示保险库里已经有密文，同样不能新建。
+  hasSealedData?: () => boolean;
+  // 前置检查读的环境，缺省是 process.env。
+  env?: NodeJS.ProcessEnv;
+}
+
+// security add-generic-password 遇到已有条目（没带 -U）时的退出码：errSecDuplicateItem。
+const KEYCHAIN_DUPLICATE_ITEM = 45;
+
+function findKeychainKey(account: string, service: string): Buffer | null {
+  try {
+    const hex = execFileSync("security", ["find-generic-password", "-a", account, "-s", service, "-w"], {
+      encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: KEYCHAIN_TIMEOUT_MS,
+    }).trim();
+    const key = Buffer.from(hex, "hex");
+    if (key.length !== KEY_BYTES) throw new Error(`vault: the key in the Keychain is not ${KEY_BYTES} bytes`);
+    return key;
+  } catch (error) {
+    if ((error as Error).message?.startsWith("vault:")) throw error;
+    // 超时（Keychain 锁着）或别的错误：不能当成没有密钥。
+    if ((error as { status?: number | null }).status !== KEYCHAIN_ITEM_NOT_FOUND) {
+      throw new Error("vault: could not read the key from the Keychain (is it locked?)");
+    }
+    return null;
+  }
+}
+
+/** 写钥匙串以前的只读检查：不在沙箱里，HOME 是真实的 home，能找到默认钥匙串。不通过时抛错，说明原因。 */
+export function checkKeychainWritable(env: NodeJS.ProcessEnv = process.env): void {
+  if (env.SANDBOX_RUNTIME) {
+    throw new Error("vault: refusing to create a Keychain key inside a sandbox, where an existing key can look missing");
+  }
+  const home = userInfo().homedir;
+  if (env.HOME !== home) {
+    throw new Error(`vault: refusing to create a Keychain key because HOME (${env.HOME ?? "unset"}) is not the user's home (${home})`);
+  }
+  // 找不到默认钥匙串时 security 直接报错退出，不弹窗；通过 Security.framework 新建条目时才会弹窗请用户新建登录钥匙串。
+  const result = spawnSync("security", ["default-keychain", "-d", "user"], { stdio: "ignore", timeout: KEYCHAIN_TIMEOUT_MS });
+  if (result.status !== 0) {
+    throw new Error("vault: refusing to create a Keychain key because no default keychain was found");
+  }
+}
+
+export function keychainKeySource(
+  account = userInfo().username, service = KEYCHAIN_VAULT_SERVICE, options: KeychainKeyOptions = {},
+): VaultKeySource {
   return {
     load() {
-      try {
-        const hex = execFileSync("security", ["find-generic-password", "-a", account, "-s", service, "-w"], {
-          encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: KEYCHAIN_TIMEOUT_MS,
-        }).trim();
-        const key = Buffer.from(hex, "hex");
-        if (key.length === KEY_BYTES) return key;
-      } catch (error) {
-        // 只有「没有这一项」（security 的退出码 44）才是还没有密钥：下面创建一个。超时（Keychain 锁着）或别的错误时
-        // 不能新建：新建会用 -U 覆盖已有的密钥，保险库里加密过的令牌就再也打不开了。
-        if ((error as { status?: number | null }).status !== KEYCHAIN_ITEM_NOT_FOUND) {
-          throw new Error("vault: could not read the key from the Keychain (is it locked?)");
-        }
+      const found = findKeychainKey(account, service);
+      if (found) return found;
+      if (!options.hasSealedData) {
+        throw new Error("vault: the Keychain has no key, and this process only reads it");
       }
+      // 读不到但已经有密文：密钥一定存在过，新建的密钥解不开这些密文。
+      if (options.hasSealedData()) {
+        throw new Error("vault: the vault already has encrypted data, but the key in the Keychain cannot be read; not creating a new key");
+      }
+      checkKeychainWritable(options.env);
       // 账号名和服务名会拼进 `security -i` 的命令行，所以只接受不需要转义的字符。密钥是十六进制。
       if (!SAFE_KEYCHAIN_NAME.test(account) || !SAFE_KEYCHAIN_NAME.test(service)) {
         throw new Error("vault: the Keychain account or service name has characters that are not allowed");
       }
       const key = randomBytes(KEY_BYTES);
-      // 命令走标准输入，不进 argv。
+      // 命令走标准输入，不进 argv。不带 -U：已有的条目不会被覆盖。
       const result = spawnSync("security", ["-i"], {
-        input: `add-generic-password -U -a "${account}" -s "${service}" -w ${key.toString("hex")}\n`,
+        input: `add-generic-password -a "${account}" -s "${service}" -w ${key.toString("hex")}\n`,
         stdio: ["pipe", "ignore", "ignore"], timeout: KEYCHAIN_TIMEOUT_MS,
       });
-      if (result.status !== 0) throw new Error("vault: could not save the key to the Keychain");
-      return key;
+      if (result.status === 0) return key;
+      if (result.status === KEYCHAIN_DUPLICATE_ITEM) {
+        // 条目已经在了（别的进程刚建好，或者刚才读不到）：用已有的。
+        const existing = findKeychainKey(account, service);
+        if (existing) return existing;
+        throw new Error("vault: the Keychain already has a key, but it cannot be read");
+      }
+      throw new Error("vault: could not save the key to the Keychain");
     },
     async read() {
       try {
@@ -163,7 +218,12 @@ export function fileKeySource(path: string): VaultKeySource {
   };
 }
 
-// 缺省：macOS 用 Keychain，其他系统用数据目录里的文件。
-export function defaultKeySource(keyFilePath: string): VaultKeySource {
-  return process.platform === "darwin" ? keychainKeySource() : fileKeySource(keyFilePath);
+// 环境变量 PLC_VAULT_KEY_SOURCE=file 时改用数据目录里的文件，不碰 Keychain。运行包的冒烟测试用它（工单 #243）。
+export const VAULT_KEY_SOURCE_ENV = "PLC_VAULT_KEY_SOURCE";
+
+// 缺省：macOS 用 Keychain，其他系统用数据目录里的文件。options 不给 hasSealedData 时，Keychain 只读不建。
+export function defaultKeySource(keyFilePath: string, options: KeychainKeyOptions = {}): VaultKeySource {
+  const env = options.env ?? process.env;
+  if (env[VAULT_KEY_SOURCE_ENV] === "file" || process.platform !== "darwin") return fileKeySource(keyFilePath);
+  return keychainKeySource(undefined, undefined, options);
 }

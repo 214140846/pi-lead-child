@@ -43,6 +43,7 @@ import { configDefaults, defineConfig } from "vitest/config";
 //
 // 网关总是开着，没配置端口时监听 47130，那是用户真实 daemon 的端口。测试里的 daemon 要是占了它，
 // 浏览器里的 companion 会连到测试 daemon 上。PLC_GATEWAY_PORT=0 让测试里的网关都用随机端口。
+// 测试不能删除这个变量。vitest.setup.ts 还拒绝测试进程监听 47130，所以忘了这一点的测试会直接失败。
 //
 // daemon 停机时先排空 Lead：等正在跑的那一轮，缺省最多 12 秒。很多测试结束时 Lead 还停在一轮里（假会话 hang），
 // 每个测试的收尾都会等满 12 秒。PLC_LEAD_DRAIN_MS=50 让测试里的 daemon 几乎不等；要测排空的测试自己设。

@@ -16,6 +16,8 @@ import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll } from "vitest";
+import { DEFAULT_GATEWAY_PORT } from "./apps/daemon/src/gateway-listen.js";
+import { reserveTestPorts } from "./packages/core/testing/reserved-ports.js";
 import { expectTempDirsRemoved, keepTempDirs, removeTempDirs, watchTempDirs } from "./packages/core/testing/temp-dirs.js";
 import { expectProcessesGone, scriptProcesses, type TestProcess } from "./packages/runtime/testing/process-leaks.js";
 
@@ -35,6 +37,10 @@ delete process.env.PLC_SOL_PI_ENTRY;
 // 同理，用户在设置里停用的 runtime（PLC_DISABLED_RUNTIMES）会被 plc 的执行器继承。测试不能跟着用户的开关变：
 // 设了 codex 以后，runtime-disabled.test.ts 有两条失败（2026-10-19 发布评审）。要它的测试自己用 vi.stubEnv 设置。
 delete process.env.PLC_DISABLED_RUNTIMES;
+// 网关的缺省端口 47130 也是用户 App 里真实 daemon 的端口。测试进程监听它时，在绑定之前就失败（reserved-ports.ts）。
+// 2026-11-05：daemon.test.ts 删除了 PLC_GATEWAY_PORT，它启动的 daemon 绑上了 127.0.0.1:47130，App 连到了测试 daemon 上。
+reserveTestPorts([DEFAULT_GATEWAY_PORT], "it is the gateway port of the user's real daemon. "
+  + "Keep PLC_GATEWAY_PORT=0 from vitest.config.ts, or pass gatewayPort: 0 to startDaemon.");
 
 const key = (target: TestProcess) => `${target.pid} ${target.command}`;
 let existing = new Set<string>();

@@ -178,6 +178,7 @@ import { createCoordinator, type Coordinator } from "@pi-lead-child/engine";
 import { daemonFileOpener, type FileOpener } from "@pi-lead-child/engine";
 import { NotesMemory } from "@pi-lead-child/engine";
 import { MemoryController, type MemoryControllerHooks } from "./memory-controller.js";
+import { daemonKeySource } from "./vault-key.js";
 import { hindsightProgram, summaryModels } from "./memory-backend.js";
 import { markAutoPullRequestRollout, reconcileWorkspaces, sweepWorkspaces, syncAutoPullRequests } from "@pi-lead-child/engine";
 import { loadArtifactStorageConfig } from "@pi-lead-child/core";
@@ -198,7 +199,6 @@ import type { InstanceLock, MaintenanceRequest } from "@pi-lead-child/supervisor
 import {
   ConnectionError,
   ConnectionHub,
-  defaultKeySource,
   fileKeySource,
   ghCliTokenSource,
   lazyVault,
@@ -2462,8 +2462,9 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
   };
 
   // 保险库：连接的令牌和记忆的密钥都用它加密（packages/connections 的 vault）。hindsight-main 用同一个密钥。
+  // Keychain 里的密钥只在保险库还没有密文时才新建（vault-key.ts）。
   const vault = lazyVault(opts.connections?.keySource
-    ?? (testDaemon ? fileKeySource(join(opts.dataDir, "connections.key")) : defaultKeySource(join(opts.dataDir, "connections.key"))));
+    ?? (testDaemon ? fileKeySource(join(opts.dataDir, "connections.key")) : daemonKeySource(db, opts.dataDir)));
   // 在后台先读好密钥：第一次用到连接时不用在请求里同步读 Keychain。
   void vault.preload();
   // 沙箱命令要的系统根证书也在后台先导出（core 的 sandbox-policy.ts）：第一次跑沙箱命令时不用同步跑 security。

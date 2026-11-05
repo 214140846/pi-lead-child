@@ -19,6 +19,7 @@ import { backupSqlite } from "./deploy/backup.js";
 import { startHindsightChild, type HindsightChildOptions } from "./hindsight-child.js";
 import { findRuntimeExecutable, runtimeSearchPath } from "@pi-lead-child/runtime";
 import type {
+  MaintenanceAction,
   MaintenanceRequest,
   SupervisorCommand,
   SupervisorPersistentState,
@@ -160,15 +161,20 @@ export function itemsBlockingMaintenance(dbPath: string, runningItemIds: readonl
   }
 }
 
-// Lead 每次重启前都备份一次（一份几十 MB）。只保留最近的 RESTART_BACKUPS_KEPT 份重启备份；
-// upgrade 的备份和别的文件不动。
-export const RESTART_BACKUPS_KEPT = 10;
+// 每次维护前都备份一次（plc-pre-<action>-<时间>.db，一份上百 MB）。每种维护只保留最新的几份（用户 2026-11-05：各 1 份）。
+// 以前只删 restart 的，upgrade 的从不删，一台机器上攒到 1.2 GB。别的文件不动：桌面版的 pre-upgrade.db、
+// 接管和改名的备份（pre-takeover-*、pre-rename-*）、手工备份（plc.db.pre-<sha>-<日期>）。
+export const MAINTENANCE_BACKUPS_KEPT: Record<MaintenanceAction, number> = { restart: 1, upgrade: 1 };
 const READINESS_CACHE_MS = 30_000;
-const RESTART_BACKUP = /^plc-pre-restart-.+\.db$/;
 
-export function pruneRestartBackups(backupDir: string, keep = RESTART_BACKUPS_KEPT): string[] {
-  const backups = readdirSync(backupDir).filter((name) => RESTART_BACKUP.test(name)).sort();
-  const removed = backups.slice(0, Math.max(0, backups.length - keep));
+export function pruneMaintenanceBackups(backupDir: string): string[] {
+  const names = readdirSync(backupDir);
+  const removed: string[] = [];
+  for (const [action, keep] of Object.entries(MAINTENANCE_BACKUPS_KEPT)) {
+    // 文件名里的时间是 ISO 格式，按名字排序就是按时间排序。
+    const backups = names.filter((name) => name.startsWith(`plc-pre-${action}-`) && name.endsWith(".db")).sort();
+    removed.push(...backups.slice(0, Math.max(0, backups.length - keep)));
+  }
   for (const name of removed) {
     for (const suffix of ["", "-wal", "-shm"]) rmSync(join(backupDir, `${name}${suffix}`), { force: true });
   }
@@ -489,7 +495,7 @@ async function runSupervisor(opts: SupervisorOptions, lock: InstanceLock): Promi
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
     const destination = join(backupDir, `plc-pre-${request.action}-${stamp}.db`);
     await (opts.backupDatabase ?? ((source, target) => backupSqlite(source, target)))(opts.dbPath, destination);
-    pruneRestartBackups(backupDir);
+    pruneMaintenanceBackups(backupDir);
     return destination;
   };
 

@@ -28,7 +28,8 @@ if (!existsSync(sealedPath)) {
   console.error(`[hindsight] ${sealedPath} is missing; the daemon writes it on start`);
   process.exit(1);
 }
-// 和 daemon 用同一个保险库密钥（server.ts 的 connections.key / Keychain）。
+// 和 daemon 用同一个保险库密钥（server.ts 的 connections.key / Keychain）。这里只读不建：secrets.sealed 已经在了，
+// 读不到密钥时新建一个只会盖掉真密钥（工单 #243）。PLC_VAULT_KEY_SOURCE=file 时读数据目录里的文件。
 const secrets = lazyVault(defaultKeySource(join(dir, "connections.key"))).open<HindsightSecrets>(readFileSync(sealedPath), HINDSIGHT_SECRETS_AAD);
 const { env, notes } = hindsightEnvironment({ service, secrets, env: process.env });
 for (const note of notes) console.log(`[hindsight] ${note}`);

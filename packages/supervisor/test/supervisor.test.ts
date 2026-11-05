@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openDb, LATEST_SCHEMA_VERSION } from "@pi-lead-child/store";
 import { createItem } from "@pi-lead-child/store";
@@ -11,7 +11,7 @@ import { tempDir } from "@pi-lead-child/core/testing";
 import { supervisorAvailable, supervisorListening, supervisorRequest } from "../src/client.js";
 import type { SupervisorStatus } from "../src/protocol.js";
 import {
-  autoStartRefusal, DEFAULT_DAEMON_READY_TIMEOUT_MS, explicitStartRefusal, itemsBlockingMaintenance, pruneRestartBackups,
+  autoStartRefusal, DEFAULT_DAEMON_READY_TIMEOUT_MS, explicitStartRefusal, itemsBlockingMaintenance, pruneMaintenanceBackups,
   startingDaemonVerdict, startSupervisor, type SupervisorHandle,
 } from "../src/server.js";
 import { loadSupervisorState } from "../src/state.js";
@@ -288,6 +288,36 @@ describe("the deploy gate at the maintenance entry", () => {
     expect(existsSync(done.supervisor.maintenance!.backupPath!)).toBe(true);
   }, 30_000);
 
+  // 2026-11-05：plc-pre-upgrade-* 从不删除，一台机器上攒了 6 份（约 1.2 GB），旁边还有 7 份 restart 备份（约 1.2 GB）。
+  // 用户定下：每种维护只留最新 1 份。桌面版的 pre-upgrade.db、接管和改名的备份、手工备份都不归这里管。
+  it("keeps only the newest backup of each maintenance action after repeated maintenance, and leaves other backups alone", async () => {
+    const dir = tempDir("plc-supervisor-backup-prune-");
+    const backups = join(dir, "backups");
+    mkdirSync(backups);
+    const others = [
+      "pre-upgrade.db",
+      "pre-takeover-2026-11-04T15-39-05-311Z.db",
+      "pre-takeover-2026-11-04T15-39-05-311Z.supervisor.plist",
+      "pre-rename-2026-11-04T12-03-03-066Z.db",
+      "plc.db.pre-08ffd82-20261016-2101",
+      "plc.db.pre-08ffd82-20261016-2101-wal",
+      "config.json.bak-pre-08ffd82-20261016-2101",
+    ];
+    for (const name of [...others, "plc-pre-restart-2020-01-01T00-00-00-000Z.db", "plc-pre-upgrade-2020-01-01T00-00-00-000Z.db"]) {
+      writeFileSync(join(backups, name), "");
+    }
+    let pid = await start(dir, deployCheckout(dir));
+    const newest: Record<string, string> = {};
+    for (const action of ["upgrade", "restart", "upgrade"] as const) {
+      const { id } = await supervisorRequest<{ id: string }>({ type: "request_maintenance", action, reason: "deploy" }, { dataDir: dir });
+      const done = await waitStatus(dir, (status) =>
+        status.supervisor.maintenance?.id === id && status.supervisor.maintenance.state === "succeeded" && Number(status.daemon?.pid) !== pid);
+      pid = Number(done.daemon?.pid);
+      newest[action] = basename(done.supervisor.maintenance!.backupPath!);
+    }
+    expect(readdirSync(backups).sort()).toEqual([...others, newest.restart, newest.upgrade].sort());
+  }, 60_000);
+
   it("does not stop the daemon when the backup fails", async () => {
     const dir = tempDir("plc-supervisor-backup-fails-");
     const pid = await start(dir, deployCheckout(dir));
@@ -403,16 +433,26 @@ describe("the deploy gate at the maintenance entry", () => {
     expect(Number(failed.daemon?.pid)).toBe(pid);
   }, 30_000);
 
-  it("keeps only the newest restart backups and leaves the others alone", () => {
+  it("keeps only the newest backup of each maintenance action, removes its -wal and -shm, and leaves the others alone", () => {
     const dir = join(tempDir("plc-supervisor-prune-"), "backups");
     mkdirSync(dir);
-    for (let day = 10; day <= 22; day += 1) writeFileSync(join(dir, `plc-pre-restart-2026-10-${day}T00-00-00-000Z.db`), "");
-    writeFileSync(join(dir, "plc-pre-upgrade-2026-10-01T00-00-00-000Z.db"), "");
-    writeFileSync(join(dir, "plc.db.pre-08ffd82-20261016-2101"), "");
-    const removed = pruneRestartBackups(dir, 10);
-    expect(removed).toEqual([10, 11, 12].map((day) => `plc-pre-restart-2026-10-${day}T00-00-00-000Z.db`));
-    expect(readdirSync(dir)).toHaveLength(12);
-    expect(readdirSync(dir)).toContain("plc-pre-upgrade-2026-10-01T00-00-00-000Z.db");
+    const backup = (action: string, day: number) => `plc-pre-${action}-2026-10-${day}T00-00-00-000Z.db`;
+    for (let day = 10; day <= 12; day += 1) {
+      for (const action of ["restart", "upgrade"]) writeFileSync(join(dir, backup(action, day)), "");
+    }
+    writeFileSync(join(dir, `${backup("upgrade", 10)}-wal`), "");
+    writeFileSync(join(dir, `${backup("upgrade", 10)}-shm`), "");
+    const others = [
+      "pre-upgrade.db",
+      "pre-takeover-2026-11-04T15-39-05-311Z.db",
+      "pre-rename-2026-11-04T12-03-03-066Z.db",
+      "plc.db.pre-08ffd82-20261016-2101",
+      "plc.db.pre-08ffd82-20261016-2101-wal",
+    ];
+    for (const name of others) writeFileSync(join(dir, name), "");
+    const removed = pruneMaintenanceBackups(dir);
+    expect(removed.sort()).toEqual([backup("restart", 10), backup("restart", 11), backup("upgrade", 10), backup("upgrade", 11)]);
+    expect(readdirSync(dir).sort()).toEqual([...others, backup("restart", 12), backup("upgrade", 12)].sort());
   });
 });
 
