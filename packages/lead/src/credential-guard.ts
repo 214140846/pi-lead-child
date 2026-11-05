@@ -4,7 +4,7 @@
 // 也存进了 lead-sessions 下的会话记录。pi 的内置工具没有路径限制，所以这里用一个扩展（pi 的 tool_call、
 // tool_result 钩子）补上三件事：
 //   1. 读凭证文件：直接拦住（tool_call 返回 block）。清单见 credentialPathReason。
-//      数据目录（~/.pi-lead-child）照常可以读：logs/、runtime-events/、sessions/、plc.db 都要用来排查问题。
+//      数据目录（~/Library/Application Support/Bytezard Lead/）照常可以读：logs/、runtime-events/、sessions/、plc.db 都要用来排查问题。
 //      只拦里面的凭证：cli-credential.json、保险库的密钥文件（*.key）、Lead 自己的 agent/auth.json。
 //   2. 搜索和列目录：起点在凭证目录里的拦住；起点在上层（例如 ~）时照常执行，结果里指向凭证的行去掉。
 //   3. 所有结果脱敏：协议里的那套规则（redactSecretText）、已知密钥变量的值（daemon 环境里的、config.json

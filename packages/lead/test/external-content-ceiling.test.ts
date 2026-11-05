@@ -63,9 +63,10 @@ describe("each tool declares whether its output is external content", () => {
 
   // 用户 2026-10-27 定的范围：只有读卡、读对话和连接工具的结果算外部内容。读卡（get_channel_card）在工单 05 并进了读对话。
   // 对话里消息附带的文件（read_channel_file，2026-11-02）是对话的一部分，也算。
+  // 挂到工单上的附件（read_ticket_attachment，工单 #231）可能是外部消息里的文件，照旧算。
   it("counts only reading cards and conversations and connection results", () => {
     expect([...EXTERNAL_TEXT_TOOLS].sort()).toEqual(
-      ["call_connection_tool", "read_channel_conversation", "read_channel_file", "read_connection_result"],
+      ["call_connection_tool", "read_channel_conversation", "read_channel_file", "read_connection_result", "read_ticket_attachment"],
     );
     for (const name of [
       // 笔记、文件、按页读回。

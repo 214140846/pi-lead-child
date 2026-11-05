@@ -42,7 +42,7 @@ export function connectionInstallService(hub: ConnectionHub): ConnectionInstallS
   };
 }
 
-/** PLC 自己的 skill 目录：<数据目录>/skills（缺省 ~/.pi-lead-child/skills）。 */
+/** PLC 自己的 skill 目录：<数据目录>/skills（缺省 ~/Library/Application Support/Bytezard Lead/skills）。 */
 export function installedSkillsDir(dataDir: string): string {
   return join(dataDir, "skills");
 }

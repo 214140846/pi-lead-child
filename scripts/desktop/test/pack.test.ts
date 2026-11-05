@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { tempDir } from "@pi-lead-child/core/testing";
 import { DAEMON_EXTERNALS } from "../../../apps/daemon/scripts/externals.js";
+import { AGENT_BINARY, AGENT_LAUNCHER, AGENT_SIGN_ID, AGENT_STAGING } from "../lib/agent-bundle.js";
 import { packRuntime, PLC_WRAPPER, REQUIRED_BUILD_FILES } from "../lib/pack.js";
 import { hashFiles, type ReleaseManifest, type UpdateManifest } from "../lib/release.js";
 import type { FetchLike } from "../lib/node-dist.js";
@@ -66,9 +67,15 @@ function fakeNodeDist(o: { tamper?: boolean } = {}): { fetchImpl: FetchLike; bin
   return { fetchImpl, binary };
 }
 
+// 测试里的假 Node 不是真的 Mach-O，codesign 签不了：只记下要签什么。真的 codesign 在 agent-bundle.test.ts 里测。
+const signed: Array<{ path: string; identifier: string }> = [];
+const fakeSign = async (path: string, identifier: string) => {
+  signed.push({ path, identifier });
+};
+
 const pack = (repo: string, out: string, fetchImpl: FetchLike) => packRuntime({
   repoRoot: repo, outDir: out, version: "1.3.0", repository: "acme/x", nodeVersion: NODE, schemaVersion: 63,
-  sourceTree: "a".repeat(40), externals: DAEMON_EXTERNALS, fetchImpl, now: new Date("2026-11-03T08:00:00Z"),
+  sourceTree: "a".repeat(40), externals: DAEMON_EXTERNALS, fetchImpl, now: new Date("2026-11-03T08:00:00Z"), sign: fakeSign,
 });
 
 function listTree(root: string, dir = root): string[] {
@@ -88,9 +95,18 @@ describe("packRuntime", () => {
     const runtime = join(out, "runtime");
     expect(result.runtimeDir).toBe(runtime);
 
-    // Node 叫 bin/lead-agent，bin/node 指向它，bin/plc 用它运行。
-    expect(readFileSync(join(runtime, "bin/lead-agent"))).toEqual(dist.binary);
-    expect(statSync(join(runtime, "bin/lead-agent")).mode & 0o111).toBe(0o111);
+    // Node 叫 bin/lead-agent，用自己的标识重签；软链接 bin/Bytezard Lead 指向它，launchd 的 plist 写这个软链接：
+    // 登录项显示 Bytezard Lead，进程名还是 lead-agent（设计第 8.7 节，做法 1b）。bin/node 指向它，bin/plc 用它运行。
+    expect(AGENT_BINARY).toBe("bin/lead-agent");
+    expect(AGENT_LAUNCHER).toBe("bin/Bytezard Lead");
+    expect(lstatSync(join(runtime, AGENT_BINARY)).isFile()).toBe(true);
+    expect(readFileSync(join(runtime, AGENT_BINARY))).toEqual(dist.binary);
+    expect(statSync(join(runtime, AGENT_BINARY)).mode & 0o111).toBe(0o111);
+    expect(readlinkSync(join(runtime, AGENT_LAUNCHER))).toBe("lead-agent");
+    expect(readFileSync(join(runtime, AGENT_LAUNCHER))).toEqual(dist.binary);
+    // 签的是放到 bin/lead-agent 以前的临时文件，签好以后 rename 过去（agent-binary.ts）。
+    expect(signed.at(-1)).toEqual({ path: join(runtime, AGENT_STAGING), identifier: AGENT_SIGN_ID });
+    expect(existsSync(join(runtime, "Bytezard Lead.app"))).toBe(false);
     expect(readlinkSync(join(runtime, "bin/node"))).toBe("lead-agent");
     expect(readFileSync(join(runtime, "bin/plc"), "utf8")).toBe(PLC_WRAPPER);
     expect(PLC_WRAPPER).toContain('exec "$ROOT/bin/lead-agent" "$ROOT/apps/cli/dist/cli.mjs" "$@"');
@@ -138,6 +154,7 @@ describe("packRuntime", () => {
     expect(listTree(unpacked).sort()).toEqual(listTree(runtime).sort());
     expect(listTree(unpacked).some((path) => path.split("/").pop()!.startsWith("._"))).toBe(false);
     expect(readlinkSync(join(unpacked, "bin/node"))).toBe("lead-agent");
+    expect(readlinkSync(join(unpacked, "bin/Bytezard Lead"))).toBe("lead-agent");
     expect(await hashFiles(unpacked, Object.keys(release.files))).toEqual(release.files);
   });
 

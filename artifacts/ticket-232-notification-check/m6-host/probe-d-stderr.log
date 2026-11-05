@@ -1,0 +1,4 @@
+[31831:1104/202912.676288:INFO:electron/shell/browser/notifications/mac/cocoa_notification.mm:202] Notification created (21b876b2-582a-41e7-aeda-fb2d7bc94e10)
+[31831:1104/202912.688589:INFO:electron/shell/browser/notifications/mac/notification_presenter_mac.mm:71] Notification authorization granted: 1
+[31831:1104/202912.688960:INFO:electron/shell/browser/notifications/mac/cocoa_notification.mm:243] Notification scheduled (21b876b2-582a-41e7-aeda-fb2d7bc94e10)
+[31831:1104/202912.698834:INFO:electron/shell/browser/notifications/mac/cocoa_notification.mm:312] Notification displayed (21b876b2-582a-41e7-aeda-fb2d7bc94e10)

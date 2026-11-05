@@ -13,6 +13,9 @@ const StrictObject = <T extends TProperties>(properties: T) =>
 
 const RequestId = { id: Type.Optional(Type.String()) };
 
+// 一条桌面通知正文的上限（字符）。daemon 推给 App 之前截到这个长度，App 交回失败的那条时也不能超过它。
+export const DESKTOP_NOTIFICATION_BODY_MAX = 4_000;
+
 export const LocalSocketCommandSchema = Type.Union([
   StrictObject({ type: Type.Literal("status"), ...RequestId }),
   // 停机前先排空 Lead（2026-10-16 提醒 #83）：daemon 不再开新的 Lead 回合（新消息存成排队的轮次），
@@ -31,6 +34,18 @@ export const LocalSocketCommandSchema = Type.Union([
   // 把 Lead 的默认模型写进 config.json（plc lead use）。经 daemon 写，daemon 核对 config.json 时才认得出这是它自己写的
   // （2026-10-19 审查：别的进程直接改 config.json 会报警）。回答 { path, models }。改完要重启 daemon 才生效。
   StrictObject({ type: Type.Literal("set_lead_model"), ...RequestId, spec: Type.String({ minLength: 3, maxLength: 200 }) }),
+  // Bytezard Lead 的 App 订阅桌面通知（docs/desktop/macos-desktop-design.md 第 8.6 节路径 A）。key 是数据目录里
+  // shell-pairing.key 的内容：执行器的沙箱读不到它，所以别的进程订不走通知。回答以后连接保持打开，
+  // daemon 每条通知写一行 DesktopNotificationEvent；有订阅时 daemon 不调 osascript。连接断开就是退订。
+  StrictObject({
+    type: Type.Literal("subscribe_desktop_notifications"), ...RequestId,
+    key: Type.String({ minLength: 1, maxLength: 128 }),
+  }),
+  // 只在订阅了的连接上有效：App 发这一条失败了（Electron 的 failed 事件），daemon 用 osascript 补发。
+  StrictObject({
+    type: Type.Literal("desktop_notification_failed"), ...RequestId,
+    body: Type.String({ maxLength: DESKTOP_NOTIFICATION_BODY_MAX }),
+  }),
 ]);
 export type LocalSocketCommand = Static<typeof LocalSocketCommandSchema>;
 
@@ -38,6 +53,14 @@ export type LocalSocketCommand = Static<typeof LocalSocketCommandSchema>;
 export function isLocalSocketCommand(value: unknown): value is LocalSocketCommand {
   return Value.Check(LocalSocketCommandSchema, value);
 }
+
+// subscribe_desktop_notifications 以后 daemon 推给 App 的一行。title 是用户配置的 Lead 名字。
+export const DesktopNotificationEventSchema = StrictObject({
+  type: Type.Literal("desktop_notification"),
+  title: Type.String({ minLength: 1 }),
+  body: Type.String({ maxLength: DESKTOP_NOTIFICATION_BODY_MAX }),
+});
+export type DesktopNotificationEvent = Static<typeof DesktopNotificationEventSchema>;
 
 export interface LocalSocketResponse<T = unknown> {
   type: "response";

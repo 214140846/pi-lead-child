@@ -4,6 +4,7 @@ import WebSocket from "ws";
 import { Value } from "typebox/value";
 import {
   CHAT_PLACEMENT_CAPABILITY,
+  EVENT_REPLAY_LIMIT,
   TICKET_CHAT_ANSWERER_CAPABILITY,
   ApprovalSchema,
   ChatSendCommandSchema,
@@ -469,6 +470,52 @@ describe("paired WebSocket protocol v2", () => {
         .toHaveLength(1);
     } finally {
       client.ws.close();
+      await server.close();
+    }
+  });
+
+  // 2026-11-04：新配对的桌面 App 从 0 连上，网关一次补发 13 万条历史（51 MB），卡住 daemon，客户端处理不完、心跳超时、重连。
+  // 差得比 EVENT_REPLAY_LIMIT 多时不补发：客户端按 hello.latestSeq 跳过去，重取快照。差得少时照常补发。
+  it("does not replay a backlog longer than the replay limit, and still delivers live events", async () => {
+    const issued = issue("long-backlog", ["tickets:view"]);
+    const total = EVENT_REPLAY_LIMIT + 5;
+    db.transaction(() => {
+      for (let index = 1; index <= total; index++) {
+        publishGatewayEvent(db, {
+          eventId: `evt-history-${index}`,
+          type: "ticket.updated",
+          requiredScope: "tickets:view",
+          itemId: index,
+          payload: { ticketId: index, snapshotRequired: true },
+        });
+      }
+    })();
+    const service = createControlPlaneService(db, { runtime });
+    const server = await startPairedServer({
+      db, controlPlane: service, hello: runtime, chat: () => "started", addClient: () => () => {}, log: () => {},
+    }, { port: 0, outboxPollMs: 60_000 });
+    const fresh = await connect(
+      `ws://127.0.0.1:${server.port}/v1/paired/events?token=${issued.accessToken}&protocol=2&after_seq=0`,
+    );
+    const latestSeq = fresh.messages.find((message) => message.type === "hello.v2").latestSeq as number;
+    const near = await connect(
+      `ws://127.0.0.1:${server.port}/v1/paired/events?token=${issued.accessToken}&protocol=2&after_seq=${latestSeq - 3}`,
+    );
+    try {
+      await vi.waitFor(() => expect(near.messages.filter((message) => message.eventId)).toHaveLength(3));
+      server.publish({
+        eventId: "evt-after-long-backlog",
+        type: "ticket.updated",
+        requiredScope: "tickets:view",
+        itemId: 7,
+        payload: { ticketId: 7, snapshotRequired: true },
+      });
+      await vi.waitFor(() => expect(fresh.messages.some((message) => message.eventId === "evt-after-long-backlog")).toBe(true));
+      expect(fresh.messages.filter((message) => message.eventId).map((message) => message.eventId))
+        .toEqual(["evt-after-long-backlog"]);
+    } finally {
+      fresh.ws.close();
+      near.ws.close();
       await server.close();
     }
   });

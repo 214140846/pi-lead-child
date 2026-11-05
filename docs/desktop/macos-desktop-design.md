@@ -72,7 +72,7 @@
      │                               └─ 等 plc.sock 回答 status，拿到 gatewayUrl
      │
      ├─ 连 <数据目录>/plc.sock，读 status.gatewayUrl
-     ├─ 订阅 daemon 的桌面通知，用 Electron Notification 发（第 8.6 节，取决于 P0-7 实测）
+     ├─ 订阅 daemon 的桌面通知，用 Electron Notification 发（第 8.6 节，P0-7 实测后选定）
      └─ BrowserWindow 加载 http://127.0.0.1:<port>/   ← 回环自动配对，请求带 shell-pairing.key 的口令（P0-4，见 shell.md）
                                    │
                                    ▼
@@ -94,7 +94,7 @@ App 关掉以后，supervisor 和 daemon 照旧在跑。App 只是一个窗口�
 
 | 组成 | 来源 | 放在哪里 |
 |---|---|---|
-| Node | nodejs.org 官方 Node 24 的 darwin-arm64 二进制，固定版本，用 `SHASUMS256.txt` 校验，改名为 `lead-agent` | `bin/lead-agent`，`bin/node` 是指向它的软链接 |
+| Node | nodejs.org 官方 Node 24 的 darwin-arm64 二进制，固定版本，用 `SHASUMS256.txt` 校验，改名为 `lead-agent`，重新做 ad-hoc 签名（第 8.7 节） | `bin/lead-agent`；`bin/Bytezard Lead` 和 `bin/node` 是指向它的软链接，launchd 的 plist 写 `bin/Bytezard Lead` |
 | daemon、supervisor、ops、mcp-server、hindsight 的 dist | `npm run build` | `apps/daemon/dist/` |
 | plc CLI | `apps/cli` 的构建 | `apps/cli/dist/cli.mjs`，`bin/plc` 包装 |
 | Web 构建 | `npm run build:web` | `apps/daemon/dist/web/` |
@@ -108,7 +108,7 @@ P0-2 的实现没有再跑一次 `npm install`：它按根 `package-lock.json` �
 
 - **daemon 用独立的 Node，不用 Electron 自带的 Node。** daemon 的生命周期和 App 无关（用户已经定了）。如果用 `ELECTRON_RUN_AS_NODE` 跑 daemon，换 Electron 版本就会改变 daemon 的 Node ABI，better-sqlite3 也要按 Electron 重新编译。用独立的 Node，原生模块和开发环境一样按 Node ABI 构建，不需要 electron-rebuild。pi 1.1.0 要求 Node `>=22.19.0`（`node_modules/@earendil-works/pi-coding-agent/package.json` 的 engines），Node 24 满足。
 - **nodejs.org 的 Node 二进制是官方构建**，Node 下载页提供 `node-v24.x.y-darwin-arm64.tar.gz` 和 `SHASUMS256.txt`（[nodejs.org/dist/latest-v24.x](https://nodejs.org/dist/latest-v24.x/)）。
-- **Node 改名为 `lead-agent`**（第 9 节决定 6、7）：用户在「登录项」和「活动监视器」里看到的是 `lead-agent`，不是 `node`。改文件名不改文件内容，Node 原有的签名仍然有效。登录项里实际显示什么，要在 P0-7 实测。
+- **Node 改名为 `lead-agent`**（第 9 节决定 6、7）：「活动监视器」里看到的是 `lead-agent`，不是 `node`。只改名时登录项归到「Node.js Foundation」下面（P0-7 实测），所以 Node 重新做 ad-hoc 签名，launchd 的 plist 写软链接 `bin/Bytezard Lead`，登录项显示 Bytezard Lead，见第 8.7 节。
 - **运行包沿用仓库的目录形状**（`apps/daemon/dist`、根 `package.json` 带 `workspaces`），所以 `projectRoot()`、`distDir()`、`defaultWebRoot()`、pi 的 `locateExecutable`（`join(cwd, "node_modules", ".bin", "pi")`）都不用改（`packages/core/src/config.ts:33-48`，`packages/runtime/src/pi.ts:573`）。P0 先求少改；以后要换成显式的安装根，再单独做。
 - **不把整个仓库的 node_modules 打进去。** `apps/daemon/scripts/build.ts` 已经把所有后端包打进 `.mjs`，运行时只靠三个 external（`build.ts` 的 `external` 数组）。
 
@@ -119,7 +119,7 @@ P0-2 的实现没有再跑一次 `npm install`：它按根 `package-lock.json` �
   - App 被替换或删掉时，常驻的 daemon 不能跟着失效。
 - 安装根放在数据目录下面，这样一个产品只有一个目录。卸载时只删 `runtime/` 和 `shell/`，数据默认保留（第 4.4 节）。
 - 每个版本一个目录 `versions/<版本>/`，装好后不再改。`current` 是软链接。换版本时先建临时软链接，再 `rename` 覆盖 `current`，这一步是原子的。
-- 保留两个版本：`current` 和上一个，留作回滚。更早的版本在升级成功后删掉。
+- 保留两个版本：`current` 和上一个，留作回滚。更早的版本在升级成功后删掉：`desktop-install` 装好、daemon 回答以后删（`packages/supervisor/src/deploy/runtime-versions.ts`，2026-11-05）。还有进程在用的版本不删（daemon、Hindsight 和接管过来的执行器从 `versions/<版本>/` 运行）；不知道上一个是哪个版本时一个都不删。
 - 开发安装和桌面安装用同一个数据目录。开发机从旧名字迁过来，见 P0-8。
 - plist 里写 `current` 的路径，不写具体版本。Node 运行 `import.meta.url` 时会解开软链接，所以 `ops.mjs desktop-install` 要显式接收 `--root <安装根>/current`，不能靠 `projectRoot()` 推出来。
 - 新路径里有空格（`Application Support`、`Bytezard Lead`）。所有路径都用 `execFile` 的参数数组传，不拼进 shell 命令。给模型看的文字里，命令要带引号，例如 `sqlite3 -readonly ~/"Library/Application Support/Bytezard Lead/plc.db"`。
@@ -215,9 +215,7 @@ App 第一次打开时只显示一个安装进度页，没有选项。普通用�
 
 1. **移到应用程序文件夹。** 如果 `app.isInApplicationsFolder()` 返回 false，提示用户并调用 `app.moveToApplicationsFolder()`。Electron 文档写明移动成功后 App 会退出再重新打开（[Electron app API](https://www.electronjs.org/docs/latest/api/app)）。
 2. **解出运行包。** 把 `Resources/runtime/bytezard-lead-runtime-<ver>-arm64.tar.gz` 解到 `versions/<ver>.partial/`，校验 `release.json.files`，再 `rename` 成 `versions/<ver>/`。去掉 `com.apple.quarantine` 扩展属性（`xattr -dr com.apple.quarantine <目录>`，参数固定，用 `execFile` 不经 shell）。然后原子地切换 `current`。
-3. **识别已有的安装。**
-   - 如果 `com.bytezard.plc.supervisor` 的 plist 指向一个 git checkout（目录里有 `.git`，没有 `release.json`），这是开发安装。不覆盖它，进度页说「这台电脑上已经有一份开发版在运行，直接打开它」，然后跳到第 7 步。输出 `dev_install_detected`。
-   - 如果还有旧名字的 `com.pi-lead-child.supervisor` plist，这是没迁移的开发机。不安装，输出 `legacy_install_detected`，进度页提示先运行迁移（P0-8）。
+3. **识别已有的安装，自动接管。** 改名以前的安装、跑开发 checkout 的安装、换了版本的安装，都自动接管，不要求用户做任何事（第 12 节，#234）。只有设了 `PLC_KEEP_DEV_INSTALL=1` 时，才保留开发安装、直接打开它（`dev_install_detected`，第 12.8 节）。
 4. **采集登录 shell 的 PATH**（第 5.1 节），写进数据目录。
 5. **装 plist。** 复用 `plistContent`/`installAgent`（`packages/supervisor/src/deploy/launchd.ts`），`nodeBin` 用 `current/bin/lead-agent`，`entry`、`cwd` 都用 `current` 的路径。用户级 LaunchAgent，`launchctl bootstrap gui/<uid>`，不需要 sudo。
 6. **健康检查。** 等 `supervisor.sock` 能连上（60 秒），发 `ensure_running`，等 `plc.sock` 回答 `status`。等多久和 supervisor 一致：`DEFAULT_DAEMON_READY_TIMEOUT_MS`，2026-11-03 改成 10 分钟（59a8a29e），`ensure_running` 再多等 30 秒（`ensureRunningTimeoutMs`）。
@@ -325,6 +323,17 @@ App 菜单「卸载 Bytezard Lead…」（P1）调用 `ops.mjs desktop-uninstall
 
 大部分改动都在运行包里，壳只是安装器、窗口和通知出口，所以壳很少需要更新。
 
+**2026-11-04 改成一键换整个 dmg（用户要求）。** 用户要的是：每天查一次 GitHub release，有新版时弹一个小提示，点「更新」就换成新版并重开，不能破坏以前的数据。所以先做了 App 壳的自动替换，更新的单位是整个 dmg，上表的运行包更新（第 7.3 节）还没做：
+
+1. App 打开时距上次检查满 24 小时就查，开着时每小时看一次到没到。请求 `<仓库>/releases/latest/download/manifest.json`；仓库来自已装运行包的 `release.json.updateSource`。`release-macos.yml` 打出 dmg 以后，`scripts/desktop/add-dmg.ts` 把 dmg 的文件名、大小和 SHA-256 记进 `manifest.json`。
+2. manifest 的版本比这份 App 新时，网页顶栏写新版本号和「更新」（主题 11.14 第 5 项）。「明天再提醒」：这个版本 24 小时内不再提示。
+3. 点「更新」：下载 dmg（Electron 的 `net.fetch`，走系统代理），按大小和 SHA-256 校验；`hdiutil` 只读挂载，把里面的 App 用 `ditto` 复制到 App 所在目录下的隐藏暂存目录；核对版本号、bundle id，`codesign --verify`；卸载 dmg；两次 `rename` 换掉 App，第二次失败时把旧的挪回去；`app.relaunch()`。
+4. 新 App 打开时照常跑第 4.2 节的流程：它带的运行包比装着的新，解包，`desktop-install` 按情况 C（第 12.5 节）先备份数据库、重启到新版本，失败自动回滚。数据目录不动。暂存目录和下载的 dmg 在新 App 打开时删掉。
+5. App 菜单的「检查更新…」（用户 2026-11-05）：马上查一次，用对话框说结果。有新版时对话框给「更新」和「以后」，「更新」和网页里的是同一个动作；点过「明天再提醒」的版本也再提示。已经是最新版、查不了（没网）、不知道从哪里取更新时，各写一句。
+6. 本机验证时用 `BYTEZARD_UPDATE_URL` 换掉 manifest 和 dmg 的地址（只收 https，或者 127.0.0.1、localhost 上的 http）。
+
+代码在 `desktop/src/updater.ts`；网页那一侧在 `apps/companion/src/state/shellUpdate.ts`。这个按钮调的是 App 壳，不是 daemon，所以 Lead 现在不能替用户点它（第 7.3 节的「检查更新」「更新」操作还没做）。
+
 ### 7.3 运行包的更新流程
 
 1. **检查。** daemon 每 6 小时和每次启动时，请求 `https://github.com/<repo>/releases/latest/download/manifest.json`。GitHub 文档支持用 `/releases/latest/download/<文件名>` 直接下载最新 release 的附件（[GitHub：Linking to releases](https://docs.github.com/en/repositories/releasing-projects-on-github/linking-to-releases)）。这条路径不走 REST API，不受未认证请求每小时 60 次的限制（[GitHub REST API rate limits](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api)）。`<repo>` 来自 `release.json.updateSource`。
@@ -401,7 +410,7 @@ jobs:
 - electron-builder 设 `appId: com.bytezard.plc`、`productName: Bytezard Lead`、`mac.identity: "-"`（ad-hoc 签名）、`hardenedRuntime: false`、`notarize: false`，环境变量 `CSC_IDENTITY_AUTO_DISCOVERY=false`。electron-builder 文档：不签名时设 `CSC_IDENTITY_AUTO_DISCOVERY=false`；`identity` 设成 `"-"` 是 ad-hoc 签名；关掉签名时应该同时关掉 Hardened Runtime，否则 App 可能打不开（[code signing mac](https://www.electron.build/docs/features/code-signing/code-signing-mac)、[electron-builder mac](https://www.electron.build/docs/mac)）。
 - 为什么用 ad-hoc 而不是完全不签：Apple Silicon 要求原生代码至少有一个签名，ad-hoc 签名就够。这一条来自 Apple 的开发者发行说明，我只找到了二手引述（[Eclectic Light](https://eclecticlight.co/2020/08/22/apple-silicon-macs-will-require-signed-code/)），**未找到 Apple 原文**。electron-builder 修改 App 包（改 Info.plist、换图标）以后，Electron 原有的签名会失效，所以要让它重新 ad-hoc 签一遍。
 - 「ad-hoc 签名的 App 从网上下载后，在别的 Mac 上能否通过『仍要打开』正常启动」：**未实测**，P0-5 验收必须在一台没装过的 Mac 上测。
-- ad-hoc 签名的 App 能不能发通知，**未实测**，见第 8.6 节和 P0-7。
+- ad-hoc 签名的 App 能不能发通知：2026-11-04 实测，用户授权后能发，见第 8.6 节。
 - nodejs.org 的 Node 二进制本身有 Node 官方的签名（未逐项核实）；解出来以后去掉 quarantine 属性，launchd 运行时不再经过 Gatekeeper。
 
 ### 8.3 Gatekeeper 提示
@@ -471,6 +480,7 @@ README 另加一节「打不开怎么办」，给高级用户：如果提示「�
 | supervisor 的 launchd label | `com.bytezard.plc.supervisor` | 用户，决定 6 |
 | Hindsight 的 launchd label | `com.bytezard.plc.hindsight` | 按同一个前缀推出 |
 | 后台进程名（Node 二进制改名） | `lead-agent` | 用户，决定 6 |
+| 后台服务在「登录项与扩展」里的名字 | `Bytezard Lead`：plist 写软链接 `bin/Bytezard Lead`，指向 `bin/lead-agent`（ad-hoc 重签，标识 `com.bytezard.plc.agent`），第 8.7 节 | 用户 2026-11-04 13:35 定「登录项显示 Bytezard Lead」，做法 1b 由 Lead 选定 |
 | 数据目录 | `~/Library/Application Support/Bytezard Lead/` | 用户，决定 6 |
 | 安装根 | `<数据目录>/runtime/` | 本文，见第 2.2 节 |
 | 发布附件 | `bytezard-lead-<版本>-arm64.dmg`、`bytezard-lead-runtime-<版本>-arm64.tar.gz`、`manifest.json` | 本文 |
@@ -483,7 +493,29 @@ App 名写在 Info.plist 里。装好以后再改 Info.plist 会让签名失效�
 
 ### 8.6 通知
 
-现状：daemon 的 `defaultDesktopNotifier`（`apps/daemon/src/server.ts:607-614`）用 `osascript -e 'display notification … with title "pi-lead-child"'` 弹系统通知，标题写死。
+现状（P0-7 以后）：
+
+- daemon 的桌面通知都经过 `DesktopNotifier`（`apps/daemon/src/desktop-notifier.ts`）。每条通知的标题是用户配置的 Lead 名字，每次发都重新读，用户改名后下一条就用新名字。
+- App 开着、并且用户确认过这一份 App 的通知能显示时（见下面的「通知授权」，#232），壳（`desktop/src/notifications.ts`）在 `plc.sock` 上发 `subscribe_desktop_notifications`，带数据目录里 `shell-pairing.key` 的口令。执行器的沙箱读不到这个文件，所以别的进程订不走通知。
+- 有订阅时，daemon 把每条通知写成一行 `desktop_notification` 推给壳，不调 osascript。壳用 Electron 的 `Notification` 发出，同一条通知只弹一次。用户点通知时，壳把窗口提到前面。
+- App 关掉时连接断开，就是退订。daemon 改回自己用 osascript 发，标题也是 Lead 名字。正文和标题作为 osascript 的参数传进去，不拼进 AppleScript 源码。
+- Electron 发某一条失败（`failed` 事件）时，壳用 `desktop_notification_failed` 把正文交回 daemon，daemon 用 osascript 补发这一条。壳随后退订，这次运行里以后的通知都由 daemon 发，并且忘掉确认记录，下次打开 App 时重新检查。
+- `PLC_DESKTOP_NOTIFY=off` 时 daemon 既不调 osascript，也不推给壳。根 vitest 配置设置了它，测试不在桌面上弹通知。
+
+通知授权（#232，2026-11-04）：
+
+- Electron 45 在 macOS 上用 `UNUserNotificationCenter` 发通知。它在建通知的 presenter 时调一次 `requestAuthorizationWithOptions`（alert、sound、badge），结果只在设了 `ELECTRON_DEBUG_NOTIFICATIONS` 时写日志，不读授权状态，也不告诉 JS（[notification_presenter_mac.mm](https://github.com/electron/electron/blob/v45.2.1/shell/browser/notifications/mac/notification_presenter_mac.mm)）。`Notification.isSupported()` 和 `new Notification()` 都会建 presenter（[electron_api_notification.cc](https://github.com/electron/electron/blob/v45.2.1/shell/browser/api/electron_api_notification.cc)）。壳在 App 就绪时调 `isSupported()`，所以第一次打开 App 时 macOS 弹权限卡。
+- `show` 事件是 `addNotificationRequest` 成功的回调，`failed` 是它报错的回调（[cocoa_notification.mm](https://github.com/electron/electron/blob/v45.2.1/shell/browser/notifications/mac/cocoa_notification.mm)）。Apple 的说明：App 没有授权时提交通知请求，报 `UNError.Code.notificationsNotAllowed`（[Apple：notificationsNotAllowed](https://developer.apple.com/documentation/usernotifications/unerror/code/notificationsnotallowed)）。但实测 1 第一轮和实测 5 都是：只有 `show`，系统不显示。所以 `show` 不说明通知显示了。
+- Apple 要求发通知前先申请授权，第一次申请时系统问用户，以后再申请不再问；用户随时能在系统设置里改，App 要用 `getNotificationSettings` 读当前状态（[Apple：Asking permission to use notifications](https://developer.apple.com/documentation/usernotifications/asking-permission-to-use-notifications)、[requestAuthorization](https://developer.apple.com/documentation/usernotifications/unusernotificationcenter/requestauthorization(options:completionhandler:))）。Electron 没有暴露 `getNotificationSettings`；Electron 的通知文档推荐的 `macos-notification-state` 是原生模块（[Electron：Notifications](https://github.com/electron/electron/blob/v45.2.1/docs/tutorial/notifications.md)），壳不带原生依赖（第 8.1 节）。
+- 本机核实：macOS 27.2 上 `~/Library/Preferences/com.apple.ncprefs.plist` 最后一次写入是 2025-09-16（macOS 26 发布前后），`defaults export com.apple.ncprefs` 也没有 2025-09 以后装的 App。所以实测 5 里「`ncprefs` 没有 `com.bytezard.plc`」不能说明 App 没有授权记录。新的存放位置在 `group.com.apple.usernoted` 的组容器里，执行器的沙箱读不到。
+
+所以壳的做法是「用户亲眼确认」（`desktop/src/notification-check.ts`）：
+
+- 壳记下用户确认过通知能显示（`<数据目录>/shell/notification-check.json`）。确认只按 App 记，不按构建：实测 6 换了构建、签名摘要变了以后，系统的授权还在，通知照常显示。所以更新 App 以后不再问（2026-11-05，用户问「为什么每次重新安装或者升级都要显示」）。记录里仍写着确认时那一份 App 的标识（`Contents/_CodeSignature/CodeResources` 的 sha256；开发时用版本号），诊断用。
+- 没确认时壳不订阅，通知由 daemon 用 osascript 发，进通知中心，发送者显示为脚本编辑器。这是「show 了却没授权」的兜底：通知不丢。
+- 装好服务、打开 Companion 以前，安装页多一屏「打开通知」：请用户在权限卡上点「允许」，再发一条测试通知。用户点「看到了」或者点了那条测试通知，壳记下这一份 App，开始订阅。用户点「没看到」，或者 Electron 报 `failed`，安装页说明去「系统设置 → 通知 → Bytezard Lead」打开「允许通知」，并给出「打开系统设置」按钮（`x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=com.bytezard.plc`）。点「以后再说」直接打开 Companion，下次打开 App 再问。
+- 确认以后系统设置里又关掉了通知：按 Apple 的说明，Electron 会报 `failed`，走上面的补发和退订。这一条要实测 6 核实（[p0-7-measurements.md](p0-7-measurements.md)）；换构建以后授权还在，实测 6 已经核实。
+- 截图：`artifacts/ticket-232-notification-check/`。
 
 目标（第 9 节决定 6）：
 
@@ -493,18 +525,97 @@ App 名写在 Info.plist 里。装好以后再改 Info.plist 会让签名失效�
 
 风险：Electron 的通知文档原文是「For notifications on macOS, your application will need to be code-signed in order for notification events to emit correctly. … Unsigned binaries will emit a `failed` event when notification APIs are called.」（[Electron：Notifications](https://github.com/electron/electron/blob/main/docs/tutorial/notifications.md)）。文档没写 ad-hoc 签名算不算已签名。P0-7 实测。
 
-首选方案（路径 A，取决于 P0-7 实测）：
+**选择（定稿）：路径 A。** 主人 2026-11-04 17:24 选了方案 B：「既然都走 electron 打包 App 了，肯定走标准方案」。所以保留路径 A，App 开着时由 Electron 发通知；实测 5 里 Electron 通知不进通知中心的问题，放到 P0-8 之后另开工单处理，P0-7 不改代码。实测在 macOS 27.2（26B123）的 Apple 芯片 Mac 上做，步骤和记录见 [p0-7-measurements.md](p0-7-measurements.md)。PLC 执行器的沙箱里做不了这些实测。
 
-- App 在运行时，壳的主进程通过 `plc.sock` 订阅 daemon 的桌面通知，用 Electron 的 `Notification` 发出。来源是 App 名，标题是 Lead 名字。
+为什么选 A：
+
+- ad-hoc 签名的 App 在用户授权以后，能用 Electron 的 `Notification` 发出通知。probe 收到 `show` 事件，没有 `failed`。
+- 权限卡上的名字和「系统设置 → 通知」里的名字都是 `Bytezard Lead`。系统把 App 当成一个独立的通知来源，所以能达到决定 6 的「来源显示 App 名」。
+- 实测 5 里 Electron 通知没有进通知中心（见下面的已知限制）。它不改变路径的选择：B1 的来源是脚本编辑器的图标，做不到决定 6；B2 未核实。
+- 不需要 B2：B2 只在 ad-hoc 签名的 Electron 发不了通知时才有意义。
+
+已知限制：
+
+- 用户点「允许」之前，App 发的通知会被系统收下（Electron 报 `show`），但不显示，也没有 `failed`。第一轮实测就是这样。#232 以后，用户确认以前壳不订阅，这段时间的通知由 daemon 发，不再丢。
+- 权限卡上用的是缺省的 Electron 图标：打包时没设 App 图标（构建日志写着 `default Electron icon is used`）。这属于 P0-4、P0-5 的打包问题。
+- Electron 通知收到 `show`，却不进通知中心（实测 5，2026-11-04 17:13）：#232 用上面的「用户亲眼确认」兜住，确认以前通知由 daemon 发。实测 5 的 App 为什么没有显示，还没查清：`ncprefs` 已经不再写入，不能当证据。实测 6 用 `ELECTRON_DEBUG_NOTIFICATIONS` 读授权申请的结果。
+- App 关着时，daemon 用 osascript 发的通知进通知中心，标题是 Lead 名字，图标是脚本编辑器的通用图标，没有单独的 App 名，不是 Bytezard Lead（实测 5，主人 17:19 截图）。实测 2 时横幅弹出过；实测 5 时横幅没有弹出，原因没查（可能是专注模式，或者脚本编辑器的提醒样式）。这是路径 A 里 B1 那一半的已知缺点，第 9 节最后一段「还没定的一件事」就是在问它。
+
+路径 A（已实现）：
+
+- App 在运行时，壳的主进程通过 `plc.sock` 订阅 daemon 的桌面通知，用 Electron 的 `Notification` 发出。标题是 Lead 名字。
 - 有壳订阅时，daemon 不再调 osascript，避免同一条通知弹两次。
-- App 没在运行时，daemon 照旧用 osascript，标题改成 Lead 名字。这时来源不是 `Bytezard Lead`，具体显示什么**未核实**。
+- App 没在运行时，daemon 照旧用 osascript，标题是 Lead 名字。
+- Electron 报 `failed` 时，壳把这一条交回 daemon 用 osascript 补发，然后退订。实测里没有出现 `failed`，这是保险。
 
-P0-7 实测不通过时的备选，都**未核实**：
+没选的备选：
 
-- **B1：一直用 daemon 的 osascript。** 现有代码，只把标题改成 Lead 名字。缺点：来源不是 App 名，做不到决定 6 的「来源显示 App 名」。
-- **B2：App 包里带一个原生通知助手。** 一个很小的 Swift 程序，放在 `Bytezard Lead.app/Contents/` 下，用 `UNUserNotificationCenter` 发通知，daemon 调它。缺点：它和 Electron 用的是同一个系统接口，同样可能要求签名；还要多维护一个 Swift 构建。只有实测证明 ad-hoc 签名的原生程序能发、而 Electron 不能发时，B2 才有意义。
+- **B1：一直用 daemon 的 osascript。** 已经包含在路径 A 里：App 不在、或者 Electron 发失败时就是 B1。实测：图标是通用的脚本图标，做不到决定 6 的「来源显示 App 名」。
+- **B2：App 包里带一个原生通知助手。** 一个很小的 Swift 程序，用 `UNUserNotificationCenter` 发通知，daemon 调它。实测证明 ad-hoc 签名的 Electron 已经能发，B2 没有必要。它能不能在 App 关着时以 App 的名义发通知，**未核实**；如果用户想让 App 关着时的通知也显示 Bytezard Lead，可以再评估它。
 
-P0-7 按实测结果选路径，并把结果和选择写回本节。
+### 8.7 登录项显示的名字
+
+实测（2026-11-04，macOS 27.2）：用 `lead-agent` 启动的 LaunchAgent 装好后，「系统设置 → 通用 → 登录项与扩展 → 允许在后台」里显示的是 **Node.js Foundation**（Running in background），图标是通用占位图，不是 `lead-agent`，也不是 `Bytezard Lead`。没有弹出「已添加后台项目」通知。卸掉探测服务以后「Node.js Foundation」还在：开发机上原有的 supervisor 和 hindsight 也用 Node 运行，macOS 把用 Node 官方签名的后台项目合在一起，显示成开发者名。
+
+原因：`lead-agent` 只是 Node 的改名副本，签名还是 Node 官方的（`Identifier=node`，`TeamIdentifier=HX7739G8FX`）。Eclectic Light 的文章写明「The Developer Name given is taken from the code signing certificate」（[Manage login and background items](https://eclecticlight.co/2025/12/03/manage-login-and-background-items/)）。所以第 9 节决定 7 只靠改名做不到。
+
+**用户 2026-11-04 13:35 定：登录项要显示成 Bytezard Lead，不能显示成 Node.js Foundation，现在就改，放进 P0-7。**
+
+三个方向的评估：
+
+| 方向 | 做法 | 资料怎么说 | 改动 |
+|---|---|---|---|
+| a. 后台程序用自己的签名 | 把 Node 放进运行包里的 `Bytezard Lead.app` 程序包（`CFBundleName`、`CFBundleDisplayName` 是 Bytezard Lead，`CFBundleIdentifier` 是 `com.bytezard.plc.agent`），用 `codesign --force --sign - --identifier com.bytezard.plc.agent` 重新做 ad-hoc 签名，去掉 Node 的 Team ID | Apple 没写没有 Team ID 的程序显示什么名字。2026-11-04 实测 3：不再归到「Node.js Foundation」下面，但设置页显示的是**可执行文件名 `lead-agent`**，不是 Bytezard Lead | 小：只改打包脚本和 plist 里程序的路径；`bin/lead-agent` 改成指向程序包里的软链接，别的调用方不变 |
+| b. 用 `SMAppService.agent` 从 App 注册 | plist 放进 `Bytezard Lead.app/Contents/Library/LaunchAgents/`，App 用 Electron 的 `app.setLoginItemSettings({ type: "agentService", serviceName })` 注册。Electron 文档：plist「must correspond to a property list in the app's `Contents/Library/LaunchAgents` directory」，并且「your app should be code signed and notarized for login item settings to work reliably」（[Electron app API](https://www.electronjs.org/docs/latest/api/app)）；Apple：这个框架「control helper executables that live inside an app's main bundle」（[Apple 部署指南](https://support.apple.com/guide/deployment/manage-login-items-background-tasks-mac-depdca572563/web)） | Electron 能调；但官方要求签名和公证，ad-hoc 下能不能注册，**未核实** | 大：程序要在 App 包里，和「运行包放在数据目录、单独更新」（第 2、7 节）冲突；App 被移走或删掉时服务失效；#204 的 `desktop-install` 和 supervisor 的 launchctl 流程都要改；开发机没有 App，用不了 |
+| c. 只在 plist 加 `AssociatedBundleIdentifiers` | `launchd.plist` 加 `AssociatedBundleIdentifiers = com.bytezard.plc` | launchd.plist 手册：「indicates which bundles are associated with this job in the System Settings Login Items UI」。Apple 论坛上开发者报告加了以后「still continues to show our Developer Program name」，Apple 的工程师让他们提 bug（[Apple 论坛 713493](https://developer.apple.com/forums/thread/713493)）。2026-11-04 实测 3：ad-hoc 签名和 Node 官方签名下都**不起作用** | 最小：plist 加一个键 |
+
+**定稿：做法 1b（2026-11-04，Lead 按主人 13:35「登录项显示 Bytezard Lead，现在就改」的决定选定；它不改第 9 节决定 6）。**
+
+```
+<运行包>/bin/lead-agent                    Node，ad-hoc 重签，标识 com.bytezard.plc.agent，没有 Team ID
+<运行包>/bin/Bytezard Lead -> lead-agent   软链接；launchd 的 plist 写它
+<运行包>/bin/node -> lead-agent
+```
+
+- 打包：`scripts/desktop/lib/agent-bundle.ts` 的 `installAgent`（`scripts/desktop/lib/pack.ts` 调它）。
+- plist：`packages/supervisor/src/deploy/launchd.ts` 的 `desktopPlistOptions` 写 `<current>/bin/Bytezard Lead`，另加 `AssociatedBundleIdentifiers = com.bytezard.plc`。开发机的 plist 不变。
+- 登录项显示软链接的名字 Bytezard Lead；进程名跟着真实文件走，还是 `lead-agent`。supervisor 用 `process.execPath` 拉起 daemon，Node 会解开软链接，所以 daemon 也叫 `lead-agent`。`bin/plc`、壳、冒烟脚本照旧用 `bin/lead-agent`。
+- 交付的做法已经做了端到端实测（[p0-7-measurements.md](p0-7-measurements.md) 实测 5，探测项 p9，2026-11-04 17:13）：「允许在后台」列表显示 Bytezard Lead，不在「Node.js Foundation」下面；系统通知写「"Bytezard Lead" can run in the background」；进程名 `lead-agent`。
+
+怎么得出来的（四次实测，记录见 [p0-7-measurements.md](p0-7-measurements.md)）：
+
+1. 实测 2：只把 Node 改名为 `lead-agent`，签名还是 Node 官方的，后台项目归到「Node.js Foundation」下面。
+2. 当时先选了 a 加 c：把 Node 放进 `Bytezard Lead.app` 程序包并重签（7335ec54）。
+3. 实测 3（主人 15:57 的截图）：重签以后不再归到「Node.js Foundation」下面，但设置页显示的是可执行文件名 `lead-agent`。程序包的目录名、`CFBundleName`、`CFBundleDisplayName` 都不起作用；`AssociatedBundleIdentifiers` 在 ad-hoc 签名和 Node 官方签名下都不起作用（p2、p4）。`sfltool dumpbtm` 的 Name 和设置页不一致，不能当证据，之前根据它写的「方向 a 成立」是错的。
+4. 实测 4（主人 16:55、Lead 16:56 的截图）：不在 `.app` 里的程序，设置页和「App Background Activity」通知显示 plist 里 `ProgramArguments[0]` 那个路径的文件名；是软链接时显示软链接自己的名字（p7、p8）。活动监视器的进程名（`ucomm`）跟着真实文件名走（p7、p8）。
+
+| 实测 3、4 的探测项 | 做法 | 设置页「允许在后台」显示的名字（截图） | 进程名 ucomm |
+|---|---|---|---|
+| p1 | 程序包 + ad-hoc 重签 | `p1-exec`（程序名） | 没记录 |
+| p2 | 同 p1，加 `AssociatedBundleIdentifiers` | `p2-exec` | 没记录 |
+| p3 | 不放进程序包，只 ad-hoc 重签 | `p3-exec` | 没记录 |
+| p4 | 保留 Node 官方签名，加 `AssociatedBundleIdentifiers` | 没有单独一行，推测合进了「Node.js Foundation」 | 没记录 |
+| p5 | 实测 3 时交付的程序包做法 | `lead-agent` | `lead-agent` |
+| p6 | 可执行文件叫 `Bytezard Lead P6` | `Bytezard Lead P6` | `Bytezard Lead P6` |
+| p7 | plist 写软链接 `lead-agent-p7`，真实文件 `Bytezard Lead P7` | `lead-agent-p7`（带替身箭头） | `Bytezard Lead P7` |
+| p8 | plist 写软链接 `Bytezard Lead P8`，真实文件 `lead-agent-p8` | `Bytezard Lead P8`（带替身箭头） | `lead-agent-p8` |
+
+方案对比（要满足主人 13:35 的决定，又尽量不动第 9 节决定 6）：
+
+| 做法 | 登录项 | 活动监视器的进程名 | 代价 |
+|---|---|---|---|
+| **1b（选定）**：plist 写软链接 `bin/Bytezard Lead`，真实文件 `bin/lead-agent` | Bytezard Lead（p8 实证） | `lead-agent`，和决定 6 一致 | 改了打包脚本和 plist（#203、#204 的代码）；`Bytezard Lead.app` 程序包已经去掉。活动监视器的「路径」一列显示软链接 `…/bin/Bytezard Lead`。设置页里这一项的图标带替身箭头 |
+| 1a：真实文件就叫 `Bytezard Lead` | Bytezard Lead（p6 实证） | `Bytezard Lead`（p6），daemon 也一样 | 和决定 6 冲突。冒烟脚本按进程名 `lead-agent` 检查，要改；文件名带空格 |
+| 1c：只有 supervisor 改名 | Bytezard Lead | supervisor 叫 Bytezard Lead，其余叫 `lead-agent` | 不需要：1b 不改 supervisor 的代码，也不违背决定 6 |
+| 方向 b：`SMAppService` | 可能显示 App 名（未实测） | 不变 | 程序要放进 App 包，和运行包单独更新冲突；官方要求签名和公证；开发机没有 App |
+| 接受显示 `lead-agent` | `lead-agent`（p5 实证） | `lead-agent` | 不满足主人 13:35 的决定 |
+
+风险：
+
+- ad-hoc 签名没有 Team ID。macOS 的隐私授权（例如访问「文稿」文件夹）对这种程序按签名的哈希记。每个运行包版本的哈希都不一样，所以运行包更新以后，用户给过的隐私授权可能要重新给。有 Apple 证书以后（P2-4）用 Developer ID 签名就没有这个问题。
+- Hindsight 的后台项目（`com.bytezard.plc.hindsight`，P1-2）由 uv 启动，登录项里显示的是 uv 或 Python 的签名，不是 Bytezard Lead。P1-2 要用同样的办法处理，或者由 supervisor 拉起它、不单独注册。
+- 「已添加后台项目」通知在这台机器上一直没出现。这台机器装了 MDM 和安全软件，提示可能被压掉了。要在一台没装这些软件的 Mac 上再看一次。
+- 探测时系统弹过两条以 `node` 署名的隐私提示：「"node" was prevented from modifying apps」和「"node" tried to access your data from other apps and was blocked」。探测脚本不读别的 App 的数据，也不改 App，所以触发者还没确认，可能是开发机上别的 node 进程（执行器在用户目录里工作）。改用自己的签名以后，正式版里这类提示的署名会是 `lead-agent` 或 Bytezard Lead，不再是 `node`（未实测）。要用 TCC 日志确认触发的进程路径。
 
 ## 9. 已定的决定
 
@@ -672,7 +783,7 @@ P2-*                       ← 对应的 P1
   5. 先 bootout 旧的 `com.pi-lead-child.supervisor` 和 `com.pi-lead-child.hindsight`，确认进程都退出了。旧 plist 改名为 `.plist.pre-rename` 留着，不删。
   6. 用 `rename` 把旧目录移到新位置（同一个卷，原子操作）。不留指向旧路径的软链接：执行器沙箱的禁读清单按新路径生成，软链接会绕过它。
   7. 在一个事务里把第 3 步找到的旧路径改成新路径。
-  8. 开发模式下，把开发机的 Node 复制到 `<数据目录>/bin/lead-agent`。写新的 `com.bytezard.plc.supervisor` 和 `com.bytezard.plc.hindsight` plist，plist 用这份副本启动，然后 bootstrap。
+  8. 开发模式下，用 `scripts/desktop/lib/agent-bundle.ts` 的 `installAgent` 把开发机的 Node 复制到 `<数据目录>/bin/lead-agent` 并重新签名，建软链接 `<数据目录>/bin/Bytezard Lead`，plist 写这个软链接（第 8.7 节：只复制改名，登录项显示「Node.js Foundation」）。写新的 `com.bytezard.plc.supervisor` 和 `com.bytezard.plc.hindsight` plist，plist 用这份副本启动，然后 bootstrap。
   9. 健康检查：`plc.sock` 回答 `status`，schema 版本和迁移前一样。通过后删掉旧 plist 的 `.plist.pre-rename`。
   10. 回滚：第 5 步以后任何一步失败，就 bootout 新 label、删新 plist、把目录移回旧位置、用第 2 步的备份恢复库（第 7 步已经改过时）、把旧 plist 改回原名并 bootstrap。回滚的每一步都记日志。
 - 验收：
@@ -686,6 +797,13 @@ P2-*                       ← 对应的 P1
   - 迁移后执行器在沙箱里读不到新路径下的 `config.json`、`cli-credential.json`、`connections.key`。
   - 开发机的「登录项与扩展」里不再显示 `node`；实测截图附在工单里。`plc daemon install` 每次重新复制 Node 副本；doctor 发现副本和开发机 Node 的版本不同时报错。
   - 在真实的开发机上运行迁移前，执行者先申请用户批准（`run_on_host` 的确认卡）。
+- 实现说明（#206，2026-11-04）：
+  - 旧名字只写在 `packages/core/src/pre-rename.ts` 和迁移模块 `packages/supervisor/src/deploy/data-dir-migration.ts` 里。
+  - 合并以后、迁移以前，主 checkout 的构建在任何一次重启时就会生效。这段时间里 `dataDir()` 照旧用旧目录：旧目录在、新目录不存在或为空时就是这样。用旧目录的进程也用旧的 launchd 任务（`activeLaunchdLabel`、`hindsightLabel`），不另装一个 Hindsight 抢同一个端口。`plc daemon install` 在这种机器上拒绝，提示先迁移。
+  - 第 7 步只改代码当作路径或命令来用的列：`runs.session_path`、`runs.launcher`、`workspaces.path`、`items.workdir`、`watches.command`、`widget_sources.command`。事件、消息、核查结论这类历史记录不改，有的表本来就只许追加。第 3 步照样列出它们的行数。
+  - 回滚时把同样几列里的新目录改回旧目录，不用第 2 步的备份覆盖库。迁移前这几列里没有新目录，所以改回去和迁移前完全一样，也不丢第 2 步之后 daemon 写下的东西。迁移前就有新目录时，才用备份恢复。
+  - 预检多查两项：旧目录和新目录在同一个卷上；库的 schema 版本等于这份代码的最新版本。不等时先用新代码重启一次服务，再迁移，否则第 9 步的版本比较一定失败。
+  - 运行：在主 checkout 构建以后，`node apps/daemon/dist/ops.mjs migrate-data-dir [--locale zh] [--follow]`。迁移在自己的会话里运行，进度按行写成 JSON，写进 `~/Library/Logs/Bytezard Lead/migrate-data-dir-<时间>.jsonl`。命令只启动迁移，输出日志路径就返回；`--follow` 时跟着日志输出，在终端里用。原因：Lead 用 `run_on_host` 启动的命令在 supervisor 的 launchd 任务的进程组里，第 5 步 bootout 时会跟着被停掉；Lead 那一轮也要先结束，第 4 步的排空才等得到。
 - 依赖：P0-1、P0-2、P0-3、P0-4、P0-5、P0-6、P0-7 全部合并。
 
 ### P1-1 pi 兜底用 Lead 的服务商
@@ -773,12 +891,150 @@ P2-*                       ← 对应的 P1
 |---|---|---|
 | Apple Silicon 要求原生代码至少有 ad-hoc 签名 | 只有二手引述 | 找 Apple 开发者发行说明原文，或在干净机器上测完全不签的构建 |
 | ad-hoc 签名的 dmg 下载后能通过「仍要打开」启动 | 未实测 | P0-5 验收 |
-| ad-hoc 签名的 Electron App 能发通知 | Electron 文档原文：「For notifications on macOS, your application will need to be code-signed … Unsigned binaries will emit a `failed` event」；没写 ad-hoc 算不算已签名 | P0-7 实测 |
-| daemon 用 osascript 发的通知，通知中心里显示的来源 | 未实测 | P0-7 实测 |
+| ad-hoc 签名的 Electron App 能发通知 | Electron 文档原文：「For notifications on macOS, your application will need to be code-signed … Unsigned binaries will emit a `failed` event」。2026-11-04 实测（macOS 27.2，Lead 转述主人的截图）：能发。首次运行弹出权限卡，卡上和「系统设置 → 通知」里的名字都是 Bytezard Lead；授权前发的那条收到 `show` 但不显示；授权后重跑能弹出，没有 `failed`。实测 5（17:13）：probe 有 `show`、没有 `failed`，但通知中心里没有这一条，`ncprefs` 里没有 `com.bytezard.plc` 的记录，推测没有申请到通知授权。#232：`ncprefs` 在 macOS 27.2 上已经不再写入，不能当证据；壳改为用户确认测试通知显示以后才接管通知，见第 8.6 节 | 实测 6：读授权申请的结果；换构建以后授权在不在；关掉通知以后有没有 `failed` |
+| daemon 用 osascript 发的通知，通知中心里显示的来源 | 2026-11-04 实测 2、5：通知进通知中心，标题是参数给的 Lead 名字；图标是脚本编辑器的通用图标，没有单独的 App 名，不是 Bytezard Lead（主人 17:19 截图）。实测 5 横幅没有弹出，原因没查 | 已实测；横幅不弹的原因没查 |
 | 原生通知助手（B2，`UNUserNotificationCenter`）在 ad-hoc 签名下能发通知 | 未查，未实测 | 只在 P0-7 选 B2 时实测 |
-| 未签名 LaunchAgent 在「登录项与扩展」里显示的名字 | 未实测 | P0-7 实测 |
-| 带 Node 官方签名的 Node 改名为 `lead-agent` 后，登录项显示文件名还是签名里的开发者名 | 未实测 | P0-7 实测 |
+| ad-hoc 签名的后台程序，登录项显示什么名字 | 2026-11-04 实测 3、4（截图）：显示 plist 里 `ProgramArguments[0]` 那个路径的文件名；是软链接时显示软链接自己的名字（p7、p8）；放在程序包里时显示可执行文件名（p1–p3、p5），程序包的目录名、`CFBundleName` 不起作用。`sfltool dumpbtm` 的 Name 和设置页不一致 | 已实测 |
+| ad-hoc 签名的程序用 `AssociatedBundleIdentifiers` 能归到 App 名下 | 2026-11-04 实测 3：不能。ad-hoc 签名（p2）和 Node 官方签名（p4）下都不起作用。Developer ID 签名时的情况见 [Apple 论坛 713493](https://developer.apple.com/forums/thread/713493) | 已实测；有证书以后（P2-4）再测 |
+| `SMAppService` 在 ad-hoc 签名的 App 里能注册后台服务 | Electron 文档说要签名和公证才可靠；没有实测 | 只在用户选方案 2 时实测 |
+| 可执行文件叫 `Bytezard Lead`（带空格）时，登录项和进程名各显示什么；软链接能不能让两者不同 | 2026-11-04 实测 4（截图）：p6 登录项和进程名都是 `Bytezard Lead P6`；p8（plist 写软链接 `Bytezard Lead P8`，真实文件 `lead-agent-p8`）登录项显示 `Bytezard Lead P8`、进程名 `lead-agent-p8`。所以软链接能让两者不同，做法 1b 据此选定。实测 5（p9，交付的做法）：登录项显示 Bytezard Lead，进程名 `lead-agent` | 已实测 |
+| 未签名 LaunchAgent 在「登录项与扩展」里显示的名字 | 2026-11-04 实测：用 Node 改名副本启动的 LaunchAgent 归到「Node.js Foundation」下面，和开发机上原有的 node 后台项目合在一起。ad-hoc 重签以后显示 plist 里路径的文件名（实测 3、4）。这台机器装了 MDM 和安全软件，一直没有弹出「已添加后台项目」通知，原因未确认 | 已实测；「已添加后台项目」通知要在没装 MDM 的 Mac 上再看 |
+| 带 Node 官方签名的 Node 改名为 `lead-agent` 后，登录项显示文件名还是签名里的开发者名 | 2026-11-04 实测：显示签名里的开发者名「Node.js Foundation」。第 9 节决定 7 只靠改名做不到，已改成重签加软链接（第 8.7 节，做法 1b）。同时出现两条以 `node` 署名的隐私提示，触发者未确认 | 用 TCC 日志确认两条提示的进程路径 |
 | 用 Node 下载的运行包不带 quarantine 属性 | 未实测 | P1-3 验收时 `xattr -l` 检查 |
 | 后台项目被关掉时 `launchctl bootstrap` 的具体错误 | 未实测 | P0-3 在本机关掉开关后复现 |
 | pi 能否用环境变量指定独立的 agent 目录 | 未查 | P1-1 第一步读 pi 1.1.0 源码 |
 | Electron、electron-builder 的具体版本 | 未定 | 实施时从 npm 官方 registry 查最新稳定版并锁定 |
+
+## 12. 存量安装的自动接管
+
+用户 2026-11-04 19:20、19:30 定下：装上安装包就自动继承已有的数据和配置，不要求用户开终端、敲命令，也不要求用户点额外的确认（#234）。这一节取代第 4.2 节第 3 步原来的做法：原来遇到开发安装时不接管，遇到改名以前的安装时拒绝安装。
+
+### 12.1 总的做法
+
+- `desktop-install` 在 `detect` 后面加一步 `takeover`。识别出存量安装时自动接管，接管完接着走原来的步骤（登录 shell 的 PATH、launchd、启动）。
+- 接管复用迁移模块 `packages/supervisor/src/deploy/data-dir-migration.ts`（P0-8），用同一套预检、备份、排空、停服务、启动、健康检查和回滚。不另写一套。迁移模块多了一个参数：新服务跑开发 checkout（`ops.mjs migrate-data-dir`），还是跑安装包的运行目录 `<安装根>/current`（接管）。
+- 接管只改 launchd 的 plist，让它指向 `<安装根>/current`。旧的开发 checkout 不删，也不改。
+- 安装页多一行「接手已有的数据和设置」，只在接管时出现。下面的说明文字跟着每一步变。
+- 从停旧服务开始，任何一步失败都自动回滚到原样。安装页用大白话说明原因，给「重试」。
+
+### 12.2 怎样判断是哪种情况
+
+按下面的顺序判断，命中一种就不再往下看。
+
+| 情况 | 判断依据 | 处理 |
+|---|---|---|
+| A. 改名以前的安装 | `~/Library/LaunchAgents/com.pi-lead-child.supervisor.plist` 存在；或者 `~/.pi-lead-child/` 存在，而新的数据目录不存在、或者里面只有 App 自己的 `runtime/`、`shell/` | 把数据目录搬到新位置，接管服务（第 12.3 节） |
+| B. 已经迁移，但跑的是开发 checkout | `com.bytezard.plc.supervisor.plist` 的 `WorkingDirectory` 里有 `.git`，没有 `release.json` | 数据不动，接管服务（第 12.4 节） |
+| C. 已经是安装包版本，换了版本 | plist 指向这次的 `<安装根>/current`，并且上次装好的版本（`install-state.json` 的 `installedVersion`）和 `current` 的版本不同 | 重启到新版本（第 12.5 节） |
+| 新机器，或者再装一次同一个版本 | 以上都不是 | 照第 4.2 节的步骤，不迁移 |
+
+- 情况 A 只在数据目录是缺省位置时判断（没设 `PLC_DATA_DIR`，或者它就是缺省位置）。
+- App 第一次打开时就建了 `<数据目录>/shell/`，解包时建了 `<数据目录>/runtime/`。所以「新数据目录是空的」改成「新数据目录里只有 App 自己的文件」。core 的 `preRenameLayoutActive` 用同一条规则：App 装上以后、接管完成以前，开发机的代码照旧用旧目录，不在新目录里另开一个空库（第 12.9 节）。
+- 开发者要保持开发安装时，用第 12.8 节的开关。开关打开时，情况 A 和 B 都不接管。
+
+### 12.3 情况 A：改名以前的数据目录和服务
+
+步骤和 P0-8 的迁移一样：`precheck`、`backup`、`scan`、`drain`、`stop_old`、`move`、`rewrite`、`start_new`、`health`。和开发机迁移不同的地方：
+
+1. **预检。** 新数据目录里可以有 App 自己的 `runtime/`、`shell/`。旧目录里也有同名的项时，不接管（`target_not_empty`）。旧的 plist 不在（服务卸掉了）也接管，只搬数据。库的 schema 版本可以比安装包旧，启动时新版本会升级它；比安装包新时不接管（`schema_ahead`），什么都不改。剩余空间按库的大小算，schema 要升级时按两倍算。
+2. **移动。** 新数据目录不存在或者是空的时，照旧整个 `rename`。里面有 App 的文件时，把旧目录里的项逐个 `rename` 进去（同一个卷，每一项都是原子的），最后删掉空的旧目录。
+3. **启动。** plist 用 `desktopPlistOptions(<安装根>/current)`：`<安装根>/current/bin/Bytezard Lead` 启动 `supervisor.mjs`。不复制开发机的 Node。
+4. **Hindsight。** 和 P0-8 一样，旧的 Hindsight plist 换成新 label 和新目录。新的 daemon 启动后按运行包的命令重写这个 plist。记忆数据在 Postgres 里（嵌入式的在 `~/.pg0`），接管不碰它。
+
+备份：
+
+- `backup` 一步在线备份 `plc.db` 到 `<数据目录>/backups/pre-rename-<时间>.db`，在排空和停服务之前。
+- schema 要升级时，`stop_old` 停完服务以后再复制一份 `pre-rename-<时间>-stopped.db`。这时没有进程在写库，这一份就是停服务时的原样，回滚用它。
+
+回滚（从 `stop_old` 开始任何一步失败）：
+
+1. bootout 新任务，删新 plist。
+2. 恢复库：schema 变了时用 `-stopped.db` 覆盖；没变时把改写过的几列改回旧目录（P0-8 的做法）。
+3. 恢复 `config.json`。
+4. 把搬过去的项逐个移回旧目录。
+5. 把旧 plist 改回原名，bootstrap 旧服务。
+
+### 12.4 情况 B：已经迁移，但跑的是开发 checkout
+
+数据已经在新目录里，只换服务。用迁移模块的「原地」方式（`oldDir` 和 `newDir` 相同），不做 `scan`、`move`、`rewrite`。
+
+1. **预检。** plist 在；库的 schema 版本不比安装包新；剩余空间够放备份。
+2. **备份。** 在线备份 `plc.db` 到 `<数据目录>/backups/pre-takeover-<时间>.db`。开发安装的 plist 复制一份到 `<数据目录>/backups/pre-takeover-<时间>.supervisor.plist`，开发者要回到开发安装时参考。
+3. **排空。** 和 P0-8 一样：等 Lead 这一轮结束、没有接管不了的执行，最多 30 分钟。
+4. **停旧服务。** bootout `com.bytezard.plc.supervisor`，等 `supervisor.sock` 和 `plc.sock` 都连不上。plist 改名为 `.plist.pre-takeover`。schema 要升级时，复制一份 `pre-takeover-<时间>-stopped.db`。
+5. **启动。** 写指向 `<安装根>/current` 的 plist，bootstrap。
+6. **健康检查。** `plc.sock` 回答 `status`，库的 schema 版本等于安装包的版本。通过后删掉 `.plist.pre-takeover`。
+
+不改的东西：开发 checkout、`<数据目录>/bin/lead-agent`（开发机的 Node 副本）、Hindsight 的 launchd 任务（新的 daemon 启动后自己重写它的 plist）。
+
+回滚：bootout，删新 plist，把 `.plist.pre-takeover` 改回原名；schema 变了时用 `-stopped.db` 恢复库；bootstrap 开发安装的服务。
+
+### 12.5 情况 C：已经是安装包版本，换了版本
+
+App 带的运行包比装着的新时，壳先解包、把 `current` 换到新版本，再运行 `desktop-install`。plist 写的是 `current`，内容没变，原来不会重启服务，旧版本的进程会一直跑。现在按情况 B 的原地方式重启一次：
+
+- 判断依据：`desktop-install` 每次装好时把运行包的版本写进 `install-state.json` 的 `installedVersion`。这次的版本和它不同就是换了版本。#234 以前的安装没有这一项，第一次换版本照旧不重启。
+- 备份：`<数据目录>/backups/pre-upgrade-<时间>.db`；schema 要升级时，停服务后再复制一份 `-stopped.db`。
+- 回滚：除了情况 B 的几步，还把 `current` 指回上一个版本 `versions/<旧版本>/`，再 bootstrap。
+
+### 12.6 不重复迁移
+
+- 情况 A 完成后，旧目录和旧 plist 都没有了，下一次判断不会再命中 A。
+- 情况 B、C 完成后，plist 指向 `current`，`install-state.json` 记着这个版本。再装一次同一个版本时，launchd 一步报「已经设置好」，不重启服务。
+- 同时只能有一个 `desktop-install`：它在 `<安装根>/install.lock` 里写自己的 pid。用户在接管中途退出 App 再打开时，后一个看到前一个还活着，就报 `install_running`，说明「上一次安装还在进行」。前一个进程已经退出时，后一个接着做。
+- 接管的进程是 App 的子进程，不在 launchd 任务的进程组里，所以停旧服务时不会被一起停掉。App 中途退出时，它照样做完（输出管道断了也不中断）。
+
+### 12.7 安装页显示什么
+
+```
+┌──────────────────────────────────────────┐
+│  正在准备 Bytezard Lead…                  │
+│  ✓ 复制程序文件                           │
+│  ◌ 接手已有的数据和设置                    │  ← 只在接管时出现
+│      正在等 Bytezard Lead 做完手上这一轮工作 │  ← 跟着每一步变
+│  · 设置后台服务                           │
+│  · 启动服务                               │
+└──────────────────────────────────────────┘
+```
+
+每一步的说明：
+
+| 步骤 | 说明 |
+|---|---|
+| 识别 | 「找到了旧名字的安装，接下来把数据和设置搬到 Bytezard Lead。」或「找到了开发版的安装，接下来让 Bytezard Lead 接手它的数据和设置。」或「接下来从 1.2.0 换到 1.3.0。」 |
+| precheck | 正在检查能不能接手。 |
+| backup | 正在备份数据库。 |
+| scan | 正在查找数据里记着旧位置的地方。 |
+| drain | 正在等 Bytezard Lead 做完手上这一轮工作。最多等 30 分钟。 |
+| stop_old | 正在停下原来的后台服务。 |
+| move | 正在把数据搬到新位置。 |
+| rewrite | 正在更新数据里记着的位置。 |
+| start_new | 正在用新的后台服务启动。 |
+| health | 正在确认服务正常、数据完整。 |
+| 回滚中 | 出了问题，正在恢复原样。 |
+
+失败时：
+
+| 结果 | 安装页的话 |
+|---|---|
+| 预检没过（什么都没改） | 说明哪一项没过，例如「原来的数据和新位置不在同一块磁盘上」「你的数据比这个安装包新，请下载更新的版本」，最后一句是「什么都没改，原来的服务照常运行。」 |
+| 停服务以前失败（备份、排空） | 「没能接手原来的安装：<原因>。什么都没改，原来的服务照常运行。」 |
+| 回滚成功 | 「没能接手原来的安装，已经恢复原样：数据没有改动，原来的服务照常运行。原因：<原因>。」 |
+| 回滚也没成功 | 「没能接手原来的安装，恢复原样时也出了问题：<原因>。数据没有删除，数据库的备份在 <路径>。请点『复制诊断信息』发给我们。」 |
+
+每种失败都有「重试」「查看日志」「复制诊断信息」三个按钮。「重试」从头再判断一次：回滚后的机器回到接管前的样子，所以重试就是重新接管。
+
+壳的「再次打开」原来只看 `plc.sock` 回答 `status` 就直接打开。现在还要看 plist 指向这份 App 的 `<安装根>/current`；不是时走 `desktop-install`，这样情况 B 回滚后再打开 App，会再试一次接管。
+
+### 12.8 开发者保持开发安装
+
+- 环境变量 `PLC_KEEP_DEV_INSTALL=1`。缺省没有，普通用户碰不到。
+- 打开时，`desktop-install` 不接管情况 A 和 B：不写 plist，不重启，直接打开在跑的那份（`dev_install_detected`）。
+- 从访达打开的 App 读不到终端里的环境变量。先运行 `launchctl setenv PLC_KEEP_DEV_INSTALL 1`，再打开 App；不要了就运行 `launchctl unsetenv PLC_KEEP_DEV_INSTALL`。
+- 已经被接管、又想回到开发安装：在 checkout 里运行 `node apps/daemon/dist/ops.mjs install`，它把 plist 写回 checkout。同时打开上面的开关，不然下次打开 App 会再接管一次。
+
+### 12.9 和开发机代码的配合
+
+- core 的 `preRenameLayoutActive`：新数据目录里只有 App 自己的 `runtime/`、`shell/` 时也算空。没有这一条时，App 一装上，开发机的 CLI 和重启后的 daemon 就会改用新目录，在里面开一个空库。
+- 开发机要先跑上带这一条的代码，再装 App。否则在接管完成以前，开发机的进程可能在新目录里建文件；预检看到新目录里有别的文件就不接管（`target_not_empty`），什么都不改。
+- 壳的「查看日志」不再新建 `<数据目录>/logs/`：目录不存在时打开安装根。

@@ -3,7 +3,7 @@ import { connect } from "node:net";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { openDb } from "@pi-lead-child/store";
 import { attachJsonlReader } from "@pi-lead-child/runtime";
-import { AGENT_TOOL_DEFINITIONS, createAgentToolHandlers } from "../agent-tools/definitions.js";
+import { AGENT_TOOL_DEFINITIONS, agentToolContentOf, createAgentToolHandlers } from "../agent-tools/definitions.js";
 import { AGENT_BRIDGE_TOOLS } from "../agent-tools/connection-host.js";
 
 function readEnv(): { dbPath: string; itemId: number; runId: number } {
@@ -21,6 +21,9 @@ function text(value: string, details: Record<string, unknown> = {}) {
 }
 
 function render(name: string, value: any, itemId: number) {
+  // 带图片的结果（例如 read_ticket_attachment）原样当作内容：图片作为图像给模型。
+  const content = agentToolContentOf(value);
+  if (content) return { content, details: {} };
   if (name === "ticket_update") {
     return text(`Item #${itemId} updated${value.status ? `, status → ${value.status}` : ""}.`);
   }

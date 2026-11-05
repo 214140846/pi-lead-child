@@ -130,7 +130,7 @@ export const USER_PR_REVIEW_BOUND: IntentGrantBound = {
 
 /**
  * 两条硬性底线：用户下命令也不放。连接中心的代码执行它们，和清单无关：
- *   - 本地读取过禁止名单（.env、凭据、私钥、~/.pi-lead-child、日志），只能读清单里的仓库；
+ *   - 本地读取过禁止名单（.env、凭据、私钥、数据目录、日志），只能读清单里的仓库；
  *   - 写操作的参数里有像凭据或令牌的文字时拒绝。
  */
 export const GRANT_HARD_FLOORS = [

@@ -1572,6 +1572,30 @@ CREATE TABLE IF NOT EXISTS chat_images (
   created_at  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS chat_images_turn ON chat_images(turn_id, position);
+-- 工单附件（工单 #231，protocol 的 ticket-attachments.ts）：Lead 挂到工单上的图片和文本。文件在数据目录的 attachments/ 下，
+-- storage_path 是相对数据目录的路径，sha256 读的时候核对。来源：origin_kind 是 external（外部消息里的文件）或 user（用户在
+-- App 对话里发的图片）；source_ref 是来源里的文件编号，同一张工单同一个编号只挂一次。外部来源的附件是别人给的资料。
+-- 由 SCHEMA 建，新库老库一样，不占迁移号（和 chat_images 一样）。
+CREATE TABLE IF NOT EXISTS ticket_attachments (
+  id                   TEXT PRIMARY KEY,
+  item_id              INTEGER NOT NULL REFERENCES items(id),
+  name                 TEXT NOT NULL,
+  kind                 TEXT NOT NULL CHECK (kind IN ('image', 'text')),
+  mime_type            TEXT NOT NULL,
+  byte_size            INTEGER NOT NULL,
+  sha256               TEXT NOT NULL,
+  storage_path         TEXT NOT NULL,
+  source_ref           TEXT NOT NULL,
+  origin_kind          TEXT NOT NULL CHECK (origin_kind IN ('external', 'user')),
+  origin_source        TEXT NOT NULL,
+  origin_conversation  TEXT,
+  origin_message       TEXT,
+  origin_sender        TEXT,
+  added_by             TEXT NOT NULL,
+  created_at           TEXT NOT NULL,
+  UNIQUE (item_id, source_ref)
+);
+CREATE INDEX IF NOT EXISTS ticket_attachments_item ON ticket_attachments(item_id, created_at);
 CREATE TABLE IF NOT EXISTS gateway_events (
   seq                 INTEGER PRIMARY KEY AUTOINCREMENT,
   event_id            TEXT NOT NULL UNIQUE,

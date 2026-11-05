@@ -1,13 +1,16 @@
 // 首次安装和再次打开（docs/desktop/macos-desktop-design.md 第 4.2 节）。壳只做第 1、2 步（移到「应用程序」、解出运行包），
 // 其余交给运行包里的 `ops.mjs desktop-install`，按它每行一个 JSON 的进度更新安装页。
 //
-//   再次打开：运行包不比已装的新，并且 plc.sock 回答 status → 直接打开网关，不重新安装。
-//            顺手在后台重新读一次登录 shell 的 PATH（设计第 5.1 节：安装时和每次打开 App 时）。
+//   再次打开：运行包不比已装的新，launchd 的 plist 指向这份 App 的 <安装根>/current，并且 plc.sock 回答 status
+//            → 直接打开网关，不重新安装。顺手在后台重新读一次登录 shell 的 PATH（设计第 5.1 节：安装时和每次打开 App 时）。
+//            plist 指向别处（开发 checkout、接管回滚以后）时走 desktop-install，它会接管（设计第 12.7 节）。
 //   首次安装：解包（运行包比已装的新时才解）→ desktop-install → 拿到 gatewayUrl。
+//            desktop-install 遇到存量安装时先自动接管（设计第 12 节），进度显示在「接手已有的数据和设置」一行。
 //
 // 每一步都可以重做：解包从 .partial 从头来，desktop-install 本身是幂等的。所以「重试」就是整个流程再跑一遍。
 // 壳自己的步骤失败时也写进 <安装根>/install-state.json（第 4.3 节）；desktop-install 的步骤由它自己写。
-import { mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { daemonStatusOver, loopbackGatewayUrl, type DaemonStatus } from "./daemon-status.js";
 import type { Locale } from "./locale.js";
 import { runtimeCommand, type ShellPaths } from "./paths.js";
@@ -17,7 +20,7 @@ import {
 } from "./runtime-bundle.js";
 import { shellMessages } from "./shell.messages.js";
 
-export const INSTALL_STEPS = ["unpack", "service", "start"] as const;
+export const INSTALL_STEPS = ["unpack", "takeover", "service", "start"] as const;
 export type InstallStepId = typeof INSTALL_STEPS[number];
 export type InstallStepState = "pending" | "running" | "done" | "skipped" | "failed";
 
@@ -32,10 +35,11 @@ export interface InstallProgress {
   gatewayUrl: string | null;
 }
 
-// desktop-install 的步骤归到安装页的三行里（设计第 4.1 节的样子）。
+// desktop-install 的步骤归到安装页的几行里（设计第 4.1、12.7 节的样子）。「接手」一行只在接管时出现。
 const OPS_STEP_GROUP: Record<string, InstallStepId> = {
   preflight: "service",
   detect: "service",
+  takeover: "takeover",
   login_shell_path: "service",
   launchd: "service",
   supervisor: "start",
@@ -51,6 +55,8 @@ export interface InstallDeps {
   execFile?: ExecFile;
   spawnLines?: SpawnLines;
   daemonStatus?: DaemonStatus;
+  /** launchd 的 supervisor plist 指向这份 App 的 <安装根>/current。缺省读 paths.supervisorPlist。 */
+  serviceUsesThisRuntime?(): boolean;
   now?(): Date;
 }
 
@@ -62,7 +68,7 @@ export interface InstallOptions {
 function initialProgress(): InstallProgress {
   return {
     stage: "working",
-    steps: { unpack: "pending", service: "pending", start: "pending" },
+    steps: { unpack: "pending", takeover: "pending", service: "pending", start: "pending" },
     detail: null,
     backgroundNotice: false,
     error: null,
@@ -90,6 +96,20 @@ export function recordShellFailure(paths: Pick<ShellPaths, "installRoot" | "inst
   } catch {
     // 写不下（例如磁盘满了）不影响安装页显示错误。
   }
+}
+
+/** plist 的 WorkingDirectory 是这份 App 的 current（packages/supervisor 的 plistWorkingDirectory 写的那一行）。 */
+export function plistUsesRuntime(paths: Pick<ShellPaths, "supervisorPlist" | "current">): boolean {
+  let xml: string;
+  try {
+    xml = readFileSync(paths.supervisorPlist, "utf8");
+  } catch {
+    return false;
+  }
+  const match = /<key>WorkingDirectory<\/key>\s*<string>([^<]*)<\/string>/.exec(xml);
+  if (!match) return false;
+  const cwd = match[1]!.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+  return resolve(cwd) === resolve(paths.current);
 }
 
 interface OpsEvent {
@@ -127,6 +147,7 @@ export async function runInstall(deps: InstallDeps, onProgress: (progress: Insta
   const execFile = deps.execFile ?? realExecFile;
   const spawnLines = deps.spawnLines ?? realSpawnLines;
   const daemonStatus = deps.daemonStatus ?? daemonStatusOver(deps.paths.daemonSocket);
+  const serviceUsesThisRuntime = deps.serviceUsesThisRuntime ?? (() => plistUsesRuntime(deps.paths));
   const now = () => deps.now?.() ?? new Date();
   const progress = initialProgress();
   const emit = () => onProgress(structuredClone(progress));
@@ -144,13 +165,13 @@ export async function runInstall(deps: InstallDeps, onProgress: (progress: Insta
 
   // ── 再次打开 ──
   if (!unpack) {
-    const status = await daemonStatus(3_000);
+    const status = serviceUsesThisRuntime() ? await daemonStatus(3_000) : null;
     if (status) {
       if (installed !== null) {
         const command = runtimeCommand(deps.paths.current);
         void execFile(command.node, [command.ops, "login-shell-path"], { timeoutMs: 30_000 }).catch(() => {});
       }
-      for (const step of INSTALL_STEPS) progress.steps[step] = "done";
+      for (const step of INSTALL_STEPS) progress.steps[step] = step === "takeover" ? "skipped" : "done";
       progress.stage = "ready";
       progress.gatewayUrl = status.gatewayUrl;
       emit();
@@ -200,6 +221,11 @@ export async function runInstall(deps: InstallDeps, onProgress: (progress: Insta
       failed = event;
       return;
     }
+    // 接管：「接手」一行在做时，「设置后台服务」一行等着；接管完了再接着做。
+    if (group === "takeover") {
+      progress.steps.takeover = event.state === "running" ? "running" : event.state === "done" ? "done" : "skipped";
+      progress.steps.service = event.state === "running" ? "pending" : "running";
+    }
     if (group === "start") {
       progress.steps.service = "done";
       progress.backgroundNotice = false;
@@ -216,6 +242,7 @@ export async function runInstall(deps: InstallDeps, onProgress: (progress: Insta
   const failure = failed as OpsEvent | null;
   if (failure) return fail(OPS_STEP_GROUP[failure.step] ?? "service", failure.code ?? "unexpected", failure.message);
   if (exitCode === 0 && gatewayUrl) {
+    if (progress.steps.takeover === "pending") progress.steps.takeover = "skipped";
     progress.steps.service = "done";
     progress.steps.start = "done";
     progress.stage = "ready";

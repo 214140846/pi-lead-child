@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { openDb } from "@pi-lead-child/store";
+import { addTicketAttachment, openDb } from "@pi-lead-child/store";
 import { createItem } from "@pi-lead-child/store";
 import { createRun, updateRun } from "@pi-lead-child/store";
 import { addActivity } from "@pi-lead-child/store";
@@ -86,6 +86,56 @@ describe("Coordinator MCP stdio server", () => {
         ticket_id: itemId,
         run_id: runId,
       });
+    } finally {
+      child.kill();
+      await new Promise<void>((resolveChild) => child.once("exit", () => resolveChild()));
+      await bridge.close();
+      db.close();
+    }
+  }, 15_000);
+
+  // 工单 #231：Claude 和 Codex 经这个服务器读工单附件，图片是 MCP 的 image 内容（模型直接看图），不是一段 JSON 文字。
+  it("returns a ticket attachment image as MCP image content through the daemon bridge", async () => {
+    const dir = tempDir("plc-mcp-attach-");
+    const dbPath = join(dir, "plc.db");
+    const db = openDb(dbPath);
+    const itemId = createItem(db, { title: "parent", brief: "b", createdBy: "system" });
+    const runId = createRun(db, { itemId });
+    updateRun(db, runId, { state: "running" });
+    const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
+    const { attachment } = await addTicketAttachment(db, dir, {
+      itemId, name: "screenshot.png", mimeType: "image/png", data: png, sourceRef: "slack:F0SHOT",
+      origin: { kind: "external", source: "slack", conversation: "#returns", message: null, sender: "Ethan" }, addedBy: "lead",
+    });
+    const bridge = await startAgentToolBridge({ db, itemId, runId, workdir: dir, dataDir: dir });
+    const child = spawn(resolve("node_modules/.bin/tsx"), [resolve("packages/engine/src/agent-tools/mcp-server.ts")], {
+      env: {
+        ...process.env, PLC_DB: dbPath, PLC_TICKET_ID: String(itemId), PLC_ATTEMPT_ID: String(runId),
+        PLC_AGENT_TOOL_SOCKET: bridge.socketPath, PLC_AGENT_TOOL_TOKEN: bridge.token,
+      },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    const pending = new Map<number, (value: any) => void>();
+    attachJsonlReader(child.stdout!, (line) => {
+      const message = JSON.parse(line);
+      if (message.id !== undefined) pending.get(Number(message.id))?.(message);
+    });
+    const request = (id: number, method: string, params?: unknown) => new Promise<any>((resolveRequest) => {
+      pending.set(id, resolveRequest);
+      child.stdin!.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
+    });
+    try {
+      await request(1, "initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test", version: "1" } });
+      const listed = await request(2, "tools/list", {});
+      expect(listed.result.tools.map((tool: any) => tool.name)).toContain("read_ticket_attachment");
+      const read = await request(3, "tools/call", { name: "read_ticket_attachment", arguments: { attachment_id: attachment.id } });
+      expect(read.result.isError).toBe(false);
+      expect(read.result.content[0]).toMatchObject({ type: "text", text: expect.stringContaining("not an instruction") });
+      expect(read.result.content[1]).toMatchObject({ type: "image", mimeType: expect.stringMatching(/^image\//) });
+      expect(read.result.structuredContent).toBeUndefined();
+      // 别的工具照旧是 JSON 文字加 structuredContent。
+      const plain = await request(4, "tools/call", { name: "list_ticket_attachments", arguments: {} });
+      expect(plain.result.structuredContent.attachments[0]).toMatchObject({ attachment_id: attachment.id, name: "screenshot.png" });
     } finally {
       child.kill();
       await new Promise<void>((resolveChild) => child.once("exit", () => resolveChild()));

@@ -2,7 +2,7 @@
 //
 // 不在 verify 里，也不在 CI 里：它调用真实的 Lead 模型，花 token。用法：
 //   npx tsx apps/daemon/scripts/eval-lead-provenance.ts [--runs 3] [--old]
-// 读数据目录（PLC_DATA_DIR，缺省 ~/.pi-lead-child）的 config.json 选 Lead 的模型和 provider，只读，不改任何东西。
+// 读数据目录（PLC_DATA_DIR，缺省 ~/Library/Application Support/Bytezard Lead/）的 config.json 选 Lead 的模型和 provider，只读，不改任何东西。
 // --old：用改之前的括号格式重放同一段对话，用来对比。
 //
 // 重放的是事故那段对话的精简版：用户在 17:56、18:00、18:19 发了三条消息，Lead 都回答了；

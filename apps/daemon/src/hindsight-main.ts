@@ -1,4 +1,4 @@
-// launchd 任务 com.pi-lead-child.hindsight 的入口（supervisor 的 deploy/hindsight.ts）。
+// launchd 任务 com.bytezard.plc.hindsight 的入口（supervisor 的 deploy/hindsight.ts）。
 // 解开 daemon 写的 secrets.sealed（保险库的密钥在 Keychain 里），按 service.json 算出 Hindsight 的环境变量，
 // 再用 uvx 启动固定版本的 hindsight-api。子进程的环境只有白名单里的变量和我们算的这些（hindsightEnvironment）：
 // 这里不读 config.json 的 env 段，也不把 Keychain 读进环境。LLM 的 key 由 daemon 解析好放在 secrets.sealed 里。

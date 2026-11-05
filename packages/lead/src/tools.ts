@@ -121,6 +121,7 @@ import {
 } from "@pi-lead-child/engine";
 import { listWorkspaces, resolveWorkspace } from "@pi-lead-child/store";
 import { setReviewerSetting } from "@pi-lead-child/store";
+import { listTicketAttachments } from "@pi-lead-child/store";
 import {
   createProject, findProject, getProject, linkProjectRepository, listProjectRepositories,
   mergeProjects, updateProjectSummary, setItemDisplayTitle,
@@ -144,7 +145,7 @@ import {
   type LinkTicketResult,
   type TicketRelationInputType,
 } from "@pi-lead-child/store";
-import { supervisorRequest } from "@pi-lead-child/supervisor";
+import { activeLaunchdLabel, supervisorRequest } from "@pi-lead-child/supervisor";
 import type {
   MaintenanceAction,
   MaintenanceRequest,
@@ -172,6 +173,9 @@ import {
 } from "./read-tools.js";
 import { createStandingOrderTools } from "./standing-order-tools.js";
 import { createProfileTools } from "./profile-tools.js";
+import {
+  attachmentRefsSchema, attachmentSummary, createAttachmentTools, prepareTicketAttachments, storeTicketAttachments,
+} from "./attachment-tools.js";
 import { createSkillTools, type UserSkillInfo } from "./skill-tools.js";
 import { applyLeadToolExposure } from "./tool-exposure.js";
 import { createDesignTools } from "./design-tools.js";
@@ -481,6 +485,16 @@ export function createWatchLightTask(
   })();
   publishGatewayEvents(db, [itemUpdatedEvent(id)]);
   return id;
+}
+
+// get_ticket 里的附件（工单 #231）：编号、名字、大小和来源，不带内容。没有附件时不写这一节。
+function attachmentLines(db: Db, itemId: number): string[] {
+  const attachments = listTicketAttachments(db, itemId);
+  if (!attachments.length) return [];
+  return [`attachments（read_ticket_attachment 读内容）:`, ...attachments.map((attachment) => {
+    const item = attachmentSummary(attachment);
+    return `- ${item.attachment_id} ${item.name}（${item.kind}，${item.size}，${item.from}）`;
+  })];
 }
 
 // 数据目录里 child 能用的工作目录：轻子 agent 自己的目录（lightTaskDir）。别的地方（账本、配置、会话）不能当工作目录。
@@ -1691,6 +1705,8 @@ export function createLeadTools(deps: LeadDeps): ToolDefinition<any>[] {
             : []),
           `brief: ${t.brief}`,
           `workdir: ${t.workdir ?? "-"} | tokens=${t.total_tokens} | cost=$${t.total_cost_usd.toFixed(4)}`,
+          // 工单附件（工单 #231）：只有名字和来源，要看内容用 read_ticket_attachment。
+          ...attachmentLines(db, t.id),
           // 谁核查、核查员是谁（工单 09）。
           ...(t.kind === "task" ? [verificationLine(deps, t)] : []),
           ...(requestLines.length ? [`\n--- 派发请求 ---\n${requestLines.join("\n")}`] : []),
@@ -1921,6 +1937,11 @@ export function createLeadTools(deps: LeadDeps): ToolDefinition<any>[] {
         hold: Type.Optional(Type.Boolean({
           description: "用户要求先别执行、等他确认时传 true。建成 draft，需用户确认后才会开跑。",
         })),
+        attachments: Type.Optional(attachmentRefsSchema(
+          "建单时一起挂上的截图、图片或文本文件（给已有的工单挂用 attach_to_ticket）。用户要把别人发来的截图或者他在对话里发的图"
+          + "带给执行者时用，不要只在 brief 里写文件编号。编号的写法：外部消息里的文件写文件编号（例如 slack:F0123），"
+          + "用户在对话里发的图片写 image_ids 里的编号（img_ 开头）。只收图片和文本，单个最大 10 MB；一个取不到或不合规时整张单都不建。",
+        )),
         draft_pr: Type.Optional(Type.Boolean({
           description: "改代码的工单交付以后，系统自动开草稿 PR，返工以后自动更新它（缺省 true）。"
             + "用户说「先别提 PR」「只在本地看」时传 false。以后要改用 ticket_action(action='set_auto_pr')。",
@@ -1979,7 +2000,7 @@ export function createLeadTools(deps: LeadDeps): ToolDefinition<any>[] {
         budget?: number; verification?: VerificationPolicy;
         reviewer?: { runtime: RuntimeId; model?: string; effort?: string; reason?: string };
         parent_ticket_id?: number; due_at?: string; defer_until?: string; hold?: boolean; draft_pr?: boolean; dedupe_key?: string;
-        light?: boolean;
+        light?: boolean; attachments?: string[];
         relations?: Array<{
           target_ticket_id: number;
           relation_type: TicketRelationInputType;
@@ -2069,6 +2090,10 @@ export function createLeadTools(deps: LeadDeps): ToolDefinition<any>[] {
         // 自己的目录（数据目录下的 light-tasks/），沙箱里能写的就是这里（lead-tools-and-routing spec D9）。
         const workdir = given ?? (params.light ? lightTaskDir(deps.dataDir) : undefined);
         const relationResults: LinkTicketResult[] = [];
+        // 附件（工单 #231）：建单前先取到、核对完，一个不行就不建单。写盘在建单以后。
+        const attachments = params.attachments?.length
+          ? await prepareTicketAttachments({ db, dataDir: deps.dataDir, channelCards: deps.channelCards }, params.attachments)
+          : [];
         // 建单的事务里要认项目（仓库根目录、origin）、判断 PR 工单的仓库：git 的事实先异步查好，事务里只读缓存（git-facts.ts）。
         await Promise.all([warmRepositoryIdentity(workdir), warmWorkdirFacts(workdir)]);
         const id = db.transaction(() => {
@@ -2178,6 +2203,14 @@ export function createLeadTools(deps: LeadDeps): ToolDefinition<any>[] {
           // 刷新事件只在这里发一份（以前 daemon 按工具名另发一份，ui-action-parity P04 去掉了它）。
           publishGatewayEvents(db, [itemUpdatedEvent(id)]);
         }
+        // 附件写盘（工单 #231）：在执行者开跑（spawn_child）之前就挂好了。
+        const attached = attachments.length
+          ? (await storeTicketAttachments({ db, dataDir: deps.dataDir, channelCards: deps.channelCards }, id, attachments))
+            .map((result) => attachmentSummary(result.attachment))
+          : [];
+        const attachmentText = attached.length
+          ? `；附件 ${attached.length} 个：${attached.map((item) => `${item.name}（${item.from}）`).join("、")}，执行者用 read_ticket_attachment 读`
+          : "";
         // 回执必须报**实际**落库的 stage。以前这里恒说"draft，等用户确认"，不管单子其实
         // 生于 ready——lead 只看得到这句话，于是照着它向用户汇报，把一批 ready 的子工单
         // 说成"全部处于 draft"。
@@ -2201,8 +2234,9 @@ export function createLeadTools(deps: LeadDeps): ToolDefinition<any>[] {
           : "";
         return text(
           (stage === "draft"
-            ? `created task #${id}（draft，等用户确认后才会执行）${relationText}${templateText}${criteriaText}`
-            : `created task #${id}（${stage}，已可执行，无需确认）${relationText}${templateText}${criteriaText}`) + verificationText + cloneText,
+            ? `created task #${id}（draft，等用户确认后才会执行）${relationText}${templateText}${criteriaText}${attachmentText}`
+            : `created task #${id}（${stage}，已可执行，无需确认）${relationText}${templateText}${criteriaText}${attachmentText}`)
+            + verificationText + cloneText,
         );
       },
     }),
@@ -2693,7 +2727,7 @@ export function createLeadTools(deps: LeadDeps): ToolDefinition<any>[] {
         "向 Supervisor 提交受限维护请求。restart 和 upgrade 都会运行主 checkout 里构建好的代码：Supervisor 先检查只部署已提交的代码——"
         + "主 checkout 里会进构建的代码有没提交的改动、或者 dist 不是从干净的 commit 构建的，就拒绝并返回原因（refused=true）。"
         + "通过后 Supervisor 等 Lead 这一轮结束（busy=false）、等接管不了的 Run 排空，停 daemon，把数据库备份到 "
-        + "~/.pi-lead-child/backups/，启动并验证 schema。不能传 shell、路径、SQL 或强制中断参数。",
+        + "~/Library/Application Support/Bytezard Lead/backups/，启动并验证 schema。不能传 shell、路径、SQL 或强制中断参数。",
       parameters: Type.Object({
         action: Type.Union([Type.Literal("restart"), Type.Literal("upgrade")]),
         reason: Type.String({ minLength: 1 }),
@@ -2713,7 +2747,7 @@ export function createLeadTools(deps: LeadDeps): ToolDefinition<any>[] {
           return text(JSON.stringify({
             refused: true, action: params.action,
             reasons: ["正在运行的 Supervisor 版本太旧，没有部署闸门，也不会在重启前备份数据库。需要用户先重启一次 Supervisor"
-              + "（launchctl kickstart -k gui/$(id -u)/com.pi-lead-child.supervisor），之后再请求。"],
+              + `（launchctl kickstart -k gui/$(id -u)/${activeLaunchdLabel()}），之后再请求。`],
           }, null, 2));
         }
         const input = {
@@ -4157,6 +4191,8 @@ export function createLeadTools(deps: LeadDeps): ToolDefinition<any>[] {
     // 名字、人格和互动风格（设置页「身份与风格」，2026-10-22）：用户在这一轮明确要求时才能改。
     ...createProfileTools(deps),
     ...createDesignTools(deps),
+    // 工单附件（工单 #231）：给已有的工单挂截图、读工单上的附件。建单时挂用 create_task 的 attachments。
+    ...createAttachmentTools({ db, dataDir: deps.dataDir, channelCards: deps.channelCards }),
     // 处理消息事件的通用工具（统一消息事件 spec D8，工单 05）：派活、读对话（channel-tools.ts），回复到来源（每个入口都有），
     // 告诉用户、记下已处理（notify_user、record_disposition，在上面）。
     ...createChannelCardTools(deps.channelCards, db),

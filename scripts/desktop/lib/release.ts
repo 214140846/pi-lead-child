@@ -130,6 +130,7 @@ export function releaseManifest(o: {
 
 // 挂在 release 上的 manifest.json。更新检查（P1-3）读 /releases/latest/download/manifest.json，
 // 按 runtime.sha256 校验下载的运行包。只有一个架构，所以文件名不带架构后缀（设计文档第 8.1 节）。
+// dmg 一项在 electron-builder 打出 dmg 以后由 add-dmg.ts 加上：App 的一键更新按它下载和校验（desktop/src/updater.ts）。
 export interface UpdateManifest {
   schema: typeof MANIFEST_SCHEMA;
   product: typeof PRODUCT;
@@ -140,6 +141,22 @@ export interface UpdateManifest {
   sourceTree: string;
   builtAt: string;
   runtime: { file: string; size: number; sha256: string };
+  dmg?: { file: string; size: number; sha256: string };
+}
+
+/** dmg 的附件名：electron-builder.yml 的 artifactName，App 的更新也按这个名字找（desktop/src/updater.ts 的 dmgFileName）。 */
+export function dmgName(version: string): string {
+  assertVersion(version);
+  return `${PRODUCT}-${version}-${SUPPORTED_ARCH}.dmg`;
+}
+
+/** 把 dmg 记进 manifest。文件名必须是这个版本的 dmg：App 按 manifest 的版本拼出名字去下载。 */
+export function withDmg(manifest: UpdateManifest, dmg: { file: string; size: number; sha256: string }): UpdateManifest {
+  const expected = dmgName(manifest.version);
+  if (dmg.file !== expected) throw new Error(`dmg 的文件名要是 ${expected}，收到 ${dmg.file}`);
+  if (!Number.isSafeInteger(dmg.size) || dmg.size <= 0) throw new Error(`dmg 的大小不对：${dmg.size}`);
+  if (!/^[0-9a-f]{64}$/.test(dmg.sha256)) throw new Error("dmg 的 SHA-256 不对");
+  return { ...manifest, dmg };
 }
 
 export function updateManifest(release: ReleaseManifest, archive: { file: string; size: number; sha256: string }): UpdateManifest {

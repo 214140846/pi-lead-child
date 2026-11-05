@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useStore } from 'zustand';
 import { useShallow } from 'zustand/react/shallow';
 
@@ -15,6 +15,7 @@ import {
   selectTicketIds,
   selectWorkItemIds,
 } from './selectors';
+import type { ShellUpdateStatus } from './shellUpdate';
 import { RESOURCE_KEYS, type MessagePart, type ResourceKey } from './types';
 import { servedWebVersion, webUpdateAvailable } from './webVersion';
 import { leadNameNow } from './leadName';
@@ -54,6 +55,27 @@ export function useWebUpdate() {
   const available = useStore(runtime.webVersion, webUpdateAvailable);
   return { available, reload: runtime.dependencies.reloadApp ?? null, dismiss: () => runtime.dismissWebUpdate() };
 }
+
+// 桌面 App 的一键更新（./shellUpdate）。不在桌面 App 里时为 null。
+export function useShellUpdate(): { status: ShellUpdateStatus; apply(): void; dismiss(): void } | null {
+  const runtime = useCompanionRuntime();
+  const source = runtime.dependencies.shellUpdate ?? null;
+  const [status, setStatus] = useState<ShellUpdateStatus>(NO_SHELL_UPDATE);
+  useEffect(() => {
+    if (!source) return undefined;
+    let live = true;
+    const stop = source.subscribe((next) => { if (live) setStatus(next); });
+    source.get().then((next) => { if (live) setStatus(next); }, () => {});
+    return () => {
+      live = false;
+      stop();
+    };
+  }, [source]);
+  if (!source) return null;
+  return { status, apply: () => { void source.apply(); }, dismiss: () => { void source.dismiss(); } };
+}
+
+const NO_SHELL_UPDATE: ShellUpdateStatus = { state: 'none' };
 
 export function useOverview() {
   return useControlPlaneStore((state) => state.overview);

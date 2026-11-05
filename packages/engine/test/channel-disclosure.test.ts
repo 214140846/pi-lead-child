@@ -69,7 +69,7 @@ describe("Slack blocks for a disclosed message", () => {
 // 用户 2026-10-21：Google Calendar 的提醒判断时拿到的是空字符串。应用的正文常在 block 或附件里：按结构取出来。
 describe("the text of an app's Slack message", () => {
   it("is the text when there is one, otherwise the words in the blocks and attachments", () => {
-    expect(slackMessageText({ text: "普通消息", attachments: [{ text: "不看" }] })).toBe("普通消息");
+    expect(slackMessageText({ text: "普通消息", attachments: [{ text: "卡片" }] })).toBe("普通消息\n[消息卡片] 卡片");
     expect(slackMessageText({
       text: "",
       blocks: [

@@ -17,7 +17,7 @@ import { ReminderSettingsSchema } from "./reminders.ts";
 import { UI_ACTION_INPUT_SCHEMAS } from "./ui-actions.ts";
 import { ChatImageRefSchema, ChatImagesInputSchema } from "./chat-images.ts";
 
-export { PROTOCOL_VERSION } from "./version.ts";
+export { EVENT_REPLAY_LIMIT, PROTOCOL_VERSION } from "./version.ts";
 
 const StrictObject = <T extends TProperties>(properties: T) =>
   Type.Object(properties, { additionalProperties: false });
@@ -1265,6 +1265,7 @@ export * from "./delivery-snapshots.ts";
 export * from "./execution-plan.ts";
 export * from "./ticket-actions.ts";
 export * from "./chat-images.ts";
+export * from "./ticket-attachments.ts";
 export * from "./lead-models.ts";
 export * from "./model-settings.ts";
 export * from "./ui-actions.ts";

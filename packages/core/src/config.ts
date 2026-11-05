@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { chmodSync, mkdirSync, readFileSync, existsSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import type { Item } from "./types.js";
+import { installedDataDir } from "./pre-rename.js";
 
 // 向上找 monorepo 的根：第一个声明了 workspaces 的 package.json 所在的目录（可测纯函数）。
 // 各包自己的 package.json 没有 workspaces，所以会被跳过。找不到抛错。
@@ -52,16 +53,16 @@ export function packageSource(pkg: string, ...segments: string[]): string {
   return join(workspaceDir(pkg), "src", ...segments);
 }
 
+// 缺省 ~/Library/Application Support/Bytezard Lead/（第 9 节决定 6）。还没迁移的开发机照旧用改名以前的目录（pre-rename.ts）。
 export function dataDir(): string {
-  const dir = process.env.PLC_DATA_DIR ?? join(homedir(), ".pi-lead-child");
+  const dir = process.env.PLC_DATA_DIR ?? installedDataDir(homedir());
   // 账本、config.json 和本机 socket 都在这里：没有时以 0700 创建，只给本机这个用户。
   // 已有目录由 daemon 和 supervisor 在 listen 本机 socket 之前收紧（listenOwnerOnly）。
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   return dir;
 }
 // 桌面版运行包的安装根：<数据目录>/runtime/（docs/desktop/macos-desktop-design.md 第 1.1 节），下面是 versions/<版本>/ 和
-// current 软链接。跟着 dataDir() 走：P0-8 把数据目录改成 ~/Library/Application Support/Bytezard Lead/ 以后，它就是
-// ~/Library/Application Support/Bytezard Lead/runtime，这里不另写名字。
+// current 软链接。跟着 dataDir() 走，缺省是 ~/Library/Application Support/Bytezard Lead/runtime。
 export function installRoot(): string {
   return join(dataDir(), "runtime");
 }
@@ -420,7 +421,7 @@ export function buildChildPrompt(t: Pick<Item, "id" | "title" | "brief" | "body"
       "- 集成/E2E 测试的普通 fixture 必须通过 begin_planning/create_work_plan 挂到当前工单下，并传 required=false 避免自动派发；禁止通过 Companion 用户 HTTP 批量创建顶层工单。只有明确验证根工单语义时才能用 create_e2e_root_fixture，且每个 Run 最多 1 个。",
       "- 手动提交 delegation Checkpoint 时必须给出 related_ticket_ids；Coordinator 创建/完成子工单时也会记录确定性的系统 Checkpoint。",
       "- 调研类任务：用 web_fetch 抓取真实网页/文档,产出必须基于并引用检索到的来源,禁止凭记忆编造。",
-      "- PLC 的数据目录（~/.pi-lead-child）可以读，用来排查问题：日志、runtime-events、sessions，以及用 sqlite3 -readonly 查 plc.db。不能写 plc.db 和 config.json，也不能改它们的设置（例如连接的写入策略）：要改设置，用 notify_lead 或 request_approval 交给用户在设置页改。写库会被拒绝，并会通知用户。不要打印或复制环境变量、凭证文件里的密钥。",
+      "- PLC 的数据目录（~/Library/Application Support/Bytezard Lead/）可以读，用来排查问题：日志、runtime-events、sessions，以及用 sqlite3 -readonly 查 plc.db。不能写 plc.db 和 config.json，也不能改它们的设置（例如连接的写入策略）：要改设置，用 notify_lead 或 request_approval 交给用户在设置页改。写库会被拒绝，并会通知用户。不要打印或复制环境变量、凭证文件里的密钥。",
       "- Positive example: submit_checkpoint({kind:'milestone', stage:'tests', title:'回归测试通过', summary:'分配的测试现在都通过，原来的失败场景有了覆盖。', next_step:'运行 runtime 回归测试。'})",
       "- Positive example: update_ticket_plan({items:[{id:'read',title:'读现有的解析器',status:'done'},{id:'fix',title:'修复空输入的处理',status:'in_progress'},{id:'test',title:'补回归测试',status:'pending'}]})",
       "- Positive example: submit_checkpoint({kind:'milestone', title:'协议核对完成', summary:'5 项协议检查通过了 3 项。', progress:{current:3,total:5,label:'协议覆盖'}, artifacts:[{ref:'report',name:'report.md',kind:'report',media_type:'text/markdown',relative_path:'report.md'}]})",

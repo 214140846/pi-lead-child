@@ -209,7 +209,9 @@ describe('web companion loopback startup', () => {
     runtime.stop();
   });
 
-  it('refetches snapshots once after a fresh binding replays the event history', async () => {
+  // 新的凭证不要历史（2026-11-04）：after_seq=-1，游标跳到 hello.latestSeq，快照重取一次。
+  // 旧网关照样从 0 补发时，这些事件都丢掉，也不按补发的批次一遍遍重取。
+  it('refetches snapshots once after a fresh binding skips the event history', async () => {
     const storage = new MemoryKeyValueStorage();
     const credentials = createJsonCredentialStore(storage);
     const gateway = loopbackGateway();
@@ -223,9 +225,9 @@ describe('web companion loopback startup', () => {
     await runtime.start({ loopbackEndpoint: webLoopbackEndpoint() });
     expect(gateway.count(`GET ${WORKING_ORIGIN}/v1/tickets`)).toBe(1);
     const socket = gateway.sockets[0]!;
-    expect(new URL(socket.url).searchParams.get('after_seq')).toBe('0');
+    expect(new URL(socket.url).searchParams.get('after_seq')).toBe('-1');
 
-    // A fresh binding has cursor 0, so the gateway replays the whole history.
+    // An older gateway still replays the whole history for cursor 0.
     // Each frame is its own task, as in a browser.
     socket.hello(30);
     for (let seq = 1; seq <= 30; seq += 1) {

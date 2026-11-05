@@ -42,9 +42,9 @@ export function findPullRequestRef(text: string): PullRequestRef | null {
 
 // 用户确认的规则（2026-10-19），原样写进每一张 PR 评审工单。
 export const PR_REVIEW_GUARDRAILS = [
-  "- 可以只读查看 ~/.pi-lead-child 下的 logs、runtime-events、sessions，可以用 `sqlite3 -readonly ~/.pi-lead-child/plc.db` 查询。",
-  "- 不能写 plc.db，不能改配置（~/.pi-lead-child/config.json，以及 Codex、Claude Code、pi 自己的配置）。",
-  "- 不能读凭证：~/.pi-lead-child/cli-credential.json、.env、*.pem、*.key、各 CLI 的登录文件（例如 ~/.codex/auth.json）、Keychain。",
+  "- 可以只读查看 ~/Library/Application Support/Bytezard Lead/ 下的 logs、runtime-events、sessions，可以用 `sqlite3 -readonly ~/\"Library/Application Support/Bytezard Lead/plc.db\"` 查询。",
+  "- 不能写 plc.db，不能改配置（~/Library/Application Support/Bytezard Lead/config.json，以及 Codex、Claude Code、pi 自己的配置）。",
+  "- 不能读凭证：~/Library/Application Support/Bytezard Lead/cli-credential.json、.env、*.pem、*.key、各 CLI 的登录文件（例如 ~/.codex/auth.json）、Keychain。",
 ] as const;
 
 /** post 时缺省能提交的结论：COMMENT 和要求改动（你的笔记 #47）。APPROVE 只在 Lead 按你的话要了时加。 */

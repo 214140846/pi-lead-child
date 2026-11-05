@@ -2,6 +2,7 @@ import { createInterface } from "node:readline";
 import { connect } from "node:net";
 import { openDb } from "@pi-lead-child/store";
 import { AGENT_TOOL_DEFINITIONS, createAgentToolHandlers } from "./definitions.js";
+import { mcpToolCallResult } from "./tool-content.js";
 import { CONNECTION_AGENT_TOOL_TIMEOUT_MS, HOST_AGENT_TOOL_TIMEOUT_MS } from "./tool-timeouts.js";
 import { loadCheckpointPolicyConfig } from "@pi-lead-child/core";
 import { attachJsonlReader } from "@pi-lead-child/runtime";
@@ -153,11 +154,8 @@ lines.on("line", (line) => {
     ? callHostTool(request.id, name, args)
     : handlers!.call(name, args, controller.signal);
   void invocation.then(
-    (value) => result(request.id!, {
-      content: [{ type: "text", text: JSON.stringify(value) }],
-      structuredContent: value,
-      isError: false,
-    }),
+    // 带图片的结果（例如 read_ticket_attachment）原样当作内容：图片作为图像给模型（tool-content.ts）。
+    (value) => result(request.id!, mcpToolCallResult(value)),
     (error) => result(request.id!, {
       content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }],
       isError: true,

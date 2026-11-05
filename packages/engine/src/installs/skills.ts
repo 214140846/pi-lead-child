@@ -1,4 +1,4 @@
-// PLC 自己的 skill 目录（缺省 ~/.pi-lead-child/skills，用户 2026-11-02 定的，不装到共用的 ~/.agents/skills）里装、卸 skill
+// PLC 自己的 skill 目录（缺省 ~/Library/Application Support/Bytezard Lead/skills，用户 2026-11-02 定的，不装到共用的 ~/.agents/skills）里装、卸 skill
 // （.scratch/lead-self-install/spec.md D5）。
 //   - 来源是 GitHub 仓库的一个 commit：ref（commit、tag、分支）先解析成 40 位的 commit，之后只用它，记进清单。
 //     不 vendor 进仓库，也不跟着分支走：要换版本就卸载再装。

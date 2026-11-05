@@ -49,6 +49,26 @@ describe("runDoctor: the gateway's exposed address", () => {
 });
 
 describe("runDoctor", () => {
+  // P0-8：开发机的后台服务用 <数据目录>/bin/lead-agent 运行，它是 plc daemon install 复制的开发机 Node。
+  it("fails when the Node copy of the background service differs from the Node of this Mac", async () => {
+    const node = okProbes.nodeVersion();
+    const find = (checks: DoctorCheck[]) => checks.find((c) => c.name === "后台服务的 Node 副本");
+    const differs = find(await runDoctor({ ...okProbes, agentNodeVersion: () => "v22.0.0" }))!;
+    expect(differs.ok).toBe(false);
+    expect(differs.detail).toContain("v22.0.0");
+    expect(differs.fix).toContain("plc daemon install");
+    expect(find(await runDoctor({ ...okProbes, agentNodeVersion: () => node }))?.ok).toBe(true);
+    expect(find(await runDoctor({ ...okProbes, agentNodeVersion: () => null }))?.ok).toBeNull();
+    // 发布模式的运行包自带 Node，不是复制的；没给 probe 时也不列。
+    expect(find(await runDoctor({ ...okProbes, agentNodeVersion: () => "v22.0.0", releaseMode: () => true }))).toBeUndefined();
+    expect(find(await runDoctor(okProbes))).toBeUndefined();
+  });
+
+  it("quotes the config.json path in the chmod fix, because the data folder name has a space", async () => {
+    const perms = (await runDoctor({ ...okProbes, configPerms: () => "644" })).find((c) => c.name === "config.json 权限")!;
+    expect(perms.fix).toMatch(/^chmod 600 ".+config\.json"$/);
+  });
+
   it("全部健康时无 fail 项", async () => {
     const checks = await runDoctor(okProbes);
     expect(checks.every((c) => c.ok !== false)).toBe(true);

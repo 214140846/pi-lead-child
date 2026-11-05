@@ -7,6 +7,7 @@ import { PRESENCE_IDLE_MS } from '@pi-lead-child/protocol';
 import { platformCredentialStore } from '@/data/platformCredentialStore';
 import { platformOutboxStorage } from '@/data/platformOutboxStorage';
 import { platformRandomBytes, platformSha256 } from '@/data/platformCrypto';
+import { platformShellUpdate } from '@/data/platformShellUpdate';
 import { platformReloadApp, platformWebBuild } from '@/data/platformWebBuild';
 
 import {
@@ -63,6 +64,7 @@ export function CompanionStateProvider({ children }: PropsWithChildren) {
     outboxStorage: platformOutboxStorage,
     ...(platformWebBuild ? { webBuild: platformWebBuild } : {}),
     ...(platformReloadApp ? { reloadApp: platformReloadApp } : {}),
+    ...(platformShellUpdate ? { shellUpdate: platformShellUpdate } : {}),
   }));
 
   useEffect(() => {

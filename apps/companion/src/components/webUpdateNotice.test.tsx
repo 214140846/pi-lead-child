@@ -12,6 +12,7 @@ import { CompanionRuntimeProvider } from '../state/CompanionStateProvider';
 import {
   createCompanionStateRuntime, mountCompanionRuntime, type CompanionRuntimeDependencies, type ConnectivitySource,
 } from '../state/runtime';
+import { shellUpdateFromBridge } from '../state/shellUpdate';
 import { WebUpdateNotice } from './WebUpdateNotice';
 
 vi.mock('expo-crypto', () => ({ getRandomBytesAsync: vi.fn(), digest: vi.fn(), CryptoDigestAlgorithm: {} }));
@@ -116,3 +117,67 @@ describe('the new-version notice', () => {
     unmount();
   });
 });
+
+// 桌面 App 的一键更新（2026-11-04）：App 壳经 preload 的桥给状态，顶栏同一个位置写新版本号和「更新」，盖过网页的提示。
+describe('the desktop app update', () => {
+  function bridge(initial: unknown) {
+    let push: (status: unknown) => void = () => {};
+    const value = {
+      get: vi.fn(async () => initial),
+      apply: vi.fn(async () => {}),
+      dismiss: vi.fn(async () => {}),
+      onStatus: (callback: (status: unknown) => void) => { push = callback; },
+    };
+    return { value, push: (status: unknown) => act(() => { push(status); }) };
+  }
+
+  async function render(initial: unknown, served = 'build-b') {
+    const shell = bridge(initial);
+    const runtime = createCompanionStateRuntime({
+      client: { disconnect: () => {} } as unknown as CompanionRuntimeDependencies['client'],
+      credentials: {} as CompanionRuntimeDependencies['credentials'],
+      scheduler: { schedule: () => 0, cancel: () => {}, now: () => 0 },
+      reloadApp: vi.fn(),
+      webBuild: { current: 'build-a', served: async () => served },
+      shellUpdate: shellUpdateFromBridge(shell.value)!,
+    });
+    renderUI(<CompanionRuntimeProvider runtime={runtime}><WebUpdateNotice /></CompanionRuntimeProvider>);
+    await act(async () => {
+      runtime.handleHello(hello);
+      await Promise.resolve();
+    });
+    return shell;
+  }
+
+  it('shows the new version with Update, and hands Update and Remind me tomorrow to the app', async () => {
+    const shell = await render({ state: 'available', version: '1.4.0', size: 200_000_000 });
+    expect(screen.getByTestId('app-update-notice').textContent).toContain('New version 1.4.0');
+    expect(screen.queryByText(NOTICE)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Update' }));
+    expect(shell.value.apply).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Remind me tomorrow' }));
+    expect(shell.value.dismiss).toHaveBeenCalledTimes(1);
+  });
+
+  it('follows the download and the install, then shows the reason and Try Again when it fails', async () => {
+    const shell = await render({ state: 'available', version: '1.4.0', size: 200 });
+    shell.push({ state: 'downloading', version: '1.4.0', received: 90, total: 200 });
+    expect(screen.getByTestId('app-update-notice').textContent).toContain('Downloading the update: 45%');
+    expect(screen.queryByRole('button', { name: 'Update' })).toBeNull();
+    shell.push({ state: 'installing', version: '1.4.0' });
+    expect(screen.getByTestId('app-update-notice').textContent).toContain('Installing the update');
+    shell.push({ state: 'failed', version: '1.4.0', code: 'checksum_mismatch', detail: 'got 3 bytes' });
+    expect(screen.getByTestId('app-update-notice').textContent).toContain('The downloaded update is damaged.');
+    fireEvent.click(screen.getByRole('button', { name: 'Try Again' }));
+    expect(shell.value.apply).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves the web notice alone when the app has no update, and ignores a status it does not know', async () => {
+    const shell = await render({ state: 'none' });
+    expect(screen.getByText(NOTICE)).toBeTruthy();
+    shell.push({ state: 'exploded', version: '9.9.9' });
+    expect(screen.queryByTestId('app-update-notice')).toBeNull();
+    expect(screen.getByText(NOTICE)).toBeTruthy();
+  });
+});
+

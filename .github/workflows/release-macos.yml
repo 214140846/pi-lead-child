@@ -1,4 +1,5 @@
-# 发布 release 时打出 Apple 芯片版的 Bytezard Lead，把 dmg、运行包和 manifest.json 挂到 release 上
+# 发布 release 时打出 Apple 芯片版的 Bytezard Lead，把 dmg、运行包和 manifest.json 挂到 release 上。
+# manifest.json 也记着 dmg 的大小和 SHA-256：装好的 App 每天查一次，按它下载新版并换掉自己（desktop/src/updater.ts）
 # （docs/desktop/macos-desktop-design.md 第 8.1 节和 P0-5；发版步骤见 docs/desktop/release-notes-template.md）。
 # - 只打 arm64：一个 macos-15 job，没有构建矩阵（第 9 节决定 1）。
 # - 上传前先对运行包跑冒烟测试。任何一步失败 job 就停下，所以冒烟失败时什么都不上传。
@@ -74,6 +75,9 @@ jobs:
       - name: Build the dmg
         working-directory: desktop
         run: npm run dist -- --mac dmg --arm64 --publish never
+
+      - name: Add the dmg to manifest.json (the App updates itself from it)
+        run: node --import tsx scripts/desktop/add-dmg.ts --manifest out/manifest.json --dmg "out/desktop/bytezard-lead-${VERSION}-arm64.dmg"
 
       - name: Upload to the release
         env:

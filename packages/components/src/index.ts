@@ -68,6 +68,8 @@ export { icons } from './display/icons';
 export type { IconName } from './display/icons';
 export { ImageThumbnail } from './display/ImageThumbnail';
 export type { ImageThumbnailProps } from './display/ImageThumbnail';
+export { ImagePreview } from './display/ImagePreview';
+export type { ImagePreviewProps } from './display/ImagePreview';
 export { MessageBubble } from './display/MessageBubble';
 export type { MessageBubbleProps } from './display/MessageBubble';
 export { CodeBlock } from './display/CodeBlock';

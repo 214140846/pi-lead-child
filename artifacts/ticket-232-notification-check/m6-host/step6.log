@@ -1,0 +1,24 @@
+Wed Nov  4 20:30:54 CST 2026
+-- stderr
+[38399:1104/203054.818017:INFO:electron/shell/browser/notifications/mac/cocoa_notification.mm:202] Notification created (d62bea39-82c6-4d44-aa7f-3d7550dd8004)
+[38399:1104/203054.832996:INFO:electron/shell/browser/notifications/mac/notification_presenter_mac.mm:71] Notification authorization granted: 1
+[38399:1104/203054.833358:INFO:electron/shell/browser/notifications/mac/cocoa_notification.mm:243] Notification scheduled (d62bea39-82c6-4d44-aa7f-3d7550dd8004)
+[38399:1104/203054.838038:INFO:electron/shell/browser/notifications/mac/cocoa_notification.mm:312] Notification displayed (d62bea39-82c6-4d44-aa7f-3d7550dd8004)
+-- probe json
+{
+  "appName": "Bytezard Lead",
+  "appVersion": "0.0.1-m6",
+  "supported": true,
+  "title": "Paimon",
+  "events": [
+    {
+      "event": "called show()",
+      "atMs": 2
+    },
+    {
+      "event": "show",
+      "atMs": 22
+    }
+  ]
+}
+Wed Nov  4 20:31:19 CST 2026

@@ -164,7 +164,7 @@ describe("ensureHindsightService: a launchd job of its own, restarted only when 
     const broken = async (args: string[]) => (args[0] === "bootstrap"
       ? { ok: false, out: "Bootstrap failed: 5: Input/output error" } : { ok: args[0] !== "print", out: "" });
     await expect(ensureHindsightService({ ...base, secretsVersion: 3, launchctl: broken, sleep: async () => {} }))
-      .rejects.toThrow(/launchctl bootstrap com\.pi-lead-child\.hindsight failed after \d+ attempts: Bootstrap failed: 5: Input\/output error/);
+      .rejects.toThrow(/launchctl bootstrap com\.bytezard\.plc\.hindsight failed after \d+ attempts: Bootstrap failed: 5: Input\/output error/);
   });
 
   it("pins the embedded Postgres to 127.0.0.1 on its own port", () => {

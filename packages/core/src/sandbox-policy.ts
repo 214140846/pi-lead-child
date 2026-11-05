@@ -20,6 +20,7 @@ import { promisify } from "node:util";
 import { homedir, tmpdir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { isSecretEnvName, KNOWN_SECRET_ENV_NAMES } from "@pi-lead-child/protocol";
+import { installedDataDir } from "./pre-rename.js";
 
 // 先放行的域名：代码托管、包仓库。别的域名也能连（见文件头），这份清单让 Claude Code 不必为它们再判断一次。
 export const SANDBOX_DEFAULT_DOMAINS: readonly string[] = [
@@ -150,7 +151,7 @@ export interface SandboxPolicyInput {
   role: SandboxRole;
   // 这次运行能写的目录（绝对路径）：worktree、检出、Lead 的临时目录。系统临时目录总是能写。
   writable: readonly string[];
-  // 数据目录（~/.pi-lead-child）。不给时用缺省位置。
+  // 数据目录（缺省 ~/Library/Application Support/Bytezard Lead/）。不给时用缺省位置。
   dataDir?: string;
   env?: Record<string, string | undefined>;
   home?: string;
@@ -308,7 +309,7 @@ export function sandboxTempDirs(): string[] {
 
 export function sandboxPolicy(input: SandboxPolicyInput): SandboxPolicy {
   const home = input.home ?? homedir();
-  const dataDir = input.dataDir ?? join(home, ".pi-lead-child");
+  const dataDir = input.dataDir ?? installedDataDir(home);
   const env = input.env ?? process.env;
   // 能写整个 home（见文件头），加上 home 以外的这次运行的目录（例如别的盘上的仓库）。
   const writable = input.writable.filter((path) => isAbsolute(path)).map((path) => resolve(path));

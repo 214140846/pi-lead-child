@@ -5,7 +5,6 @@
 import { connect as netConnect, createServer, type Server, type Socket } from "node:net";
 import { existsSync, mkdirSync, unlinkSync } from "node:fs";
 import { basename, join } from "node:path";
-import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   clearInterval as clearNodeInterval, clearTimeout as clearNodeTimeout, setInterval as setNodeInterval, setTimeout as setNodeTimeout,
@@ -192,6 +191,7 @@ import { repairOutcomeSnapshots } from "@pi-lead-child/engine";
 import { reregisterFinishedRuns } from "@pi-lead-child/engine";
 import { claimInstanceLock, daemonLockPath, hasReleaseManifest, readKeychainSecret, readKeychainSecretAsync, supervisorRequest } from "@pi-lead-child/supervisor";
 import { loadOrCreateShellPairingKey, loopbackAutoPairMode } from "./shell-pairing.js";
+import { DesktopNotifier, desktopSubscription, osascriptNotifier } from "./desktop-notifier.js";
 import type { InstanceLock, MaintenanceRequest } from "@pi-lead-child/supervisor";
 import {
   ConnectionError,
@@ -562,8 +562,9 @@ export interface DaemonOpts {
   releaseMode?: boolean;
   webRoot?: string; // paired 平面在 / 下提供的 companion web UI（缺省 dist/web，由 npm run build:web 生成）
   artifactRepairOptions?: ArtifactRepairOptions;
-  // 没有客户端连着时的桌面通知（blocker、兜底通知、审批、aish 配对失效）。缺省见 defaultDesktopNotifier。
-  notifyDesktop?: (text: string) => void;
+  // 没有客户端连着时的桌面通知（blocker、兜底通知、审批、aish 配对失效）在 App 不在时的出口，参数是 (正文, Lead 名字)。
+  // 缺省是 osascript（desktop-notifier.ts）。App 订阅了 plc.sock 时通知交给 App，不调它。
+  notifyDesktop?: (text: string, title: string) => void;
   // 网络通不通（叫醒 Lead 之前探一次）。缺省：真实 daemon 解析 PLC_NETWORK_PROBE_HOST（缺省 api.anthropic.com）；
   // 注入了 sessionFactory 的测试总当网络是通的。
   networkProbe?: NetworkProbe;
@@ -593,8 +594,6 @@ export interface DaemonOpts {
   fileOpener?: FileOpener;
 }
 
-// 缺省的桌面通知：macOS 上用 osascript 弹系统通知。PLC_DESKTOP_NOTIFY=off 时不弹。
-// 根 vitest 配置设置了这个开关，测试里起的 daemon（包括子进程里的）就不会在用户桌面上弹通知。
 // 库里的时间有两种写法：ISO（带 T 和时区），和 SQLite 的 datetime('now')（UTC 的 'YYYY-MM-DD HH:MM:SS'）。
 function parseDbTime(value: string): number {
   return Date.parse(value.includes("T") ? value : `${value.replace(" ", "T")}Z`);
@@ -604,15 +603,6 @@ function parseDbTime(value: string): number {
 // （工单 15：daemon 直接推，见 owner-actions 那一步），和安全报警（同一步）。
 function isDirectPushNotification(kind: string): boolean {
   return kind === "lead_notice" || isOwnerActionNotificationKind(kind) || kind === SECURITY_ALERT_NOTIFICATION_KIND;
-}
-
-function defaultDesktopNotifier(): (text: string) => void {
-  if (process.env.PLC_DESKTOP_NOTIFY === "off") return () => {};
-  return (text) => {
-    execFile("osascript", ["-e",
-      `display notification ${JSON.stringify(text)} with title "pi-lead-child"`,
-    ], () => { /* 非 macOS / 失败静默 */ });
-  };
 }
 
 // Lead 自己发起的一轮里攒着的话和工具调用（见 startDaemon 里 systemTurnBuffer 的说明）。
@@ -2221,7 +2211,16 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
     log(`follow-up ${entry.turn.id} cancelled: Lead will not answer it`);
   }
 
-  const notifyDesktop = opts.notifyDesktop ?? defaultDesktopNotifier();
+  // 桌面通知（desktop-notifier.ts）：标题是当前的 Lead 名字；Bytezard Lead 的 App 订阅了就交给它，否则用 osascript。
+  // PLC_DESKTOP_NOTIFY=off 时都不弹（根 vitest 配置设置了它，测试里起的 daemon 不在用户桌面上弹通知）。
+  const desktopNotifier = new DesktopNotifier({
+    leadName: () => leadDisplayName(db),
+    fallback: opts.notifyDesktop ?? osascriptNotifier(),
+  });
+  const notifyDesktop = (text: string) => desktopNotifier.notify(text);
+  // 数据目录里的 shell-pairing.key：发布模式的回环自动配对和 App 订阅桌面通知都用它。plc.sock 开始监听前读或新建。
+  let shellPairingKeyCache: string | null = null;
+  const shellPairingKey = () => (shellPairingKeyCache ??= loadOrCreateShellPairingKey(opts.dataDir));
 
   let aishNotify: (text: string) => void = () => {}; // adapter 就绪后重绑
   // child 完成回调（lead spawn + scheduler 自动派发共用）。
@@ -2811,6 +2810,8 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
         if (!channelHub) throw new Error("没有接任何外部通道");
         return channelHub.readFile(fileId, maxBytes);
       },
+      // 文件是哪条消息带来的（工单 #231：挂到工单上的附件记来源）。只读账本。
+      fileOrigin: (fileId) => channelHub?.fileOrigin(fileId) ?? null,
     },
     turnUserActions,
     leadModelQuota,
@@ -5522,7 +5523,7 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
         host,
         ...(process.env.PLC_GATEWAY_HEARTBEAT_MS ? { heartbeatMs: Number(process.env.PLC_GATEWAY_HEARTBEAT_MS) } : {}),
         allowLoopbackAutoPair: autoPairMode !== "off" ? true : undefined,
-        ...(autoPairMode === "shell_only" ? { loopbackAutoPairShellKey: loadOrCreateShellPairingKey(opts.dataDir) } : {}),
+        ...(autoPairMode === "shell_only" ? { loopbackAutoPairShellKey: shellPairingKey() } : {}),
         loopbackAutoPairOrigins: loopbackAutoPairOrigins.length ? loopbackAutoPairOrigins : undefined,
         webRoot: opts.webRoot ?? defaultWebRoot(),
       }), gatewayPlan, log);
@@ -5549,9 +5550,10 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
 
   // plc.sock：本机自举和运维（0600）。plc 在这里换一个网关凭证，supervisor 用它探活和停机。
   // 聊天、事项动作、授权和重检都走网关，这里一条都没有：plc 和 companion 走同一条路。
-  // 连接不算"有客户端在听"，也收不到广播。
+  // 连接不算"有客户端在听"，也收不到广播。唯一的推送是 Bytezard Lead 的 App 订阅的桌面通知。
   const server: Server = createServer((sock) => {
     clients.add(sock);
+    const desktop = desktopSubscription(desktopNotifier, { key: shellPairingKey, send: (line) => sendTo(sock, line), log });
     attachJsonlReader(sock, (line) => {
       if (!line.trim()) return;
       let raw: unknown;
@@ -5619,6 +5621,12 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
           }
           break;
         }
+        // Bytezard Lead 的 App 订阅桌面通知（desktop-notifier.ts）。口令对不上时拒绝，通知照旧走 osascript。
+        case "subscribe_desktop_notifications":
+        case "desktop_notification_failed": {
+          desktop.handle(cmd);
+          break;
+        }
         // 临时 admin token：只在网关的内存里，几分钟后作废。plc 每次执行管理命令时换一个，不落盘。
         case "admin_token": {
           const issued = paired.issueAdminToken();
@@ -5629,10 +5637,16 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
         }
       }
     }
-    sock.on("close", () => { clients.delete(sock); });
-    sock.on("error", () => { clients.delete(sock); });
+    const dropSocket = () => {
+      clients.delete(sock);
+      desktop.close();
+    };
+    sock.on("close", dropSocket);
+    sock.on("error", dropSocket);
   });
 
+  // App 订阅桌面通知前先读口令：listen 之前就把它准备好（开发机上也一样）。
+  shellPairingKey();
   // 0600：只有本机同一个用户能连。所在目录先收紧成 0700，listen 之后再把 socket 改成 0600（见 listenOwnerOnly）。
   await listenOwnerOnly(server, sockPath, (err) => log(`[plc.sock] server error: ${err.message}`));
   log(`listening on ${sockPath}`);

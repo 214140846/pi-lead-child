@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  EVENT_REPLAY_LIMIT,
   PROTOCOL_VERSION,
   buildSocketPairingUri,
   bytesToHex,
@@ -486,6 +487,88 @@ describe('control-plane client', () => {
     client.disconnect();
   });
 
+  // 2026-11-04：桌面 App 新配对时游标是 0，网关一次补发 13 万条历史。客户端处理不完、心跳超时、断开重连，一直在补发：
+  // 会话列表反复刷新，旧的排队快照让处理过的外部消息又出现。新的凭证和落后太多的游标不要历史，跳到 hello.latestSeq。
+  describe('history after hello', () => {
+    function helloAt(latestSeq: number) {
+      return {
+        type: 'hello.v2', protocolVersion: 2, serverTime: '2026-11-04T15:40:00.000Z',
+        timezone: 'Asia/Shanghai', latestSeq, capabilities: ['event-replay'], binding,
+        daemon: { model: 'stub', sessionId: 'session-1', busy: false },
+      };
+    }
+    function eventAt(seq: number) {
+      return {
+        protocolVersion: 2, eventId: `evt-${seq}`, seq, type: 'ticket.updated',
+        occurredAt: '2026-11-04T15:40:01.000Z', requiredScope: 'tickets:view',
+        audienceBindingId: null, turnId: null, ticketId: 42, payload: { snapshotRequired: true },
+      };
+    }
+    async function connectAt(lastSeq: number) {
+      const credentials = createJsonCredentialStore(new MemoryKeyValueStorage());
+      await credentials.save({ baseUrl: 'http://daemon.test', accessToken: 'secret', binding, lastSeq });
+      const urls: string[] = [];
+      const sockets: FakeSocket[] = [];
+      const events: number[] = [];
+      const histories: string[] = [];
+      const client = new ControlPlaneClient({
+        fetch: vi.fn(async () => response({ ws_ticket: 'wst_once', expires_at: '2026-11-04T16:00:00.000Z' }, 201)),
+        credentials,
+        createWebSocket: (url) => { urls.push(url); const socket = new FakeSocket(); sockets.push(socket); return socket; },
+      });
+      await client.connect({
+        onEvent: (event) => events.push(event.seq),
+        onHello: (_hello, info) => histories.push(info?.history ?? 'missing'),
+      });
+      sockets[0]!.open();
+      return { client, credentials, socket: sockets[0]!, afterSeq: new URL(urls[0]!).searchParams.get('after_seq'), events, histories };
+    }
+
+    it('starts a new credential at the live edge without asking for history', async () => {
+      const run = await connectAt(0);
+      expect(run.afterSeq).toBe('-1');
+      run.socket.receive(helloAt(133_598));
+      expect(run.histories).toEqual(['skipped']);
+      await vi.waitFor(async () => expect((await run.credentials.load())?.lastSeq).toBe(133_598));
+      // 旧网关照样从 0 补发：这些事件不交给调用方。
+      run.socket.receive(eventAt(5));
+      run.socket.receive(eventAt(133_599));
+      await vi.waitFor(() => expect(run.events).toEqual([133_599]));
+      run.client.disconnect();
+    });
+
+    it('jumps to the live edge when the cursor is further behind than the replay limit', async () => {
+      const run = await connectAt(7);
+      expect(run.afterSeq).toBe('7');
+      run.socket.receive(helloAt(7 + EVENT_REPLAY_LIMIT + 1));
+      expect(run.histories).toEqual(['skipped']);
+      run.socket.receive(eventAt(8));
+      run.socket.receive(eventAt(7 + EVENT_REPLAY_LIMIT + 2));
+      await vi.waitFor(() => expect(run.events).toEqual([7 + EVENT_REPLAY_LIMIT + 2]));
+      expect((await run.credentials.load())?.lastSeq).toBe(7 + EVENT_REPLAY_LIMIT + 2);
+      run.client.disconnect();
+    });
+
+    it('keeps the replay when the cursor is within the replay limit', async () => {
+      const run = await connectAt(7);
+      run.socket.receive(helloAt(7 + EVENT_REPLAY_LIMIT));
+      expect(run.histories).toEqual(['replayed']);
+      run.socket.receive(eventAt(8));
+      await vi.waitFor(() => expect(run.events).toEqual([8]));
+      run.client.disconnect();
+    });
+
+    // 库从备份恢复以后，网关的 seq 比客户端的游标小：不跳回去的话，新事件都会被当成已经收过的丢掉。
+    it('moves the cursor back when the gateway is behind it', async () => {
+      const run = await connectAt(500);
+      run.socket.receive(helloAt(20));
+      expect(run.histories).toEqual(['skipped']);
+      run.socket.receive(eventAt(21));
+      await vi.waitFor(() => expect(run.events).toEqual([21]));
+      run.client.disconnect();
+    });
+  });
+
   it('enters reconnecting state and resumes from the latest persisted sequence', async () => {
     const keyValue = new MemoryKeyValueStorage();
     const credentials = createJsonCredentialStore(keyValue);
@@ -761,13 +844,14 @@ describe('control-plane client', () => {
     expect(await credentials.load()).toBeNull();
   });
 
+  // 游标从 1 开始：新的凭证（0）不要历史，hello 时就把游标跳到 latestSeq（见 history after hello）。
   it('recovers from a failed cursor save without applying the event or poisoning replay', async () => {
-    let record = { baseUrl: 'http://daemon.test', accessToken: 'secret', binding, lastSeq: 0 };
+    let record = { baseUrl: 'http://daemon.test', accessToken: 'secret', binding, lastSeq: 1 };
     let failNextCursorSave = true;
     const credentials = {
       async load() { return record; },
       async save(next: typeof record) {
-        if (next.lastSeq > 0 && failNextCursorSave) {
+        if (next.lastSeq > 1 && failNextCursorSave) {
           failNextCursorSave = false;
           throw new Error('disk full');
         }
@@ -793,18 +877,18 @@ describe('control-plane client', () => {
     sockets[0].open();
     sockets[0].receive({
       type: 'hello.v2', protocolVersion: 2, serverTime: '2026-07-24T09:00:00.000Z',
-      timezone: 'Asia/Shanghai', latestSeq: 1, capabilities: [], binding,
+      timezone: 'Asia/Shanghai', latestSeq: 2, capabilities: [], binding,
       daemon: { model: 'stub', sessionId: 'session-1', busy: false },
     });
     sockets[0].receive({
-      protocolVersion: 2, eventId: 'event-1', seq: 1, type: 'ticket.updated',
+      protocolVersion: 2, eventId: 'event-2', seq: 2, type: 'ticket.updated',
       occurredAt: '2026-07-24T09:00:01.000Z', requiredScope: 'tickets:view',
       audienceBindingId: null, turnId: null, ticketId: 42, payload: { snapshotRequired: true },
     });
 
     await vi.waitFor(() => expect(errors).toContain('failed to persist replay cursor'));
     expect(events).toEqual([]);
-    expect(record.lastSeq).toBe(0);
+    expect(record.lastSeq).toBe(1);
     expect(timers.length).toBeGreaterThanOrEqual(2);
 
     timers.at(-1)!();
@@ -812,16 +896,16 @@ describe('control-plane client', () => {
     sockets[1].open();
     sockets[1].receive({
       type: 'hello.v2', protocolVersion: 2, serverTime: '2026-07-24T09:00:02.000Z',
-      timezone: 'Asia/Shanghai', latestSeq: 1, capabilities: [], binding,
+      timezone: 'Asia/Shanghai', latestSeq: 2, capabilities: [], binding,
       daemon: { model: 'stub', sessionId: 'session-1', busy: false },
     });
     sockets[1].receive({
-      protocolVersion: 2, eventId: 'event-1-replay', seq: 1, type: 'ticket.updated',
+      protocolVersion: 2, eventId: 'event-2-replay', seq: 2, type: 'ticket.updated',
       occurredAt: '2026-07-24T09:00:03.000Z', requiredScope: 'tickets:view',
       audienceBindingId: null, turnId: null, ticketId: 42, payload: { snapshotRequired: true },
     });
-    await vi.waitFor(() => expect(events).toEqual(['event-1-replay']));
-    expect(record.lastSeq).toBe(1);
+    await vi.waitFor(() => expect(events).toEqual(['event-2-replay']));
+    expect(record.lastSeq).toBe(2);
     client.disconnect();
   });
 

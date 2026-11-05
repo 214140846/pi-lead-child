@@ -68,6 +68,8 @@ import type { Db } from "@pi-lead-child/store";
 import { activeRun, getRun, latestSessionRun, listRuns, runTokenUsage } from "@pi-lead-child/store";
 import { listActivitiesAfter } from "@pi-lead-child/store";
 import { listChatImageRefs, ticketReplyActionsByTurn } from "@pi-lead-child/store";
+import { listTicketAttachments, readTicketAttachment, TicketAttachmentError } from "@pi-lead-child/store";
+import type { TicketAttachment, TicketAttachmentContent } from "@pi-lead-child/protocol";
 import {
   listArtifacts,
   openArtifactContentAsync,
@@ -1091,6 +1093,19 @@ export function createControlPlaneService(db: Db, options: ControlPlaneOptions) 
         attemptId: runId,
         createdAt: iso(artifact.createdAt) ?? artifact.createdAt,
       }));
+    },
+
+    // 工单附件（工单 #231，protocol 的 ticket-attachments.ts）：列表不带内容。工单不存在时 undefined。
+    listTicketAttachments(itemId: number): TicketAttachment[] | undefined {
+      if (!getItem(db, itemId)) return undefined;
+      return listTicketAttachments(db, itemId);
+    },
+
+    // 一个附件的内容（base64）。文件异步读，读完核对哈希（store 的 readTicketAttachment）。找不到时抛 TicketAttachmentError。
+    async readTicketAttachmentContent(itemId: number, attachmentId: string): Promise<TicketAttachmentContent> {
+      if (!options.dataDir) throw new TicketAttachmentError("not_found", "attachment storage is unavailable");
+      const { attachment, data } = await readTicketAttachment(db, options.dataDir, itemId, attachmentId);
+      return { id: attachment.id, mimeType: attachment.mimeType, data: data.toString("base64") };
     },
 
     // 下载前要把整个文件重新算一遍哈希：异步算，不占住 daemon 的主线程（store 的 openArtifactContentAsync）。

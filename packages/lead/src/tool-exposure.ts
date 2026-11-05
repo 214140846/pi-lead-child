@@ -26,6 +26,8 @@ export const LEAD_CODEMODE_TOOL_GROUPS: ReadonlyArray<{ label: string; tools: re
       "create_project", "merge_projects", "update_project_summary", "link_project_repository", "get_project", "set_display_title",
       "get_ticket_tree", "list_items", "update_item", "steer_child",
       "authorize_retry", "record_handback",
+      // 工单附件（工单 #231）：建单时挂用 create_task 的 attachments（常驻）；给已有工单挂、读附件少用。
+      "attach_to_ticket", "read_ticket_attachment",
     ],
   },
   {

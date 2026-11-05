@@ -6,7 +6,7 @@ import {
 import type {
   KernelArtifact, KernelOutcomeSnapshotResource, KernelTicketPow, TicketAcceptanceCriteria, TicketAction,
   TicketActionId as TicketOperationId, TicketActionRunRequest, TicketChatResume, TicketDelivery, TicketExecutionPlan,
-  TicketReplyActionId,
+  TicketAttachment, TicketReplyActionId,
 } from '@pi-lead-child/protocol';
 import { useState, type ReactNode } from 'react';
 
@@ -33,6 +33,8 @@ import type { DeliveryNumbers } from './deliveryNumbers';
 import { InterventionPanel } from './InterventionPanel';
 import type { LegacyTicketAction, LegacyTicketActionId } from './legacyTicketActions';
 import type { TicketLogRunPresentation } from './LogTimeline';
+import { TicketAttachmentStrip, TicketAttachmentViewer, type TicketAttachmentLoader } from './TicketAttachments';
+import { ticketAttachmentsMessages } from './ticketAttachments.messages';
 import { TicketChatDock, type TicketChatAction } from './TicketChatDock';
 import type { TicketActionReceipt, TicketRunProgress } from './ticketChatStatus';
 import { isTicketBlockedForActions, ticketDecision } from './ticketDecision';
@@ -130,6 +132,10 @@ export type TicketThreadProps = {
   pow?: KernelTicketPow | null;
   outcome?: KernelOutcomeSnapshotResource | null;
   taskDescription?: { brief: string; body: string };
+  /** 工单附件（工单 #231，GET /v1/tickets/:id/attachments）：任务说明下面的缩略图。 */
+  attachments?: readonly TicketAttachment[];
+  /** 取一个附件的内容（点开看大图、画缩略图）。 */
+  onLoadAttachment?: TicketAttachmentLoader;
   logs?: TicketLogPresentation[];
   logRuns?: TicketLogRunPresentation[];
   messageIds?: readonly string[];
@@ -250,6 +256,8 @@ export function TicketThread({
   pow = null,
   outcome = null,
   taskDescription,
+  attachments = [],
+  onLoadAttachment,
   logs = [],
   logRuns = [],
   messageIds = [],
@@ -301,6 +309,7 @@ export function TicketThread({
   const leadName = useLeadName();
   const locale = useLocale();
   const m = useMessages(ticketThreadMessages);
+  const attachmentText = useMessages(ticketAttachmentsMessages);
   const sources = sourceLabels(leadName, locale);
   const titles = detailSectionTitles(locale);
   const [remembered, remember] = useRememberedSections();
@@ -308,6 +317,7 @@ export function TicketThread({
   const [briefOpen, setBriefOpen] = useState(false);
   const [linkFormOpen, setLinkFormOpen] = useState(false);
   const [barMenuOpen, setBarMenuOpen] = useState(false);
+  const [openAttachment, setOpenAttachment] = useState<TicketAttachment | null>(null);
   const [confirming, setConfirming] = useState<TicketAction | null>(null);
   // 恢复已取消的工单：先确认，有已取消的子工单时选恢复范围（旧接口，legacyTicketActions.ts）。
   const [restoring, setRestoring] = useState<LegacyTicketAction | null>(null);
@@ -533,22 +543,26 @@ export function TicketThread({
 
   // ── 任务说明 ──
   const brief = briefPreview(taskDescription?.brief ?? '');
-  const taskSection = brief.full ? (
+  // 附件（工单 #231）放在任务说明下面：没有任务说明、只有附件时照样有这一块。折叠时摘要后面写几个附件。
+  const attachmentNote = attachments.length ? attachmentText.summary(attachments.length) : null;
+  const taskSummary = [brief.full ? briefSummary(brief.full, ticket.summary) : null, attachmentNote].filter(Boolean).join(' · ');
+  const taskSection = brief.full || attachments.length ? (
     <Section
       testID="ticket-section-task"
       title={titles.task}
       source={writerLabel(facts?.createdBy, leadName, locale)}
-      summary={collapsed('task') ? briefSummary(brief.full, ticket.summary) : undefined}
+      summary={collapsed('task') ? taskSummary : undefined}
       collapsed={collapsed('task')}
       onToggle={toggle('task')}
     >
       <Column gap="card-row">
-        <MarkdownMessage markdown={briefOpen ? brief.full : brief.preview} />
+        {brief.full ? <MarkdownMessage markdown={briefOpen ? brief.full : brief.preview} /> : null}
         {brief.truncated ? (
           <Row>
             <Button testID="ticket-brief-toggle" label={briefOpen ? m.collapse : m.showAll} variant="link" size="xs" onPress={() => setBriefOpen((open) => !open)} />
           </Row>
         ) : null}
+        <TicketAttachmentStrip attachments={attachments} load={onLoadAttachment} onOpen={setOpenAttachment} />
       </Column>
     </Section>
   ) : null;
@@ -980,6 +994,7 @@ export function TicketThread({
           </ScrollArea>
         )}
       </DockedLayout>
+      <TicketAttachmentViewer attachment={openAttachment} load={onLoadAttachment} onClose={() => setOpenAttachment(null)} />
       <Sheet testID="ticket-bar-menu" open={barMenuOpen} onClose={() => setBarMenuOpen(false)} title={m.moreActionsTitle}>
         {bar.more.map((action, index) => (
           <RecordRow

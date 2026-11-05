@@ -1,30 +1,40 @@
 // 桌面版的一条命令安装（docs/desktop/macos-desktop-design.md 第 4.2 节第 3–7 步，P0-3）。App 解出运行包、切好 current 以后运行
 // `current/bin/lead-agent current/apps/daemon/dist/ops.mjs desktop-install --root <安装根>/current`，这里做剩下的事：
 //   preflight         运行包在安装根的 current 下面，release.json 和文件哈希对得上，socket 路径不超过 macOS 的上限
-//   detect            已有开发安装（plist 指向 git checkout）就不覆盖；还有改名以前的 plist 就不装
+//   detect            看已有的是哪种安装（第 12.2 节）；库比运行包新时不装
+//   takeover          自动接管存量安装（第 12 节）：改名以前的安装、跑开发 checkout 的安装、换了版本的安装。
+//                     复用 data-dir-migration.ts，失败自动回滚。设了 PLC_KEEP_DEV_INSTALL=1 时保留开发安装、直接打开它
 //   login_shell_path  读登录 shell 的 PATH，写进 <数据目录>/login-shell-path.json
 //   launchd           写 plist，launchctl bootstrap gui/<uid>
 //   supervisor        等 supervisor.sock 能回答（60 秒）
 //   daemon            发 ensure_running，等 plc.sock 回答 status（120 秒），拿到 gatewayUrl
 // 每一步按行输出 JSON（{step, state, message}，失败时带 code），同时写进 <安装根>/install-state.json。
 // 每一步都可以重做：重复运行时 plist 没变、服务在跑，就不再 bootout，所以只有一个 supervisor。
+// 同时只跑一个：<安装根>/install.lock 里写着正在安装的进程（第 12.6 节）。
 // 发布模式不检查 AM_API_KEY：那是开发环境的要求（ops 的 install）。
 // 有副作用的部分（launchctl、两个 socket、登录 shell）由调用方注入，单元测试换成假的。路径只用参数数组传给子进程。
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
-import { saveLoginShellPath, type LoginShellPathResult } from "@pi-lead-child/core";
+import { holdsOnlyAppEntries, saveLoginShellPath, type LoginShellPathResult } from "@pi-lead-child/core";
 import type { Locale } from "@pi-lead-child/protocol";
 import { daemonReadyTimeoutMs, SUPERVISOR_REQUEST_TIMEOUT } from "../client.js";
+import {
+  runDataDirMigration, type DataDirMigrationCode, type DataDirMigrationDeps, type DataDirMigrationEvent, type DataDirMigrationResult,
+} from "./data-dir-migration.js";
 import { desktopInstallMessages } from "./desktop-install.messages.js";
 import { desktopPlistOptions, plistContent, plistWorkingDirectory } from "./launchd.js";
-import { RELEASE_MANIFEST_FILE, releaseReadiness } from "./release.js";
+import { databaseSchemaVersion, readReleaseManifest, RELEASE_MANIFEST_FILE, releaseReadiness } from "./release.js";
+import { pruneRuntimeVersions } from "./runtime-versions.js";
 
-export const DESKTOP_INSTALL_STEPS = ["preflight", "detect", "login_shell_path", "launchd", "supervisor", "daemon", "done"] as const;
+export const DESKTOP_INSTALL_STEPS = [
+  "preflight", "detect", "takeover", "login_shell_path", "launchd", "supervisor", "daemon", "done",
+] as const;
 export type DesktopInstallStep = typeof DESKTOP_INSTALL_STEPS[number];
 export type DesktopInstallState = "running" | "done" | "skipped" | "failed";
 export type DesktopInstallCode =
   | "root_invalid" | "release_invalid" | "socket_path_too_long"
-  | "dev_install_detected" | "legacy_install_detected"
+  | "install_running" | "schema_ahead" | "dev_install_detected"
+  | "takeover_refused" | "takeover_failed" | "takeover_rolled_back" | "takeover_rollback_failed"
   | "login_shell_path_unavailable" | "launchd_unchanged"
   | "launchd_bootstrap_failed" | "supervisor_timeout" | "daemon_refused" | "daemon_timeout"
   | "disk_full" | "unexpected";
@@ -35,9 +45,20 @@ export interface DesktopInstallEvent {
   message: string;
   code?: DesktopInstallCode;
   gatewayUrl?: string;
+  /** takeover 这一步里迁移模块正在做的那一步（安装页不用它，给诊断看）。 */
+  phase?: DataDirMigrationEvent["step"];
 }
 
+/** 已有的是哪种安装（第 12.2 节）。 */
+export type TakeoverCase =
+  | { kind: "pre_rename"; oldDir: string }
+  | { kind: "dev" }
+  | { kind: "upgrade"; from: string; to: string };
+
 export const INSTALL_STATE_FILE = "install-state.json";
+export const INSTALL_LOCK_FILE = "install.lock";
+/** 开发者保持开发安装的开关（第 12.8 节）。缺省没有。 */
+export const KEEP_DEV_INSTALL_ENV = "PLC_KEEP_DEV_INSTALL";
 // macOS 的 sun_path 是 104 字节，含结尾的 NUL，所以路径本身最多 103 字节。
 export const MAX_SOCKET_PATH_BYTES = 103;
 // 数据目录里 listen 的 socket。supervisor.sock 最长，它决定上限。
@@ -53,6 +74,14 @@ export interface DesktopInstallDeps {
   plistPath: string;
   /** 改名以前的 supervisor plist（launchd.ts 的 preRenamePlistPaths）。 */
   preRenamePlistPaths: string[];
+  /** 改名以前的数据目录（~/.pi-lead-child）。数据目录不是缺省位置时为 null：不接管改名以前的安装。 */
+  preRenameDataDir: string | null;
+  /** PLC_KEEP_DEV_INSTALL=1：不接管改名以前的安装和开发安装，直接打开在跑的那份（第 12.8 节）。 */
+  keepDevInstall?: boolean;
+  /** 接管用的迁移模块（data-dir-migration.ts）要的 launchctl、排空、等进程退出和健康检查。 */
+  takeover: Pick<DataDirMigrationDeps, "launchAgentsDir" | "uid" | "launchctl" | "freeBytes" | "drain" | "waitStopped" | "health" | "afterStep">;
+  /** 进程还活着（install.lock 用）。缺省用 process.kill(pid, 0)。 */
+  processAlive?(pid: number): boolean;
   locale: Locale;
   emit(event: DesktopInstallEvent): void;
   captureLoginShellPath(): Promise<LoginShellPathResult>;
@@ -77,11 +106,13 @@ export interface DesktopInstallDeps {
     ensureRunning(): Promise<void>;
   };
   daemon: {
-    /** plc.sock 回答 status 时返回它的 gatewayUrl；超过 timeoutMs 为 null。 */
-    waitForStatus(timeoutMs: number): Promise<{ gatewayUrl: string } | null>;
+    /** dataDir（缺省是安装的数据目录）的 plc.sock 回答 status 时返回它的 gatewayUrl；超过 timeoutMs 为 null。 */
+    waitForStatus(timeoutMs: number, dataDir?: string): Promise<{ gatewayUrl: string } | null>;
   };
   /** daemon 步骤等 plc.sock 回答的期限。缺省和 supervisor 等 daemon 就绪的期限一样（daemonReadyTimeoutMs，10 分钟）。 */
   daemonWaitMs?: number;
+  /** 删旧版本前看哪些版本还有进程在用（runtime-versions.ts）。缺省读 ps。 */
+  runningCommands?(): string[];
   now?(): Date;
 }
 
@@ -95,6 +126,12 @@ export interface DesktopInstallResult {
 interface InstallState {
   version: 1;
   root: string;
+  /** 上次装好的运行包版本（release.json 的 version）。和这次不同就是换了版本（第 12.5 节）。 */
+  installedVersion?: string;
+  /** installedVersion 之前装的版本：回滚要用，删旧版本时留着它（runtime-versions.ts）。 */
+  previousVersion?: string;
+  /** 这次装好以后删掉的旧版本（诊断用）。 */
+  prunedVersions?: string[];
   startedAt: string;
   updatedAt: string;
   outcome: DesktopInstallResult["outcome"] | "running";
@@ -118,7 +155,7 @@ export function socketPathTooLong(dataDir: string): { path: string; bytes: numbe
 }
 
 /**
- * 已有的 plist 指向什么。dev：WorkingDirectory 里有 .git、没有 release.json，是开发安装，不覆盖。
+ * 已有的 plist 指向什么。dev：WorkingDirectory 里有 .git、没有 release.json，是开发安装（第 12.4 节接管它）。
  * 不是 plistContent 写的、或者指向别的运行包时为 other：照常覆盖。
  */
 export function existingInstallKind(plistPath: string): "none" | "dev" | "other" {
@@ -133,6 +170,84 @@ export function existingInstallKind(plistPath: string): "none" | "dev" | "other"
   return "other";
 }
 
+/** 上一次 desktop-install 写的状态。没有或读不了时为 null。 */
+function readInstallState(path: string): Partial<InstallState> | null {
+  try {
+    const value = JSON.parse(readFileSync(path, "utf8")) as unknown;
+    return value && typeof value === "object" ? value as Partial<InstallState> : null;
+  } catch {
+    return null;
+  }
+}
+
+function defaultProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return errorCode(error) === "EPERM";
+  }
+}
+
+/** 拿 install.lock：拿到时返回释放它的函数；别的 desktop-install 还活着时返回 null。前一个进程已经退出时接着做。 */
+function acquireInstallLock(installRoot: string, alive: (pid: number) => boolean): (() => void) | null {
+  const lock = join(installRoot, INSTALL_LOCK_FILE);
+  mkdirSync(installRoot, { recursive: true });
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      writeFileSync(lock, `${process.pid}\n`, { flag: "wx" });
+      return () => rmSync(lock, { force: true });
+    } catch (error) {
+      if (errorCode(error) !== "EEXIST") throw error;
+      const holder = Number.parseInt(readFileSync(lock, "utf8"), 10);
+      if (Number.isSafeInteger(holder) && holder > 0 && holder !== process.pid && alive(holder)) return null;
+      rmSync(lock, { force: true });
+    }
+  }
+  return null;
+}
+
+/**
+ * 已有的是哪种安装，要不要接管（第 12.2 节）。按顺序：改名以前的安装、跑开发 checkout 的安装、换了版本的安装。
+ * 都不是时为 null：新机器，或者再装一次同一个版本。
+ */
+export function detectTakeover(o: {
+  root: string; dataDir: string; plistPath: string; preRenamePlistPaths: string[]; preRenameDataDir: string | null;
+  installedVersion: string | undefined; version: string;
+}): TakeoverCase | null {
+  const old = o.preRenameDataDir;
+  if (old && (o.preRenamePlistPaths.some((path) => existsSync(path)) || (existsSync(old) && holdsOnlyAppEntries(o.dataDir)))) {
+    return { kind: "pre_rename", oldDir: old };
+  }
+  const kind = existingInstallKind(o.plistPath);
+  if (kind === "dev") return { kind: "dev" };
+  if (kind === "other" && o.installedVersion && o.installedVersion !== o.version
+    && plistPointsAt(o.plistPath, o.root) && existsSync(join(dirname(o.root), "versions", o.installedVersion))) {
+    return { kind: "upgrade", from: o.installedVersion, to: o.version };
+  }
+  return null;
+}
+
+function plistPointsAt(plistPath: string, root: string): boolean {
+  try {
+    const cwd = plistWorkingDirectory(readFileSync(plistPath, "utf8"));
+    return cwd !== null && resolve(cwd) === resolve(root);
+  } catch {
+    return false;
+  }
+}
+
+// 迁移模块的预检没过：安装页的话。什么都没改。
+const REFUSED: Partial<Record<DataDirMigrationCode, keyof ReturnType<typeof desktopInstallMessages>["takeover"]["refused"]>> = {
+  target_not_empty: "targetNotEmpty",
+  not_same_volume: "notSameVolume",
+  disk_space: "diskSpace",
+  socket_path_too_long: "socketPathTooLong",
+  schema_ahead: "schemaAhead",
+  schema_behind: "other",
+  legacy_service_missing: "other",
+};
+
 function errorCode(error: unknown): string | undefined {
   return error && typeof error === "object" && "code" in error ? String((error as { code: unknown }).code) : undefined;
 }
@@ -141,8 +256,11 @@ export async function runDesktopInstall(deps: DesktopInstallDeps): Promise<Deskt
   const m = desktopInstallMessages(deps.locale);
   const now = () => (deps.now?.() ?? new Date()).toISOString();
   const statePath = join(deps.installRoot, INSTALL_STATE_FILE);
+  const previousState = readInstallState(statePath);
   const state: InstallState = {
     version: 1, root: deps.root, startedAt: now(), updatedAt: now(), outcome: "running", steps: {}, lastError: null,
+    ...(typeof previousState?.installedVersion === "string" ? { installedVersion: previousState.installedVersion } : {}),
+    ...(typeof previousState?.previousVersion === "string" ? { previousVersion: previousState.previousVersion } : {}),
   };
   // 安装状态写不下（例如磁盘满了）不挡住安装：进度行照样输出，App 靠它显示。
   const saveState = () => {
@@ -171,15 +289,20 @@ export async function runDesktopInstall(deps: DesktopInstallDeps): Promise<Deskt
   };
 
   let step: DesktopInstallStep = "preflight";
+  let releaseLock: (() => void) | null = null;
   try {
     // ── preflight ──
     emit({ step, state: "running", message: m.preflight.running });
+    releaseLock = acquireInstallLock(deps.installRoot, deps.processAlive ?? defaultProcessAlive);
+    if (!releaseLock) throw new StepFailure("install_running", m.errors.installRunning);
     const root = resolve(deps.root);
     if (!isAbsolute(deps.root) || basename(root) !== "current" || dirname(root) !== resolve(deps.installRoot)) {
       throw new StepFailure("root_invalid", m.errors.rootInvalid(deps.root));
     }
-    const readiness = releaseReadiness(root, deps.installRoot, deps.dbPath);
+    // 库的版本在 detect 里看：库在哪个目录要先认出是哪种安装。这里只看运行包本身。
+    const readiness = releaseReadiness(root, deps.installRoot, null);
     if (!readiness.ready) throw new StepFailure("release_invalid", m.errors.releaseInvalid(readiness.reasons.join(" ")));
+    const manifest = readReleaseManifest(root);
     const tooLong = socketPathTooLong(deps.dataDir);
     if (tooLong) {
       throw new StepFailure("socket_path_too_long", m.errors.socketPathTooLong(tooLong.path, tooLong.bytes, MAX_SOCKET_PATH_BYTES));
@@ -189,18 +312,43 @@ export async function runDesktopInstall(deps: DesktopInstallDeps): Promise<Deskt
     // ── detect ──
     step = "detect";
     emit({ step, state: "running", message: m.detect.running });
-    if (existingInstallKind(deps.plistPath) === "dev") {
+    const found = detectTakeover({
+      root, dataDir: deps.dataDir, plistPath: deps.plistPath, preRenamePlistPaths: deps.preRenamePlistPaths,
+      preRenameDataDir: deps.preRenameDataDir, installedVersion: state.installedVersion, version: manifest.version,
+    });
+    // 数据所在的目录：改名以前的安装还在旧目录里。
+    const liveDataDir = found?.kind === "pre_rename" ? found.oldDir : deps.dataDir;
+    if (found && found.kind !== "upgrade" && deps.keepDevInstall) {
       emit({ step, state: "done", code: "dev_install_detected", message: m.detect.devInstall });
-      // 开发安装由它自己的 checkout 管：不写 plist，不重启。在跑的话把它的地址交给 App 打开。
+      // 开发者要保持开发安装：不写 plist，不重启。在跑的话把它的地址交给 App 打开。
       step = "done";
-      const status = await deps.daemon.waitForStatus(3_000);
+      const status = await deps.daemon.waitForStatus(3_000, liveDataDir);
       emit({ step, state: "done", code: "dev_install_detected", message: m.detect.devInstall, ...(status ? { gatewayUrl: status.gatewayUrl } : {}) });
       return finish({ ok: true, outcome: "dev_install", code: "dev_install_detected", ...(status ? { gatewayUrl: status.gatewayUrl } : {}) });
     }
-    if (deps.preRenamePlistPaths.some((path) => existsSync(path))) {
-      throw new StepFailure("legacy_install_detected", m.detect.legacyInstall);
+    // 库比运行包新：新代码打不开旧版本，什么都不改（第 12.3 节）。
+    const dbVersion = databaseSchemaVersion(join(liveDataDir, "plc.db"));
+    if (dbVersion !== null && dbVersion > manifest.schemaVersion) {
+      throw new StepFailure("schema_ahead", m.errors.schemaAhead(dbVersion, manifest.schemaVersion));
     }
-    emit({ step, state: "done", message: m.detect.done });
+    emit({
+      step, state: "done",
+      message: !found ? m.detect.done
+        : found.kind === "pre_rename" ? m.detect.preRename
+        : found.kind === "dev" ? m.detect.dev
+        : m.detect.upgrade(found.from, found.to),
+    });
+
+    // ── takeover ──
+    step = "takeover";
+    if (!found) {
+      emit({ step, state: "skipped", message: m.takeover.notNeeded });
+    } else {
+      emit({ step, state: "running", message: m.takeover.starting });
+      const result = await takeOver(deps, found, root, (event) => emit(event));
+      if (!result.ok) throw takeoverFailure(m, result);
+      emit({ step, state: "done", message: m.takeover.done });
+    }
 
     // ── login_shell_path ──：读不到不算失败，supervisor 和 daemon 还有已知目录兜底。
     step = "login_shell_path";
@@ -255,7 +403,21 @@ export async function runDesktopInstall(deps: DesktopInstallDeps): Promise<Deskt
     if (!status) throw new StepFailure("daemon_timeout", m.errors.daemonTimeout);
     emit({ step, state: "done", message: m.daemon.done });
 
+    // 只留这次的和上一个运行包版本（runtime-versions.ts）。换了版本时，上一个就是上次装好的；再装一次同一个版本时沿用记着的。
+    // 不知道上一个是哪个（第一次安装、更早的 install-state.json）时不删：分不清哪个是回滚要用的。
+    const previousVersion = state.installedVersion && state.installedVersion !== manifest.version ? state.installedVersion : state.previousVersion;
+    if (previousVersion) {
+      state.previousVersion = previousVersion;
+      const pruned = pruneRuntimeVersions({
+        versionsDir: join(deps.installRoot, "versions"),
+        keep: [manifest.version, previousVersion],
+        ...(deps.runningCommands ? { runningCommands: deps.runningCommands } : {}),
+      });
+      if (pruned.removed.length) state.prunedVersions = pruned.removed;
+    }
+
     step = "done";
+    state.installedVersion = manifest.version;
     emit({ step, state: "done", message: m.done, gatewayUrl: status.gatewayUrl });
     return finish({ ok: true, outcome: "installed", gatewayUrl: status.gatewayUrl });
   } catch (error) {
@@ -268,5 +430,37 @@ export async function runDesktopInstall(deps: DesktopInstallDeps): Promise<Deskt
       saveState();
     }
     return finish({ ok: false, outcome: "failed", code: failure.code });
+  } finally {
+    releaseLock?.();
   }
+}
+
+/** 用迁移模块接管（第 12.3–12.5 节）。迁移模块每一步的进度换成安装页的话，作为 takeover 这一步的进度发出去。 */
+async function takeOver(
+  deps: DesktopInstallDeps, found: TakeoverCase, root: string, emit: (event: DesktopInstallEvent) => void,
+): Promise<DataDirMigrationResult> {
+  const m = desktopInstallMessages(deps.locale);
+  return runDataDirMigration({
+    ...deps.takeover,
+    oldDir: found.kind === "pre_rename" ? found.oldDir : deps.dataDir,
+    newDir: deps.dataDir,
+    service: { kind: "desktop", root, ...(found.kind === "upgrade" ? { previousVersion: found.from } : {}) },
+    locale: deps.locale,
+    now: deps.now,
+    emit: (event) => {
+      if (event.state === "running") emit({ step: "takeover", state: "running", phase: event.step, message: m.takeover.phases[event.step] });
+      else if (event.state === "rollback") emit({ step: "takeover", state: "running", phase: event.step, message: m.takeover.rollingBack });
+    },
+  });
+}
+
+function takeoverFailure(m: ReturnType<typeof desktopInstallMessages>, result: DataDirMigrationResult): StepFailure {
+  const reason = result.error ?? result.code ?? "";
+  if (result.code === "rolled_back") return new StepFailure("takeover_rolled_back", m.takeover.rolledBack(reason), reason);
+  if (result.code === "rollback_failed") {
+    return new StepFailure("takeover_rollback_failed", m.takeover.rollbackFailed(reason, result.backupPath ?? "-"), reason);
+  }
+  const refused = result.code ? REFUSED[result.code] : undefined;
+  if (refused) return new StepFailure("takeover_refused", m.takeover.refused[refused], reason);
+  return new StepFailure("takeover_failed", m.takeover.failed(reason), reason);
 }

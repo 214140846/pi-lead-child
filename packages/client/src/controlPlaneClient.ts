@@ -176,12 +176,18 @@ import {
   PairChallengeSchema,
   PairSocketErrorSchema,
   PairingRedeemResponseSchema,
+  EVENT_REPLAY_LIMIT,
   PROTOCOL_VERSION,
   CHAT_CLIENT_MESSAGE_ID_CAPABILITY,
   CHAT_IMAGES_CAPABILITY,
   CHAT_IMAGES_INCLUDE,
   CHAT_PLACEMENT_CAPABILITY,
   ChatImageSchema,
+  TicketAttachmentContentSchema,
+  TicketAttachmentListSchema,
+  type TicketAttachment,
+  type TicketAttachmentContent,
+  type TicketAttachmentList,
   LeadModelCatalogSchema,
   LeadModelSwitchResultSchema,
   LEAD_QUEUE_OPT_IN,
@@ -333,9 +339,14 @@ export interface ControlPlaneSocket {
   close(code?: number, reason?: string): void;
 }
 
+// 这次连上时，断开期间的事件补发了没有。skipped：新的凭证、落后太多（EVENT_REPLAY_LIMIT）、或者游标比网关还新。
+// 网关没有补发，客户端的游标直接跳到 hello.latestSeq，调用方要重取快照，否则会漏掉中间的变化。
+export type ConnectionHistory = 'replayed' | 'skipped';
+
 export interface ConnectionHandlers {
   onEvent?: (event: GatewayEvent) => void;
-  onHello?: (hello: HelloV2) => void;
+  // info 总是有；写成可选的，只给 hello 的旧调用方（测试替身）不用改。
+  onHello?: (hello: HelloV2, info?: { history: ConnectionHistory }) => void;
   onStateChange?: (state: ConnectionState) => void;
   onProtocolError?: (error: Error) => void;
   // 网关拒绝了凭证：签 ws ticket 时网关回 401 unauthorized，或者连着时 binding 被撤销（关闭码 4001）。
@@ -1293,6 +1304,19 @@ export class ControlPlaneClient {
       body: JSON.stringify({ model: choice.model, effort: choice.effort }),
       ...(signal ? { signal } : {}),
     });
+  }
+
+  // 工单附件（工单 #231，protocol 的 ticket-attachments.ts）：列表不带内容；旧 daemon 没有这个接口时报错（404）。
+  async getTicketAttachments(ticketId: number, signal?: AbortSignal): Promise<TicketAttachment[]> {
+    const response = await this.request<TicketAttachmentList>(`/v1/tickets/${ticketId}/attachments`, TicketAttachmentListSchema, { signal });
+    return response.items;
+  }
+
+  // 一个工单附件的内容（base64）。
+  async getTicketAttachment(ticketId: number, attachmentId: string, signal?: AbortSignal): Promise<TicketAttachmentContent> {
+    return this.request<TicketAttachmentContent>(
+      `/v1/tickets/${ticketId}/attachments/${encodeURIComponent(attachmentId)}`, TicketAttachmentContentSchema, { signal },
+    );
   }
 
   // 用户发给 Lead 的一张图片（会话快照的 images 里的 id，protocol 的 chat-images.ts）。
@@ -2424,7 +2448,8 @@ export class ControlPlaneClient {
       url.search = new URLSearchParams({
         ticket: ticket.ws_ticket,
         protocol: String(PROTOCOL_VERSION),
-        after_seq: String(record.lastSeq),
+        // 新的凭证（游标是 0）不要历史：状态来自快照，从连上的那一刻接着收（-1）。
+        after_seq: record.lastSeq > 0 ? String(record.lastSeq) : '-1',
         // 选收 Lead 健康（带 lead 的 daemon.status.changed）、Lead 生成的富交互卡片（带 surface 的
         // lead.tool.updated，protocol 的 ui-surfaces.ts）、「Lead 动态」的推送（工单 06）和工单回复的动作按钮
         // 有了判断结果（2026-10-19，ticket-chat.ts）、Lead 忙时排着的外部消息（工单 10，lead-queue.ts）。旧 daemon 忽略这个参数。
@@ -2511,7 +2536,8 @@ export class ControlPlaneClient {
       this.setState('connected');
       this.startHeartbeat();
       this.sendPresence();
-      this.handlers.onHello?.(message as HelloV2);
+      const history = this.historyAfterHello(message as HelloV2, generation);
+      this.handlers.onHello?.(message as HelloV2, { history });
       return;
     }
     if (Value.Check(CommandResultSchema, message)) {
@@ -2525,6 +2551,37 @@ export class ControlPlaneClient {
       return;
     }
     this.handlers.onProtocolError?.(new ControlPlaneClientError('unknown WebSocket message', 'invalid_response'));
+  }
+
+  // 网关没有补发时（见 ConnectionHistory），游标跳到 hello.latestSeq。排在事件队列里：后面到的事件按新游标判断，
+  // 旧网关照样补发的那些 seq 不大于新游标，acceptEvent 丢掉它们。
+  private historyAfterHello(hello: HelloV2, generation: number): ConnectionHistory {
+    const lastSeq = this.record?.lastSeq ?? 0;
+    const latest = hello.latestSeq;
+    if (lastSeq === latest) return 'replayed';
+    if (lastSeq > 0 && lastSeq < latest && latest - lastSeq <= EVENT_REPLAY_LIMIT) return 'replayed';
+    this.eventQueue = this.eventQueue
+      .then(() => this.moveCursor(latest, generation))
+      .catch((reason) => this.handleCursorPersistenceFailure(reason, generation));
+    return 'skipped';
+  }
+
+  private async moveCursor(seq: number, generation: number): Promise<void> {
+    if (generation !== this.connectionGeneration) return;
+    const record = await this.requireRecord();
+    if (record.lastSeq === seq) return;
+    const credentialGeneration = this.credentialGeneration;
+    const snapshot = {
+      ...record,
+      lastSeq: seq,
+      binding: { ...record.binding, scopes: [...record.binding.scopes] },
+    };
+    await this.saveCredentials(snapshot, credentialGeneration);
+    if (
+      generation !== this.connectionGeneration ||
+      credentialGeneration !== this.credentialGeneration
+    ) return;
+    this.record = snapshot;
   }
 
   private async acceptEvent(event: GatewayEvent, generation: number): Promise<void> {

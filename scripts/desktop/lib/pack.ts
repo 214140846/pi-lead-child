@@ -8,6 +8,7 @@ import { execFile } from "node:child_process";
 import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
+import { AGENT_BINARY, installAgent, type SignFn } from "./agent-bundle.js";
 import { copyExternals, externalClosure, type ClosureEntry, type Lockfile } from "./externals.js";
 import { assertMachOArch } from "./macho.js";
 import { extractNodeBinary, fetchVerifiedNode, type FetchLike } from "./node-dist.js";
@@ -54,6 +55,8 @@ export interface PackOptions {
   fetchImpl?: FetchLike;
   now?: Date;
   log?: (line: string) => void;
+  /** 给后台服务的程序（bin/lead-agent）重签。缺省是 codesign 的 ad-hoc 签名；测试里的假 Node 签不了，换成假的。 */
+  sign?: SignFn;
 }
 
 export interface PackResult {
@@ -97,13 +100,19 @@ export async function packRuntime(o: PackOptions): Promise<PackResult> {
   for (const path of [runtimeDir, archive, manifestPath]) rmSync(path, { recursive: true, force: true });
   mkdirSync(join(runtimeDir, "bin"), { recursive: true });
 
-  // Node：官方二进制，校验哈希，改名为 lead-agent（设计文档第 9 节决定 6、7）。
+  // Node：官方二进制，校验哈希，改名为 lead-agent（设计文档第 9 节决定 6、7），用自己的标识重新做 ad-hoc 签名，
+  // 再建软链接 bin/Bytezard Lead 给 launchd 用：登录项显示这个软链接的名字，进程名还是 lead-agent（第 8.7 节，做法 1b）。
   const node = await fetchVerifiedNode({
     version: o.nodeVersion, arch, cacheDir: join(outDir, "cache", "node"), baseUrl: o.nodeDistUrl, fetchImpl: o.fetchImpl, log,
   });
-  const leadAgent = join(runtimeDir, "bin", "lead-agent");
-  await extractNodeBinary({ tarball: node.tarball, version: o.nodeVersion, arch, dest: leadAgent, workDir: outDir });
-  assertMachOArch(leadAgent, "bin/lead-agent", arch);
+  await installAgent({
+    root: runtimeDir,
+    placeBinary: async (dest) => {
+      await extractNodeBinary({ tarball: node.tarball, version: o.nodeVersion, arch, dest, workDir: outDir });
+      assertMachOArch(dest, AGENT_BINARY, arch);
+    },
+    sign: o.sign,
+  });
   // 给 #!/usr/bin/env node 的脚本用（pi 的 bin 就是这样的脚本）。
   symlinkSync("lead-agent", join(runtimeDir, "bin", "node"));
   writeFileSync(join(runtimeDir, "bin", "plc"), PLC_WRAPPER);

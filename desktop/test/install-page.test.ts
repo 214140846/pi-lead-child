@@ -8,7 +8,7 @@ import { renderInstallView } from "../src/renderer/render.js";
 function progress(extra: Partial<InstallProgress>): InstallProgress {
   return {
     stage: "working",
-    steps: { unpack: "done", service: "running", start: "pending" },
+    steps: { unpack: "done", takeover: "skipped", service: "running", start: "pending" },
     detail: "Setting up the background service.",
     backgroundNotice: true,
     error: null,
@@ -42,10 +42,35 @@ describe("the install page", () => {
     expect(root.querySelectorAll("button")).toHaveLength(0);
   });
 
+  // 接管存量安装时多一行（设计第 12.7 节），说明文字跟着每一步变；失败时说清楚、给「重试」。
+  it("shows the takeover row only while it takes over, with its step detail and its failure", () => {
+    const taking = progress({
+      steps: { unpack: "done", takeover: "running", service: "pending", start: "pending" },
+      detail: "Moving your data to the new place.",
+    });
+    const { root } = draw(installView({ kind: "progress", progress: taking }, { leadName: "Nina", locale: "en" }));
+    expect([...root.querySelectorAll("li")].map((li) => [li.dataset.step, li.dataset.state])).toEqual([
+      ["unpack", "done"], ["takeover", "running"], ["service", "pending"], ["start", "pending"],
+    ]);
+    expect(root.querySelector("li[data-step=takeover]")?.textContent).toContain("Take over the data and settings");
+    expect(root.querySelector(".detail")?.textContent).toBe("Moving your data to the new place.");
+
+    const failed = progress({
+      stage: "failed",
+      steps: { unpack: "done", takeover: "failed", service: "pending", start: "pending" },
+      backgroundNotice: false,
+      error: { code: "takeover_rolled_back", message: "没能接手原来的安装，已经恢复原样：数据没有改动，原来的服务照常运行。" },
+    });
+    const page = draw(installView({ kind: "progress", progress: failed }, { leadName: "Nina", locale: "zh" }));
+    expect(page.root.querySelector("li[data-step=takeover]")?.textContent).toBe("接手已有的数据和设置失败");
+    expect(page.root.querySelector("[role=alert]")?.textContent).toContain("已经恢复原样");
+    expect([...page.root.querySelectorAll("button")].map((button) => button.textContent)).toEqual(["重试", "查看日志", "复制诊断信息"]);
+  });
+
   it("shows the failure and three actions; the buttons call back with their action", () => {
     const failed = progress({
       stage: "failed",
-      steps: { unpack: "done", service: "failed", start: "pending" },
+      steps: { unpack: "done", takeover: "pending", service: "failed", start: "pending" },
       backgroundNotice: false,
       error: { code: "launchd_bootstrap_failed", message: "The background service could not start." },
     });

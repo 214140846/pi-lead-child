@@ -377,7 +377,7 @@ export const SKILLS_ACTIONS = {
     permission: "lead_allowed", changesRules: true, externalRefusalNext: EXTERNAL_NEXT, liveUserTurnExempt: true,
     external: false, irreversible: false,
     where: SKILL_WHERE,
-    hint: "从 GitHub 装一个 skill 到 PLC 自己的 skill 目录（~/.pi-lead-child/skills）。不要往 ~/.agents/skills、~/.claude/skills 里拷："
+    hint: "从 GitHub 装一个 skill 到 PLC 自己的 skill 目录（~/Library/Application Support/Bytezard Lead/skills）。不要往 ~/.agents/skills、~/.claude/skills 里拷："
       + "那是给别的工具用的。input.repo 写 owner/name，ref 写 commit、tag 或分支（系统解析成 commit 并固定），path 写仓库里 skill 的目录。"
       + "装之前系统做安全检查（越界链接、隐藏字符、没法审查的文件），不过的拒绝并写明原因；带的脚本照装并列出来。"
       + "装好以后马上能用 find_skill 找到。",

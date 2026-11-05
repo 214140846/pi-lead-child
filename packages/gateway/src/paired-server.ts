@@ -22,12 +22,14 @@ import {
   MilestonePatchRequestSchema,
   PairConfirmSchema,
   PairHelloSchema,
+  EVENT_REPLAY_LIMIT,
   PROTOCOL_VERSION,
   CHAT_CLIENT_MESSAGE_ID_CAPABILITY,
   CHAT_PLACEMENT_CAPABILITY,
   CHAT_FOLLOW_UP_ACTIONS_CAPABILITY,
   FollowUpActionRequestSchema,
   CHAT_IMAGE_ID_PATTERN,
+  TICKET_ATTACHMENT_ID_PATTERN,
   CHAT_IMAGES_CAPABILITY,
   CHAT_IMAGES_INCLUDE,
   LEAD_AVATAR_CAPABILITY,
@@ -127,6 +129,7 @@ import { handleRuleChangeRoute } from "./rule-change-routes.js";
 import { handleTimerRoute } from "./timer-routes.js";
 import type { LeadCapability, LeadGrant, LeadGrantChannel } from "@pi-lead-child/store";
 import { findClientMessageTurn, getChatImage, getItem, listWidgets, loadSetupStatus, recordClientMessageTurn, type ChatImageData } from "@pi-lead-child/store";
+import { TicketAttachmentError } from "@pi-lead-child/store";
 import { decodeChatImages } from "./chat-images.js";
 import { setProjectStatus } from "@pi-lead-child/store";
 import { createMilestone, type ItemMilestone } from "@pi-lead-child/store";
@@ -2617,6 +2620,29 @@ export async function startPairedServer(
         return;
       }
 
+      // 工单附件（工单 #231，protocol 的 ticket-attachments.ts）：列表和一个附件的内容。只读，和工单详情一样只要 tickets:view。
+      const attachmentsMatch = url.pathname.match(/^\/v1\/tickets\/(\d+)\/attachments$/);
+      if (req.method === "GET" && attachmentsMatch) {
+        requireAuth(req, "tickets:view");
+        const items = service().listTicketAttachments(Number(attachmentsMatch[1]));
+        if (!items) throw new HttpError(404, "not_found", "ticket not found");
+        json(req, res, 200, { items });
+        return;
+      }
+      const attachmentMatch = url.pathname.match(/^\/v1\/tickets\/(\d+)\/attachments\/([^/]+)$/);
+      if (req.method === "GET" && attachmentMatch) {
+        requireAuth(req, "tickets:view");
+        const id = decodeURIComponent(attachmentMatch[2]!);
+        if (!TICKET_ATTACHMENT_ID_PATTERN.test(id)) throw new HttpError(404, "not_found", "attachment not found");
+        try {
+          json(req, res, 200, await service().readTicketAttachmentContent(Number(attachmentMatch[1]), id));
+        } catch (error) {
+          if (error instanceof TicketAttachmentError) throw new HttpError(404, "not_found", "attachment not found");
+          throw error;
+        }
+        return;
+      }
+
       const runsMatch = url.pathname.match(/^\/v1\/tickets\/(\d+)\/attempts$/);
       if (req.method === "GET" && runsMatch) {
         requireAuth(req, "tickets:view");
@@ -3159,6 +3185,10 @@ export async function startPairedServer(
     sendWs(ws, { type: "command.result", id, success: false, error: { code, message } });
   }
 
+  function replayWanted(afterSeq: number, throughSeq: number): boolean {
+    return afterSeq <= throughSeq && throughSeq - afterSeq <= EVENT_REPLAY_LIMIT;
+  }
+
   function replay(
     ws: WsSocket,
     binding: Binding,
@@ -3300,9 +3330,13 @@ export async function startPairedServer(
           busy: Boolean(daemon.busy),
         },
       });
-      if (afterSeq >= 0) {
+      // 补发游标后面的事件。差得太多（EVENT_REPLAY_LIMIT）或者游标比网关还新时不补发：一次补发全部会卡住 daemon，
+      // 客户端也处理不完。客户端看到 hello.latestSeq 以后自己跳过去，重取快照。
+      if (afterSeq >= 0 && replayWanted(afterSeq, baselineSeq)) {
         const replayed = replay(ws, binding, scopes, afterSeq, baselineSeq, includes);
         clientState.lastSentSeq = Math.max(clientState.lastSentSeq, replayed.lastSeq);
+      } else if (afterSeq >= 0) {
+        clientState.lastSentSeq = baselineSeq;
       }
     } else {
       send({ type: "hello", ...bridge.hello(), binding: safeBinding(binding) });

@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { dataDir, installRoot } from "@pi-lead-child/core";
 import { tempDir } from "@pi-lead-child/core/testing";
-import { shellPaths } from "../src/paths.js";
+import { LAUNCHD_LABEL } from "@pi-lead-child/supervisor";
+import { shellPaths, SUPERVISOR_LABEL } from "../src/paths.js";
 
 const saved = { PLC_DATA_DIR: process.env.PLC_DATA_DIR, HOME: process.env.HOME };
 
@@ -28,6 +29,11 @@ describe("shellPaths", () => {
     delete process.env.PLC_DATA_DIR;
     process.env.HOME = tempDir("plc-desktop-home-");
     expect(shellPaths(process.env, process.env.HOME).dataDir).toBe(dataDir());
+  });
+
+  it("looks at the same launchd plist as the supervisor", () => {
+    expect(SUPERVISOR_LABEL).toBe(LAUNCHD_LABEL);
+    expect(shellPaths({}, "/Users/alice").supervisorPlist).toBe(`/Users/alice/Library/LaunchAgents/${LAUNCHD_LABEL}.plist`);
   });
 
   it("puts the Electron user data in a shell folder below the data folder, not in its root", () => {

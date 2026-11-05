@@ -7,26 +7,32 @@
 //   stop           没有 supervisor 时停 daemon，并在 supervisor-state.json 里记下"用户停的"
 //   install        安装 launchd 常驻 supervisor（开发安装；运行包里运行时不查 AM_API_KEY）
 //   desktop-install --root <安装根>/current [--locale en|zh] [--progress-json]
-//                  桌面版：一条命令装好 launchd 服务并等到健康，按行输出 JSON 进度（supervisor 的 desktop-install.ts）
+//                  桌面版：一条命令装好 launchd 服务并等到健康，按行输出 JSON 进度（supervisor 的 desktop-install.ts）。
+//                  遇到存量安装时自动迁移、接管（设计第 12 节）；PLC_KEEP_DEV_INSTALL=1 时保留开发安装
 //   login-shell-path  读登录 shell 的 PATH，写进 <数据目录>/login-shell-path.json。App 每次打开时运行
 //   selfcheck      运行包自检：能加载 better-sqlite3，能读 release.json。换版本以前对新版本运行
+//   migrate-data-dir [--locale en|zh] [--follow]
+//                  开发机从改名以前的数据目录和 launchd 任务迁到新名字（supervisor 的 data-dir-migration.ts，P0-8）。
+//                  迁移在自己的会话里运行，进度写进 ~/Library/Logs/Bytezard Lead/ 下的日志；--follow 时在这里跟着输出
 //   uninstall      卸载 launchd 常驻
 //   doctor         只读诊断
 //   lead-model     显示 Lead 模型与 provider
 //   lead-use SPEC  把 Lead 默认模型写入 config.json
 import Database from "better-sqlite3";
-import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, openSync, statSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, statSync, statfsSync } from "node:fs";
 import { connect } from "node:net";
-import { join } from "node:path";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
 import {
   DAEMON_ONLY_ENV_NAMES,
-  captureLoginShellPath, dataDir, dbPath, distDir, envConfigPath, installRoot, loadEnvConfig, packageSource, projectRoot,
-  saveLoginShellPath, workspaceDir,
+  captureLoginShellPath, dataDir, dbPath, defaultDataDir, distDir, envConfigPath, isPreRenameDataDir, loadEnvConfig,
+  packageSource, preRenameDataDir, projectRoot, saveLoginShellPath, workspaceDir,
 } from "@pi-lead-child/core";
 import {
-  agentStatus, autoStartRefusal, bootstrapAgent, buildsFreshReal, ensureRunningTimeoutMs, hasReleaseManifest, plistPath as launchdPlistPath,
-  preRenamePlistPaths, readReleaseManifest, runDesktopInstall, loadSupervisorState, saveSupervisorState, dbProbesReal, distFreshReal, formatChecks, installAgent, keychainSecretExists,
+  activeLaunchdLabel, AGENT_BINARY, agentStatus, autoStartRefusal, bootstrapAgent, installAgentBinary, itemsBlockingMaintenance,
+  launchAgentsDir, launchctl, runDataDirMigration, socketListening, SUPERVISOR_WAIT_MS, buildsFreshReal, ensureRunningTimeoutMs, hasReleaseManifest, plistPath as launchdPlistPath,
+  KEEP_DEV_INSTALL_ENV, preRenamePlistPaths, readReleaseManifest, runDesktopInstall, loadSupervisorState, saveSupervisorState, dbProbesReal, distFreshReal, formatChecks, installAgent, keychainSecretExists,
   plistContent, plistPath, resolveDaemonOnlyKey, resolveKeyReal, runDoctor, supervisorListening, supervisorRequest, supervisorSockPath,
   uninstallAgent, uninstallHindsightService, type BuildOutput, type DoctorProbes, type SupervisorStatus,
 } from "@pi-lead-child/supervisor";
@@ -40,7 +46,7 @@ import {
 } from "@pi-lead-child/store";
 
 const PROJECT_ROOT = projectRoot();
-const USAGE = "usage: ops.mjs start [--auto] | stop | install | desktop-install --root <dir> [--locale en|zh] [--progress-json] | login-shell-path | selfcheck | uninstall | doctor | lead-model | lead-use <provider/model> | ledger-guard status|uninstall";
+const USAGE = "usage: ops.mjs start [--auto] | stop | install | desktop-install --root <dir> [--locale en|zh] [--progress-json] | login-shell-path | selfcheck | migrate-data-dir [--locale en|zh] [--follow] | uninstall | doctor | lead-model | lead-use <provider/model> | ledger-guard status|uninstall";
 // start --auto 被 supervisor 拒绝（plc 的 daemon-link.ts 认这个退出码）。
 const AUTO_START_REFUSED = 3;
 
@@ -91,19 +97,19 @@ async function waitForSupervisorStopped(timeoutMs = 40_000): Promise<void> {
 }
 
 // daemon 自己的 plc.sock：只用它探活和停机。
-const daemonSockPath = () => join(dataDir(), "plc.sock");
-function daemonReachable(): Promise<boolean> {
+const daemonSockPath = (dir: string = dataDir()) => join(dir, "plc.sock");
+function daemonReachable(dir?: string): Promise<boolean> {
   return new Promise((resolve) => {
-    const sock = connect(daemonSockPath());
+    const sock = connect(daemonSockPath(dir));
     sock.once("connect", () => { sock.end(); resolve(true); });
     sock.once("error", () => resolve(false));
   });
 }
 
 // plc.sock 的 status（daemon 没在运行时为 null）。只读：doctor 用它看网关对外地址的状态。
-function daemonLocalStatus(): Promise<DaemonLocalStatus | null> {
+function daemonLocalStatus(dir?: string): Promise<DaemonLocalStatus | null> {
   return new Promise((resolve) => {
-    const sock = connect(daemonSockPath());
+    const sock = connect(daemonSockPath(dir));
     let buffer = "";
     const timer = setTimeout(() => { sock.destroy(); resolve(null); }, 3_000);
     sock.setEncoding("utf8");
@@ -150,8 +156,8 @@ function daemonCommand<T>(command: LocalSocketCommand, timeoutMs = 10_000): Prom
   });
 }
 
-async function shutdownUnsupervisedDaemon(): Promise<void> {
-  const sock = connect(daemonSockPath());
+async function shutdownUnsupervisedDaemon(dir?: string): Promise<void> {
+  const sock = connect(daemonSockPath(dir));
   await new Promise<void>((resolve) => {
     sock.once("connect", () => {
       sock.write(`${JSON.stringify({ type: "shutdown" })}\n`);
@@ -238,9 +244,26 @@ async function stopRunningService(): Promise<void> {
   }
 }
 
+// 开发机的 Node 复制成 <数据目录>/bin/lead-agent 并重签，建软链接 <数据目录>/bin/Bytezard Lead（设计第 8.7 节，P0-8）：
+// 「登录项与扩展」显示 Bytezard Lead，不显示 node。每次安装都重新复制，开发机换了 Node 版本以后跟着换。
+async function placeDevAgent(dir: string): Promise<{ binary: string; launcher: string }> {
+  return installAgentBinary({
+    root: dir,
+    placeBinary: (dest) => {
+      copyFileSync(process.execPath, dest);
+      chmodSync(dest, 0o755);
+    },
+  });
+}
+
 async function install(): Promise<number> {
   const entry = join(distDir(), "supervisor.mjs");
   if (!existsSync(entry)) { console.error("先构建: npm run build"); return 1; }
+  // 还没迁移的开发机：不在旧目录旁边另装一个新任务。
+  if (isPreRenameDataDir(dataDir(), homedir())) {
+    console.error("这台机器还在用改名以前的数据目录和 launchd 任务。先迁移：node apps/daemon/dist/ops.mjs migrate-data-dir");
+    return 1;
+  }
   // AM_API_KEY 是开发环境的要求。运行包（根目录有 release.json）里不查它。
   const configuredKey = resolveKeyReal(dataDir(), {}, "AM_API_KEY") === "config";
   if (!hasReleaseManifest(PROJECT_ROOT) && !configuredKey && !keychainSecretExists("AM_API_KEY")) {
@@ -253,8 +276,9 @@ async function install(): Promise<number> {
   await stopRunningService();
   const logDir = join(dataDir(), "logs");
   mkdirSync(logDir, { recursive: true });
+  const { launcher } = await placeDevAgent(dataDir());
   const p = await installAgent(plistPath(), plistContent({
-    nodeBin: process.execPath, entry, cwd: PROJECT_ROOT, logDir,
+    nodeBin: launcher, entry, cwd: PROJECT_ROOT, logDir,
   }));
   await waitForSupervisor(60_000);
   await supervisorRequest({ type: "ensure_running" }, { timeoutMs: 35_000 });
@@ -278,17 +302,36 @@ function flagValue(args: string[], name: string): string | undefined {
 }
 
 // 桌面版的安装（设计第 4.2 节）。进度按行输出 JSON 到 stdout，App 逐行读。--progress-json 是 App 的写法，输出总是 JSON。
+// 数据目录和壳的规则一样（desktop/src/paths.ts）：PLC_DATA_DIR，缺省是新名字的目录。不用 dataDir()：还没迁移的开发机上
+// 它是旧目录，而 App 装在新目录里（设计第 12.2 节）。--root 不在 <安装根>/current 时，preflight 拒绝。
 async function desktopInstall(args: string[]): Promise<number> {
   const root = flagValue(args, "--root");
   const locale = flagValue(args, "--locale") ?? "en";
   if (!root || !isLocale(locale)) { console.error(USAGE); return 2; }
+  // 接管途中 App 退出时，读进度的管道断了，写 stdout 会出 EPIPE：不能因此停在一半（设计第 12.6 节）。
+  process.stdout.on("error", () => {});
+  const home = homedir();
+  const appDataDir = process.env.PLC_DATA_DIR ?? defaultDataDir(home);
+  const appInstallRoot = join(appDataDir, "runtime");
   const result = await runDesktopInstall({
     root,
-    installRoot: installRoot(),
-    dataDir: dataDir(),
-    dbPath: dbPath(),
+    installRoot: appInstallRoot,
+    dataDir: appDataDir,
+    dbPath: join(appDataDir, "plc.db"),
     plistPath: launchdPlistPath(),
     preRenamePlistPaths: preRenamePlistPaths(),
+    // 改名以前的安装只在数据目录是缺省位置时接管：设了别的 PLC_DATA_DIR 时，旧目录和它无关。
+    preRenameDataDir: resolve(appDataDir) === resolve(defaultDataDir(home)) ? preRenameDataDir(home) : null,
+    keepDevInstall: process.env[KEEP_DEV_INSTALL_ENV] === "1",
+    takeover: {
+      launchAgentsDir: launchAgentsDir(),
+      uid: process.getuid!(),
+      launchctl,
+      freeBytes,
+      drain: drainForMigration,
+      waitStopped: waitServicesStopped,
+      health: newServiceHealthy,
+    },
     locale,
     emit: (event) => process.stdout.write(`${JSON.stringify(event)}\n`),
     captureLoginShellPath: () => captureLoginShellPath(),
@@ -299,13 +342,15 @@ async function desktopInstall(args: string[]): Promise<number> {
     },
     supervisor: {
       // 只看 supervisor.sock 能不能连上：忙着的 supervisor 回答 status 要几秒，按回答判断会把在跑的服务停掉重装。
-      waitUntilAvailable: async (timeoutMs) => (await waitUntil(timeoutMs, async () => await supervisorListening() || null)) !== null,
+      waitUntilAvailable: async (timeoutMs) => (await waitUntil(timeoutMs, async () => await supervisorListening(appDataDir) || null)) !== null,
       // supervisor 等 daemon 就绪最多 10 分钟（daemonReadyTimeoutMs），这里比它多等 30 秒，机器忙时不把还在启动报成失败。
-      ensureRunning: async () => { await supervisorRequest({ type: "ensure_running" }, { timeoutMs: ensureRunningTimeoutMs() }); },
+      ensureRunning: async () => {
+        await supervisorRequest({ type: "ensure_running" }, { dataDir: appDataDir, timeoutMs: ensureRunningTimeoutMs() });
+      },
     },
     daemon: {
-      waitForStatus: (timeoutMs) => waitUntil(timeoutMs, async () => {
-        const status = await daemonLocalStatus();
+      waitForStatus: (timeoutMs, dir = appDataDir) => waitUntil(timeoutMs, async () => {
+        const status = await daemonLocalStatus(dir);
         return status ? { gatewayUrl: status.gatewayUrl } : null;
       }),
     },
@@ -346,8 +391,122 @@ function selfcheck(): number {
   return ok ? 0 : 1;
 }
 
+// 排空最多等多久：Lead 一轮或者一个接管不了的执行，通常几分钟内结束。
+const MIGRATION_DRAIN_TIMEOUT_MS = 30 * 60_000;
+const MIGRATION_STOP_TIMEOUT_MS = 60_000;
+
+// 等 dir 下的 supervisor 和 daemon 都退出。bootout 以后 supervisor 先排空、再停 daemon；20 秒后还在的，直接请它们停。
+async function waitServicesStopped(dir: string): Promise<void> {
+  const started = Date.now();
+  let asked = false;
+  for (;;) {
+    const supervisorUp = await socketListening(join(dir, "supervisor.sock"), 1_000);
+    const daemonUp = await daemonReachable(dir);
+    if (!supervisorUp && !daemonUp) return;
+    const waited = Date.now() - started;
+    if (waited > MIGRATION_STOP_TIMEOUT_MS) {
+      throw new Error(`${dir} 下的 supervisor 或 daemon 在 ${MIGRATION_STOP_TIMEOUT_MS / 1000} 秒内没有退出`);
+    }
+    if (!asked && waited > 20_000) {
+      asked = true;
+      if (supervisorUp) await supervisorRequest({ type: "shutdown" }, { dataDir: dir, timeoutMs: 35_000 }).catch(() => {});
+      else await shutdownUnsupervisedDaemon(dir);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+}
+
+// 和 supervisor 的维护用同一个判断（server.ts 的 maintenanceTick）：Lead 不忙，在跑的执行都能在重启后接管。
+async function drainForMigration(dir: string): Promise<void> {
+  const drained = await waitUntil(MIGRATION_DRAIN_TIMEOUT_MS, async () => {
+    const status = await daemonLocalStatus(dir);
+    if (!status) return true;
+    return !status.busy && !itemsBlockingMaintenance(join(dir, "plc.db"), status.runningItemIds).length;
+  });
+  if (!drained) throw new Error(`Lead 或执行在 ${MIGRATION_DRAIN_TIMEOUT_MS / 60_000} 分钟内没有空下来`);
+}
+
+async function newServiceHealthy(dir: string): Promise<void> {
+  const up = await waitUntil(SUPERVISOR_WAIT_MS, async () => await socketListening(join(dir, "supervisor.sock"), 1_000) || null);
+  if (!up) throw new Error(`新的 supervisor 在 ${SUPERVISOR_WAIT_MS / 1000} 秒内没有开始监听`);
+  await supervisorRequest({ type: "ensure_running" }, { dataDir: dir, timeoutMs: ensureRunningTimeoutMs() });
+  const status = await waitUntil(ensureRunningTimeoutMs(), () => daemonLocalStatus(dir));
+  if (!status) throw new Error("新的 daemon 没有回答 status");
+}
+
+function freeBytes(dir: string): number {
+  const stats = statfsSync(dir);
+  return Number(stats.bavail) * Number(stats.bsize);
+}
+
+async function startDetachedMigration(locale: string, follow: boolean): Promise<number> {
+  const logDir = join(homedir(), "Library", "Logs", "Bytezard Lead");
+  mkdirSync(logDir, { recursive: true });
+  const log = join(logDir, `migrate-data-dir-${new Date().toISOString().replace(/[:.]/g, "-")}.jsonl`);
+  const fd = openSync(log, "a", 0o600);
+  const child = spawn(process.execPath, [process.argv[1]!, "migrate-data-dir", "--locale", locale, MIGRATION_RUN_FLAG], {
+    detached: true, stdio: ["ignore", fd, fd], env: process.env,
+  });
+  child.unref();
+  process.stdout.write(`${JSON.stringify({ started: true, pid: child.pid, log })}\n`);
+  if (!follow) return 0;
+  const exit = new Promise<number>((resolve) => child.once("exit", (code) => resolve(code ?? 1)));
+  let offset = 0;
+  let code: number | null = null;
+  void exit.then((value) => { code = value; });
+  for (;;) {
+    // 先看它结束了没有，再读日志：结束以前写的最后几行也会输出。
+    const done = code;
+    const text = readFileSync(log, "utf8");
+    if (text.length > offset) {
+      process.stdout.write(text.slice(offset));
+      offset = text.length;
+    }
+    if (done !== null) return done;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+}
+
+// 开发机从改名以前的名字迁到新名字（supervisor 的 data-dir-migration.ts）。进度按行输出 JSON。
+// 迁移会停掉 supervisor 的 launchd 任务。launchd 停一个任务时连同它的进程组一起停：从 daemon 里启动的命令
+// （Lead 的 run_on_host）在这个进程组里，跟着被杀，迁移就停在一半。daemon 停了以后，接着它输出的管道也断了。
+// 所以真正的迁移在自己的会话里运行（detached），输出写进日志文件；这里只启动它。
+// 也不等它结束：Lead 用 run_on_host 启动时，Lead 这一轮要先结束，迁移的排空才等得到。--follow 时跟着日志输出，在终端里用。
+const MIGRATION_RUN_FLAG = "--run";
+
+async function migrateDataDir(args: string[]): Promise<number> {
+  const locale = flagValue(args, "--locale") ?? "en";
+  if (!isLocale(locale)) { console.error(USAGE); return 2; }
+  if (process.env.PLC_DATA_DIR) {
+    console.error("设了 PLC_DATA_DIR：迁移只处理缺省的数据目录。去掉 PLC_DATA_DIR 再运行。");
+    return 2;
+  }
+  const entry = join(distDir(), "supervisor.mjs");
+  if (!existsSync(entry)) { console.error("先构建: npm run build"); return 1; }
+  if (!args.includes(MIGRATION_RUN_FLAG)) return startDetachedMigration(locale, args.includes("--follow"));
+  // 管道那头的 daemon 停了以后，写 stdout 会出 EPIPE：不能因此中断迁移。
+  process.stdout.on("error", () => {});
+  const home = homedir();
+  const result = await runDataDirMigration({
+    oldDir: preRenameDataDir(home),
+    newDir: defaultDataDir(home),
+    launchAgentsDir: launchAgentsDir(),
+    service: { kind: "dev", checkout: PROJECT_ROOT, entry, placeAgent: placeDevAgent },
+    uid: process.getuid!(),
+    locale,
+    launchctl,
+    freeBytes,
+    drain: drainForMigration,
+    waitStopped: waitServicesStopped,
+    health: newServiceHealthy,
+    emit: (event) => process.stdout.write(`${JSON.stringify(event)}\n`),
+  });
+  return result.ok ? 0 : 1;
+}
+
 async function uninstall(): Promise<void> {
-  await uninstallAgent(plistPath());
+  const label = activeLaunchdLabel();
+  await uninstallAgent(join(launchAgentsDir(), `${label}.plist`), label);
   // Hindsight 记忆服务是独立的 launchd 任务，一起停掉。它的数据（Postgres 里的库或者 ~/.pg0）留着。
   await uninstallHindsightService();
   console.log("已卸载（Supervisor、daemon 和 Hindsight 记忆服务随 bootout 停止；记忆数据保留）");
@@ -394,6 +553,15 @@ async function doctor(): Promise<number> {
       [".ts", ".tsx"],
     ),
     nodeVersion: () => process.version,
+    agentNodeVersion: () => {
+      const agent = join(dataDir(), AGENT_BINARY);
+      if (!existsSync(agent)) return null;
+      try {
+        return execFileSync(agent, ["--version"], { encoding: "utf8", timeout: 10_000 }).trim();
+      } catch (error) {
+        return `无法运行（${error instanceof Error ? error.message : String(error)}）`;
+      }
+    },
     releaseMode: () => hasReleaseManifest(PROJECT_ROOT),
     gatewayExposure: async () => (await daemonLocalStatus())?.gatewayExposure ?? null,
   };
@@ -494,6 +662,7 @@ try {
     case "desktop-install": process.exitCode = await desktopInstall(args); break;
     case "login-shell-path": process.exitCode = await loginShellPath(); break;
     case "selfcheck": process.exitCode = selfcheck(); break;
+    case "migrate-data-dir": process.exitCode = await migrateDataDir(args); break;
     case "uninstall": await uninstall(); break;
     case "doctor": process.exitCode = await doctor(); break;
     case "lead-model": leadModel(); break;

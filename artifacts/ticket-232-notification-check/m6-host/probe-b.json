@@ -1,0 +1,16 @@
+{
+  "appName": "Bytezard Lead",
+  "appVersion": "0.0.1-m6",
+  "supported": true,
+  "title": "Paimon",
+  "events": [
+    {
+      "event": "called show()",
+      "atMs": 1
+    },
+    {
+      "event": "show",
+      "atMs": 20
+    }
+  ]
+}

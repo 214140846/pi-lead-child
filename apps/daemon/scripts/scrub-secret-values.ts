@@ -6,7 +6,7 @@
 //      它会改写文本文件，逐个清理 plc.db 和 backups/、plc.db.bak-* 这些数据库备份（改之前和之后都做完整性检查），
 //      改过的数据库会 VACUUM。「要你决定」的文件它不动。
 //   4. 启动 daemon，然后轮换这些密钥。
-// 只打印路径、文件数和次数，不打印值。--data-dir 缺省是 PLC_DATA_DIR 或 ~/.pi-lead-child。
+// 只打印路径、文件数和次数，不打印值。--data-dir 缺省是 PLC_DATA_DIR 或缺省的数据目录（core 的 dataDir()）。
 import { connect } from "node:net";
 import { join } from "node:path";
 import { dataDir } from "@pi-lead-child/core";

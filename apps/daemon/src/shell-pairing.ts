@@ -4,8 +4,9 @@
 //
 // 桌面版的发布模式（运行包根目录有 release.json）缺省打开，但多一道口令：daemon 在数据目录写一个 0600 的口令文件，
 // Bytezard Lead 的窗口（desktop/src/main.ts）读它，给发往网关的请求加上 SHELL_PAIRING_HEADER。别的系统用户读不到这个文件。
+// App 在 plc.sock 上订阅桌面通知时也要带这个口令（desktop-notifier.ts），所以开发机上 daemon 也会生成它。
 // 口令文件按 *.key 命名：执行器的沙箱禁读（core 的 sandbox-policy.ts），Lead 的凭证守卫也按扩展名拦住它。
-import { randomBytes } from "node:crypto";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -43,4 +44,11 @@ export function loadOrCreateShellPairingKey(dataDir: string): string {
   writeFileSync(path, `${key}\n`, { mode: 0o600 });
   chmodSync(path, 0o600);
   return key;
+}
+
+/** 比较两个口令，用时和内容无关。 */
+export function sameSecret(given: string, expected: string): boolean {
+  const a = Buffer.from(given);
+  const b = Buffer.from(expected);
+  return a.length === b.length && timingSafeEqual(a, b);
 }

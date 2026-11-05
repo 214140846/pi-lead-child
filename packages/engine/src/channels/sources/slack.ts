@@ -58,7 +58,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { Type } from "typebox";
 import { SLACK_APP_TOKEN_ENV, SLACK_SESSION_COOKIE_ENV, SLACK_USER_TOKEN_ENV } from "@pi-lead-child/core";
-import { normalizeSlackEmojiCode, plainObjectLinks, SLACK_BYLINE_EMOJI_DEFAULT, type SenderTrust } from "@pi-lead-child/protocol";
+import { formatAttachmentBytes, normalizeSlackEmojiCode, plainObjectLinks, SLACK_BYLINE_EMOJI_DEFAULT, type SenderTrust } from "@pi-lead-child/protocol";
 import type { SystemStandingOrderSeed } from "@pi-lead-child/store";
 import { channelInboundPayload } from "../payload.js";
 import { ChannelFileNotFoundError, ChannelTargetGoneError } from "../types.js";
@@ -657,18 +657,6 @@ function blockText(block: unknown): string[] {
   return [];
 }
 
-// 一个附件里的字：前言、作者、标题、正文、字段、脚注；都没有时用 fallback。附件里也可能有 block。
-function attachmentText(attachment: unknown): string[] {
-  if (!isRecord(attachment)) return [];
-  const fields = Array.isArray(attachment.fields)
-    ? attachment.fields.flatMap((field) => isRecord(field) ? [[field.title, field.value].filter(isString).join(": ")] : [])
-    : [];
-  const blocks = Array.isArray(attachment.blocks) ? attachment.blocks.flatMap(blockText) : [];
-  const parts = [attachment.pretext, attachment.author_name, attachment.title, attachment.text].filter(isString);
-  const all = [...parts, ...fields.filter(isString), ...blocks, ...[attachment.footer].filter(isString)];
-  return all.length ? all : [attachment.fallback].filter(isString);
-}
-
 // Slack 的文件编号（F 开头）。readFile 只认它。
 const SLACK_FILE_ID = /^F[A-Z0-9]{1,30}$/;
 
@@ -685,18 +673,83 @@ function slackFileLine(file: unknown): string[] {
   return [type.startsWith("image/") ? `[图片 ${name}，${ref}]` : `[文件 ${name}，${type ? `${type}，` : ""}${ref}]`];
 }
 
+// 一个附件里的字：前言、作者（withAuthor 时）、标题、正文、字段、block、脚注；都没有时用 fallback。
+function attachmentText(attachment: Record<string, unknown>, withAuthor: boolean): string[] {
+  const fields = Array.isArray(attachment.fields)
+    ? attachment.fields.flatMap((field) => isRecord(field) ? [[field.title, field.value].filter(isString).join(": ")] : [])
+    : [];
+  const blocks = Array.isArray(attachment.blocks) ? attachment.blocks.flatMap(blockText) : [];
+  const parts = [attachment.pretext, withAuthor ? attachment.author_name : null, attachment.title, attachment.text].filter(isString);
+  const all = [...parts, ...fields.filter(isString), ...blocks, ...[attachment.footer].filter(isString)];
+  return all.length ? all : [attachment.fallback].filter(isString);
+}
+
+// 附件是哪种卡片：转发的消息（is_share）、链接到的一条 Slack 消息（is_msg_unfurl）、链接预览（from_url）。应用的卡片是 null。
+function attachmentKind(attachment: Record<string, unknown>): string | null {
+  if (attachment.is_share === true) return "转发的消息";
+  if (attachment.is_msg_unfurl === true) return "消息卡片";
+  if (isString(attachment.from_url) || isString(attachment.original_url)) return "链接预览";
+  return null;
+}
+
+// 一个附件的文字。消息的 text 有字、或者附件不是应用的卡片时，写成「[转发的消息] 作者：正文」一段，作者是 author_name
+// （链接预览没有作者时用 service_name）。text 为空的应用消息（例如日历提醒）卡片就是正文，照原来的样子一段一行。
+function attachmentCard(attachment: Record<string, unknown>, messageHasText: boolean): string {
+  const kind = attachmentKind(attachment);
+  if (!messageHasText && !kind) return attachmentText(attachment, true).join("\n");
+  const author = [attachment.author_name, attachment.author_subname, attachment.service_name].find(isString);
+  const text = attachmentText(attachment, false).map((part) => part.trim()).filter(Boolean);
+  if (!author && !text.length) return "";
+  return `[${kind ?? "消息卡片"}] ${author ? `${author}${text.length ? "：" : ""}` : ""}${text.join("\n")}`;
+}
+
+// 附件里的外链图片（image_url，没有时 thumb_url，例如链接预览的封面）不是 Slack 文件，readFile 取不到：写一行说明，不丢掉。
+// 和附件里某个 Slack 文件是同一个地址时不写。
+function attachmentImageLine(attachment: Record<string, unknown>): string[] {
+  const url = [attachment.image_url, attachment.thumb_url].find(isString);
+  if (!url || !/^https?:\/\//.test(url)) return [];
+  const files = Array.isArray(attachment.files) ? attachment.files.filter(isRecord) : [];
+  if (files.some((file) => Object.values(file).includes(url))) return [];
+  return [`[图片 卡片里的外链图片，不是 Slack 文件，没有文件编号：${url.replace(/[\s[\]<>]/g, "")}]`];
+}
+
+// 比较 text 和 block 的字时用的样子：<链接|文字> 取文字，<链接> 取链接，提及去掉，转义还原，空白去掉。
+function comparable(text: string): string {
+  return text
+    .replace(/<([^<>|\n]+)\|([^<>\n]+)>/g, (_, target: string, label: string) => /^[@#!]/.test(target) ? "" : label)
+    .replace(/<([@#!][^<>\n]*)>/g, "")
+    .replace(/<([^<>\n]+)>/g, "$1")
+    .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&")
+    .replace(/\s+/g, "");
+}
+
 /**
- * 一条消息的正文。text 有字时就是它。应用（例如日历提醒）常把正文放在附件或者 block 里，text 是空的（2026-10-21：Google
- * Calendar 的提醒判断时拿到的是空字符串）：这时按结构取出 block 和附件里的文字，一段一行。只按结构取，不看内容。
- * 附带的文件在正文后面，一个文件一行标记（2026-11-02：别人发来的截图以前整个丢了，Lead 只读到正文）。
+ * 一条消息的正文，一段一行：
+ * - text。应用（例如日历提醒）常把正文放在附件或者 block 里，text 是空的（2026-10-21：Google Calendar 的提醒判断时拿到的
+ *   是空字符串）：这时按结构取出 block 和附件里的文字。text 有字时，block 里 text 没有的字也带上（多半是重复的）。
+ * - 附件（转发的消息、链接预览、应用的卡片）一个一段，写明哪种卡片、谁写的（2026-11-04：别人转发了一条带截图的消息，
+ *   又写了一句「帮忙看一下」，Lead 只读到这一句）。
+ * - 附带的文件，消息的在前、附件里的在后，一个文件一行标记（2026-11-02：别人发来的截图以前整个丢了，Lead 只读到正文）；
+ *   附件里取不到的外链图片也写一行。
+ * 只按结构取，不看内容。
  */
 export function slackMessageText(message: SlackMessage): string {
-  const files = Array.isArray(message.files) ? message.files.flatMap(slackFileLine) : [];
-  if (typeof message.text === "string" && message.text.trim()) return [message.text, ...files].join("\n");
-  const blocks = Array.isArray(message.blocks) ? message.blocks.flatMap(blockText) : [];
-  const attachments = Array.isArray(message.attachments) ? message.attachments.flatMap(attachmentText) : [];
-  const body = [...blocks, ...attachments].map((part) => part.trim()).filter(Boolean).join("\n").slice(0, MESSAGE_TEXT_MAX);
-  return [body, ...files].filter(Boolean).join("\n");
+  const text = typeof message.text === "string" && message.text.trim() ? message.text : "";
+  const attachments = Array.isArray(message.attachments) ? message.attachments.filter(isRecord) : [];
+  let blocks = Array.isArray(message.blocks) ? message.blocks.flatMap(blockText) : [];
+  if (text) {
+    const seen = comparable(text);
+    blocks = blocks.filter((block) => !seen.includes(comparable(block)));
+  }
+  const cards = attachments.map((attachment) => attachmentCard(attachment, Boolean(text)));
+  const body = [...blocks, ...cards].map((part) => part.trim()).filter(Boolean).join("\n").slice(0, MESSAGE_TEXT_MAX);
+  const files = [
+    ...(Array.isArray(message.files) ? message.files.flatMap(slackFileLine) : []),
+    ...attachments.flatMap((attachment) => [
+      ...(Array.isArray(attachment.files) ? attachment.files.flatMap(slackFileLine) : []), ...attachmentImageLine(attachment),
+    ]),
+  ];
+  return [text, body, ...files].filter(Boolean).join("\n");
 }
 
 /**
@@ -1906,7 +1959,7 @@ export function createSlackChannelAdapter(options: SlackChannelOptions): Channel
       if (!url) throw new Error(`Slack 没有给这个文件的下载地址：${ref}`);
       if (!slackFileUrlAllowed(url)) throw new Error(`这个文件的下载地址不在 ${SLACK_FILES_HOST} 上，不带令牌去下载`);
       const size = typeof file.size === "number" ? file.size : 0;
-      if (size > readOptions.maxBytes) throw new Error(`文件有 ${size} 字节，超过了上限 ${readOptions.maxBytes} 字节`);
+      if (size > readOptions.maxBytes) throw new Error(`文件有 ${formatAttachmentBytes(size)}，超过了上限 ${formatAttachmentBytes(readOptions.maxBytes)}`);
       if (!web.download) throw new Error("这个 Slack 客户端不能下载文件");
       const data = await web.download(url, context.credential.token, readOptions.maxBytes);
       return {

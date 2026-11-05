@@ -21,14 +21,16 @@ export type ImageThumbnailProps = {
   label: string;
   // 取图失败：占位块里显示一个提示图标。
   failed?: boolean;
+  // 给出时整张小图可以点，例如点开看大图（工单附件）。无障碍名称用 label。
+  onPress?: () => void;
   // 给出时右上角有删除按钮。
   onRemove?: () => void;
   removeLabel?: string;
   testID?: string;
 };
 
-// 一张图片的小图：会话输入框上方待发的图片，会话里你发过的图片。
-export function ImageThumbnail({ uri, label, failed = false, onRemove, removeLabel: removeLabelProp, testID }: ImageThumbnailProps) {
+// 一张图片的小图：会话输入框上方待发的图片，会话里你发过的图片，工单详情里的附件。
+export function ImageThumbnail({ uri, label, failed = false, onPress, onRemove, removeLabel: removeLabelProp, testID }: ImageThumbnailProps) {
   const m = useMessages(displayMessages);
   const removeLabel = removeLabelProp ?? m.removeImage;
   return (
@@ -52,6 +54,18 @@ export function ImageThumbnail({ uri, label, failed = false, onRemove, removeLab
         <View flex={1} items="center" justify="center">
           <Icon name="error-outline" size={18} color="text-muted" accessibilityLabel={m.imageFailed} />
         </View>
+      ) : null}
+      {onPress ? (
+        <Pressable
+          testID={testID ? `${testID}-open` : undefined}
+          aria-label={label}
+          onPress={onPress}
+          position="absolute"
+          t={0}
+          r={0}
+          b={0}
+          l={0}
+        />
       ) : null}
       {onRemove ? (
         <Pressable

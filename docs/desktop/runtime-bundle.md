@@ -39,6 +39,8 @@ out/
 `runtime/` 的形状和设计文档第 1.1 节一致：
 
 - `bin/lead-agent`：nodejs.org 的 Node 二进制，版本写在 `desktop/node-version`。脚本用同一个版本目录里的 `SHASUMS256.txt` 校验下载的 tar.gz，对不上时删掉文件并失败。
+  脚本用 `codesign --force --sign - --identifier com.bytezard.plc.agent` 重新做 ad-hoc 签名，去掉 Node 原来的签名，「登录项与扩展」才不把它归到「Node.js Foundation」下面（设计第 8.7 节）。
+- `bin/Bytezard Lead`：指向 `lead-agent` 的软链接。launchd 的 plist 写这个路径：「允许在后台」显示它的名字 Bytezard Lead，进程名还是 `lead-agent`（设计第 8.7 节，做法 1b）。
 - `bin/node`：指向 `lead-agent` 的软链接。
 - `bin/plc`：shell 包装，用 `bin/lead-agent` 运行 `apps/cli/dist/cli.mjs`。
 - `package.json`（`workspaces: []`）、`apps/daemon/package.json`、`apps/cli/package.json`：让 `projectRoot()` 和 `workspaceDir()` 照旧找到目录。
@@ -115,15 +117,16 @@ App 解出运行包、切好 `current` 以后运行（P0-3，设计文档第 4.2
 
 - `--root` 必须正好是 `<安装根>/current`。`<安装根>` 是 `installRoot()`（`packages/core/src/config.ts`），等于 `dataDir()` 下的 `runtime/`。P0-8 改数据目录以后，它就是 `~/Library/Application Support/Bytezard Lead/runtime`。
 - `--locale` 是 `en` 或 `zh`，缺省是 `en`。安装时还没有库，读不到用户选的界面语言。文案在 `packages/supervisor/src/deploy/desktop-install.messages.ts`。
-- stdout 每行一个 JSON：`{step, state, message}`，失败时带 `code`，最后一行带 `gatewayUrl`。同样的内容写进 `<安装根>/install-state.json`，失败时 `lastError.detail` 里有 launchctl 的原文。
+- stdout 每行一个 JSON：`{step, state, message}`，失败时带 `code`，最后一行带 `gatewayUrl`。装好时 `install-state.json` 记下 `installedVersion`。同样的内容写进 `<安装根>/install-state.json`，失败时 `lastError.detail` 里有 launchctl 的原文。
 - 退出码：0 是装好了，或者发现了开发安装；1 是失败；2 是参数不对。
 
 步骤按顺序是：
 
 | step | 做什么 | 可能的 code |
 |---|---|---|
-| `preflight` | `--root` 的位置、`release.json` 和文件哈希、数据目录里 socket 路径的长度（最多 103 字节） | `root_invalid`、`release_invalid`、`socket_path_too_long` |
-| `detect` | 已有的 plist 指向 git checkout 时不覆盖；还有改名以前的 plist 时不装 | `dev_install_detected`（退出码 0）、`legacy_install_detected` |
+| `preflight` | 同时只跑一个（`<安装根>/install.lock`）；`--root` 的位置、`release.json` 和文件哈希、数据目录里 socket 路径的长度（最多 103 字节） | `install_running`、`root_invalid`、`release_invalid`、`socket_path_too_long` |
+| `detect` | 认出已有的是哪种安装（设计文档第 12.2 节）；库比运行包新时不装。设了 `PLC_KEEP_DEV_INSTALL=1` 时保留开发安装、直接打开它 | `schema_ahead`、`dev_install_detected`（退出码 0） |
+| `takeover` | 自动接管存量安装：改名以前的、跑开发 checkout 的、换了版本的（设计文档第 12 节）。没有要接管的时是 `skipped`。进度行带 `phase`（迁移模块的步骤） | `takeover_refused`（什么都没改）、`takeover_failed`（停服务以前失败，什么都没改）、`takeover_rolled_back`、`takeover_rollback_failed` |
 | `login_shell_path` | 读登录 shell 的 PATH，写进 `<数据目录>/login-shell-path.json`。读不到时是 `skipped`，安装继续 | `login_shell_path_unavailable` |
 | `launchd` | 写 plist，bootout 再 bootstrap。plist 没变、服务在跑时不重启 | `launchd_unchanged`、`launchd_bootstrap_failed` |
 | `supervisor` | 等 `supervisor.sock` 回答（60 秒） | `supervisor_timeout` |

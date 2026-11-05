@@ -47,6 +47,9 @@ export interface DoctorProbes {
   webFresh(): boolean | null;                       // dist/web 对比 companion 源码；null=未构建
   fts5Available(): boolean;
   nodeVersion(): string;
+  // 开发机的 Node 副本（<数据目录>/bin/lead-agent，plc daemon install 复制）的版本。没有副本时为 null。
+  // 缺席时不列这一项（发布模式、只注入了部分 probes 的测试）。
+  agentNodeVersion?(): string | null;
   // 发布模式：运行包根目录有 release.json（桌面版）。这时 AM_API_KEY 和 aish 都是可选的：它们是开发环境的要求。缺席时按开发模式算。
   releaseMode?(): boolean;
   // 网关在回环之外的那个地址的状态（daemon 的 status 里有）。只监听回环或 daemon 没在运行时为 null。
@@ -78,7 +81,7 @@ export async function runDoctor(p: DoctorProbes): Promise<DoctorCheck[]> {
     : {
       name: "凭证 AM_API_KEY", ok: am !== null && am !== "broken",
       detail: am === "broken" ? "config.json 有条目但无法解析（检查 value/fromEnv 拼写）" : am ? `来源: ${am}` : "未配置",
-      fix: am !== null && am !== "broken" ? undefined : "写入 ~/.pi-lead-child/config.json 的 env 段（launchd 环境不含 shell 变量）",
+      fix: am !== null && am !== "broken" ? undefined : `写入 ${envConfigPath()} 的 env 段（launchd 环境不含 shell 变量）`,
     });
   const tv = p.resolveKey("TAVILY_API_KEY");
   checks.push({
@@ -102,7 +105,7 @@ export async function runDoctor(p: DoctorProbes): Promise<DoctorCheck[]> {
   checks.push({
     name: "config.json 权限", ok: perms === null ? null : perms === "600",
     detail: perms === null ? "无 config.json" : `mode ${perms}`,
-    fix: perms !== null && perms !== "600" ? "chmod 600 ~/.pi-lead-child/config.json" : undefined,
+    fix: perms !== null && perms !== "600" ? `chmod 600 "${envConfigPath()}"` : undefined,
   });
   const aish = p.aishConfigured();
   checks.push({
@@ -148,7 +151,19 @@ export async function runDoctor(p: DoctorProbes): Promise<DoctorCheck[]> {
   const fts5 = p.fts5Available();
   checks.push({ name: "FTS5 检索", ok: fts5, detail: fts5 ? "可用" : "不可用，notes 检索降级 LIKE" });
   checks.push({ name: "node", ok: true, detail: p.nodeVersion() });
+  if (p.agentNodeVersion && !release) checks.push(agentNodeCheck(p.agentNodeVersion(), p.nodeVersion()));
   return checks;
+}
+
+// 开发机的后台服务用 Node 的副本运行（设计第 8.7 节，P0-8）。开发机换了 Node 以后副本还是旧的：launchd 跑的和
+// plc、构建用的不是同一个版本，better-sqlite3 这类原生模块会加载失败。
+export function agentNodeCheck(agent: string | null, node: string): DoctorCheck {
+  const name = "后台服务的 Node 副本";
+  if (agent === null) return { name, ok: null, detail: "没有副本（plc daemon install 时复制）" };
+  if (agent !== node) {
+    return { name, ok: false, detail: `副本是 ${agent}，开发机的 Node 是 ${node}`, fix: "plc daemon install（重新复制开发机的 Node）" };
+  }
+  return { name, ok: true, detail: agent };
 }
 
 // fix 只在需要行动时才设置——formatChecks 见 fix 就渲染，✓ 态带 fix 会冒出一条虚假提示。
@@ -158,7 +173,7 @@ function dbSchemaCheck(s: DbSchemaStatus): DoctorCheck {
     return { name, ok: null, detail: "plc.db 尚未创建（daemon 首次启动时创建）" };
   }
   if (s.state === "unreadable") {
-    return { name, ok: false, detail: `只读打开失败: ${s.error}`, fix: "检查 ~/.pi-lead-child/plc.db 是否损坏" };
+    return { name, ok: false, detail: `只读打开失败: ${s.error}`, fix: "检查数据目录里的 plc.db 是否损坏" };
   }
   if (s.current > s.expected) {
     return {

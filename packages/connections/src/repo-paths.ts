@@ -81,7 +81,7 @@ export function resolveScopedPath(root: string, input: string, options: { denied
     return { ok: false, reason: "路径不存在" };
   }
   if (!isContained(canonicalRoot, canonical)) return { ok: false, reason: "路径（经过符号链接以后）在仓库外面" };
-  // 助手自己的数据目录（~/.pi-lead-child：账本、凭据、日志）：仓库在它里面、或者路径经过符号链接落进它里面，都拒绝。
+  // 助手自己的数据目录（~/Library/Application Support/Bytezard Lead/：账本、凭据、日志）：仓库在它里面、或者路径经过符号链接落进它里面，都拒绝。
   for (const denied of options.deniedRoots ?? []) {
     let canonicalDenied: string;
     try {

@@ -1,6 +1,6 @@
 // 账本的写入守卫（2026-10-19 审查）。
 //
-// 一个 child 在 bash 里执行了 `sqlite3 ~/.pi-lead-child/plc.db "UPDATE connections SET write_policy = 'direct' …"`。
+// 一个 child 在 bash 里执行了 `sqlite3 <数据目录>/plc.db "UPDATE connections SET write_policy = 'direct' …"`。
 // child 和 daemon 是同一个系统用户，文件权限挡不住它。规则是：plc.db 可以读（排查问题要用 sqlite3 -readonly），
 // 不能写；改设置必须走 daemon 的 API。
 //

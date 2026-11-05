@@ -1157,6 +1157,57 @@ describe('CompanionStateRuntime', () => {
     expect(client.getTickets).toHaveBeenCalledTimes(2);
   });
 
+  // 2026-11-04：补发的历史里有旧的排队快照，早就处理过的外部消息出现在输入框上方。补发时不用它，补发完按 GET 的为准。
+  it('does not show a replayed lead-queue snapshot, and refetches the queue when the replay ends', async () => {
+    const stale = {
+      key: 'slack:D0STALE', conversation: 'Ethan 的私信', source: 'slack', sourceLabel: 'Slack', senders: ['Ethan'],
+      count: 4, excerpt: '早就处理过的消息', cardIds: [3], firstAt: '2026-11-03T09:20:00.000Z', lastAt: '2026-11-03T09:26:00.000Z',
+      next: true, actions: ['remove'],
+    };
+    const getLeadQueue = vi.fn(async () => ({ busy: true, entries: [] }));
+    let handlers: ConnectionHandlers = {};
+    const client = transport({ connect: connectAtLatestSeq(5, (next) => { handlers = next; }), getLeadQueue });
+    const timers = scheduler();
+    const runtime = createCompanionStateRuntime({ client, credentials: credentialStore(), scheduler: timers });
+    await runtime.start();
+    expect(getLeadQueue).toHaveBeenCalledTimes(1);
+
+    handlers.onEvent?.(gatewayEvent(4, 'snapshot.required', { resource: 'lead-queue', queue: { busy: true, entries: [stale] } }));
+    await runtime.whenIdle();
+    expect(runtime.control.getState().leadQueue?.entries).toEqual([]);
+
+    handlers.onEvent?.(gatewayEvent(5, 'snapshot.required', { resource: 'lead-queue', queue: { busy: true, entries: [stale] } }));
+    await runtime.whenIdle();
+    timers.runAll();
+    await vi.waitFor(() => expect(getLeadQueue).toHaveBeenCalledTimes(2));
+    expect(runtime.control.getState().leadQueue?.entries).toEqual([]);
+
+    // 连上以后推来的照常整份替换。
+    handlers.onEvent?.(gatewayEvent(6, 'snapshot.required', { resource: 'lead-queue', queue: { busy: true, entries: [stale] } }));
+    await runtime.whenIdle();
+    expect(runtime.control.getState().leadQueue?.entries).toEqual([stale]);
+  });
+
+  it('refetches the snapshots when the gateway skipped the history', async () => {
+    const getLeadQueue = vi.fn(async () => ({ busy: false, entries: [] }));
+    const client = transport({
+      getLeadQueue,
+      connect: vi.fn(async (handlers: ConnectionHandlers = {}) => {
+        handlers.onHello?.({
+          type: 'hello.v2', protocolVersion: PROTOCOL_VERSION, serverTime: '2026-11-04T15:40:00.000Z',
+          timezone: 'Asia/Shanghai', latestSeq: 133_598, capabilities: [], binding,
+          daemon: { model: overview.model, sessionId: overview.sessionId, busy: false },
+        }, { history: 'skipped' });
+        handlers.onStateChange?.('connected');
+      }),
+    });
+    const runtime = createCompanionStateRuntime({ client, credentials: credentialStore(), scheduler: scheduler() });
+    await runtime.start();
+    await vi.waitFor(() => expect(client.getConversationTurns).toHaveBeenCalledTimes(2));
+    expect(client.getTickets).toHaveBeenCalledTimes(2);
+    expect(getLeadQueue).toHaveBeenCalledTimes(2);
+  });
+
   it('does not merge an older conversation-card page after its resource generation changes', async () => {
     const older = deferred<ReturnType<typeof emptyConversationCardPage>>();
     const completed = durableConversationCard('completed', '2026-07-24T08:02:00.000Z');

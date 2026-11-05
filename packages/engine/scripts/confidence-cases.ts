@@ -13,6 +13,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { installedDataDir } from "@pi-lead-child/core";
 import { isSenderTrust } from "@pi-lead-child/protocol";
 import {
   CONFIDENCE_INTENT_LABELS, CONFIDENCE_MODEL_DEFAULTS, evaluateConfidenceModel,
@@ -25,7 +26,7 @@ import { draftResult, readLiveCase, rescoreWithModel, type JevCase, type LiveRef
 const ROOT = process.cwd();
 const DIR = path.join(ROOT, ".scratch", "confidence-model");
 // 线上库：只读地打开（readLiveCase）。
-const LIVE_DB = path.join(os.homedir(), ".pi-lead-child", "plc.db");
+const LIVE_DB = path.join(installedDataDir(os.homedir()), "plc.db");
 // Jev 打的分（只有分数，没有消息原文）。
 const JEV_CACHE = path.join(DIR, "jev-scores.json");
 

@@ -3,6 +3,8 @@
 import { describe, expect, it } from "vitest";
 import { Value } from "typebox/value";
 import {
+  DESKTOP_NOTIFICATION_BODY_MAX,
+  DesktopNotificationEventSchema,
   ADMIN_SCOPE,
   ALL_SCOPES,
   ADMIN_TOKEN_TTL_MS,
@@ -103,6 +105,16 @@ describe("plc.sock: local bootstrap and ops only", () => {
     // 停机前排空 Lead：supervisor 先发 drain，等回答再发 shutdown。
     expect(Value.Check(LocalSocketCommandSchema, { type: "drain", id: "d1", timeoutMs: 12_000 })).toBe(true);
     expect(Value.Check(LocalSocketCommandSchema, { type: "drain", timeoutMs: 600_000 })).toBe(false);
+  });
+
+  // Bytezard Lead 的 App 订阅桌面通知（P0-7 路径 A）：带口令订阅，daemon 推 DesktopNotificationEvent，发失败的那条交回。
+  it("accepts the desktop app's notification subscription and its failure report", () => {
+    expect(Value.Check(LocalSocketCommandSchema, { type: "subscribe_desktop_notifications", id: "s", key: "a".repeat(64) })).toBe(true);
+    expect(Value.Check(LocalSocketCommandSchema, { type: "subscribe_desktop_notifications" })).toBe(false);
+    expect(Value.Check(LocalSocketCommandSchema, { type: "desktop_notification_failed", body: "#12 需要你重新登录" })).toBe(true);
+    expect(Value.Check(LocalSocketCommandSchema, { type: "desktop_notification_failed", body: "x".repeat(DESKTOP_NOTIFICATION_BODY_MAX + 1) })).toBe(false);
+    expect(Value.Check(DesktopNotificationEventSchema, { type: "desktop_notification", title: "Paimon", body: "#12 需要你重新登录" })).toBe(true);
+    expect(Value.Check(DesktopNotificationEventSchema, { type: "desktop_notification", title: "", body: "x" })).toBe(false);
   });
 
   it("rejects the client commands that moved to the gateway", () => {

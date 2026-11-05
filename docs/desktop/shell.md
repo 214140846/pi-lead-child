@@ -35,8 +35,8 @@ PLC 执行器的沙箱里，`hdiutil create` 报 `Device not configured`，所�
 1. 在 `ready` 和单实例锁之前，把 Electron 的 `userData` 设到 `<数据目录>/shell`。
 2. 打开窗口，先显示安装页。窗口标题是上次记下的 Lead 名字，第一次是 `Paimon`。
 3. App 打包后不在「应用程序」里时，安装页只给一个按钮「移动并重新打开」，它调用 `app.moveToApplicationsFolder()`。
-4. 运行包不比已装的新，并且 `plc.sock` 回答 `status` 时，直接打开网关，不重新安装。同时在后台运行一次 `ops.mjs login-shell-path`。
-5. 否则先解包（只在 App 带的运行包比已装的新时），再运行 `ops.mjs desktop-install`，按它每行一个 JSON 的进度更新安装页。
+4. 运行包不比已装的新，launchd 的 plist 指向这份 App 的 `<安装根>/current`，并且 `plc.sock` 回答 `status` 时，直接打开网关，不重新安装。同时在后台运行一次 `ops.mjs login-shell-path`。
+5. 否则先解包（只在 App 带的运行包比已装的新时），再运行 `ops.mjs desktop-install`，按它每行一个 JSON 的进度更新安装页。遇到存量安装时，安装页多一行「接手已有的数据和设置」（设计文档第 12.7 节）。
 6. 拿到 `gatewayUrl` 以后，窗口加载 `<gatewayUrl>/`。
 
 解包的顺序：
@@ -88,3 +88,15 @@ desktop-install 每一步的说明来自运行包（`--locale` 按系统的首�
 ## 在受限沙箱里
 
 PLC 执行器的沙箱不允许 Electron 注册 mach 端口，App 启动即退出（`bootstrap_check_in … Permission denied`）。在那里只能跑单元测试和 `electron-builder --mac dir`。
+
+## 通知
+
+App 开着时，桌面通知由壳发出（设计第 8.6 节路径 A，`desktop/src/notifications.ts`）：
+
+1. `ready` 以后，如果 `Notification.isSupported()`，壳连 `<数据目录>/plc.sock`，发 `subscribe_desktop_notifications`，带 `shell-pairing.key` 的口令。
+2. daemon 每条通知推一行 `{type:"desktop_notification", title, body}`。`title` 是用户配置的 Lead 名字。壳用 Electron 的 `Notification` 发出；用户点通知时，窗口回到前面。
+3. daemon 没起来、重启了、或者还没有口令时，壳每 5 秒重连一次。
+4. Electron 发某一条失败（`failed` 事件）时，壳发 `desktop_notification_failed` 把正文交回 daemon，daemon 用 osascript 补发。壳随后退订，这次运行里不再订阅。
+5. App 退出时连接断开，daemon 改回自己用 osascript 发。
+
+实测工具：`open "Bytezard Lead.app" --args --notification-probe` 只发一条测试通知，结果写进 `$TMPDIR/bytezard-lead-notification-probe.json`。步骤见 [p0-7-measurements.md](p0-7-measurements.md)。

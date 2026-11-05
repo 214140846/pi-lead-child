@@ -1,85 +1,41 @@
 // 桌面版的一条命令安装（docs/desktop/macos-desktop-design.md 第 4.2 节、第 10 节 P0-3）。
 // launchctl 和两个 socket 换成假的：测试不碰这台机器上真的 launchd 任务。数据目录和安装根带空格，和真实的
 // ~/Library/Application Support/Bytezard Lead/ 一样。
-import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { tempDir } from "@pi-lead-child/core/testing";
-import { loginShellPathFile, type LoginShellPathResult } from "@pi-lead-child/core";
+import { loginShellPathFile } from "@pi-lead-child/core";
 import {
   INSTALL_STATE_FILE, MAX_SOCKET_PATH_BYTES, runDesktopInstall, socketPathTooLong,
-  type DesktopInstallDeps, type DesktopInstallEvent,
 } from "../src/deploy/desktop-install.js";
 import { LAUNCHD_LABEL, plistContent } from "../src/deploy/launchd.js";
 import { daemonReadyTimeoutMs, DEFAULT_DAEMON_READY_TIMEOUT_MS, SUPERVISOR_REQUEST_TIMEOUT } from "../src/client.js";
-
-const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
-
-// 一份装好的运行包：<数据目录>/runtime/versions/1.3.0/，current 指向它。
-function installedRuntime(parent = tempDir("plc-desktop-")) {
-  const dataDir = join(parent, "Bytezard Lead");
-  const installRoot = join(dataDir, "runtime");
-  const version = join(installRoot, "versions", "1.3.0");
-  const files: Record<string, string> = {
-    "bin/lead-agent": "node binary",
-    "apps/daemon/dist/supervisor.mjs": "supervisor",
-  };
-  for (const [file, content] of Object.entries(files)) {
-    mkdirSync(join(version, file, ".."), { recursive: true });
-    writeFileSync(join(version, file), content);
-  }
-  writeFileSync(join(version, "release.json"), JSON.stringify({
-    schema: 1, product: "bytezard-lead", version: "1.3.0", arch: process.arch, schemaVersion: 63,
-    files: Object.fromEntries(Object.entries(files).map(([file, content]) => [file, sha256(content)])),
-  }));
-  symlinkSync(join(installRoot, "versions", "1.3.0"), join(installRoot, "current"));
-  return { dataDir, installRoot, root: join(installRoot, "current"), version };
-}
-
-// 假的 launchd：记下调用顺序，按 bootstrap/bootout 数正在跑的 supervisor。
-function fakeHost(runtime: ReturnType<typeof installedRuntime>, overrides: Partial<DesktopInstallDeps> = {}) {
-  const calls: string[] = [];
-  const events: DesktopInstallEvent[] = [];
-  const host = { supervisors: 0, loaded: false, calls, events };
-  const plistPath = join(runtime.dataDir, "..", "LaunchAgents", `${LAUNCHD_LABEL}.plist`);
-  const deps: DesktopInstallDeps = {
-    root: runtime.root,
-    installRoot: runtime.installRoot,
-    dataDir: runtime.dataDir,
-    dbPath: join(runtime.dataDir, "plc.db"),
-    plistPath,
-    preRenamePlistPaths: [],
-    locale: "en",
-    emit: (event) => events.push(event),
-    captureLoginShellPath: async (): Promise<LoginShellPathResult> => {
-      calls.push("capture");
-      return { state: "ok", shell: "/bin/zsh", path: ["/Users/alice/.nvm/versions/node/v24.1.0/bin", "/usr/bin"] };
-    },
-    launchd: {
-      loaded: async () => host.loaded,
-      stopRunning: async () => { calls.push("stop"); if (host.loaded) { host.loaded = false; host.supervisors = 0; } },
-      bootstrap: async (plist) => {
-        calls.push(`bootstrap ${plist}`);
-        if (host.loaded) host.supervisors -= 1; // bootstrapAgent 先 bootout
-        host.loaded = true;
-        host.supervisors += 1;
-      },
-    },
-    supervisor: {
-      waitUntilAvailable: async () => host.supervisors > 0,
-      ensureRunning: async () => { calls.push("ensure_running"); },
-    },
-    daemon: { waitForStatus: async () => (host.supervisors > 0 ? { gatewayUrl: "http://127.0.0.1:47131" } : null) },
-    now: () => new Date("2026-11-03T09:00:00.000Z"),
-    ...overrides,
-  };
-  return { deps, host, plistPath };
-}
+import { addRuntimeVersion, fakeHost, installedRuntime } from "./desktop-fixtures.js";
 
 const installState = (installRoot: string) => JSON.parse(readFileSync(join(installRoot, INSTALL_STATE_FILE), "utf8"));
 
 describe("runDesktopInstall", () => {
+  // App 能一键更新以后（2026-11-04），每次更新多一个约 400 MB 的版本。装好以后只留这次的和上一个（设计第 2.2 节）。
+  it("keeps the installed and the previous runtime version, and a version that an executor still runs from", async () => {
+    const runtime = installedRuntime();
+    for (const version of ["1.0.0", "1.1.0", "1.2.0"]) addRuntimeVersion(runtime.installRoot, version);
+    writeFileSync(join(runtime.installRoot, INSTALL_STATE_FILE), JSON.stringify({ installedVersion: "1.3.0", previousVersion: "1.2.0" }));
+    const executor = `${join(runtime.installRoot, "versions", "1.0.0")}/bin/lead-agent run`;
+    const { deps } = fakeHost(runtime, { runningCommands: () => [executor] });
+    expect(await runDesktopInstall(deps)).toMatchObject({ ok: true, outcome: "installed" });
+    expect(readdirSync(join(runtime.installRoot, "versions")).sort()).toEqual(["1.0.0", "1.2.0", "1.3.0"]);
+    expect(installState(runtime.installRoot)).toMatchObject({ installedVersion: "1.3.0", previousVersion: "1.2.0", prunedVersions: ["1.1.0"] });
+  });
+
+  it("removes no version when it does not know which one was installed before", async () => {
+    const runtime = installedRuntime();
+    addRuntimeVersion(runtime.installRoot, "1.1.0");
+    const { deps } = fakeHost(runtime, { runningCommands: () => [] });
+    expect(await runDesktopInstall(deps)).toMatchObject({ ok: true });
+    expect(readdirSync(join(runtime.installRoot, "versions")).sort()).toEqual(["1.1.0", "1.3.0"]);
+  });
+
   it("installs from an install root with spaces, points the plist at current, and reports each step as JSON", async () => {
     const runtime = installedRuntime();
     expect(runtime.root).toContain("Bytezard Lead");
@@ -91,13 +47,14 @@ describe("runDesktopInstall", () => {
 
     const xml = readFileSync(plistPath, "utf8");
     expect(xml).toBe(plistContent({
-      nodeBin: join(runtime.root, "bin", "lead-agent"),
+      nodeBin: join(runtime.root, "bin", "Bytezard Lead"),
       entry: join(runtime.root, "apps", "daemon", "dist", "supervisor.mjs"),
       cwd: runtime.root,
       logDir: join(runtime.dataDir, "logs"),
+      associatedBundleId: "com.bytezard.plc",
     }));
     expect(xml).toContain(`<key>Label</key><string>${LAUNCHD_LABEL}</string>`);
-    expect(xml).toContain(`<string>${runtime.installRoot}/current/bin/lead-agent</string>`);
+    expect(xml).toContain(`<string>${runtime.installRoot}/current/bin/Bytezard Lead</string>`);
     expect(xml).toContain(`<string>${runtime.installRoot}/current/apps/daemon/dist/supervisor.mjs</string>`);
     expect(xml).toContain(`<key>WorkingDirectory</key><string>${runtime.installRoot}/current</string>`);
     expect(xml).not.toContain("versions/1.3.0");
@@ -145,9 +102,11 @@ describe("runDesktopInstall", () => {
     expect(readFileSync(plistPath, "utf8")).toContain(runtime.root);
   });
 
-  it("does not overwrite a developer install whose plist points at a git checkout", async () => {
+  // 开发者的开关（设计第 12.8 节）：缺省接管开发安装，设了 PLC_KEEP_DEV_INSTALL=1 才保留它。
+  it("keeps a developer install whose plist points at a git checkout when the developer asks for it", async () => {
     const runtime = installedRuntime();
     const { deps, host, plistPath } = fakeHost(runtime, {
+      keepDevInstall: true,
       daemon: { waitForStatus: async () => ({ gatewayUrl: "http://127.0.0.1:47130" }) },
     });
     const checkout = join(tempDir("plc-checkout-"), "my repo");
@@ -162,19 +121,6 @@ describe("runDesktopInstall", () => {
     expect(host.calls).toEqual([]);
     expect(host.events.find((event) => event.code === "dev_install_detected")).toMatchObject({ step: "detect", state: "done" });
     expect(host.events.at(-1)).toMatchObject({ step: "done", code: "dev_install_detected", gatewayUrl: "http://127.0.0.1:47130" });
-  });
-
-  it("does not install while a plist with the pre-rename label is still on the machine", async () => {
-    const runtime = installedRuntime();
-    const legacy = join(tempDir("plc-agents-"), "com.pi-lead-child.supervisor.plist");
-    writeFileSync(legacy, "<plist/>");
-    const { deps, host, plistPath } = fakeHost(runtime, { preRenamePlistPaths: [legacy] });
-    const result = await runDesktopInstall(deps);
-    expect(result).toEqual({ ok: false, outcome: "failed", code: "legacy_install_detected" });
-    expect(host.calls).toEqual([]);
-    expect(existsSync(plistPath)).toBe(false);
-    expect(host.events.at(-1)).toMatchObject({ step: "detect", state: "failed", code: "legacy_install_detected" });
-    expect(installState(runtime.installRoot).lastError).toMatchObject({ step: "detect", code: "legacy_install_detected" });
   });
 
   it("stops before installing when a socket path in the data folder is longer than macOS allows", async () => {

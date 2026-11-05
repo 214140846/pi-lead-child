@@ -1,5 +1,6 @@
 import type {
   ChatImageInput,
+  TicketAttachment,
   LeadModelCatalog,
   LeadModelChoice,
   LeadModelSwitchResult,
@@ -140,6 +141,7 @@ import { createStreamCoordinator, type StreamCoordinator, type StreamScheduler }
 import { createStreamStore } from './streams/store';
 import { createWorkspaceStore } from './workspace/store';
 import { createWebVersionStore } from './webVersion';
+import type { ShellUpdateSource } from './shellUpdate';
 import { DAEMON_OLDER_THAN_WEB, RESOURCE_KEYS, type ResourceKey, type ResourceLoadState } from './types';
 
 export type CompanionTransport = Pick<
@@ -215,7 +217,7 @@ export type CompanionTransport = Pick<
   | 'getOwnerAction' | 'disownOwnerAction'
   | 'getTicketReviewer' | 'getTicketDeliveries'
   | 'listTicketActions' | 'runTicketAction' | 'getTicketAcceptanceCriteria' | 'getTicketExecutionPlan'
-  | 'getChatImage'
+  | 'getChatImage' | 'getTicketAttachments' | 'getTicketAttachment'
   | 'getLeadModels' | 'switchLeadModel'
 >>;
 
@@ -232,6 +234,8 @@ export interface CompanionRuntimeDependencies {
   webBuild?: WebBuildSource;
   // 重新加载 App，拿到新版本：web 上重新加载页面。原生应用上没有。
   reloadApp?: () => void;
+  // 桌面 App 的一键更新（./shellUpdate）：只有桌面 App 里的网页有。
+  shellUpdate?: ShellUpdateSource;
 }
 
 // 网页的版本（protocol 的 web-build.ts）：current 是构建时内联进页面的，served() 读 daemon 现在提供的。
@@ -302,6 +306,8 @@ export class CompanionStateRuntime {
   private shownOutboxIds = new Set<string>();
   // 向 daemon 取过的图片（用户发给 Lead 的，按 id）：同一张图只取一次。取失败的拿掉，下次再取。
   private chatImages = new Map<string, Promise<ChatImageInput>>();
+  // 工单附件的内容，按「工单:附件」缓存（附件挂上以后不变）。
+  private ticketAttachmentContents = new Map<string, Promise<{ mimeType: string; data: string }>>();
   private leadAvatarImagesLoading = new Set<string>();
   private scopes = new Set<Scope>();
   private capabilities = new Set<string>();
@@ -483,6 +489,31 @@ export class CompanionStateRuntime {
       },
     );
     this.chatImages.set(imageId, loading);
+    return loading;
+  }
+
+  // 工单附件（工单 #231，GET /v1/tickets/:id/attachments）。不缓存，工单变了以后再读一次。旧 daemon 没有这个接口时报错，界面按没有附件画。
+  async getTicketAttachments(ticketId: number, signal?: AbortSignal): Promise<TicketAttachment[]> {
+    const read = this.dependencies.client.getTicketAttachments;
+    if (typeof read !== 'function') throw new Error('this connection cannot read ticket attachments');
+    return read.call(this.dependencies.client, ticketId, signal);
+  }
+
+  // 一个工单附件的内容（base64）。附件挂上以后不变，取过的缓存起来；取不到时下次再取。
+  loadTicketAttachment(ticketId: number, attachmentId: string): Promise<{ mimeType: string; data: string }> {
+    const key = `${ticketId}:${attachmentId}`;
+    const cached = this.ticketAttachmentContents.get(key);
+    if (cached) return cached;
+    const read = this.dependencies.client.getTicketAttachment;
+    if (typeof read !== 'function') return Promise.reject(new Error('this connection cannot read ticket attachments'));
+    const loading = read.call(this.dependencies.client, ticketId, attachmentId).then(
+      (content) => ({ mimeType: content.mimeType, data: content.data }),
+      (error: unknown) => {
+        this.ticketAttachmentContents.delete(key);
+        throw error;
+      },
+    );
+    this.ticketAttachmentContents.set(key, loading);
     return loading;
   }
 
@@ -1746,13 +1777,29 @@ export class CompanionStateRuntime {
         return;
       }
       const reduction = reduceGatewayEvent(adapted.event);
+      const invalidations = [...reduction.invalidations];
       for (const mutation of reduction.control) {
+        // 补发的排队快照是当时的样子，早就处理过的外部消息会在输入框上方闪出来。补发时不用它，补发完重取一次。
+        if (mutation.type === 'lead-queue.replace' && event.seq <= this.replayThroughSeq) {
+          invalidations.push(RESOURCE_KEYS.leadQueue);
+          continue;
+        }
         applyControlPlaneMutation(this.control, sessionId, mutation);
       }
       for (const mutation of reduction.streams) this.applyStreamMutation(mutation);
-      this.invalidateForEvent(event.seq, this.expandInvalidations(reduction.invalidations));
+      this.invalidateForEvent(event.seq, this.expandInvalidations(invalidations));
       this.control.setState({ lastAppliedGatewaySeq: event.seq });
     });
+  }
+
+  // 网关没有补发断开期间的事件（client 的 ConnectionHistory 是 skipped：新的凭证、落后太多）。手上的快照可能漏了中间的变化：
+  // 重新取一遍连上就要的快照，再重取有人在看的懒加载资源（工单对话、设置页等）。
+  private refetchAfterSkippedHistory(): void {
+    void this.refresh().catch(() => {});
+    const watched = Object.entries(this.control.getState().resourceState)
+      .filter(([, resource]) => resource !== undefined && resource.observerCount > 0)
+      .map(([key]) => key);
+    if (watched.length > 0) this.invalidation.invalidate(watched);
   }
 
   handleHello(hello: HelloV2): void {
@@ -1784,7 +1831,10 @@ export class CompanionStateRuntime {
   handlers(): ConnectionHandlers {
     return {
       onEvent: (event) => this.handleEvent(event),
-      onHello: (hello) => this.handleHello(hello),
+      onHello: (hello, info) => {
+        this.handleHello(hello);
+        if (info?.history === 'skipped') this.refetchAfterSkippedHistory();
+      },
       onStateChange: (connectionState) => {
         if (this.stopped) return;
         this.control.setState({ connectionState });

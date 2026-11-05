@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { tempDir } from "@pi-lead-child/core/testing";
 import {
-  hashFiles, parseNodeVersionFile, parsePackArgs, releaseManifest, runtimeArchiveName, sha256File, updateManifest, UsageError,
+  dmgName, hashFiles, parseNodeVersionFile, parsePackArgs, releaseManifest, runtimeArchiveName, sha256File, updateManifest, UsageError, withDmg,
 } from "../lib/release.js";
 
 const valid = ["--arch", "arm64", "--version", "1.3.0", "--repository", "acme/x"];
@@ -74,5 +74,26 @@ describe("names and manifests", () => {
     expect(await hashFiles(dir, ["a"])).toEqual({ a: "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824" });
     expect(await sha256File(join(dir, "a"))).toBe("2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
     await expect(hashFiles(dir, ["a", "b/missing"])).rejects.toThrow(/缺少 b\/missing/);
+  });
+});
+
+// App 的一键更新按 manifest 里的 dmg 下载和校验（desktop/src/updater.ts）。
+describe("the dmg in manifest.json", () => {
+  const manifest = {
+    schema: 1, product: "bytezard-lead", version: "1.3.0", arch: "arm64", node: "24.22.2", schemaVersion: 63,
+    sourceTree: "a".repeat(40), builtAt: "2026-11-05T00:00:00.000Z",
+    runtime: { file: "bytezard-lead-runtime-1.3.0-arm64.tar.gz", size: 3, sha256: "b".repeat(64) },
+  } as const;
+
+  it("adds the dmg of the same version", () => {
+    expect(dmgName("1.3.0")).toBe("bytezard-lead-1.3.0-arm64.dmg");
+    expect(withDmg(manifest, { file: "bytezard-lead-1.3.0-arm64.dmg", size: 9, sha256: "c".repeat(64) }).dmg)
+      .toEqual({ file: "bytezard-lead-1.3.0-arm64.dmg", size: 9, sha256: "c".repeat(64) });
+  });
+
+  it("refuses the dmg of another version, an empty file and a bad hash", () => {
+    expect(() => withDmg(manifest, { file: "bytezard-lead-1.2.0-arm64.dmg", size: 9, sha256: "c".repeat(64) })).toThrow(/1\.3\.0/);
+    expect(() => withDmg(manifest, { file: "bytezard-lead-1.3.0-arm64.dmg", size: 0, sha256: "c".repeat(64) })).toThrow();
+    expect(() => withDmg(manifest, { file: "bytezard-lead-1.3.0-arm64.dmg", size: 9, sha256: "xyz" })).toThrow();
   });
 });

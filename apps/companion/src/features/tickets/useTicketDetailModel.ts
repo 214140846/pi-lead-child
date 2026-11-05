@@ -1,6 +1,6 @@
 import type {
   DeliverySummary, KernelIntervention, KernelInterventionRef, TicketActionId as TicketOperationId, TicketActionRunRequest,
-  TicketReviewerInfo,
+  TicketAttachment, TicketReviewerInfo,
 } from '@pi-lead-child/protocol';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
@@ -60,6 +60,8 @@ import { ticketThreadMessages } from './ticketThread.messages';
 // 一张工单详情需要的全部数据和动作：读 hooks、算视图模型、包好动作的进行中和出错状态。
 // 工单面板（TicketThread）和「证据与记录」都读它，谁都不再自己推导（AGENTS.md：每个界面从同一个 TicketSummary 推导当前状态）。
 export type TicketDetailModel = Omit<TicketThreadProps, 'onClose' | 'standalone' | 'showComposer'>;
+
+const EMPTY_ATTACHMENTS: TicketAttachment[] = [];
 
 export function useTicketDetailModel(
   ticket: Ticket,
@@ -269,6 +271,22 @@ export function useTicketDetailModel(
     deliveryList?.ticketId === ticketId ? deliveryList.deliveries : [],
     acceptanceCriteria?.delivery ?? null,
   ), [acceptanceCriteria?.delivery, deliveryList, ticketId]);
+  // 工单附件（工单 #231，GET /v1/tickets/:id/attachments）：不放进工单快照，理由和交付列表一样。工单变了再读一次
+  // （Lead 挂附件时会改工单的更新时间）。读不到时（旧 daemon）按没有附件画。
+  const [attachmentList, setAttachmentList] = useState<{ ticketId: number; attachments: TicketAttachment[] } | null>(null);
+  useEffect(() => {
+    if (!connected) return undefined;
+    const controller = new AbortController();
+    runtime.getTicketAttachments(ticketId, controller.signal)
+      .then((attachments) => setAttachmentList({ ticketId, attachments }))
+      .catch(() => {});
+    return () => controller.abort();
+  }, [connected, deliveriesKey, runtime, ticketId]);
+  const attachments = attachmentList?.ticketId === ticketId ? attachmentList.attachments : EMPTY_ATTACHMENTS;
+  const loadAttachment = useCallback(
+    (attachmentId: string) => runtime.loadTicketAttachment(ticketId, attachmentId),
+    [runtime, ticketId],
+  );
   const attemptItems = useMemo(() => buildAttemptPresentation(attempts, runFacts, locale), [attempts, locale, runFacts]);
   // 概览上的「经过」：每件事一行，连续的失败合成一行（复核 P1-2）。
   const story = useMemo(() => buildTicketStory({
@@ -437,6 +455,8 @@ export function useTicketDetailModel(
     pow: workbench?.pow ?? null,
     outcome: workbench?.outcomeSnapshot ?? null,
     taskDescription: detail ? { brief: detail.brief, body: detail.body } : undefined,
+    attachments,
+    onLoadAttachment: loadAttachment,
     artifacts,
     artifactCapability,
     artifactDownloadStates,

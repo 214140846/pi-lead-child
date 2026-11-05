@@ -87,7 +87,7 @@ export const ActionPermissionSchema = Type.Union([
 //     换回某种方式、「代你往来源里写」开关。编号是来源，例如 slack。
 //   connections  连接的清单（设置 → 连接，2026-11-02，lead-installs.ts）：加远程 MCP、本地 MCP。编号只有 connections。
 //   connection  一个连接：请用户授权、断开。编号是连接的 key（GET /v1/connections 的 key，例如 notion、custom-3）。
-//   skills  PLC 自己的 skill 目录（~/.pi-lead-child/skills，2026-11-02）：从 GitHub 装一个。编号只有 skills。
+//   skills  PLC 自己的 skill 目录（~/Library/Application Support/Bytezard Lead/skills，2026-11-02）：从 GitHub 装一个。编号只有 skills。
 //   skill  PLC 装的一个 skill：卸载。编号是 skill 的名字。
 export const UI_ACTION_TARGET_TYPES = [
   "runtime", "device", "approval", "decision", "channel_card", "channel_conversation", "channel_policy", "channel_handbook", "lead_model",

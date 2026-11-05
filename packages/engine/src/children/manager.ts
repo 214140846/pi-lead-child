@@ -9,6 +9,7 @@ import {
 import { assertRunAllowed, executorRetryBudget } from "@pi-lead-child/store";
 import { addActivity } from "@pi-lead-child/store";
 import { createIngestor } from "../pipeline/ingest.js";
+import { ticketAttachmentsPromptSection } from "../agent-tools/ticket-attachments.js";
 import { ensurePullRequestReviewGrant } from "./pr-review-grant.js";
 import { EXPRESSION_SECTION } from "@pi-lead-child/core";
 import { createRuntimeEventStore, recordSecurityAlert } from "@pi-lead-child/store";
@@ -796,7 +797,8 @@ async function runItemLifecycle(
   const startRequest = (prompt: string, resumeSessionId: string | undefined, forkSession: boolean): RuntimeStartRequest => ({
     itemId, runId, role, purpose,
     prompt: [
-      `${prompt}${codingSkill}`, packetSection, criteriaSection(), planSection(), resumeSessionId ? "" : EXPRESSION_SECTION,
+      `${prompt}${codingSkill}`, packetSection, criteriaSection(), ticketAttachmentsPromptSection(db, itemId), planSection(),
+      resumeSessionId ? "" : EXPRESSION_SECTION,
     ].filter(Boolean).join("\n\n"),
     workdir, sessionDir: opts.sessionDir,
     // 启动垫片的文件放在数据目录里（工单 14），daemon 重启后还能找到（工单 15）。

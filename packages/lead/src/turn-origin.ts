@@ -50,8 +50,9 @@ export interface TurnOriginDeps {
 // Lead 去不掉。用户 2026-10-27 定的范围：只有读外部通道的对话（带卡的事实）、连接工具的结果算（加上外部消息叫醒的一轮）。
 // 调用以后 external 和 externalBy 都记上，规则 1–4 都生效。读卡的 get_channel_card 并进了 read_channel_conversation（工单 05）。
 // 外部消息附带的文件（read_channel_file，2026-11-02）和对话一样算：图片里的字也是别人写的。
+// 工单附件（read_ticket_attachment，工单 #231）也算：外部来源的附件挂到工单上以后照旧是别人给的资料。
 export const EXTERNAL_TEXT_TOOLS: ReadonlySet<string> = new Set([
-  "read_channel_conversation", "read_channel_file", "call_connection_tool", "read_connection_result",
+  "read_channel_conversation", "read_channel_file", "read_ticket_attachment", "call_connection_tool", "read_connection_result",
 ]);
 
 // 输出不算外部内容的工具。用户 2026-10-27：笔记、本机文件、工单状态、child 和子 agent 的报告、账本记录都不算；
@@ -88,6 +89,8 @@ export const INTERNAL_TEXT_TOOLS: ReadonlySet<string> = new Set([
   "confirm_item", "render_ui", "notify_user", "follow_up", "cancel_follow_up", "record_disposition", "watch",
   "wait_for_user_action", "cancel_wait", "perform_action", "send_channel_message", "react_channel_message", "record_handback",
   "mark_channel_card_handled", "propose_standing_order_change", "update_lead_profile", "set_lead_avatar", "update_design_preferences",
+  // 挂附件（工单 #231）：结果只有挂了什么（名字、大小、来源），没有文件的内容。
+  "attach_to_ticket",
   // 处理消息事件的通用工具（统一消息事件工单 05）：结果是派出的工单、发出的话或者卡上的草稿、卡的状态。
   "dispatch_agent_task", "reply_to_source",
   // 改选交接说明里的一句（自动代你处理方案 B，D1）：结果是用户写的句子和重算的上限，没有外部的原文。

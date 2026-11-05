@@ -1,5 +1,6 @@
 // @pi-lead-child/core 的公开 API。其他包只能从这里引用本包。
 export * from "./config.js";
+export * from "./pre-rename.js";
 export * from "./expression.js";
 export * from "./outcome-defects.js";
 export * from "./tokens.js";

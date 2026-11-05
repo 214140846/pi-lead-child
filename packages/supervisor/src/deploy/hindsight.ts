@@ -1,5 +1,5 @@
 // Hindsight 记忆服务的托管（2026-10-16 用户决定：先接 Hindsight，由 daemon 负责初始化好它）。
-// - 它是一个独立的 launchd 任务（com.pi-lead-child.hindsight），不是 daemon 或 supervisor 的子进程。
+// - 它是一个独立的 launchd 任务（com.bytezard.plc.hindsight），不是 daemon 或 supervisor 的子进程。
 //   所以 daemon 重启、升级，supervisor 重装，都不会重启它。daemon 只在期望状态变了时重启它（热重载）：
 //   版本、端口、数据库、embedding、reranker、LLM，或者密钥换了。
 // - 用什么模型由 daemon 决定（apps/daemon 的 memory-controller.ts，用户在设置页选）。这里只接收决定好的配置：
@@ -20,9 +20,15 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { delimiter, dirname, join } from "node:path";
+import { dataDir as currentDataDir, isPreRenameDataDir, PRE_RENAME_HINDSIGHT_LABEL } from "@pi-lead-child/core";
 import { launchctl } from "./launchd.js";
 
-export const HINDSIGHT_LABEL = "com.pi-lead-child.hindsight";
+export const HINDSIGHT_LABEL = "com.bytezard.plc.hindsight";
+
+/** 用这个数据目录的 Hindsight 任务。还没迁移的开发机用改名以前的任务，不另装一个新任务抢同一个端口。 */
+export function hindsightLabel(dataDir: string): string {
+  return isPreRenameDataDir(dataDir, homedir()) ? PRE_RENAME_HINDSIGHT_LABEL : HINDSIGHT_LABEL;
+}
 // 升级：改这里，重启 daemon。plist 跟着变，launchd 重启服务；Hindsight 启动时自己做数据库迁移。
 export const HINDSIGHT_VERSION = "1.0.0";
 export const HINDSIGHT_DEFAULT_PORT = 47188;
@@ -45,8 +51,8 @@ export function hindsightDir(dataDir: string): string {
   return join(dataDir, "hindsight");
 }
 
-export function hindsightPlistPath(): string {
-  return join(homedir(), "Library", "LaunchAgents", `${HINDSIGHT_LABEL}.plist`);
+export function hindsightPlistPath(label: string = HINDSIGHT_LABEL): string {
+  return join(homedir(), "Library", "LaunchAgents", `${label}.plist`);
 }
 
 const sha = (value: unknown, length: number) =>
@@ -279,7 +285,7 @@ export function hindsightPlist(o: {
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>Label</key><string>${HINDSIGHT_LABEL}</string>
+  <key>Label</key><string>${hindsightLabel(o.dataDir)}</string>
   <key>ProgramArguments</key>
   <array>
 ${args}
@@ -353,6 +359,7 @@ async function waitUntilUnloaded(ctl: Launchctl, target: string, sleep: (ms: num
 
 // bootstrap 失败时先等任务卸载完，再重试，最多 BOOTSTRAP_ATTEMPTS 次。
 async function bootstrap(ctl: Launchctl, target: string, plist: string, sleep: (ms: number) => Promise<void>): Promise<void> {
+  const label = target.slice(target.lastIndexOf("/") + 1);
   let out = "";
   for (let attempt = 1; attempt <= BOOTSTRAP_ATTEMPTS; attempt += 1) {
     const r = await ctl(["bootstrap", `gui/${process.getuid!()}`, plist]);
@@ -363,7 +370,7 @@ async function bootstrap(ctl: Launchctl, target: string, plist: string, sleep: (
       await waitUntilUnloaded(ctl, target, sleep);
     }
   }
-  throw new Error(`launchctl bootstrap ${HINDSIGHT_LABEL} failed after ${BOOTSTRAP_ATTEMPTS} attempts: ${out}`);
+  throw new Error(`launchctl bootstrap ${label} failed after ${BOOTSTRAP_ATTEMPTS} attempts: ${out}`);
 }
 
 // 让服务处在期望状态。期望状态没变、任务在跑时什么也不做。不等服务就绪：客户端用 /health 判断它能不能用。
@@ -403,11 +410,12 @@ export async function ensureHindsightService(o: EnsureHindsightOptions): Promise
 
   const logDir = join(o.dataDir, "logs");
   mkdirSync(logDir, { recursive: true });
-  const plist = o.plistPath ?? hindsightPlistPath();
+  const label = hindsightLabel(o.dataDir);
+  const plist = o.plistPath ?? hindsightPlistPath(label);
   const content = hindsightPlist({ programArguments: o.programArguments, dataDir: o.dataDir, logDir, service });
   const ctl = o.launchctl ?? launchctl;
   const sleep = o.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
-  const target = `gui/${process.getuid!()}/${HINDSIGHT_LABEL}`;
+  const target = `gui/${process.getuid!()}/${label}`;
   const installed = existsSync(plist) ? readFileSync(plist, "utf8") : null;
   const loaded = (await ctl(["print", target])).ok;
   let restarted = false;
@@ -420,12 +428,12 @@ export async function ensureHindsightService(o: EnsureHindsightOptions): Promise
     }
     await bootstrap(ctl, target, plist, sleep);
     restarted = true;
-    log(`[hindsight] ${installed === null ? "installed" : "updated and restarted"} ${HINDSIGHT_LABEL} `
+    log(`[hindsight] ${installed === null ? "installed" : "updated and restarted"} ${label} `
       + `(hindsight-api ${HINDSIGHT_VERSION}, port ${port}, embedding ${describeEmbedding(o.embedding)}, reranker ${describeReranker(o.reranker)})`);
   } else if (!loaded) {
     await bootstrap(ctl, target, plist, sleep);
     restarted = true;
-    log(`[hindsight] started ${HINDSIGHT_LABEL}`);
+    log(`[hindsight] started ${label}`);
   }
   return { url: `http://127.0.0.1:${port}`, index: sha(databaseUrl, 8), restarted };
 }
@@ -454,11 +462,12 @@ export function describeReranker(reranker: HindsightReranker): string {
 
 // 停掉服务（例如用户把 embedding 关掉了），删掉 plist。数据和密钥留着。plc daemon uninstall 也用它。
 export async function uninstallHindsightService(opts: {
-  plistPath?: string; launchctl?: (args: string[]) => Promise<{ ok: boolean; out: string }>;
+  plistPath?: string; launchctl?: (args: string[]) => Promise<{ ok: boolean; out: string }>; label?: string;
 } = {}): Promise<void> {
   const ctl = opts.launchctl ?? launchctl;
-  await ctl(["bootout", `gui/${process.getuid!()}/${HINDSIGHT_LABEL}`]);
-  rmSync(opts.plistPath ?? hindsightPlistPath(), { force: true });
+  const label = opts.label ?? hindsightLabel(currentDataDir());
+  await ctl(["bootout", `gui/${process.getuid!()}/${label}`]);
+  rmSync(opts.plistPath ?? hindsightPlistPath(label), { force: true });
 }
 
 // hindsight-api 子进程从 daemon 的环境里只拿这些（2026-10-16 发布评审：白名单，不是黑名单）。

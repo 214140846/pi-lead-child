@@ -38,10 +38,14 @@ describe("release-macos workflow", () => {
     const pack = stepIndex(/scripts\/desktop\/pack-runtime\.ts --arch arm64 /);
     const smoke = stepIndex(/scripts\/desktop\/smoke-runtime\.ts out\/runtime$/);
     const dmg = stepIndex(/npm run dist -- --mac dmg --arm64 --publish never/);
+    const addDmg = stepIndex(/scripts\/desktop\/add-dmg\.ts --manifest out\/manifest\.json --dmg "out\/desktop\/bytezard-lead-\$\{VERSION\}-arm64\.dmg"$/);
     const upload = stepIndex(/^gh release upload /);
     expect(pack).toBeGreaterThan(-1);
     expect(smoke).toBeGreaterThan(pack);
     expect(dmg).toBeGreaterThan(smoke);
+    // App 的一键更新按 manifest 里的 dmg 下载和校验：先记进 manifest，再上传。
+    expect(addDmg).toBeGreaterThan(dmg);
+    expect(upload).toBeGreaterThan(addDmg);
     expect(upload).toBe(job.steps.length - 1);
     // GitHub 缺省在一步失败后跳过后面的步骤。if: always()、continue-on-error 都会让失败的冒烟之后照样上传。
     for (const step of job.steps) {

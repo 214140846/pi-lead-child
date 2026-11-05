@@ -61,6 +61,8 @@ export interface FakeSlackMessage {
   metadata?: { event_type: string; event_payload: Record<string, unknown> };
   // 消息附带的文件（dm 的 files 选项）。
   files?: FakeSlackFile[];
+  // 消息卡片：转发的消息、链接预览、应用的卡片（dm、mention 的 attachments 选项），照原样存。
+  attachments?: unknown[];
   deleted: boolean;
   // chat.update 改过几次。
   edits?: number;
@@ -591,6 +593,7 @@ export class FakeSlack {
       ...(message.blocks ? { blocks: message.blocks } : {}),
       ...(message.metadata ? { metadata: message.metadata } : {}),
       ...(message.files ? { files: message.files.map((file) => this.wireFile(file)) } : {}),
+      ...(message.attachments ? { attachments: message.attachments } : {}),
     };
   }
 
@@ -875,11 +878,12 @@ export class FakeSlack {
     }, options.files);
   }
 
-  /** 别人在频道里提到用户。 */
-  mention(from: string, text: string, options: { channel?: string; thread?: string } = {}): ChannelDelivery {
+  /** 别人在频道里提到用户。attachments：消息带的卡片，例如转发的消息。 */
+  mention(from: string, text: string, options: { channel?: string; thread?: string; attachments?: unknown[] } = {}): ChannelDelivery {
     return this.post({
       channel: options.channel ?? "C0PROJ", channel_type: "channel", user: from, text: `<@${this.self.id}> ${text}`,
       ...(options.thread ? { thread_ts: options.thread } : {}),
+      ...(options.attachments ? { attachments: options.attachments } : {}),
     });
   }
 
@@ -968,6 +972,7 @@ export class FakeSlack {
       channel: String(event.channel), ts, user: String(event.user), team, text: String(event.text), deleted: false,
       ...(typeof event.thread_ts === "string" ? { thread_ts: event.thread_ts } : {}),
       ...(files ? { files } : {}),
+      ...(Array.isArray(event.attachments) ? { attachments: event.attachments } : {}),
     };
     this.messages.push(message);
     return this.envelope({ type: "message", ...event, ts, user_team: team });

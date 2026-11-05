@@ -119,6 +119,23 @@ describe("which commands write the ledger or the config", () => {
     }
   });
 
+  // P0-8：数据目录改成 ~/Library/Application Support/Bytezard Lead/，路径里有空格，命令里带引号或者转义。
+  it("finds writes to the renamed data folder, with the path quoted or escaped", () => {
+    const dataDir = "/Users/x/Library/Application Support/Bytezard Lead";
+    const renamed = { dbPath: `${dataDir}/plc.db`, dataDir, home: "/Users/x" };
+    for (const command of [
+      "sqlite3 ~/\"Library/Application Support/Bytezard Lead/plc.db\" \"UPDATE items SET stage = 'done'\"",
+      "sqlite3 \"$HOME/Library/Application Support/Bytezard Lead/plc.db\" 'delete from approvals'",
+      "sqlite3 ~/Library/Application\\ Support/Bytezard\\ Lead/plc.db 'delete from approvals'",
+      "cd ~/\"Library/Application Support/Bytezard Lead\" && sqlite3 plc.db 'delete from approvals'",
+    ]) {
+      expect(detectLedgerWrite(command, renamed), command).toEqual({ target: "plc.db" });
+    }
+    expect(detectLedgerWrite("echo '{}' > \"$HOME/Library/Application Support/Bytezard Lead/config.json\"", renamed))
+      .toEqual({ target: "config.json" });
+    expect(detectLedgerWrite("sqlite3 -readonly ~/\"Library/Application Support/Bytezard Lead/plc.db\" 'select 1'", renamed)).toBeNull();
+  });
+
   it("leaves reads alone (review finding 5)", () => {
     for (const command of [
       "sqlite3 -readonly ~/.pi-lead-child/plc.db 'SELECT * FROM connections'",

@@ -2246,6 +2246,32 @@ export class ChannelHub {
     }
   }
 
+  /**
+   * 一个文件是哪条消息带来的（工单 #231：挂到工单上的附件要记来源）。在这个来源记过的消息里找正文带着这个文件标记的，
+   * 取最新的一条：对话的称呼、消息在来源里的编号、发信人的称呼。没记过这条消息时返回 null。
+   */
+  fileOrigin(fileId: string): { conversation: string | null; message: string | null; sender: string | null } | null {
+    const bar = fileId.indexOf(":");
+    if (bar <= 0) return null;
+    const row = this.db.prepare(
+      "SELECT payload FROM events WHERE source = ? AND instr(payload, ?) > 0 ORDER BY seq DESC LIMIT 1",
+    ).get(fileId.slice(0, bar), `文件编号 ${fileId}]`) as { payload: string } | undefined;
+    if (!row) return null;
+    let payload: Record<string, unknown>;
+    try {
+      payload = JSON.parse(row.payload) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+    const sender = payload.sender && typeof payload.sender === "object" ? (payload.sender as Record<string, unknown>).name : null;
+    const ref = messageRefOf(payload);
+    return {
+      conversation: typeof payload.laneLabel === "string" ? payload.laneLabel : null,
+      message: ref ? Object.values(ref).join("/") : null,
+      sender: typeof sender === "string" ? sender : null,
+    };
+  }
+
   /** 最近有动静的对话（道），最近的在前：给 Lead 翻对话列表用，只有结构化的事实。 */
   recentConversations(source: string | null, limit = 20): ChannelRecentConversation[] {
     return listRecentChannelLanes(this.db, Math.min(Math.max(Math.floor(limit), 1), 50), source ?? undefined)
