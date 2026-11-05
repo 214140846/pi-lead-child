@@ -16,8 +16,9 @@ import {
   type SetFastChainRequest,
 } from "@pi-lead-child/protocol";
 import {
-  assertConfiguredLeadModel, leadModelCatalog, loadLeadModelConfig, OPENAI_COMPATIBLE_APIS, removeLeadProviderInConfig,
-  saveLeadProviderInConfig, setLeadProviderKeySource, type LeadCatalogModel, type LeadModelConfig, type LeadProviderConfig,
+  assertConfiguredLeadModel, effectiveAccountPrefix, leadModelCatalog, loadLeadModelConfig, OPENAI_COMPATIBLE_APIS, removeLeadProviderInConfig,
+  saveLeadProviderInConfig, setLeadProviderKeySource, type LeadCatalogModel, type LeadCatalogProviderInfo, type LeadModelConfig,
+  type LeadProviderConfig,
 } from "@pi-lead-child/lead";
 import { resolveEnvSpec } from "@pi-lead-child/core";
 import { UiActionError, type ModelSettingsChange, type ModelSettingsService, type ModelSettingsSummary } from "@pi-lead-child/engine";
@@ -31,6 +32,9 @@ import { modelSettingsMessages } from "./model-settings.messages.js";
 import { SealedSecrets } from "./sealed-secrets.js";
 
 const FIRST_SEEN_KEY = "lead.model_first_seen";
+
+// 一个服务商的目录。info 是读到了什么（详细目录、accountPrefix 和 capabilities 的生效值），目录拉不到时为 null。
+type ProviderCatalog = { models: LeadCatalogModel[]; problem: string | null; info: LeadCatalogProviderInfo | null };
 const CATALOG_TTL_MS = 30_000;
 const MAX_FAST_MODELS = 32;
 
@@ -125,7 +129,7 @@ function fastModelId(name: string, taken: ReadonlySet<string>): string {
 export class ModelSettings implements ModelSettingsService {
   private readonly secrets: SealedSecrets<string>;
   private queue: Promise<unknown> = Promise.resolve();
-  private catalogCache: { at: number; value: Promise<Map<string, { models: LeadCatalogModel[]; problem: string | null }>> } | null = null;
+  private catalogCache: { at: number; value: Promise<Map<string, ProviderCatalog>> } | null = null;
 
   constructor(private readonly options: ModelSettingsOptions) {
     this.secrets = new SealedSecrets<string>(options.db, options.vault);
@@ -189,15 +193,17 @@ export class ModelSettings implements ModelSettingsService {
 
   // ── 页面用的整份 ──────────────────────────────────────────────────────────────
 
-  private catalogs(config: LeadModelConfig): Promise<Map<string, { models: LeadCatalogModel[]; problem: string | null }>> {
+  private catalogs(config: LeadModelConfig): Promise<Map<string, ProviderCatalog>> {
     if (this.catalogCache && Date.now() - this.catalogCache.at < CATALOG_TTL_MS) return this.catalogCache.value;
     const value = (async () => {
-      const result = new Map<string, { models: LeadCatalogModel[]; problem: string | null }>();
+      const result = new Map<string, ProviderCatalog>();
       await Promise.all(Object.entries(config.providers).map(async ([name, provider]) => {
         const one: LeadModelConfig = { providers: { [name]: provider }, models: [] };
         const catalog = await leadModelCatalog(one, this.options.env, this.options.fetch);
         const failed = catalog.notes.find((note) => note.startsWith(`${name}: no models`) || note.startsWith(`${name}: discover failed`));
-        result.set(name, { models: catalog.models, problem: failed ? failed.slice(name.length + 2).slice(0, 500) : null });
+        result.set(name, {
+          models: catalog.models, problem: failed ? failed.slice(name.length + 2).slice(0, 500) : null, info: catalog.providers[name] ?? null,
+        });
       }));
       return result;
     })();
@@ -217,7 +223,7 @@ export class ModelSettings implements ModelSettingsService {
   }
 
   // 记下目录里新出现的、目录没给发布时间的模型。服务商第一次拉目录时就有的记成 null（不知道什么时候出的）。
-  private recordFirstSeen(catalogs: Map<string, { models: LeadCatalogModel[]; problem: string | null }>): FirstSeen {
+  private recordFirstSeen(catalogs: Map<string, ProviderCatalog>): FirstSeen {
     const state = this.readFirstSeen();
     const at = this.now().toISOString();
     let changed = false;
@@ -254,7 +260,7 @@ export class ModelSettings implements ModelSettingsService {
       blocked.set(model, Math.max(blocked.get(model) ?? 0, entry.until));
     }
     const providers: ModelProvider[] = Object.entries(config.providers).map(([name, provider]) => {
-      const catalog = catalogs.get(name) ?? { models: [], problem: null };
+      const catalog = catalogs.get(name) ?? { models: [], problem: null, info: null };
       const key = this.providerKey(name, provider);
       const models: BrainModel[] = catalog.models.map((model) => {
         const spec = `${model.provider}/${model.id}`;
@@ -265,6 +271,7 @@ export class ModelSettings implements ModelSettingsService {
           contextWindow: model.contextWindow, efforts: model.efforts, defaultEffort: model.defaultEffort,
           released: model.created ? { at: model.created, source: "provider" as const } : seen ? { at: seen, source: "first_seen" as const } : null,
           blockedUntil: until === undefined ? null : new Date(until).toISOString(),
+          group: model.group, source: model.source,
         };
       });
       // 最新发布的在前面；不知道时间的排在最后，按 id。
@@ -272,6 +279,10 @@ export class ModelSettings implements ModelSettingsService {
       return {
         name, baseUrl: provider.baseUrl, api: (provider.api ?? "openai-completions") as ModelProviderApi,
         keySet: key.set, keySource: key.source, keyHost: key.host, models, problem: catalog.problem,
+        accountPrefix: provider.accountPrefix ?? null,
+        accountPrefixActive: catalog.info?.accountPrefix ?? effectiveAccountPrefix(provider, false),
+        capabilities: provider.capabilities ?? "auto",
+        catalog: catalog.info && !catalog.problem ? (catalog.info.detailed ? "detailed" : "plain") : "none",
       };
     });
     const fast = loadDecisionModels(this.options.dataDir);
@@ -337,7 +348,11 @@ export class ModelSettings implements ModelSettingsService {
       const baseUrl = checkedUrl(request.baseUrl, locale);
       const host = serviceUrlHost(baseUrl);
       const existed = request.name in this.config().providers;
-      const { droppedConfigKey } = saveLeadProviderInConfig(request.name, { baseUrl, api: request.api }, serviceUrlHost, this.options.dataDir);
+      const { droppedConfigKey } = saveLeadProviderInConfig(request.name, {
+        baseUrl, api: request.api,
+        ...(request.accountPrefix !== undefined ? { accountPrefix: request.accountPrefix } : {}),
+        ...(request.capabilities !== undefined ? { capabilities: request.capabilities } : {}),
+      }, serviceUrlHost, this.options.dataDir);
       const secret = providerSecretName(request.name);
       const notes: string[] = [];
       if (typeof request.apiKey === "string") {

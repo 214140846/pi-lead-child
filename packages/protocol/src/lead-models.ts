@@ -28,7 +28,8 @@ export const LeadModelOptionSchema = StrictObject({
   provider: Type.String({ minLength: 1 }),
   // 目录里的 id，去掉 provider，例如 as4/claude-sonnet-5。
   id: Type.String({ minLength: 1 }),
-  // id 里第一个斜杠前的部分（vibeproxy 给账号设的前缀）。没有时为 null。
+  // 账号（group）：id 里第一个斜杠前的部分，只在这家服务商的 accountPrefix 生效时才有（vibeproxy 的 as1、as4）。
+  // magpie 的 auto/deepseek-flash 这类前缀不是账号，为 null。字段名沿用 prefix：这个 DTO 是严格的契约，不改名。
   prefix: Nullable(Type.String()),
   // 上游，例如 anthropic、antigravity。不知道时为 null。
   source: Nullable(Type.String()),
@@ -66,9 +67,13 @@ const EFFORT_SUFFIX = /^(.+)\(([A-Za-z0-9_-]{1,32})\)$/;
 /**
  * 拆开一个模型 spec：vibeproxy/as4/claude-sonnet-5(high) →
  * { model: "vibeproxy/as4/claude-sonnet-5", provider: "vibeproxy", id: "as4/claude-sonnet-5", prefix: "as4",
- *   bareId: "claude-sonnet-5", effort: "high" }。
+ *   bareId: "as4/claude-sonnet-5", effort: "high" }。
+ *
+ * prefix 只是 id 里第一个斜杠前的部分，不一定是账号。bareId 是显示用的 id：给了 group（账号）时去掉它，
+ * 没给或者为 null 时是完整的 id。只取最后一个斜杠后面的部分会把 auto/deepseek-flash 和 deepseek/deepseek-flash
+ * 显示成同一个名字（Lead 模型分组，2026-11-05）。
  */
-export function parseLeadModelSpec(spec: string): {
+export function parseLeadModelSpec(spec: string, group: string | null = null): {
   model: string; provider: string; id: string; prefix: string | null; bareId: string; effort: string | null;
 } {
   const trimmed = spec.trim();
@@ -82,9 +87,14 @@ export function parseLeadModelSpec(spec: string): {
   return {
     model, provider, id,
     prefix: prefixEnd > 0 ? id.slice(0, prefixEnd) : null,
-    bareId: id.slice(id.lastIndexOf("/") + 1),
+    bareId: leadModelDisplayId(id, group),
     effort,
   };
+}
+
+/** 显示用的模型 id：有账号（group）时去掉 「<group>/」，没有时是完整的 id。 */
+export function leadModelDisplayId(id: string, group: string | null): string {
+  return group && id.startsWith(`${group}/`) ? id.slice(group.length + 1) : id;
 }
 
 export function leadModelSpec(choice: LeadModelChoice): string {

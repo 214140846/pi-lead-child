@@ -1,9 +1,9 @@
 // 设置 → 模型（方案 B，2026-10-29，.scratch/model-settings/spec.md）的纯逻辑：分工的格子、模型库的分组和排序、文案。
 // 页面（ModelSection.tsx、ModelPicker.tsx、ModelLibrary.tsx）只管画。
 import {
-  MODEL_MAX_BACKUPS, parseLeadModelSpec,
+  MODEL_MAX_BACKUPS, parseLeadModelSpec, groupModelsByProvider, flatModelSections,
   DEFAULT_LOCALE,
-  type BrainModel, type FastModel, type LeadModelChoice, type Locale, type ModelProvider, type ModelRelease, type ModelSettingsDto,
+  type BrainModel, type ModelSection, type FastModel, type LeadModelChoice, type Locale, type ModelProvider, type ModelRelease, type ModelSettingsDto,
 } from '@pi-lead-child/protocol';
 
 import { intlLocale } from '@/i18n';
@@ -27,12 +27,27 @@ export function brainIndex(dto: ModelSettingsDto): Map<string, BrainEntry> {
   return index;
 }
 
-/** 一个模型的显示名：目录的显示名，带账号前缀（as4）时写在后面。目录不在时是 id。 */
+/**
+ * 一个模型的显示名：目录的显示名，有账号（group，as4）时写在后面。目录没给显示名、或者不在目录里时是完整的 id。
+ * 账号只读 daemon 给的 group：magpie 的 auto/、deepseek/ 不是账号（Lead 模型分组，2026-11-05）。
+ */
 export function brainModelName(spec: string, entry: BrainEntry | undefined): string {
   const parsed = parseLeadModelSpec(spec);
   const name = entry?.model.name?.trim();
   if (!name) return parsed.id;
-  return parsed.prefix ? `${name} · ${parsed.prefix}` : name;
+  const group = entry?.model.group ?? null;
+  return group ? `${name} · ${group}` : name;
+}
+
+/** 分组用的样子：daemon 不给 group、source 时（旧 daemon）当作没有。 */
+export function groupable(provider: string, model: BrainModel): BrainModel & { provider: string; group: string | null; source: string | null } {
+  return { ...model, provider, group: model.group ?? null, source: model.source ?? null };
+}
+
+/** 一个服务商的目录按「group · channel」分段（protocol 的 groupModelsByProvider）。keep 决定画哪些。 */
+export function providerSections(provider: ModelProvider, keep?: (model: BrainModel) => boolean): ModelSection<BrainModel>[] {
+  const grouped = groupModelsByProvider(provider.models.map((model) => groupable(provider.name, model)), keep ? { keep } : {});
+  return flatModelSections(grouped);
 }
 
 /** 上下文窗口：1048576 → 1M，500000 → 500K。 */
@@ -156,6 +171,8 @@ export type ProviderGroupView = {
   models: BrainModel[];
   // 收着没画的个数。
   hidden: number;
+  // 要画的模型按「group · channel」分段（标题按这个服务商的全部模型算）。
+  sections: ModelSection<BrainModel>[];
   // 分工里用了它几个模型（收起整组时行尾写出来）。
   inUse: string[];
   latest: string | null;
@@ -181,8 +198,9 @@ export function providerGroup(
     ? matching
     : matching.filter((model, index) => index < limit || inUse.has(model.model));
   const latest = provider.models.find((model) => model.released?.source === 'provider')?.released ?? provider.models[0]?.released ?? null;
+  const shown = new Set(models.map((model) => model.model));
   return {
-    provider, models, hidden: matching.length - models.length,
+    provider, models, hidden: matching.length - models.length, sections: providerSections(provider, (model) => shown.has(model.model)),
     inUse: provider.models.filter((model) => inUse.has(model.model)).map((model) => model.model),
     latest: latest ? localDate(latest.at) : null,
   };
@@ -202,7 +220,7 @@ export function groupUseLabel(dto: ModelSettingsDto, group: ProviderGroupView, l
   return roles.length ? roles.join(' · ') : null;
 }
 
-/** 服务商一行的第二行：主机 · 接口 · key · 共 N 个 · 最新 日期。 */
+/** 服务商一行的第二行：接口 · key · 共 N 个 · 按账号分组 · 最新 日期。不写地址（原型的设置页，2026-11-05）：地址在「设置」里。 */
 export function providerSub(group: ProviderGroupView, locale: Locale): string {
   const m = modelMessages(locale);
   const { provider } = group;
@@ -211,7 +229,8 @@ export function providerSub(group: ProviderGroupView, locale: Locale): string {
     : provider.keySource === 'env' ? m.keyInEnv
     : m.keyNotNeeded;
   return [
-    urlHost(provider.baseUrl), apiLabels(locale)[provider.api], key, m.modelCount(provider.models.length),
+    apiLabels(locale)[provider.api], key, m.modelCount(provider.models.length),
+    provider.accountPrefixActive ? m.groupedByAccount : null,
     group.latest ? m.latest(group.latest) : null,
   ].filter(Boolean).join(' · ');
 }
@@ -257,4 +276,42 @@ export function fastFormProblem(form: { name: string; baseUrl: string; model: st
   if (urlProblem) return urlProblem;
   if (!/^[A-Za-z0-9._-]{1,64}$/.test(form.model.trim())) return m.modelNameInvalid;
   return null;
+}
+
+// ── 服务商的「高级」（Lead 模型分组，2026-11-05）──────────────────────────────
+
+export type CapabilitySource = NonNullable<ModelProvider['capabilities']>;
+export const CAPABILITY_SOURCES: readonly CapabilitySource[] = ['auto', 'detailed', 'plain', 'config'];
+
+/** 「高级」的表单值：accountPrefix 是 config 里写的（null 是没写，按缺省）；capabilities 没写时是 auto。 */
+export interface AdvancedForm {
+  accountPrefix: boolean | null;
+  capabilities: CapabilitySource;
+}
+
+export function advancedForm(provider: ModelProvider | null): AdvancedForm {
+  return { accountPrefix: provider?.accountPrefix ?? null, capabilities: provider?.capabilities ?? 'auto' };
+}
+
+/** 「前缀是账号」的开关现在显示开还是关：写了用写的，没写时按缺省（读到详细目录算是）。 */
+export function accountPrefixOn(provider: ModelProvider | null, form: AdvancedForm): boolean {
+  if (form.accountPrefix !== null) return form.accountPrefix;
+  return provider?.catalog === 'detailed';
+}
+
+/** save_provider 要带的「高级」字段：只带改过的。旧 daemon 没给这些字段时不带。 */
+export function advancedChanges(provider: ModelProvider | null, form: AdvancedForm): Partial<AdvancedForm> {
+  if (!provider || provider.capabilities === undefined) return {};
+  const before = advancedForm(provider);
+  return {
+    ...(form.accountPrefix !== before.accountPrefix ? { accountPrefix: form.accountPrefix } : {}),
+    ...(form.capabilities !== before.capabilities ? { capabilities: form.capabilities } : {}),
+  };
+}
+
+/** 能力实际按哪里读：auto 换成详细目录或普通目录。 */
+export function capabilitiesNow(provider: ModelProvider | null, form: AdvancedForm): 'detailed' | 'plain' | 'config' | 'none' {
+  if (!provider || provider.catalog === 'none') return form.capabilities === 'config' ? 'config' : 'none';
+  if (form.capabilities === 'auto') return provider.catalog === 'detailed' ? 'detailed' : 'plain';
+  return form.capabilities;
 }

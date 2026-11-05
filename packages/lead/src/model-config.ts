@@ -22,6 +22,13 @@ export const OPENAI_COMPATIBLE_APIS = [
 
 export type OpenAICompatibleApi = (typeof OPENAI_COMPATIBLE_APIS)[number];
 
+// 模型能力（能不能看图）从哪里读（Lead 模型分组，2026-11-05）：
+//   auto：有 CLIProxyAPI 的详细目录就读它，没有时读普通目录的条目（magpie 的 modalities.input）；
+//   detailed：只读详细目录；plain：只读普通目录；config：只读 config.json 的 models[].input。
+// config.json 里写了 models[].input 的模型，不管哪一种，都以写的为准。
+export const LEAD_CAPABILITY_SOURCES = ["auto", "detailed", "plain", "config"] as const;
+export type LeadCapabilitySource = (typeof LEAD_CAPABILITY_SOURCES)[number];
+
 export interface LeadProviderModelConfig {
   id: string;
   name?: string;
@@ -40,6 +47,11 @@ export interface LeadProviderConfig {
   compat?: Record<string, unknown>;
   models?: LeadProviderModelConfig[];
   discover?: boolean;
+  // 模型 id 里第一个斜杠前的部分是不是账号（vibeproxy 的 as1/、as4/）。没写时：读到了详细目录就当作是，否则当作不是
+  // （magpie 的 auto/、deepseek/ 不是账号）。
+  accountPrefix?: boolean;
+  // 能不能看图从哪里读。没写时是 auto。
+  capabilities?: LeadCapabilitySource;
 }
 
 export interface LeadModelConfig {
@@ -145,9 +157,9 @@ export async function discoverOpenAICompatibleModels(
 export interface LeadCatalogModel {
   provider: string;
   id: string;
-  // id 里第一个斜杠前的部分：vibeproxy 给一个账号设了 prefix 时，这个账号的模型是 <prefix>/<model>（例如 as4/claude-sonnet-5）。
-  // 没有斜杠时为 null。
-  prefix: string | null;
+  // 账号（group）：id 里第一个斜杠前的部分，只在这家服务商的 accountPrefix 生效时才算（vibeproxy 给一个账号设了 prefix 时，
+  // 这个账号的模型是 <prefix>/<model>，例如 as4/claude-sonnet-5）。不生效（magpie 的 auto/deepseek-flash）或者没有斜杠时为 null。
+  group: string | null;
   // 上游（/v1/models 的 owned_by，例如 anthropic、antigravity）。不知道时为 null。
   source: string | null;
   // 目录给的显示名。没有时为 null。
@@ -210,28 +222,81 @@ function catalogCreatedAt(item: Record<string, unknown>, now = Date.now()): stri
   return new Date(ms).toISOString();
 }
 
+// 一个 provider 的目录读到了什么（设置页的「高级」要显示）。
+export interface LeadCatalogProviderInfo {
+  // 读到了 CLIProxyAPI 的详细目录（?client_version=pi 返回了 models[]）。
+  detailed: boolean;
+  // accountPrefix 的生效值：config 写了用写的；没写时读到了详细目录就是 true，否则是 false。
+  accountPrefix: boolean;
+  // 能不能看图实际按哪里读：auto 换成了 detailed 或 plain。
+  capabilities: Exclude<LeadCapabilitySource, "auto">;
+}
+
+/** accountPrefix 的生效值。 */
+export function effectiveAccountPrefix(provider: Pick<LeadProviderConfig, "accountPrefix">, detailed: boolean): boolean {
+  return provider.accountPrefix ?? detailed;
+}
+
+/** 能不能看图实际按哪里读：auto 时有详细目录读详细目录，没有时读普通目录。 */
+export function effectiveCapabilities(
+  provider: Pick<LeadProviderConfig, "capabilities">, detailed: boolean,
+): Exclude<LeadCapabilitySource, "auto"> {
+  const declared = provider.capabilities ?? "auto";
+  if (declared !== "auto") return declared;
+  return detailed ? "detailed" : "plain";
+}
+
+function inputKinds(value: unknown): Array<"text" | "image"> | null {
+  if (!Array.isArray(value)) return null;
+  const kinds = stringList(value).filter((kind): kind is "text" | "image" => kind === "text" || kind === "image");
+  return kinds.length ? kinds : null;
+}
+
+// 普通目录（data[]）的一项里和能力有关的字段。magpie 没有详细目录，把这些写在普通目录里（2026-11-05）：
+// modalities.input（或者 input_modalities）、display_name、context_window、max_output_tokens（或者 max_tokens）。
+// 推理强度不从这里读：Lead 把强度写成 id 后面的 (level) 后缀，只有 CLIProxyAPI 认。
+interface PlainCatalogFields {
+  input: Array<"text" | "image"> | null;
+  name: string | null;
+  contextWindow: number | null;
+  maxTokens: number | null;
+}
+
+function plainCatalogFields(item: Record<string, unknown>): PlainCatalogFields {
+  const modalities = isRecord(item.modalities) ? item.modalities.input : undefined;
+  return {
+    input: inputKinds(item.input_modalities) ?? inputKinds(modalities),
+    name: typeof item.display_name === "string" && item.display_name.trim() ? item.display_name : null,
+    contextWindow: positiveInteger(item.context_window),
+    maxTokens: positiveInteger(item.max_output_tokens) ?? positiveInteger(item.max_tokens),
+  };
+}
+
 // 一个 provider 的目录。discover 时先问普通的 OpenAI 目录（id 和 owned_by，拉不到就报错，和以前一样），
 // 再问 CLIProxyAPI（vibeproxy）的详细目录（?client_version=pi：显示名、能不能看图、推理强度）。别的服务没有详细目录，
-// 这一步失败或者没有 models 时只用普通目录。config 里写的模型排在前面，能不能看图以 config 写的为准。
+// 这一步失败或者没有 models 时只用普通目录。config 里写的模型排在前面。
+//
+// 能不能看图（Lead 模型分组，2026-11-05）：config 的 models[].input 优先；其次按 capabilities 声明的来源读；
+// 没声明（auto）时，有详细目录读它的 input_modalities，否则读普通目录条目的 modalities.input。
+// 账号（group）只在 accountPrefix 生效时才取。
 async function providerCatalog(
   name: string,
   provider: LeadProviderConfig,
   env: Record<string, string | undefined>,
   fetchImpl: typeof fetch,
-): Promise<{ models: LeadCatalogModel[]; note: string | null }> {
+): Promise<{ models: LeadCatalogModel[]; note: string | null; info: LeadCatalogProviderInfo }> {
   const configured = provider.models ?? [];
-  const entry = (id: string, extra: Partial<LeadCatalogModel> = {}): LeadCatalogModel => {
-    const slash = id.indexOf("/");
-    return {
-      provider: name, id, prefix: slash > 0 ? id.slice(0, slash) : null, source: null, name: null,
-      input: ["text"], efforts: [], defaultEffort: null, contextWindow: null, maxTokens: null, created: null, ...extra,
-    };
-  };
+  const configuredInput = new Map(configured.flatMap((model) => (model.input ? [[model.id, model.input] as const] : [])));
+  const entry = (id: string, extra: Partial<LeadCatalogModel> = {}): LeadCatalogModel => ({
+    provider: name, id, group: null, source: null, name: null,
+    input: ["text"], efforts: [], defaultEffort: null, contextWindow: null, maxTokens: null, created: null, ...extra,
+  });
   const byId = new Map<string, LeadCatalogModel>();
   for (const model of configured) {
     byId.set(model.id, entry(model.id, { ...(model.name ? { name: model.name } : {}), ...(model.input ? { input: model.input } : {}) }));
   }
   let note: string | null = null;
+  let detailed = false;
   if (provider.discover !== false && (provider.discover === true || configured.length === 0)) {
     const apiKey = resolveLeadApiKey(provider, env, name);
     const base = provider.baseUrl.endsWith("/") ? provider.baseUrl : `${provider.baseUrl}/`;
@@ -254,23 +319,25 @@ async function providerCatalog(
       if (!Array.isArray(payload.data)) throw new Error(`GET ${url.href} did not return OpenAI-compatible { data: [...] }`);
       const owners = new Map<string, string | null>();
       const created = new Map<string, string>();
+      // 普通目录里的能力字段，和详细目录分开放：capabilities 决定读哪一份。
+      const plain = new Map<string, PlainCatalogFields>();
       for (const item of payload.data) {
         if (!isRecord(item) || typeof item.id !== "string" || !item.id.trim()) continue;
-        owners.set(item.id.trim(), typeof item.owned_by === "string" && item.owned_by.trim() ? item.owned_by.trim() : null);
+        const id = item.id.trim();
+        owners.set(id, typeof item.owned_by === "string" && item.owned_by.trim() ? item.owned_by.trim() : null);
         const at = catalogCreatedAt(item);
-        if (at) created.set(item.id.trim(), at);
+        if (at) created.set(id, at);
+        plain.set(id, plainCatalogFields(item));
       }
       let rich: unknown[] = [];
-      // Anthropic 的 display_name 在普通目录里就有。
-      const displayNames = new Map<string, string>();
-      for (const item of payload.data) {
-        if (isRecord(item) && typeof item.id === "string" && typeof item.display_name === "string") displayNames.set(item.id.trim(), item.display_name);
-      }
       // 只有 OpenAI 兼容的代理有详细目录。
       if (!anthropic) try {
         const detail = await fetchImpl(new URL("models?client_version=pi", base), { headers });
         const body = detail.ok ? await detail.json() as { models?: unknown } : null;
-        if (Array.isArray(body?.models)) rich = body.models;
+        if (Array.isArray(body?.models)) {
+          rich = body.models;
+          detailed = true;
+        }
       } catch {
         // 不是 CLIProxyAPI：没有详细目录。
       }
@@ -278,19 +345,25 @@ async function providerCatalog(
       for (const item of rich) {
         if (isRecord(item) && typeof item.slug === "string" && item.visibility !== "hide") details.set(item.slug.trim(), item);
       }
+      const capabilities = provider.capabilities ?? "auto";
       for (const id of uniqueStrings([...owners.keys(), ...details.keys()])) {
         const detail = details.get(id);
-        const input = stringList(detail?.input_modalities).filter((kind): kind is "text" | "image" => kind === "text" || kind === "image");
+        const flat = plain.get(id);
+        const detailInput = inputKinds(detail?.input_modalities);
+        const fromCatalog = capabilities === "detailed" ? detailInput
+          : capabilities === "plain" ? flat?.input ?? null
+          : capabilities === "config" ? null
+          : detail ? detailInput : flat?.input ?? null;
         const previous = byId.get(id);
         byId.set(id, entry(id, {
           source: owners.get(id) ?? null,
-          name: previous?.name ?? (typeof detail?.display_name === "string" ? detail.display_name : displayNames.get(id) ?? null),
-          // config 写了 input 时以它为准（手动覆盖）；没写时用目录说的。
-          input: configured.find((model) => model.id === id)?.input ?? (input.length ? input : ["text"]),
+          name: previous?.name ?? (typeof detail?.display_name === "string" ? detail.display_name : flat?.name ?? null),
+          // config 写了 input 时以它为准（手动覆盖）；没写时按 capabilities 读目录。
+          input: configuredInput.get(id) ?? fromCatalog ?? ["text"],
           efforts: stringList(detail?.supported_reasoning_levels, (level) => (isRecord(level) ? level.effort : level)),
           defaultEffort: typeof detail?.default_reasoning_level === "string" ? detail.default_reasoning_level : null,
-          contextWindow: positiveInteger(detail?.context_window),
-          maxTokens: positiveInteger(detail?.max_tokens),
+          contextWindow: positiveInteger(detail?.context_window) ?? flat?.contextWindow ?? null,
+          maxTokens: positiveInteger(detail?.max_tokens) ?? flat?.maxTokens ?? null,
           created: created.get(id) ?? null,
         }));
       }
@@ -301,30 +374,43 @@ async function providerCatalog(
     }
   }
   if (byId.size === 0) throw new Error(`lead.providers.${name} has no models; set models[] or discover:true`);
-  return { models: [...byId.values()], note };
+  const info: LeadCatalogProviderInfo = {
+    detailed,
+    accountPrefix: effectiveAccountPrefix(provider, detailed),
+    capabilities: effectiveCapabilities(provider, detailed),
+  };
+  const models = [...byId.values()].map((model) => ({ ...model, group: info.accountPrefix ? modelGroup(model.id) : null }));
+  return { models, note, info };
+}
+
+function modelGroup(id: string): string | null {
+  const slash = id.indexOf("/");
+  return slash > 0 ? id.slice(0, slash) : null;
 }
 
 /**
  * Lead 能用的模型（所有 provider 的目录）。目录拉不到、config 里也没写模型的 provider 跳过，原因写在 notes 里。
- * 会话输入框的模型选择和 Lead 的 list_lead_models 都读它。
+ * 会话输入框的模型选择、设置页和 Lead 的 list_lead_models 都读它。providers 是每家读到了什么（设置页的「高级」）。
  */
 export async function leadModelCatalog(
   config: LeadModelConfig,
   env: Record<string, string | undefined> = process.env,
   fetchImpl: typeof fetch = fetch,
-): Promise<{ models: LeadCatalogModel[]; notes: string[] }> {
+): Promise<{ models: LeadCatalogModel[]; notes: string[]; providers: Record<string, LeadCatalogProviderInfo> }> {
   const models: LeadCatalogModel[] = [];
   const notes: string[] = [];
+  const providers: Record<string, LeadCatalogProviderInfo> = {};
   for (const [name, provider] of Object.entries(config.providers)) {
     try {
       const catalog = await providerCatalog(name, provider, env, fetchImpl);
       models.push(...catalog.models);
+      providers[name] = catalog.info;
       if (catalog.note) notes.push(catalog.note);
     } catch (error) {
       notes.push(`${name}: no models (${String(error)})`);
     }
   }
-  return { models, notes };
+  return { models, notes, providers };
 }
 
 export async function registerLeadProviders(
@@ -436,10 +522,12 @@ export function setLeadModelChainInConfig(specs: readonly string[], dir?: string
 /**
  * 接入或修改一个服务商（lead.providers.<name>）。新的服务商拉目录（discover: true）。改了别的字段（models、headers……）照旧。
  * 地址换了主机、config.json 里又手写了 apiKey 时，删掉那个 key：key 只发给原来的主机。返回删没删。
+ * accountPrefix、capabilities（设置页的「高级」、首次启动的「前缀是账号吗」）：不给时不变；accountPrefix 为 null、
+ * capabilities 为 auto 时从 config 里删掉，回到缺省。
  */
 export function saveLeadProviderInConfig(
   name: string,
-  settings: { baseUrl: string; api: OpenAICompatibleApi },
+  settings: { baseUrl: string; api: OpenAICompatibleApi; accountPrefix?: boolean | null; capabilities?: LeadCapabilitySource },
   hostOf: (url: string) => string | null,
   dir?: string,
 ): { droppedConfigKey: boolean } {
@@ -454,6 +542,14 @@ export function saveLeadProviderInConfig(
   }
   next.baseUrl = settings.baseUrl;
   next.api = settings.api;
+  if (settings.accountPrefix !== undefined) {
+    if (settings.accountPrefix === null) delete next.accountPrefix;
+    else next.accountPrefix = settings.accountPrefix;
+  }
+  if (settings.capabilities !== undefined) {
+    if (settings.capabilities === "auto") delete next.capabilities;
+    else next.capabilities = settings.capabilities;
+  }
   providers[name] = next;
   writePlcConfig({ ...file, lead: { ...file.lead, providers, models: file.lead?.models ?? [] } }, dir);
   return { droppedConfigKey };
@@ -489,7 +585,23 @@ function normalizeLeadProvider(name: string, raw: unknown): LeadProviderConfig {
       : undefined,
     models: normalizeProviderModels(name, value.models),
     discover: value.discover === undefined ? undefined : Boolean(value.discover),
+    ...(normalizeAccountPrefix(name, value.accountPrefix)),
+    ...(normalizeCapabilities(name, value.capabilities)),
   };
+}
+
+function normalizeAccountPrefix(name: string, raw: unknown): { accountPrefix?: boolean } {
+  if (raw === undefined || raw === null) return {};
+  if (typeof raw !== "boolean") throw new Error(`lead.providers.${name}.accountPrefix 必须是 true 或 false`);
+  return { accountPrefix: raw };
+}
+
+function normalizeCapabilities(name: string, raw: unknown): { capabilities?: LeadCapabilitySource } {
+  if (raw === undefined || raw === null) return {};
+  if (typeof raw !== "string" || !(LEAD_CAPABILITY_SOURCES as readonly string[]).includes(raw)) {
+    throw new Error(`lead.providers.${name}.capabilities 仅支持 ${LEAD_CAPABILITY_SOURCES.join(", ")}`);
+  }
+  return { capabilities: raw as LeadCapabilitySource };
 }
 
 function normalizeApiKey(name: string, raw: unknown): EnvSpec | undefined {

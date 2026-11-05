@@ -26,7 +26,7 @@ import { UI_ACTIONS, UI_ACTION_TARGETS } from "./catalog.js";
 import { externalTurnWhy, ruleChangeRefusalText, type ExternalContentSource, type RuleChangeConfirm } from "./external-content.js";
 import { confirmedOperationProblem, requestRuleChangeConfirmation, ruleChangeEntityKey } from "./rule-change-confirmations.js";
 import {
-  UiActionError, uiIrreversibleOf, uiPermissionOf, uiWhereOf,
+  UiActionError, uiIrreversibleOf, uiPermissionOf, uiUserTurnOnlyOf, uiWhereOf,
   type UiActionAuthority, type UiActionCaller, type UiActionDefinition, type UiActionEnv, type UiActionRefusal, type UiActionRun,
   type UiActionServices,
 } from "./types.js";
@@ -146,13 +146,15 @@ function externalTurnFloorOf(definition: UiActionDefinition, target: unknown): s
 }
 
 // 这一轮带着的外部内容对这个操作算不算数（authority.ts 第 6 条）：不改规则、也没有外部底线的操作不看它；
-// 用户本人正在说话的那一轮不受限制。写进提示词的设置（promptSetting）没有这个例外。
+// 用户本人正在说话的那一轮不受限制。写进提示词的设置（promptSetting）、这一次只认用户本人这一轮的操作（userTurnOnly，
+// 例如外部消息派的执行要的审批，工单 #246 第 6 节）没有这个例外。
 function ruleCeilingOf(
-  db: Db, definition: UiActionDefinition, target: unknown, turnId: string | null,
+  db: Db, definition: UiActionDefinition, target: unknown, env: UiActionEnv, turnId: string | null,
   externalContent: readonly ExternalContentSource[] | null,
 ): readonly ExternalContentSource[] | null {
   if (externalContent === null || !(definition.changesRules || externalTurnFloorOf(definition, target))) return null;
   if (definition.promptSetting || (definition.externalRefusalNext && !definition.liveUserTurnExempt)) return externalContent;
+  if (uiUserTurnOnlyOf(definition, target, env).on) return externalContent;
   return isLiveUserTurn(db, turnId, definition.scope) ? null : externalContent;
 }
 
@@ -161,12 +163,13 @@ function authorityFacts(
   definition: UiActionDefinition, target: unknown, env: UiActionEnv, externalContent: readonly ExternalContentSource[] | null,
 ) {
   const permission = uiPermissionOf(definition, target, env);
+  const userTurnOnly = uiUserTurnOnlyOf(definition, target, env);
   return {
     permission,
     ...leadAuthorityFor({
       permission, external: definition.external, irreversible: uiIrreversibleOf(definition, target),
       delegatedInScope: permission === "delegated" && Boolean(definition.delegatedScope?.(target, env)),
-      userTurnOnly: definition.userTurnOnly === true,
+      userTurnOnly: userTurnOnly.on, userTurnOnlyWhy: userTurnOnly.why,
       changesRules: definition.changesRules || externalTurnFloorOf(definition, target) !== null,
       turnHasExternalContent: externalContent !== null,
     }),
@@ -185,7 +188,7 @@ export async function listLeadUiActions(
   const actions = views.map((view) => {
     const definition = uiActionDefinition(resolved.type, view.id)!;
     const { mode, why } = authorityFacts(
-      definition, resolved.value, env, ruleCeilingOf(db, definition, resolved.value, options.turnId, externalContent),
+      definition, resolved.value, env, ruleCeilingOf(db, definition, resolved.value, env, options.turnId, externalContent),
     );
     // 这一轮能不能凭：还要看这一轮的凭证有没有这个操作的 scope。
     const turnBlocker = mode === "user_turn" ? activeUserTurnBlocker(db, options.turnId, definition.scope) : null;
@@ -249,7 +252,7 @@ function resolveUiAuthority(
 ): { by: ActionAttribution; authority: UiActionAuthority; turnStartedAt?: number } {
   if (caller.kind === "user") return { by: { actor: "user" }, authority: "user" };
   if (caller.confirmation) return confirmedAuthority(db, definition, target, caller.confirmation, env, request.input);
-  const externalContent = ruleCeilingOf(db, definition, target.value, caller.turnId, caller.externalContent ?? null);
+  const externalContent = ruleCeilingOf(db, definition, target.value, env, caller.turnId, caller.externalContent ?? null);
   const { permission, mode, why, forUser } = authorityFacts(definition, target.value, env, externalContent);
   const name = UI_ACTION_TARGETS[target.type].name(target.value);
   const where = uiWhereOf(definition, target.value);

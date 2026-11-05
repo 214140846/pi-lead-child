@@ -103,6 +103,19 @@ describe('pending intervention card header', () => {
     expect(text).toContain('3 个 commit · 只推分支，不开 PR');
     expect(text).not.toContain('Approval required');
     expect(text).not.toContain('来自 child');
+    expect(screen.queryByTestId('intervention-external-origin')).toBeNull();
+  });
+
+  // 工单 #246 第 6 节：外部消息派的执行要的审批，卡上写明要你自己批。
+  it('says an approval of a run that an external message started needs the user', () => {
+    const approval: KernelIntervention = {
+      id: 'approval:6', kind: 'approval', authorityId: 6, ticketId: 161, attemptId: 74, audience: 'user', state: 'pending',
+      title: 'Approval required: send_email', detail: 'reply to Ethan', actions: ['approve', 'reject', 'approve_session'],
+      resolution: null, createdAt: '2026-10-26T08:02:00.000Z', resolvedBy: null, resolvedAt: null, externalOrigin: true,
+    };
+    renderUI(<InterventionCard intervention={approval} leadName="Fairy" onOpenTicket={() => {}} />);
+    expect(screen.getByTestId('intervention-external-origin').textContent)
+      .toBe('An external message started this run. You must approve it yourself.');
   });
 
   it('puts the decision question in the header, once', () => {

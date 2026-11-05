@@ -269,6 +269,10 @@ export function InterventionCard({
         ) : full ? null : (
           <MarkdownMessage markdown={checkpoint?.summary ?? m.syncingDetail} size="secondary" tone="secondary" />
         )}
+        {/* 外部消息派的执行要的审批（工单 #246 第 6 节）：Lead 不能替你批，卡上写明。 */}
+        {full?.kind === 'approval' && full.externalOrigin ? (
+          <Text testID="intervention-external-origin" size="meta" tone="secondary">{m.externalOrigin}</Text>
+        ) : null}
         {options.length ? (
           // 单选行：选项名 600，代价写在同一行；选中的行 accent-wash 底（主题 11.3）。
           <Column role="radiogroup" gap="text-stack">

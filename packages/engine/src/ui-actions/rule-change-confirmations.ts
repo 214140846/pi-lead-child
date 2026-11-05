@@ -27,7 +27,7 @@ import {
 import { AVAILABLE, unavailable } from "../ticket-actions/types.js";
 import type { ExternalContentSource, RuleChangeConfirm, RuleChangeOperation } from "./external-content.js";
 import { UiActionError, type UiActionDefinition, type UiActionRun, type UiActionServices, type UiActionTargetKind } from "./types.js";
-import { hostCommandInputOf, runHostCommand } from "./host-commands.js";
+import { hostCommandInputOf, runRecordedHostCommand } from "./host-commands.js";
 
 export const ruleChangeEntityKey = (id: string) => `rule_change:${id}`;
 
@@ -246,8 +246,13 @@ const LEAD_TOOL_OPERATIONS: Readonly<Record<string, {
   },
   run_on_host: {
     scope: "tickets:create",
-    async run(_db, input, _reason, _now, context) {
-      const result = await runHostCommand(hostCommandInputOf(input), { id: context.id });
+    async run(db, input, _reason, _now, context) {
+      // 用户在卡上看过命令本身，不过筛查器。和免沙箱的命令一样写 host_command.*（设计文档 5.5）。
+      const command = hostCommandInputOf(input);
+      const result = await runRecordedHostCommand(db, command, {
+        id: context.id, turnId: null, turnOrigin: "confirmed_card", via: "run_on_host", confirmationId: context.id,
+        screen: null, spendsMoney: command.spends_money === true,
+      });
       return { text: result.text, next: `命令的完整输出在 ${result.outputPath}，用 read 读。` };
     },
   },

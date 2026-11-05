@@ -1,5 +1,5 @@
 import { AnchoredPanel, Button, Column, Dot, Icon, Pressable, Row, Text, TextField, useBreakpoint } from '@pi-lead-child/components';
-import { DEFAULT_LOCALE, type Locale, type ModelSettingsDto } from '@pi-lead-child/protocol';
+import { DEFAULT_LOCALE, modelSectionTitle, type Locale, type ModelSettingsDto } from '@pi-lead-child/protocol';
 import { useState, type ReactNode } from 'react';
 
 import { useMessages } from '@/i18n';
@@ -62,10 +62,13 @@ export type PickerOption = {
 
 export type PickerGroup = {
   key: string;
+  // 分段标题。空字符串时不画标题（只有一个服务商、一种通道、没有账号）。
   title: string;
   count: number;
   options: PickerOption[];
   hidden: number;
+  // 「显示其余」按服务商算：画在这个服务商的最后一段下面。key 交给 onShowAll，title 写进按钮。
+  more?: { key: string; title: string };
 };
 
 // 一个格子：点开是下拉。footer 是下拉底部的一行（例如「移出备用」）。below 是格子下面的说明（例如选的模型用不了的原因）。
@@ -99,10 +102,12 @@ export function Slot({ label, face, open, onOpen, onClose, groups, footer, below
       {groups.length === 0 ? <Text size="note" tone="muted" py="row-y">{m.noMatch}</Text> : null}
       {groups.map((group) => (
         <Column key={group.key} testID={`${testID}-group-${group.key}`}>
-          <Row items="center" gap="inline-item" pt="section-label-top" pb="section-label-bottom">
-            <Text size="meta" weight="semibold" tone="secondary">{group.title}</Text>
-            <Text size="meta" tone="muted">{group.count}</Text>
-          </Row>
+          {group.title ? (
+            <Row items="center" gap="inline-item" pt="section-label-top" pb="section-label-bottom">
+              <Text size="meta" weight="semibold" tone="secondary">{group.title}</Text>
+              <Text size="meta" tone="muted">{group.count}</Text>
+            </Row>
+          ) : null}
           {group.options.map((option) => (
             <Pressable
               key={option.key}
@@ -131,7 +136,8 @@ export function Slot({ label, face, open, onOpen, onClose, groups, footer, below
           ))}
           {group.hidden > 0 && onShowAll ? (
             <Row px="row-x" py="nav-item">
-              <Button testID={`${testID}-more-${group.key}`} label={m.showGroupRest(group.title, group.hidden)} variant="link" size="xs" onPress={() => onShowAll(group.key)} />
+              <Button testID={`${testID}-more-${group.more?.key ?? group.key}`} label={m.showGroupRest(group.more?.title ?? group.title, group.hidden)} variant="link" size="xs"
+                onPress={() => onShowAll(group.more?.key ?? group.key)} />
             </Row>
           ) : null}
         </Column>
@@ -211,8 +217,10 @@ export function AddSlot({ label, left, onPress, testID }: { label: string; left:
   );
 }
 
-// 大脑的下拉：按服务商分组，组里最新的在前，每组先露几个（正在用的和选中的总露出来）。分工里别的格子已经用了的模型不能选。
-// 设置 → 记忆的摘要模型也用它（slot 为 -1）。
+// 大脑的下拉（Lead 模型分组，2026-11-05）：和模型库、输入框同一个分组函数（protocol 的 groupModelsByProvider）：
+// 按服务商，再按「group · channel」分段；有多个服务商时分段标题是 provider · group · channel。每个服务商先露几个最新的
+// （正在用的和选中的总露出来），「显示其余」画在这个服务商的最后一段下面。分工里别的格子已经用了的模型不能选。
+// 直觉兜底那一格、设置 → 记忆的摘要模型也用它（slot 为 -1）。
 export function brainPickerGroups(dto: ModelSettingsDto, options: {
   search: string;
   showAll: ReadonlySet<string>;
@@ -227,29 +235,34 @@ export function brainPickerGroups(dto: ModelSettingsDto, options: {
   const used = brainInUse(dto);
   if (options.selected) used.add(options.selected);
   const index = brainIndex(dto);
+  const withProvider = dto.brain.providers.length > 1;
   const groups: PickerGroup[] = [];
   for (const provider of dto.brain.providers) {
     const view = providerGroup(provider, used, { query: options.search, showAll: options.showAll.has(provider.name), visible: PICKER_VISIBLE });
     if (view.models.length === 0) continue;
-    groups.push({
-      key: provider.name,
-      title: provider.name,
-      count: provider.models.length,
-      hidden: view.hidden,
-      options: view.models.map((model) => {
-        const elsewhere = options.slot >= 0
-          ? dto.brain.chain.findIndex((choice, i) => i !== options.slot && choice.model === model.model)
-          : -1;
-        return {
-          key: model.model,
-          title: brainModelName(model.model, index.get(model.model)),
-          sub: model.id,
-          date: releaseLabel(model.released, locale),
-          selected: model.model === options.selected,
-          disabledReason: elsewhere >= 0 ? modelMessages(locale).alreadySlot(slotLabel(elsewhere, locale)) : null,
-          onPick: () => options.onPick(model.model),
-        };
-      }),
+    view.sections.forEach((section, i) => {
+      const last = i === view.sections.length - 1;
+      groups.push({
+        key: section.key,
+        title: modelSectionTitle(section, withProvider) || (withProvider ? provider.name : ''),
+        count: section.total,
+        hidden: last ? view.hidden : 0,
+        ...(last ? { more: { key: provider.name, title: provider.name } } : {}),
+        options: section.models.map((model) => {
+          const elsewhere = options.slot >= 0
+            ? dto.brain.chain.findIndex((choice, j) => j !== options.slot && choice.model === model.model)
+            : -1;
+          return {
+            key: model.model,
+            title: brainModelName(model.model, index.get(model.model)),
+            sub: model.id,
+            date: releaseLabel(model.released, locale),
+            selected: model.model === options.selected,
+            disabledReason: elsewhere >= 0 ? modelMessages(locale).alreadySlot(slotLabel(elsewhere, locale)) : null,
+            onPick: () => options.onPick(model.model),
+          };
+        }),
+      });
     });
   }
   return groups;

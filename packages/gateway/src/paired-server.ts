@@ -96,6 +96,7 @@ import {
   type ChannelCardDto,
   type RuleChangeConfirmationDto,
   type RuntimeSettingsDto,
+  withoutModelGrouping,
 } from "@pi-lead-child/protocol";
 import {
   BY_USER, createCoordinator, DelegationBlockedError, DeliveryError, grantItemDelegation, ReviewerChangeError,
@@ -125,6 +126,7 @@ import { CHANNEL_ACTION_ERRORS, handleChannelRoute, type ChannelCardService } fr
 import { handleChannelPolicyRoute } from "./channel-policy-routes.js";
 import { handleHandbookRoute } from "./handbook-routes.js";
 import { handleReplyStyleRoute } from "./reply-style-routes.js";
+import { handleHostBypassRoute } from "./host-bypass-routes.js";
 import { handleRuleChangeRoute } from "./rule-change-routes.js";
 import { handleTimerRoute } from "./timer-routes.js";
 import type { LeadCapability, LeadGrant, LeadGrantChannel } from "@pi-lead-child/store";
@@ -1490,7 +1492,8 @@ export async function startPairedServer(
         } catch (error) {
           throw new HttpError(503, "internal_error", m.modelSettingsFailed(error));
         }
-        json(req, res, 200, { modelSettings });
+        // 分组的字段只给带 grouping=1 的客户端：旧版 Companion 的严格 schema 不认它们，会把整份拒收。
+        json(req, res, 200, { modelSettings: url.searchParams.get("grouping") === "1" ? modelSettings : withoutModelGrouping(modelSettings) });
         return;
       }
 
@@ -2033,6 +2036,19 @@ export async function startPairedServer(
         requireAuth: (scope) => { requireAuth(req, scope); },
         perform: async (action, input, scope) => (await performUiActionAsUser(req, requireAuth(req, scope), {
           target: { type: "reply_style", id: "user" }, action, input,
+        })).result,
+      })) return;
+
+      // 「用户本人发话时免沙箱」开关（工单 #246 实施单 A）：打开是操作层的 host_bypass.enable（user_direct），Lead 调它总是被拒绝；
+      // 关掉是 host_bypass.disable，Lead 也能做。
+      if (await handleHostBypassRoute({
+        req, res, url, db: bridge.db,
+        now: () => new Date(),
+        json: (status, value) => json(req, res, status, value),
+        readBody: async () => parseJson(await readBody(req, maxBodyBytes)) ?? {},
+        requireAuth: (scope) => { requireAuth(req, scope); },
+        perform: async (action, input, scope) => (await performUiActionAsUser(req, requireAuth(req, scope), {
+          target: { type: "host_bypass", id: "lead" }, action, input,
         })).result,
       })) return;
 

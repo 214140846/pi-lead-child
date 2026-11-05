@@ -26,6 +26,7 @@ const ICON_WELLS: Record<SettingsSectionId, ColorToken> = {
   model: 'text',
   memory: 'violet',
   'standing-orders': 'warning',
+  'host-bypass': 'warning',
   runtimes: 'accent',
 };
 

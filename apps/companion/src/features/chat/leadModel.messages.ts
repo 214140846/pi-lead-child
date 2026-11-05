@@ -19,8 +19,6 @@ export const leadModelMessages = defineMessages({
     selectedLabel: (model: string) => `${model}, selected`,
     quotaUsed: (time: string) => `Quota used up, back at ${time}`,
     noImages: 'Cannot read images',
-    otherSource: 'Other',
-    anyAccount: 'Any account',
   },
   zh: {
     pickerLabel: (model) => `Lead 的模型：${model}，点开换模型`,
@@ -38,7 +36,5 @@ export const leadModelMessages = defineMessages({
     selectedLabel: (model) => `${model}，正在选着`,
     quotaUsed: (time) => `额度用完，${time} 恢复`,
     noImages: '不能看图',
-    otherSource: '其他',
-    anyAccount: '不指定账号',
   },
 });

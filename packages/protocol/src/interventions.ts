@@ -185,6 +185,8 @@ const ApprovalInterventionShape = StrictObject({
   createdAt: Type.String(),
   resolvedBy: Type.Union([Type.String(), Type.Null()]),
   resolvedAt: Type.Union([Type.String(), Type.Null()]),
+  // 外部消息派的执行要的审批（工单 #246 第 6 节）：只有用户本人能批，Fairy 不能替用户批。只在是时给 true，别的不给这个字段。
+  externalOrigin: Type.Optional(Type.Literal(true)),
 });
 const ApprovalInterventionSchema = Type.Refine(
   ApprovalInterventionShape,

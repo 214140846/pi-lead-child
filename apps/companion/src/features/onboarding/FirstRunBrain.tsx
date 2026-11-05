@@ -1,7 +1,7 @@
 import {
   Box, Button, Card, ChoiceGroup, Column, Icon, LeadAvatar, Pressable, Row, Screen, ScrollArea, SegmentedControl, Text, TextField,
 } from '@pi-lead-child/components';
-import type { ModelProviderApi } from '@pi-lead-child/protocol';
+import { modelSectionTitle, type ModelProviderApi } from '@pi-lead-child/protocol';
 import { useState } from 'react';
 
 import { useLeadAvatarSource } from '@/components/useLeadAvatarSource';
@@ -11,8 +11,9 @@ import { useModelAction } from '@/features/settings/useModelAction';
 
 import { onboardingMessages } from './onboarding.messages';
 import {
-  connectedProvider, firstRunPresets, firstRunModelList, firstRunModelMeta, firstRunPreset, firstRunProviderFacts, firstRunProviderRequest,
-  modelEffort, recommendedBrainModel, type FirstRunPresetId,
+  connectedProvider, firstRunModelSections, firstRunPresets, firstRunModelList, firstRunModelMeta, firstRunPreset, firstRunProviderFacts,
+  firstRunProviderRequest, modelEffort, prefixAnswerRequest, prefixQuestion, presetNeedsUrl, recommendedBrainModel, VIBEPROXY_BASE_URL,
+  type FirstRunPresetId,
 } from './firstRunModel';
 
 // 首次启动页（2026-10-30，.scratch/onboarding/spec.md，画布 A1、A3）：大脑不能用时整页显示，两步。
@@ -60,15 +61,33 @@ export function FirstRunBrain({ onSkip }: { onSkip: () => void }) {
   const [picked, setPicked] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
+  // 「前缀是账号吗」的回答。缺省是「不是」；连接后回答过、或者上线前，写进服务商的 accountPrefix。
+  const [prefixAnswer, setPrefixAnswer] = useState<'no' | 'yes'>('no');
 
-  const facts = firstRunProviderFacts(connectedProvider(modelSettings, providerName), locale);
+  const provider = connectedProvider(modelSettings, providerName);
+  const facts = firstRunProviderFacts(provider, locale);
   const { connected } = facts;
   const models = firstRunModelList(facts.models, showAll ? null : MODEL_LIST_LIMIT);
   const recommended = recommendedBrainModel(facts.models);
   const recommendedId = recommended ? recommended.model : null;
   const chosen = picked ?? recommendedId;
   const custom = preset === 'custom';
+  const needsUrl = presetNeedsUrl(preset);
   const presetInfo = firstRunPreset(preset, locale);
+  const question = connected ? prefixQuestion(provider, preset) : null;
+  const sections = firstRunModelSections(provider, models);
+
+  const choosePreset = (id: FirstRunPresetId) => {
+    setPreset(id);
+    setProblem(null);
+    if (id === 'vibeproxy') setBaseUrl(VIBEPROXY_BASE_URL);
+  };
+  const answerPrefix = async (answer: 'no' | 'yes') => {
+    setPrefixAnswer(answer);
+    if (!provider) return;
+    const outcome = await run('save_provider', prefixAnswerRequest(provider, answer === 'yes'));
+    if (!outcome.ok) setProblem(outcome.error);
+  };
 
   const connect = async () => {
     const request = firstRunProviderRequest({ preset, apiKey, baseUrl, api }, (modelSettings?.brain.providers ?? []).map((entry) => entry.name), locale);
@@ -85,9 +104,18 @@ export function FirstRunBrain({ onSkip }: { onSkip: () => void }) {
     setApiKey('');
     setProviderName(request.input.name);
     setPicked(null);
+    setPrefixAnswer('no');
   };
   const goOnline = async () => {
     if (!chosen) return;
+    // 问过「前缀是账号吗」却没动过：把缺省的「不是」写进去，以后 vibeproxy 有了详细目录也不会自己变。
+    if (question && provider && facts.accountPrefix === null) {
+      const saved = await run('save_provider', prefixAnswerRequest(provider, prefixAnswer === 'yes'));
+      if (!saved.ok) {
+        setProblem(saved.error);
+        return;
+      }
+    }
     const outcome = await run('set_brain_chain', { models: [{ model: chosen, effort: modelEffort(facts.models, chosen) }] });
     if (!outcome.ok) setProblem(outcome.error);
   };
@@ -133,29 +161,33 @@ export function FirstRunBrain({ onSkip }: { onSkip: () => void }) {
                     value={preset}
                     options={firstRunPresets(locale).map((entry) => ({ id: entry.id, label: entry.label, description: entry.description }))}
                     optionTestID={(id) => `first-run-preset-${id}`}
-                    onSelect={(id) => { setPreset(id as FirstRunPresetId); setProblem(null); }}
+                    onSelect={(id) => choosePreset(id as FirstRunPresetId)}
                     disabled={busy}
                   />
-                  {custom ? (
+                  {needsUrl ? (
                     <Column gap="card-row">
                       <Column gap="text-stack">
                         <Text size="label" weight="semibold" tone="secondary">{m.baseUrl}</Text>
-                        <TextField testID="first-run-base-url" value={baseUrl} onChangeText={setBaseUrl} placeholder="http://127.0.0.1:8317/v1"
+                        <TextField testID="first-run-base-url" value={baseUrl} onChangeText={setBaseUrl} placeholder={VIBEPROXY_BASE_URL}
                           variant="filled" size="sm" mono keyboardType="url" autoComplete="off" autoCapitalize="none" autoCorrect={false} />
                       </Column>
-                      <Column gap="text-stack">
-                        <Text size="label" weight="semibold" tone="secondary">{m.apiFormat}</Text>
-                        <SegmentedControl testID="first-run-api" options={API_OPTIONS} value={api} onChange={setApi} size="sm" />
-                      </Column>
+                      {custom ? (
+                        <Column gap="text-stack">
+                          <Text size="label" weight="semibold" tone="secondary">{m.apiFormat}</Text>
+                          <SegmentedControl testID="first-run-api" options={API_OPTIONS} value={api} onChange={setApi} size="sm" />
+                        </Column>
+                      ) : (
+                        <Text testID="first-run-vibeproxy-note" size="note" tone="secondary">{m.vibeproxyNote}</Text>
+                      )}
                     </Column>
                   ) : null}
                   <Column gap="text-stack">
-                    <Text size="label" weight="semibold" tone="secondary">{custom ? m.apiKeyCustom : m.apiKey}</Text>
+                    <Text size="label" weight="semibold" tone="secondary">{needsUrl ? m.apiKeyCustom : m.apiKey}</Text>
                     <TextField
                       testID="first-run-api-key"
                       value={apiKey}
                       onChangeText={setApiKey}
-                      placeholder={custom ? m.apiKeyOptional : m.apiKeyPlaceholder(presetInfo.label)}
+                      placeholder={needsUrl ? m.apiKeyOptional : m.apiKeyPlaceholder(presetInfo.label)}
                       variant="filled"
                       size="sm"
                       secure
@@ -183,17 +215,44 @@ export function FirstRunBrain({ onSkip }: { onSkip: () => void }) {
               </Row>
               {connected ? (
                 <Column gap="card-row">
-                  <ChoiceGroup
-                    testID="first-run-models"
-                    variant="radio"
-                    accessibilityLabel={m.brainModel}
-                    value={chosen}
-                    {...(recommendedId ? { recommended: recommendedId } : {})}
-                    options={models.map((model) => ({ id: model.model, label: model.name ?? model.id, description: firstRunModelMeta(model, locale) }))}
-                    optionTestID={(id) => `first-run-model-${id}`}
-                    onSelect={setPicked}
-                    disabled={busy}
-                  />
+                  {question ? (
+                    <Column testID="first-run-prefix-question" gap="field" p="row-x" rounded="lg" borderWidth={1} borderColor="border" bg="surface-subtle">
+                      <Text size="card-title" weight="semibold">{m.prefixQuestion(question.map((prefix) => `${prefix}/`).join(locale === 'zh' ? '、' : ', '))}</Text>
+                      <Text size="note" tone="secondary">{m.prefixExplain}</Text>
+                      <Row>
+                        <SegmentedControl
+                          testID="first-run-prefix"
+                          options={[{ value: 'no' as const, label: m.prefixNo }, { value: 'yes' as const, label: m.prefixYes }]}
+                          value={prefixAnswer}
+                          onChange={(answer) => void answerPrefix(answer)}
+                          size="sm"
+                        />
+                      </Row>
+                    </Column>
+                  ) : null}
+                  {/* 按「group · channel」分段（和设置页同一个分组函数）。都没有时不写标题。 */}
+                  <Column testID="first-run-models" gap="card-row">
+                    {sections.map((section) => (
+                      <Column key={section.key} gap="field" testID={`first-run-section-${section.key}`}>
+                        {modelSectionTitle(section, false) ? (
+                          <Row items="center" gap="inline-item">
+                            <Text size="meta" weight="semibold" tone="secondary">{modelSectionTitle(section, false)}</Text>
+                            <Text size="meta" tone="muted" mono>{section.total}</Text>
+                          </Row>
+                        ) : null}
+                        <ChoiceGroup
+                          variant="radio"
+                          accessibilityLabel={m.brainModel}
+                          value={chosen}
+                          {...(recommendedId && section.models.some((model) => model.model === recommendedId) ? { recommended: recommendedId } : {})}
+                          options={section.models.map((model) => ({ id: model.model, label: model.name ?? model.id, description: firstRunModelMeta(model, locale) }))}
+                          optionTestID={(id) => `first-run-model-${id}`}
+                          onSelect={setPicked}
+                          disabled={busy}
+                        />
+                      </Column>
+                    ))}
+                  </Column>
                   {!showAll && facts.modelCount > MODEL_LIST_LIMIT ? (
                     <Pressable testID="first-run-show-all" aria-label={m.showAllLabel} onPress={() => setShowAll(true)}>
                       <Text size="label" weight="semibold" color="accent-strong">{m.showAll(facts.modelCount)}</Text>

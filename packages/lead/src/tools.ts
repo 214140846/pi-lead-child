@@ -28,10 +28,10 @@ import {
 import { listWatches, watchOrigin, WatchInputError, WATCH_LIMITS, type WatchAgentChoice } from "@pi-lead-child/store";
 import {
   checkRepositoryAccess, describeWatchSchedule, findRepositoryCheckout, HOST_COMMAND_LIMITS, hostCommandInputOf, isLiveUserTurn,
-  parseRepositorySpec, recordTicketRepository, recordTicketRepositoryClone, startRepositoryClone, workspaceRepository,
+  parseRepositorySpec, recordTicketRepository, recordTicketRepositoryClone, runRecordedHostCommand, startRepositoryClone, workspaceRepository,
   type RepositoryCheckout,
 } from "@pi-lead-child/engine";
-import { EXTERNAL_TURN_WATCH_REFUSAL, handsBlockedInTurn, leadScratchDir } from "./hands.js";
+import { EXTERNAL_TURN_WATCH_REFUSAL, handsBlockedInTurn, HOST_RUN_MARK, hostCommandRoute, leadScratchDir } from "./hands.js";
 import { addNotification, getNotification, listNotifications, markNotificationDelivered, type NotificationState } from "@pi-lead-child/store";
 import { pendingApprovals } from "@pi-lead-child/store";
 import { getApproval, getChannelCard, getDecisionRequest, latestCheckpointIdForAction } from "@pi-lead-child/store";
@@ -2780,7 +2780,8 @@ export function createLeadTools(deps: LeadDeps): ToolDefinition<any>[] {
       description:
         "列出当前 Lead 正在使用的模型，以及 config.json 里已配置 provider 的可选目录"
         + "（含 discover 拉取到的模型）。切换前先用本工具核对精确的 provider/model id。"
-        + "目录里每个模型写着账号前缀（prefix，例如 as1、as4 是用户的两个 Anthropic 账号）、上游（source）、能不能看图（image）"
+        + "目录里每个模型写着账号（prefix，例如 as1、as4 是用户的两个 Anthropic 账号；只有服务商的 accountPrefix 生效时才有，"
+        + "magpie 的 auto/、deepseek/ 这类前缀不是账号，prefix 为 null）、通道（source）、能不能看图（image）"
         + "和可以选的推理强度（efforts）。",
       parameters: Type.Object({}),
       execute: async () => {
@@ -3097,13 +3098,26 @@ export function createLeadTools(deps: LeadDeps): ToolDefinition<any>[] {
         cwd: Type.Optional(Type.String()),
         timeout_seconds: Type.Optional(Type.Integer({ minimum: 1, maximum: HOST_COMMAND_LIMITS.maxTimeoutSeconds })),
         reason: Type.String({ minLength: 1, maxLength: 1000 }),
+        spends_money: Type.Optional(Type.Boolean({ description: "认为这条命令会花钱（云资源、付费 API、部署）时填 true。" })),
       }),
-      execute: async (_id, params: { command: string; cwd?: string; timeout_seconds?: number; reason: string }) => {
+      execute: async (_id, params: { command: string; cwd?: string; timeout_seconds?: number; reason: string; spends_money?: boolean }) => {
         const input = hostCommandInputOf(params);
+        // 免沙箱开着、用户本人正在发话、没读过外部内容、筛查器放行时直接跑，不发卡（docs/ticket-246-user-turn-bypass.md 3.1）。
+        const route = hostCommandRoute(db, deps, {
+          command: input.command, cwd: input.cwd, via: "run_on_host", spendsMoney: input.spends_money === true, dataDir: deps.dataDir,
+        });
+        if (route.route === "host") {
+          const result = await runRecordedHostCommand(db, input, route.record, { dataDir: deps.dataDir, run: route.run });
+          return {
+            ...text(`${HOST_RUN_MARK}免沙箱开着，这是用户本人发话的一轮：命令直接跑了，没有发确认卡。退出码 ${result.exitCode ?? "未知"}。\n${result.text}`),
+            details: { exitCode: result.exitCode, timedOut: result.timedOut, outputPath: result.outputPath } as Record<string, unknown>,
+          };
+        }
         const card = authorizationCardResult(db, deps, {
           tool: "run_on_host", code: "needs_authorization", input,
           label: "在你的 Mac 上跑一条命令（沙箱外）", where: "你的终端",
-          reason: params.reason, why: "命令在沙箱外跑，用你自己的权限和凭证：要你确认这一次。",
+          reason: params.reason,
+          why: "命令在沙箱外跑，用你自己的权限和凭证：要你确认这一次。" + (route.why ? `免沙箱开着，但这一次没有直接跑：${route.why}。` : ""),
         });
         if (!card) throw new Error("没能存下这条命令，确认卡没有发出。请把命令告诉用户，请他在终端里跑。");
         return card;

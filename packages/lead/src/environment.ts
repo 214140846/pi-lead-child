@@ -18,7 +18,7 @@ import type { ConnectionHub } from "@pi-lead-child/connections";
 import { projectRoot, SANDBOX_SECRET_HOSTS_ENV, sandboxSecrets } from "@pi-lead-child/core";
 import { currentModelCatalog } from "@pi-lead-child/engine";
 import { redactAndCap, type DecisionModelDto, type MemorySettingsDto } from "@pi-lead-child/protocol";
-import { incidentModel, listUnhealthyRuntimeTargets, type Db } from "@pi-lead-child/store";
+import { getHostBypass, incidentModel, listUnhealthyRuntimeTargets, type Db } from "@pi-lead-child/store";
 import { disabledRuntimes } from "@pi-lead-child/runtime";
 import { loadLeadModelConfig } from "./model-config.js";
 
@@ -92,6 +92,8 @@ export interface LeadEnvironmentSnapshot {
   runtimes: RuntimeEnvironment[] | null;
   // 第三方账号的连接。daemon 没有提供时为 null。
   connections: Array<{ label: string; state: string }> | null;
+  // 「用户本人发话时免沙箱」开关（工单 #246 设计 5.4）：开没开、到点的时间。读不到时为 null。不给时当作读不到。
+  hostBypass?: { enabled: boolean; until: string | null } | null;
 }
 
 // ── 纯函数：快照 → 文字 ─────────────────────────────────────────────────────────────────
@@ -281,6 +283,14 @@ export function renderLeadEnvironment(): string {
   ].join("\n");
 }
 
+// 免沙箱开关一行（hostBypass: { enabled, until }）。读不到时不写。
+function hostBypassLines(state: LeadEnvironmentSnapshot["hostBypass"]): string[] {
+  if (!state) return [];
+  return [state.enabled
+    ? `- 用户本人发话时免沙箱：开着（hostBypass: { enabled: true, until: ${state.until} }），到点自动关。只有用户能在设置里打开；你能关（perform_action 的 host_bypass / lead / disable）。`
+    : "- 用户本人发话时免沙箱：关着（hostBypass: { enabled: false }）。只有用户能在 设置 → 免沙箱 里打开。"];
+}
+
 /**
  * get_environment 的结果：现在的配置和状态。纯函数：同样的快照和环境变量得到同样的文字。
  * 只在 Lead 调用时生成，不进系统提示词。
@@ -293,6 +303,7 @@ export function renderEnvironmentDetails(snapshot: LeadEnvironmentSnapshot, env:
     memoryLine(snapshot.memory),
     ...runtimeLines(snapshot.runtimes),
     connectionLine(snapshot.connections),
+    ...hostBypassLines(snapshot.hostBypass ?? null),
     sandboxSecretsLine(env),
   ].join("\n");
 }
@@ -383,5 +394,9 @@ export function collectLeadEnvironment(sources: LeadEnvironmentSources): LeadEnv
         state: item.state === "degraded" ? "connected" : item.state,
       })), null)
       : null,
+    hostBypass: attempt(() => {
+      const state = getHostBypass(sources.db, new Date());
+      return { enabled: state.enabled, until: state.until };
+    }, null),
   };
 }

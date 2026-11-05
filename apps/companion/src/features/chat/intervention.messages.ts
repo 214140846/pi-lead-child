@@ -15,6 +15,8 @@ export const interventionMessages = defineMessages({
     approveSession: 'Approve the same kind on this ticket',
     reject: 'Reject',
     approveOnce: 'Approve this once',
+    // 外部消息派的执行要的审批（工单 #246 第 6 节）：Lead 不能替你批。
+    externalOrigin: 'An external message started this run. You must approve it yourself.',
     error: {
       notPending: 'This request no longer waits for an answer.',
       invalidApproval: 'This approval action is not valid.',
@@ -72,6 +74,7 @@ export const interventionMessages = defineMessages({
     approveSession: '本工单同类免批',
     reject: '拒绝',
     approveOnce: '授权这一次',
+    externalOrigin: '外部消息派的执行，要你自己批。',
     error: {
       notPending: '该介入请求已不再等待处理',
       invalidApproval: '审批操作无效',

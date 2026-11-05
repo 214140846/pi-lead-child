@@ -232,6 +232,15 @@ export function useRuntimeSettings() {
   return { runtimeSettings, resource };
 }
 
+// 「用户本人发话时免沙箱」开关（GET /v1/lead/host-bypass，工单 #246）。连上就取（runtime 的 core 资源里有它）；
+// snapshot.required（resource 是 host-bypass）时重取。设置页「免沙箱」和输入框上方的标记读它。
+export function useHostBypass() {
+  useObservedResource(RESOURCE_KEYS.hostBypass);
+  const hostBypass = useControlPlaneStore((state) => state.hostBypass);
+  const resource = useControlPlaneStore((state) => state.resourceState[RESOURCE_KEYS.hostBypass]);
+  return { hostBypass, resource };
+}
+
 // Lead 的名字、人格和互动风格（GET /v1/lead/profile）。连上就取（runtime 的 core 资源里有它）；
 // snapshot.required（resource 是 lead-profile）时重取。设置页「身份与风格」读它。
 export function useLeadProfile() {

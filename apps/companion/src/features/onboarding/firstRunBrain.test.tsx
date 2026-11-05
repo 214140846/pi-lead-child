@@ -43,10 +43,11 @@ const setup = (brain: boolean): SetupStatus => ({
 
 type Perform = (type: string, id: string, action: string, request: unknown) => Promise<{ target: unknown; action: string; result: unknown }>;
 
-function firstRunRuntime() {
+// connected：save_provider 以后 daemon 给的服务商（缺省是 Anthropic）。它拿到请求的 input，可以照 accountPrefix 重新分组。
+function firstRunRuntime(connected: (input: Record<string, unknown>) => ModelProvider = () => anthropic) {
   const state = { providers: [] as ModelProvider[], brain: false };
-  const perform = vi.fn<Perform>(async (_type, _id, action) => {
-    if (action === 'save_provider') state.providers = [anthropic];
+  const perform = vi.fn<Perform>(async (_type, _id, action, request) => {
+    if (action === 'save_provider') state.providers = [connected((request as { input: Record<string, unknown> }).input)];
     if (action === 'set_brain_chain') state.brain = true;
     return { target: { type: 'model_settings', id: 'models' }, action, result: { summary: 'ok', note: null } };
   });
@@ -115,5 +116,97 @@ describe('the first-run page', { timeout: 30_000 }, () => {
     runtime.control.setState({ setup: null });
     renderWithRuntime(<RootTabs />, runtime);
     expect(screen.getByTestId('app-slot')).toBeTruthy();
+  });
+});
+
+// Lead 模型分组（用户 2026-11-05，原型 docs/prototypes/model-grouping 的第 1 个场景）。
+const plainModel = (provider: string, id: string, source: string, group: string | null = null): BrainModel => ({
+  model: `${provider}/${id}`, id, name: null, image: false, contextWindow: null, efforts: [], defaultEffort: null,
+  released: null, blockedUntil: null, group, source,
+});
+
+// magpie 风格的服务：只有普通目录，id 带 auto/、deepseek/ 前缀。accountPrefix 为 true 时 daemon 把前缀当账号。
+function magpie(input: Record<string, unknown>): ModelProvider {
+  const account = input.accountPrefix === true;
+  const name = String(input.name);
+  return {
+    name, baseUrl: 'https://magpie.example.com/v1', api: 'openai-completions', keySet: true, keySource: 'settings',
+    keyHost: 'magpie.example.com', problem: null, accountPrefix: typeof input.accountPrefix === 'boolean' ? input.accountPrefix : null,
+    accountPrefixActive: account, capabilities: 'auto', catalog: 'plain',
+    models: [
+      plainModel(name, 'auto/deepseek-flash', 'deepseek', account ? 'auto' : null),
+      plainModel(name, 'deepseek/deepseek-v4', 'deepseek', account ? 'deepseek' : null),
+      plainModel(name, 'bailian/qwen-max', 'bailian-token-plan', account ? 'bailian' : null),
+    ],
+  };
+}
+
+const vibeproxyProvider = (): ModelProvider => ({
+  name: 'vibeproxy', baseUrl: 'http://127.0.0.1:8317/v1', api: 'openai-completions', keySet: false, keySource: null, keyHost: null,
+  problem: null, accountPrefix: true, accountPrefixActive: true, capabilities: 'auto', catalog: 'detailed',
+  models: [
+    plainModel('vibeproxy', 'as4/claude-opus-5-5', 'anthropic', 'as4'),
+    plainModel('vibeproxy', 'as1/claude-opus-5-5', 'anthropic', 'as1'),
+    plainModel('vibeproxy', 'gemini-3-flash', 'antigravity'),
+  ],
+});
+
+const inputs = (perform: ReturnType<typeof firstRunRuntime>['perform']) => perform.mock.calls.map((call) => [call[2], (call[3] as { input: unknown }).input]);
+
+describe('the first-run page with model groups', { timeout: 30_000 }, () => {
+  it('has a vibeproxy preset that writes accountPrefix: true and lists the models by account', async () => {
+    const { runtime, perform } = firstRunRuntime(vibeproxyProvider);
+    renderWithRuntime(<RootTabs />, runtime);
+    fireEvent.click(screen.getByTestId('first-run-preset-vibeproxy'));
+    expect((screen.getByTestId('first-run-base-url') as HTMLInputElement).value).toBe('http://127.0.0.1:8317/v1');
+    expect(screen.getByTestId('first-run-vibeproxy-note').textContent).toContain('accountPrefix: true');
+    fireEvent.click(screen.getByTestId('first-run-connect'));
+    await waitFor(() => expect(screen.getByTestId('first-run-provider-done')).toBeTruthy());
+    expect(inputs(perform)[0]).toEqual(['save_provider', {
+      name: 'vibeproxy', baseUrl: 'http://127.0.0.1:8317/v1', api: 'openai-completions', accountPrefix: true,
+    }]);
+    // 已经写了 accountPrefix：不问。按账号分段，as1 在 as4 前面。
+    expect(screen.queryByTestId('first-run-prefix-question')).toBeNull();
+    const titles = Array.from(screen.getByTestId('first-run-models').querySelectorAll('[data-testid^="first-run-section-"]'))
+      .map((element) => element.getAttribute('data-testid'));
+    expect(titles).toEqual([
+      'first-run-section-vibeproxy|as1|anthropic', 'first-run-section-vibeproxy|as4|anthropic', 'first-run-section-vibeproxy||antigravity',
+    ]);
+  });
+
+  it('asks whether the prefixes are accounts, and writes "yes" into the provider and regroups', async () => {
+    const { runtime, perform } = firstRunRuntime(magpie);
+    renderWithRuntime(<RootTabs />, runtime);
+    fireEvent.click(screen.getByTestId('first-run-preset-custom'));
+    fireEvent.change(screen.getByTestId('first-run-base-url'), { target: { value: 'https://magpie.example.com/v1' } });
+    fireEvent.click(screen.getByTestId('first-run-connect'));
+    await waitFor(() => expect(screen.getByTestId('first-run-prefix-question')).toBeTruthy());
+    // 问句用这家实际的两个前缀；缺省选「不是」，按通道分段。
+    expect(screen.getByTestId('first-run-prefix-question').textContent).toContain('Are prefixes like auto/, deepseek/ accounts?');
+    expect(screen.getByTestId('first-run-section-example||deepseek')).toBeTruthy();
+    fireEvent.click(screen.getByText('Yes, the prefix is an account'));
+    await waitFor(() => expect(screen.getByTestId('first-run-section-example|auto|deepseek')).toBeTruthy());
+    expect(inputs(perform)[1]).toEqual(['save_provider', {
+      name: 'example', baseUrl: 'https://magpie.example.com/v1', api: 'openai-completions', accountPrefix: true,
+    }]);
+    fireEvent.click(screen.getByTestId('first-run-go'));
+    await waitFor(() => expect(screen.getByTestId('app-slot')).toBeTruthy());
+    // 已经回答过：上线时不再写。
+    expect(inputs(perform).map(([action]) => action)).toEqual(['save_provider', 'save_provider', 'set_brain_chain']);
+  });
+
+  it('writes the default "no" into the provider when the user goes online without answering', async () => {
+    const { runtime, perform } = firstRunRuntime(magpie);
+    renderWithRuntime(<RootTabs />, runtime);
+    fireEvent.click(screen.getByTestId('first-run-preset-custom'));
+    fireEvent.change(screen.getByTestId('first-run-base-url'), { target: { value: 'https://magpie.example.com/v1' } });
+    fireEvent.click(screen.getByTestId('first-run-connect'));
+    await waitFor(() => expect(screen.getByTestId('first-run-prefix-question')).toBeTruthy());
+    fireEvent.click(screen.getByTestId('first-run-go'));
+    await waitFor(() => expect(screen.getByTestId('app-slot')).toBeTruthy());
+    expect(inputs(perform)[1]).toEqual(['save_provider', {
+      name: 'example', baseUrl: 'https://magpie.example.com/v1', api: 'openai-completions', accountPrefix: false,
+    }]);
+    expect(inputs(perform)[2]![0]).toBe('set_brain_chain');
   });
 });

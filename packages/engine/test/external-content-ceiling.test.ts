@@ -167,6 +167,8 @@ describe("the rule-change flag in the catalog", () => {
       "channel_connection.sign_in", "channel_connection.use_mode", "channel_connection.allow_writes", "channel_connection.block_writes",
       // Lead 自己装 MCP 和 skill（2026-11-02，.scratch/lead-self-install D1）：连接和 skill 会改变 Lead 的行为。
       "connections.add_remote", "connections.add_local", "connection.authorize", "connection.disconnect", "skills.install", "skill.uninstall",
+      // 用户本人发话时免沙箱（工单 #246）：打开授予 Lead 权力（user_direct）。关掉不改规则。
+      "host_bypass.enable",
     ]);
   });
 

@@ -1,6 +1,7 @@
-import type {
-  BrainModel, KernelRuntimeId, Locale, ModelProvider, ModelProviderApi, ModelSettingsDto, RuntimeSettingEntry, RuntimeSettingsDto,
-  RuntimeSettingsRequest,
+import {
+  flatModelSections, groupModelsByProvider,
+  type BrainModel, type KernelRuntimeId, type Locale, type ModelProvider, type ModelProviderApi, type ModelSection, type ModelSettingsDto,
+  type RuntimeSettingEntry, type RuntimeSettingsDto, type RuntimeSettingsRequest,
 } from '@pi-lead-child/protocol';
 
 import { onboardingMessages } from './onboarding.messages';
@@ -8,7 +9,7 @@ import { onboardingMessages } from './onboarding.messages';
 // 首次启动页（2026-10-30，.scratch/onboarding/spec.md，画布 A1、A3）的纯函数：服务商预设、接入时的请求、推荐哪个模型。
 // 首次启动时还没有任何服务商（用户 2026-10-30）：先选接口类型、填 key 或地址，连接后读这家的模型列表，再选模型。
 
-export type FirstRunPresetId = 'anthropic' | 'openai' | 'google' | 'custom';
+export type FirstRunPresetId = 'anthropic' | 'openai' | 'google' | 'vibeproxy' | 'custom';
 
 export interface FirstRunPreset {
   id: FirstRunPresetId;
@@ -20,16 +21,23 @@ export interface FirstRunPreset {
   api: ModelProviderApi | null;
 }
 
+export const VIBEPROXY_BASE_URL = 'http://127.0.0.1:8317/v1';
+
 const PRESETS: readonly Omit<FirstRunPreset, 'label' | 'description'>[] = [
   { id: 'anthropic', name: 'anthropic', baseUrl: 'https://api.anthropic.com', api: 'anthropic-messages' },
   { id: 'openai', name: 'openai', baseUrl: 'https://api.openai.com/v1', api: 'openai-responses' },
   // Gemini 走 Google 的 OpenAI 兼容端点：目录和对话都用 Bearer key。
   { id: 'google', name: 'google', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', api: 'openai-completions' },
+  // vibeproxy（本机的 CLIProxyAPI，Lead 模型分组，2026-11-05）：缺省地址是它对外的端口 8317，地址可以改；key 通常不用填。
+  // 它的模型 id 带账号前缀（as1/、as4/），接入时在 config 里写上 accountPrefix: true。
+  { id: 'vibeproxy', name: 'vibeproxy', baseUrl: VIBEPROXY_BASE_URL, api: 'openai-completions' },
   { id: 'custom', name: null, baseUrl: null, api: null },
 ];
 
 // 品牌名不翻译；其他服务的名字和每一项的说明按界面语言。
-const BRAND_LABELS: Record<Exclude<FirstRunPresetId, 'custom'>, string> = { anthropic: 'Anthropic', openai: 'OpenAI', google: 'Google' };
+const BRAND_LABELS: Record<Exclude<FirstRunPresetId, 'custom'>, string> = {
+  anthropic: 'Anthropic', openai: 'OpenAI', google: 'Google', vibeproxy: 'vibeproxy',
+};
 
 /** 预设的服务商，名字和说明按界面语言。 */
 export function firstRunPresets(locale: Locale): FirstRunPreset[] {
@@ -67,20 +75,32 @@ export function customProviderName(baseUrl: string, existing: readonly string[])
 export interface FirstRunProviderForm {
   preset: FirstRunPresetId;
   apiKey: string;
-  // 只有其他服务用：地址和接口格式。
+  // 其他服务和 vibeproxy 用：地址（vibeproxy 空着时用预设的）。接口格式只有其他服务用。
   baseUrl: string;
   api: ModelProviderApi;
 }
+
+/** 这个预设要不要填地址。 */
+export function presetNeedsUrl(preset: FirstRunPresetId): boolean {
+  return preset === 'custom' || preset === 'vibeproxy';
+}
+
+export type FirstRunProviderInput = { name: string; baseUrl: string; api: ModelProviderApi; apiKey?: string; accountPrefix?: boolean };
 
 /** 接入请求（save_provider 的 input）。填得不对时返回原因。 */
 export function firstRunProviderRequest(
   form: FirstRunProviderForm,
   existing: readonly string[],
   locale: Locale,
-): { ok: true; input: { name: string; baseUrl: string; api: ModelProviderApi; apiKey?: string } } | { ok: false; problem: string } {
+): { ok: true; input: FirstRunProviderInput } | { ok: false; problem: string } {
   const m = onboardingMessages(locale);
   const preset = firstRunPreset(form.preset, locale);
   const apiKey = form.apiKey.trim();
+  if (preset.id === 'vibeproxy') {
+    const baseUrl = (form.baseUrl.trim() || preset.baseUrl!).replace(/\/+$/, '');
+    if (!/^https?:\/\/[^\s]+$/.test(baseUrl)) return { ok: false, problem: m.badUrl };
+    return { ok: true, input: { name: preset.name!, baseUrl, api: preset.api!, ...(apiKey ? { apiKey } : {}), accountPrefix: true } };
+  }
   if (preset.id !== 'custom') {
     if (!apiKey) return { ok: false, problem: m.keyMissing(preset.label) };
     return { ok: true, input: { name: preset.name!, baseUrl: preset.baseUrl!, api: preset.api!, apiKey } };
@@ -126,7 +146,7 @@ export function firstRunModelMeta(model: BrainModel, locale: Locale): string {
 // 页面要的事实都在这里算：网页包开着 React Compiler，组件里读一个可能是 null 的对象的属性时，编译器会把它提到渲染时读，
 // 对象是 null 时整个组件崩掉（2026-10-29 设置 → 模型踩过）。组件只拿这个函数的结果。
 export function firstRunProviderFacts(provider: ModelProvider | null, locale: Locale) {
-  if (!provider) return { connected: false, name: null, modelCount: 0, models: [] as BrainModel[], problem: null };
+  if (!provider) return { connected: false, name: null, modelCount: 0, models: [] as BrainModel[], problem: null, accountPrefix: null };
   const connected = provider.problem === null && provider.models.length > 0;
   return {
     connected,
@@ -135,7 +155,47 @@ export function firstRunProviderFacts(provider: ModelProvider | null, locale: Lo
     models: provider.models,
     // 接入了，但目录读不出来：说明原因，留在第一步。
     problem: connected ? null : provider.problem ?? onboardingMessages(locale).emptyCatalog(provider.name),
+    // config 里写的 accountPrefix（null：没写）。
+    accountPrefix: provider.accountPrefix ?? null,
   };
+}
+
+// ── 前缀是不是账号（Lead 模型分组，2026-11-05，原型的第 1 个场景）──────────────────────────
+// 模型 id 带斜杠、这家又没有详细目录时，不知道前缀是账号（vibeproxy 的 as4/）还是模型名的一部分（magpie 的 auto/）。
+// 连接后问一句，缺省选「不是」。回答写进这家服务商的 accountPrefix（save_provider），列表马上按新的分组。
+
+/** id 里第一个斜杠前的部分，按出现的先后，不重复。 */
+export function modelPrefixes(models: readonly BrainModel[]): string[] {
+  const prefixes: string[] = [];
+  for (const model of models) {
+    const slash = model.id.indexOf('/');
+    const prefix = slash > 0 ? model.id.slice(0, slash) : null;
+    if (prefix && !prefixes.includes(prefix)) prefixes.push(prefix);
+  }
+  return prefixes;
+}
+
+/**
+ * 要不要问「前缀是账号吗」：有带斜杠的 id、daemon 说这家没有详细目录。vibeproxy 预设已经写了 accountPrefix: true，不问。
+ * 旧 daemon 不给 catalog（也存不了 accountPrefix）时不问。返回问句里写的两个前缀，不问时为 null。
+ */
+export function prefixQuestion(provider: ModelProvider | null, preset: FirstRunPresetId): string[] | null {
+  if (!provider || preset === 'vibeproxy' || provider.catalog === undefined || provider.catalog === 'detailed') return null;
+  const prefixes = modelPrefixes(provider.models);
+  return prefixes.length ? prefixes.slice(0, 2) : null;
+}
+
+/** 回答「前缀是账号吗」时的 save_provider：地址和接口格式照旧，只改 accountPrefix。 */
+export function prefixAnswerRequest(provider: ModelProvider, isAccount: boolean): FirstRunProviderInput {
+  return { name: provider.name, baseUrl: provider.baseUrl, api: provider.api, accountPrefix: isAccount };
+}
+
+/** 连接后的模型列表按「group · channel」分段（和设置页同一个分组函数）。shown 是要画的那几个。 */
+export function firstRunModelSections(provider: ModelProvider | null, shown: readonly BrainModel[]): ModelSection<BrainModel>[] {
+  if (!provider) return [];
+  const visible = new Set(shown.map((model) => model.model));
+  const models = provider.models.map((model) => ({ ...model, provider: provider.name, group: model.group ?? null, source: model.source ?? null }));
+  return flatModelSections(groupModelsByProvider(models, { keep: (model) => visible.has(model.model) }));
 }
 
 /** 选中的模型的缺省推理强度（目录给的）。 */

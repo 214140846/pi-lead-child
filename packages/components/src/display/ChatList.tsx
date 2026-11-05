@@ -119,15 +119,40 @@ function VirtualChatList<T>({
     if (info.itemKey === previousLastKey.current && info.size > info.previous + 1 && !following()) setNewBelow(true);
   }, [following]);
 
+  // web：最后一次 scroll 事件时列表停在哪里。浏览器自己把列表往回拉（见下面发消息）时还没发 scroll 事件，这里还是原来的位置。
+  const lastScrollTop = useRef<number | null>(null);
+  useEffect(() => {
+    if (Platform.OS !== 'web') return undefined;
+    const node = listRef.current?.getScrollableNode() as HTMLElement | null | undefined;
+    if (!node || typeof node.addEventListener !== 'function') return undefined;
+    const onScroll = () => { lastScrollTop.current = node.scrollTop; };
+    onScroll();
+    node.addEventListener('scroll', onScroll, { passive: true });
+    return () => node.removeEventListener('scroll', onScroll);
+  }, []);
+
   // 你发了消息：回到底部，继续跟随。第一次渲染不算。
+  // web（工单 #251）：发多行消息、带图片发消息时，输入框在同一刻变矮，列表的可视区变高。这时新消息还没画出来，
+  // 浏览器把 scrollTop 夹到旧内容的底部，旧内容整体往下移；接着再滚到底，看起来先往下、再往上。
+  // 这个 effect 跑的时候，Legend List 还没把新消息的高度写进页面；到下一帧画出来之前才写好。
+  // 所以在那一帧画之前，先回到被拉回之前的位置，再从那里平滑滚到底：只往一个方向动。
   const firstFollowKey = useRef(true);
   useEffect(() => {
     if (firstFollowKey.current) {
       firstFollowKey.current = false;
-      return;
+      return undefined;
     }
     setNewBelow(false);
     void listRef.current?.scrollToEnd({ animated: true });
+    const node = Platform.OS === 'web' ? listRef.current?.getScrollableNode() as HTMLElement | null | undefined : null;
+    const before = lastScrollTop.current;
+    if (!node || before === null || node.scrollTop >= before) return undefined;
+    const frame = requestAnimationFrame(() => {
+      if (node.scrollTop >= before) return;
+      node.scrollTop = Math.min(before, node.scrollHeight - node.clientHeight);
+      void listRef.current?.scrollToEnd({ animated: true });
+    });
+    return () => cancelAnimationFrame(frame);
   }, [followKey]);
 
   // web：你按下的那一块，在会话栏变宽、变窄（工单面板打开、关闭）以后留在原来的高度。

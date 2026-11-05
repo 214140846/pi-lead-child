@@ -9,6 +9,7 @@ import type {
   ModelSettingsDto,
   SetupStatus,
   LeadAvatarDto,
+  HostBypassDto,
   LeadProfileDto,
   DesignPreferencesDto,
   RuntimeSettingsDto,
@@ -72,6 +73,7 @@ export type ResourceKey =
   | 'runtime-settings'
   | 'lead-profile'
   | 'lead-avatar'
+  | 'host-bypass'
   | 'design-preferences'
   | 'channel-settings'
   | 'conversation:current'
@@ -112,6 +114,8 @@ export const RESOURCE_KEYS = {
   runtimeSettings: 'runtime-settings' as const,
   leadProfile: 'lead-profile' as const,
   leadAvatar: 'lead-avatar' as const,
+  // 「用户本人发话时免沙箱」开关（GET /v1/lead/host-bypass，工单 #246）。连上就取：开着时输入框上方要画标记。
+  hostBypass: 'host-bypass' as const,
   designPreferences: 'design-preferences' as const,
   channelSettings: 'channel-settings' as const,
   workItems: 'work-items' as const,
@@ -343,6 +347,8 @@ export interface ControlPlaneData {
   leadAvatar: LeadAvatarDto | null;
   /** 取到的形象图片，按 id：data: URI。取不到时是空字符串（用系统素材）。 */
   leadAvatarImages: Record<string, string>;
+  /** 「用户本人发话时免沙箱」开关（GET /v1/lead/host-bypass）。连上以后就取；没取到、或者旧 daemon 没有时为 null（当作关着）。 */
+  hostBypass: HostBypassDto | null;
   /** 界面的外观偏好（GET /v1/design/preferences）。连上以后就取；没取到时用缺省值画。 */
   designPreferences: DesignPreferencesDto | null;
   /** 外部消息通道的凭据和状态（GET /v1/channels/settings）：每个来源一行，没有密钥的值。没取到时为 null。 */

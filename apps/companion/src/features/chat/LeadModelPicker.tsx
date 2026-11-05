@@ -14,9 +14,11 @@ import { effortForModel, groupLeadModels, leadModelLabel } from './leadModelGrou
 // switch_lead_model 是同一个操作：Lead 空闲时马上换，正在回答时这一轮结束后换，不用重启。
 export function LeadModelPicker({ current }: { current: string | null | undefined }) {
   const m = useMessages(leadModelMessages);
+  const accounts = useModelAccounts();
   // daemon 还不知道用哪个模型时（hello 里是 unknown）不写。
   if (!current?.trim() || current === 'unknown') return null;
-  const label = leadModelLabel(current);
+  // 知道账号时去掉它（as4/claude-sonnet-5 写成 claude-sonnet-5）；目录还没读到时写完整的 id。
+  const label = leadModelLabel(current, accounts.get(parseLeadModelSpec(current).model) ?? null);
   // 外面包一层：Popover 的锚点自己是 alignSelf: flex-start，直接放进工具栏会贴着这一行的上边，
   // 和左边的「+」、右边的发送按钮对不齐（2026-10-26 用户截图）。这一层由工具栏垂直居中。
   return (
@@ -39,6 +41,24 @@ export function LeadModelPicker({ current }: { current: string | null | undefine
     </Popover>
     </Box>
   );
+}
+
+// 目录里每个模型的账号（Lead 模型分组，2026-11-05）：前缀是不是账号由 daemon 按服务商的 accountPrefix 定，
+// 输入框右下角的模型名要靠它决定去不去掉前缀。挂上时读一次目录（daemon 缓存 30 秒），读不到时当作没有账号。
+function useModelAccounts(): Map<string, string | null> {
+  const runtime = useCompanionRuntime();
+  const [accounts, setAccounts] = useState<Map<string, string | null>>(() => new Map());
+  useEffect(() => {
+    let live = true;
+    Promise.resolve().then(() => runtime.loadLeadModels()).then(
+      (catalog) => {
+        if (live && catalog?.models) setAccounts(new Map(catalog.models.map((model) => [model.model, model.prefix])));
+      },
+      () => {},
+    );
+    return () => { live = false; };
+  }, [runtime]);
+  return accounts;
 }
 
 type PanelState =
@@ -113,7 +133,7 @@ function LeadModelPanel({ close, onSwitched }: { close: () => void; onSwitched?:
           close();
           onSwitched();
         } else if (result.applied === 'after_turn') {
-          setNotice({ tone: 'secondary', text: m.afterTurn(leadModelLabel(spec).id) });
+          setNotice({ tone: 'secondary', text: m.afterTurn(leadModelLabel(spec, catalog.models.find((model) => model.model === choice.model)?.prefix ?? null).id) });
         } else {
           close();
         }
@@ -126,14 +146,14 @@ function LeadModelPanel({ close, onSwitched }: { close: () => void; onSwitched?:
   };
 
   const pending = selected.model !== catalog.current.model || selected.effort !== catalog.current.effort;
-  const groups = groupLeadModels(catalog.models, locale);
+  const groups = groupLeadModels(catalog.models);
   // 选着的模型可能在列表很下面：最上面写一行它是哪个来源的哪个模型，不用翻下去找。
   const selectedGroup = groups.find((group) => group.models.some((model) => model.model === selected.model));
   const selectedId = selectedOption?.prefix ? selectedOption.id.slice(selectedOption.prefix.length + 1) : parseLeadModelSpec(selected.model).id;
   return (
     <Column gap="card-section" testID="lead-model-catalog">
       <Text testID="lead-model-selected" size="body" weight="semibold">
-        {m.inUse(`${selectedGroup ? `${selectedGroup.title} · ` : ''}${selectedId}${selected.effort ? ` ${selected.effort}` : ''}`)}
+        {m.inUse(`${selectedGroup?.title ? `${selectedGroup.title} · ` : ''}${selectedId}${selected.effort ? ` ${selected.effort}` : ''}`)}
       </Text>
       {pending ? (
         <Text testID="lead-model-pending" size="note" tone="secondary">
@@ -159,7 +179,7 @@ function LeadModelPanel({ close, onSwitched }: { close: () => void; onSwitched?:
       ) : null}
       {groups.map((group) => (
         <Column key={group.key} gap="group-label" testID={`lead-model-group-${group.title}`}>
-          <Text size="eyebrow" tone="muted">{group.title}</Text>
+          {group.title ? <Text size="eyebrow" tone="muted">{group.title}</Text> : null}
           <Column>
             {group.models.map((model) => (
               <ModelRow

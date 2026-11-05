@@ -6,12 +6,14 @@ import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 import { tempDir } from "@pi-lead-child/core/testing";
 import {
-  activePairedUserTurn, addLeadFollowUp, cancelLeadFollowUp, completeTurn, createItem, createLoopbackBinding, createTurn, getLeadProfile,
-  getNote, listInbox, listTriggers, openDb, renderCoreMemory, revokeBinding, saveNote, UserTurnScopeError, type Db,
+  activePairedUserTurn, addLeadFollowUp, cancelLeadFollowUp, channelOwnerBinding, completeTurn, createCliBinding, createItem,
+  createLoopbackBinding, createTurn, getLeadProfile,
+  getNote, listEvents, listInbox, listTriggers, openDb, renderCoreMemory, revokeBinding, saveNote, UserTurnScopeError, type Db,
 } from "@pi-lead-child/store";
 import type { Scope } from "@pi-lead-child/protocol";
 import { createLeadTools, type LeadDeps } from "../src/tools.js";
-import { withExternalContent, type LeadTurnOrigin } from "../src/turn-origin.js";
+import { enableHostBypass } from "@pi-lead-child/engine";
+import { hostBypassActive, withExternalContent, type LeadTurnOrigin } from "../src/turn-origin.js";
 
 let db: Db;
 let deps: LeadDeps;
@@ -200,5 +202,148 @@ describe("core memory goes into Lead's system prompt", () => {
     const saved = await tool("save_note").execute("t", preference);
     expect(saved.isError).toBeUndefined();
     expect(renderCoreMemory(db)).toContain("沟通偏好: 先给结论");
+  });
+});
+
+// 免沙箱（docs/ticket-246-user-turn-bypass.md 3.1、3.2，实施单 C）：开关开着、用户本人正在发话、这一轮没读过外部内容。
+describe("hostBypassActive", () => {
+  const turnOn = () => enableHostBypass(db, { minutes: 30, bindingId: null, resolvedBy: "user via Mac 网页", reason: "test", now: new Date() });
+
+  it("is off while the switch is off, even in the user's own turn", () => {
+    userTurn("turn-off");
+    turnId = "turn-off";
+    expect(hostBypassActive(db, deps)).toEqual({ active: false, code: "off", why: null });
+  });
+
+  it("is on in the user's own turn from Companion, plc and a Slack DM to themselves, and says which", () => {
+    turnOn();
+    userTurn("turn-companion");
+    turnId = "turn-companion";
+    expect(hostBypassActive(db, deps)).toEqual({ active: true, turnId: "turn-companion", turnOrigin: "live_user_companion" });
+    const cli = createCliBinding(db, { name: "plc" }).binding;
+    createTurn(db, { id: "turn-plc", originBindingId: cli.id, originKind: "paired:cli", userText: "…", state: "streaming" });
+    turnId = "turn-plc";
+    expect(hostBypassActive(db, deps)).toMatchObject({ active: true, turnOrigin: "live_user_plc" });
+    const slack = channelOwnerBinding(db, { subject: "slack:U000TEST", name: "Slack 私信" })!;
+    createTurn(db, { id: "turn-slack", originBindingId: slack.id, originKind: "paired:companion", userText: "…", state: "streaming" });
+    turnId = "turn-slack";
+    expect(hostBypassActive(db, deps)).toMatchObject({ active: true, turnOrigin: "live_user_slack_self_dm" });
+  });
+
+  it("turns off for the rest of the user's turn once it reads external content", () => {
+    turnOn();
+    userTurn("turn-read");
+    turnId = "turn-read";
+    expect(hostBypassActive(db, deps).active).toBe(true);
+    origin = withExternalContent(origin, { via: "tool", tool: "read_channel_conversation" });
+    const decision = hostBypassActive(db, deps);
+    expect(decision).toMatchObject({ active: false, code: "external_content" });
+    expect(decision.active ? "" : decision.why).toContain("read_channel_conversation");
+    // 没有声明的工具也按外部内容算。
+    origin = withExternalContent({ external: false, timer: null }, { via: "tool", tool: "some_new_tool" });
+    expect(hostBypassActive(db, deps)).toMatchObject({ active: false, code: "external_content" });
+  });
+
+  it("stays off in system turns, a follow-up's turn, an external message's turn, a finished turn and after the end time", () => {
+    turnOn();
+    // 系统回合（定时器、通知、心跳、摘要、子 agent 交回）：没有 channel turn。
+    expect(hostBypassActive(db, deps)).toMatchObject({ active: false, code: "not_user_turn" });
+    // 用户设的跟进到点的一轮：timer:<编号>。
+    const bindingId = userTurn("turn-set");
+    const followUp = addLeadFollowUp(db, {
+      at: new Date(Date.now() - 1_000), note: "看一下",
+      setBy: { turnId: "turn-set", bindingId, startedAt: new Date().toISOString() },
+    });
+    origin = { external: false, timer: followUp };
+    expect(hostBypassActive(db, deps)).toMatchObject({ active: false, code: "not_user_turn" });
+    // 外部消息叫醒的一轮。
+    origin = { external: true, timer: null, externalBy: [{ via: "message", source: "slack" }], externalEvents: [7] };
+    expect(hostBypassActive(db, deps)).toMatchObject({ active: false, code: "not_user_turn" });
+    // 结束了的一轮。
+    origin = { external: false, timer: null };
+    turnId = "turn-set";
+    completeTurn(db, "turn-set");
+    expect(hostBypassActive(db, deps)).toMatchObject({ active: false, code: "not_user_turn" });
+    // 到点以后。
+    userTurn("turn-late");
+    turnId = "turn-late";
+    expect(hostBypassActive(db, deps, new Date(Date.now() + 31 * 60_000))).toMatchObject({ active: false, code: "off" });
+  });
+});
+
+// run_on_host 在免沙箱开着时（实施单 C 验收 1、2、4、5）：用户本人的一轮直接跑、不发卡；读过外部内容、筛查不放行时发卡。
+describe("run_on_host with the sandbox bypass on", () => {
+  const turnOn = () => enableHostBypass(db, { minutes: 30, bindingId: null, resolvedBy: "user via Mac 网页", reason: "test", now: new Date() });
+  const cards = () => listEvents(db, { kind: "rule_change.requested" });
+  const hostEvents = (kind: "started" | "finished") => listEvents(db, { kind: `host_command.${kind}` });
+
+  it("runs the command at once in the user's own turn, returns the exit code and records both events with the command redacted", async () => {
+    turnOn();
+    userTurn("turn-run");
+    turnId = "turn-run";
+    const result = await tool("run_on_host").execute("t", {
+      command: "echo hi-from-host; echo 'Bearer abc123def456ghi'", cwd: deps.dataDir, reason: "test",
+    });
+    expect(result.isError).toBeFalsy();
+    expect(result.content[0].text).toMatch(/^（沙箱外）/);
+    expect(result.content[0].text).toContain("退出码 0");
+    expect(result.content[0].text).toContain("hi-from-host");
+    expect(result.content[0].text).not.toContain("abc123def456ghi");
+    expect(result.details).toMatchObject({ exitCode: 0, timedOut: false });
+    expect(cards()).toEqual([]);
+    const [started] = hostEvents("started");
+    const [finished] = hostEvents("finished");
+    expect(started?.payload).toMatchObject({
+      turnId: "turn-run", turnOrigin: "live_user_companion", via: "run_on_host", confirmationId: null, cwd: deps.dataDir,
+      timeoutSeconds: 120, screen: { verdict: "allow", rule: null }, spendsMoney: false,
+    });
+    expect(String(started?.payload.command)).toContain("echo hi-from-host");
+    expect(String(started?.payload.command)).not.toContain("abc123def456ghi");
+    expect(finished?.payload).toMatchObject({ id: started?.payload.id, exitCode: 0, timedOut: false, truncated: false });
+    expect(finished?.entityKey).toBe(started?.entityKey);
+  });
+
+  it("sends the confirm card with the reason once the turn read external content, and runs nothing", async () => {
+    turnOn();
+    userTurn("turn-read-slack");
+    turnId = "turn-read-slack";
+    origin = withExternalContent(origin, { via: "tool", tool: "read_channel_conversation" });
+    const result = await tool("run_on_host").execute("t", { command: "echo nope", cwd: deps.dataDir, reason: "test" });
+    expect(result.isError).toBe(true);
+    const body = JSON.parse(result.content[0].text);
+    expect(body).toMatchObject({ refused: true, kind: "needs_authorization", user_action: { kind: "confirm_rule_change" } });
+    expect(body.refusal.message).toContain("免沙箱开着，但这一次没有直接跑");
+    expect(body.refusal.message).toContain("read_channel_conversation");
+    expect(cards().length).toBe(1);
+    expect(hostEvents("started")).toEqual([]);
+  });
+
+  it("sends the confirm card when the screen says floor or unknown, or the command spends money", async () => {
+    turnOn();
+    userTurn("turn-screen");
+    turnId = "turn-screen";
+    for (const [params, rule] of [
+      [{ command: "security find-generic-password -s x" }, "credentials"],
+      [{ command: "echo $(whoami)" }, "command-substitution"],
+      [{ command: "sudo ls" }, "privilege-escalation"],
+      [{ command: "echo ok", spends_money: true }, "spends-money"],
+    ] as const) {
+      const result = await tool("run_on_host").execute("t", { ...params, cwd: deps.dataDir, reason: "test" });
+      expect(result.isError, rule).toBe(true);
+      const body = JSON.parse(result.content[0].text);
+      expect(body.kind, rule).toBe("needs_authorization");
+      expect(body.refusal.message, rule).toContain("命令筛查没有放行");
+    }
+    expect(hostEvents("started")).toEqual([]);
+  });
+
+  it("sends the confirm card as before when the switch is off, without a bypass reason", async () => {
+    userTurn("turn-plain");
+    turnId = "turn-plain";
+    const result = await tool("run_on_host").execute("t", { command: "echo hi", cwd: deps.dataDir, reason: "test" });
+    const body = JSON.parse(result.content[0].text);
+    expect(body.kind).toBe("needs_authorization");
+    expect(body.refusal.message).toBe("命令在沙箱外跑，用你自己的权限和凭证：要你确认这一次。");
+    expect(hostEvents("started")).toEqual([]);
   });
 });

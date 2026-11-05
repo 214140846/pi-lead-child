@@ -9,7 +9,7 @@ import { tempDir } from "@pi-lead-child/core/testing";
 
 import {
   assertConfiguredLeadModel, LEAD_CONTEXT_WINDOW_LIMIT, leadModelCatalog, normalizeLeadModelConfig, registerLeadProviders,
-  setLeadModelInConfig, splitLeadModelEffort,
+  saveLeadProviderInConfig, setLeadModelInConfig, splitLeadModelEffort,
 } from "../src/model-config.js";
 import { PRECIPITATE_RATIO } from "../src/precipitate.js";
 
@@ -58,7 +58,7 @@ const config = (models: string[] = [], extra: Record<string, unknown> = {}) => n
 describe("the Lead model catalog", () => {
   it("reads the account prefix, the upstream, image input and the effort levels", async () => {
     const { models } = await leadModelCatalog(config(), {}, vibeproxy as typeof fetch);
-    expect(models.map((model) => [model.id, model.prefix, model.source])).toEqual([
+    expect(models.map((model) => [model.id, model.group, model.source])).toEqual([
       ["claude-sonnet-5", null, "anthropic"],
       ["gemini-3.8-flash-high", null, "antigravity"],
       ["as1/claude-sonnet-5", "as1", "anthropic"],
@@ -163,6 +163,114 @@ describe("the Lead model catalog", () => {
   });
 });
 
+// Lead 模型分组（用户 2026-11-05，原型 docs/prototypes/model-grouping）：账号（group）只在 accountPrefix 生效时才取；
+// 能不能看图按 config → capabilities 声明 → 自动识别的顺序判断。
+describe("account groups and image input", () => {
+  // magpie 风格的服务：没有详细目录，?client_version=pi 也只回普通目录；能力写在 data[] 的每一项里。
+  const magpieList = {
+    data: [
+      {
+        id: "auto/deepseek-flash", owned_by: "deepseek", display_name: "DeepSeek Flash", modalities: { input: ["text", "image"] },
+        supported_reasoning_levels: [{ effort: "low" }, { effort: "high" }], context_window: 1_048_576, max_output_tokens: 393_216,
+      },
+      { id: "deepseek/deepseek-flash", owned_by: "deepseek", modalities: { input: ["text"] } },
+      { id: "bailian/qwen-max", owned_by: "bailian-token-plan" },
+    ],
+  };
+  const magpie = async () => new Response(JSON.stringify(magpieList));
+  const magpieConfig = (extra: Record<string, unknown> = {}) => normalizeLeadModelConfig({
+    providers: { magpie: { baseUrl: "https://magpie.example.com/v1", apiKey: { value: "k" }, ...extra } },
+    models: [],
+  });
+
+  it("groups vibeproxy by account without any config change, because it returns the detailed catalog", async () => {
+    const { models, providers } = await leadModelCatalog(config(), {}, vibeproxy as typeof fetch);
+    expect(providers.vibeproxy).toEqual({ detailed: true, accountPrefix: true, capabilities: "detailed" });
+    expect(models.filter((model) => model.group).map((model) => [model.group, model.id])).toEqual([
+      ["as1", "as1/claude-sonnet-5"],
+      ["as4", "as4/claude-sonnet-5"],
+    ]);
+  });
+
+  it("does not read the auto/ and deepseek/ prefixes of a plain catalog as accounts, until accountPrefix is true", async () => {
+    const plainRun = await leadModelCatalog(magpieConfig(), {}, magpie as typeof fetch);
+    expect(plainRun.providers.magpie).toEqual({ detailed: false, accountPrefix: false, capabilities: "plain" });
+    expect(plainRun.models.map((model) => model.group)).toEqual([null, null, null]);
+
+    const declared = await leadModelCatalog(magpieConfig({ accountPrefix: true }), {}, magpie as typeof fetch);
+    expect(declared.models.map((model) => [model.id, model.group])).toEqual([
+      ["auto/deepseek-flash", "auto"],
+      ["deepseek/deepseek-flash", "deepseek"],
+      ["bailian/qwen-max", "bailian"],
+    ]);
+    // vibeproxy 也能关掉：config 写了 false 就不按账号分。
+    const off = await leadModelCatalog(config([], { accountPrefix: false }), {}, vibeproxy as typeof fetch);
+    expect(off.models.every((model) => model.group === null)).toBe(true);
+  });
+
+  it("reads image input, the name and the windows from a plain catalog, but no effort levels", async () => {
+    const { models } = await leadModelCatalog(magpieConfig(), {}, magpie as typeof fetch);
+    expect(models.find((model) => model.id === "auto/deepseek-flash")).toMatchObject({
+      name: "DeepSeek Flash", input: ["text", "image"], efforts: [], contextWindow: 1_048_576, maxTokens: 393_216,
+    });
+    expect(models.find((model) => model.id === "deepseek/deepseek-flash")?.input).toEqual(["text"]);
+    expect(models.find((model) => model.id === "bailian/qwen-max")?.input).toEqual(["text"]);
+  });
+
+  it("puts the input written in config.json first, then the declared capabilities source, then auto detection", async () => {
+    // config 写的 input 优先：目录说能看图，config 说不能。
+    const configFirst = await leadModelCatalog(
+      magpieConfig({ models: [{ id: "auto/deepseek-flash", input: ["text"] }], discover: true }), {}, magpie as typeof fetch,
+    );
+    expect(configFirst.models.find((model) => model.id === "auto/deepseek-flash")?.input).toEqual(["text"]);
+
+    // capabilities: config：不读目录的能力，只认 config 写的。
+    const configOnly = await leadModelCatalog(
+      magpieConfig({ capabilities: "config", models: [{ id: "bailian/qwen-max", input: ["text", "image"] }], discover: true }),
+      {}, magpie as typeof fetch,
+    );
+    expect(configOnly.providers.magpie?.capabilities).toBe("config");
+    expect(configOnly.models.find((model) => model.id === "auto/deepseek-flash")?.input).toEqual(["text"]);
+    expect(configOnly.models.find((model) => model.id === "bailian/qwen-max")?.input).toEqual(["text", "image"]);
+
+    // capabilities: detailed：这家没有详细目录，普通目录说的也不算。
+    const detailedOnly = await leadModelCatalog(magpieConfig({ capabilities: "detailed" }), {}, magpie as typeof fetch);
+    expect(detailedOnly.models.find((model) => model.id === "auto/deepseek-flash")?.input).toEqual(["text"]);
+
+    // capabilities: plain：vibeproxy 的详细目录不算，只看普通目录（它没写能力）。
+    const plainOnly = await leadModelCatalog(config([], { capabilities: "plain" }), {}, vibeproxy as typeof fetch);
+    expect(plainOnly.models.find((model) => model.id === "as4/claude-sonnet-5")?.input).toEqual(["text"]);
+    // accountPrefix 没写：读到了详细目录，照样按账号分。
+    expect(plainOnly.models.find((model) => model.id === "as4/claude-sonnet-5")?.group).toBe("as4");
+  });
+
+  it("rejects an unknown capabilities source and a non-boolean accountPrefix", () => {
+    expect(() => magpieConfig({ capabilities: "guess" })).toThrow(/capabilities/);
+    expect(() => magpieConfig({ accountPrefix: "yes" })).toThrow(/accountPrefix/);
+  });
+
+  it("writes accountPrefix and capabilities into config.json, and removes them to go back to the default", () => {
+    const hostOf = (url: string) => new URL(url).host;
+    saveLeadProviderInConfig("magpie", { baseUrl: "https://magpie.example.com/v1", api: "openai-completions" }, hostOf, dir);
+    saveLeadProviderInConfig("magpie", {
+      baseUrl: "https://magpie.example.com/v1", api: "openai-completions", accountPrefix: true, capabilities: "plain",
+    }, hostOf, dir);
+    const read = () => JSON.parse(readFileSync(join(dir, "config.json"), "utf8")).lead.providers.magpie;
+    expect(read()).toMatchObject({ discover: true, accountPrefix: true, capabilities: "plain" });
+    // 不给时不变。
+    saveLeadProviderInConfig("magpie", { baseUrl: "https://magpie.example.com/v1", api: "openai-completions" }, hostOf, dir);
+    expect(read()).toMatchObject({ accountPrefix: true, capabilities: "plain" });
+    // null 和 auto：回到缺省。
+    saveLeadProviderInConfig("magpie", {
+      baseUrl: "https://magpie.example.com/v1", api: "openai-completions", accountPrefix: null, capabilities: "auto",
+    }, hostOf, dir);
+    expect(read().accountPrefix).toBeUndefined();
+    expect(read().capabilities).toBeUndefined();
+    saveLeadProviderInConfig("magpie", { baseUrl: "https://magpie.example.com/v1", api: "openai-completions", accountPrefix: false }, hostOf, dir);
+    expect(read().accountPrefix).toBe(false);
+  });
+});
+
 // 首次启动引导的 Anthropic 预设（2026-10-30，.scratch/onboarding）：Anthropic 原生接口的目录在 /v1/models，key 放在 x-api-key。
 describe("the Anthropic catalog", () => {
   const anthropicList = {
@@ -192,6 +300,8 @@ describe("the Anthropic catalog", () => {
       ["claude-sonnet-5-5", "Claude Sonnet 5.5", "2026-09-28T00:00:00.000Z"],
       ["claude-haiku-5-5", "Claude Haiku 5.5", "2026-09-20T00:00:00.000Z"],
     ]);
+    // 分组和看图的新规则不影响 Anthropic 原生接口：没有账号，能力和以前一样（目录没写，按只能读文字）。
+    expect(models.map((model) => [model.group, model.input])).toEqual([[null, ["text"]], [null, ["text"]]]);
   });
 
   it("keeps the Bearer token for a proxy that speaks anthropic-messages", async () => {

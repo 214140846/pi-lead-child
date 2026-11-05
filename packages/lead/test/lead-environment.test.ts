@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { estimateTokens } from "@pi-lead-child/core";
 import { tempDir } from "@pi-lead-child/core/testing";
 import { setModelCatalogForTesting } from "@pi-lead-child/engine";
-import { createItem, markRuntimeDegraded, openDb, recordRuntimeHealthFailure } from "@pi-lead-child/store";
+import { createItem, HOST_BYPASS_KEY, markRuntimeDegraded, openDb, recordRuntimeHealthFailure } from "@pi-lead-child/store";
 import { typedFailure } from "@pi-lead-child/runtime";
 import {
   collectLeadEnvironment, ENVIRONMENT_TOKEN_BUDGET, renderEnvironmentDetails, renderLeadEnvironment, type LeadEnvironmentSnapshot,
@@ -253,6 +253,30 @@ describe("collectLeadEnvironment", () => {
       expect(snapshot.connections).toBeNull();
       expect(snapshot.runtimes).not.toBeNull();
       expect(renderEnvironmentDetails(snapshot, {})).toContain("读不到 config.json 的 lead.models");
+    } finally {
+      db.close();
+    }
+  });
+});
+
+// 工单 #246 设计 5.4：get_environment 的结果里有 hostBypass: { enabled, until }。
+describe("the host bypass switch in get_environment", () => {
+  it("says whether the switch is on and until when, and says off once the time has passed", () => {
+    const dataDir = tempDir("plc-env-host-bypass-");
+    const db = openDb(join(dataDir, "plc.db"));
+    try {
+      const sources = { db, dataDir, env: {}, leadModel: () => null, smartModel: () => null };
+      expect(collectLeadEnvironment(sources).hostBypass).toEqual({ enabled: false, until: null });
+      expect(renderEnvironmentDetails(collectLeadEnvironment(sources), {})).toContain("hostBypass: { enabled: false }");
+      const until = new Date(Date.now() + 30 * 60_000).toISOString();
+      const write = (value: string) => db.prepare(
+        `INSERT INTO kv (key, value, updated_at) VALUES (?, ?, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+      ).run(HOST_BYPASS_KEY, JSON.stringify({ enabled: true, until: value, bindingId: 1, enabledAt: new Date().toISOString(), reason: "test" }));
+      write(until);
+      expect(collectLeadEnvironment(sources).hostBypass).toEqual({ enabled: true, until });
+      expect(renderEnvironmentDetails(collectLeadEnvironment(sources), {})).toContain(`hostBypass: { enabled: true, until: ${until} }`);
+      write(new Date(Date.now() - 1_000).toISOString());
+      expect(collectLeadEnvironment(sources).hostBypass).toEqual({ enabled: false, until: null });
     } finally {
       db.close();
     }

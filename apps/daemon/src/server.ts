@@ -24,6 +24,7 @@ import {
 } from "@pi-lead-child/lead";
 import { isSummaryTokenCapError, leadCompactionInstructions, LEAD_COMPACTION_BUDGETS, type CompactionProgress } from "@pi-lead-child/lead";
 import { contextUsageLine, leadContextUsage, type LeadContextUsage } from "@pi-lead-child/lead";
+import { startHostBypassClock } from "./host-bypass-clock.js";
 import { userMessagePlacement } from "./user-placement.js";
 import { createLeadInput, defaultDigestBatch, isReminderFireEvent, type DigestBatchPolicy } from "./lead-input.js";
 import { compactionEndOutcome, createLeadHealthTracker, isEmptyLengthStop, leadContextFullError } from "./lead-health.js";
@@ -818,6 +819,9 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
 
   // 操作层（engine 的 ui-actions/）用的服务。只建这一个对象：网关的页面入口和 Lead 的工具都拿它，两个入口调的是同一个实例。
   const uiActionServices: UiActionServices = { runtimeSettings };
+  // 「用户本人发话时免沙箱」到点的定时器（工单 #246 实施单 A）：启动时先把已经过了时限的开关置关，开、关以后操作层叫它重新排。
+  const hostBypassClock = startHostBypassClock(db, { log });
+  uiActionServices.hostBypassClock = hostBypassClock;
 
   interface TurnOutcome {
     ok: boolean;
@@ -2942,7 +2946,7 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
           const spec = `${model.provider}/${model.id}`;
           const until = blocked.get(spec);
           return {
-            model: spec, provider: model.provider, id: model.id, prefix: model.prefix, source: model.source, name: model.name,
+            model: spec, provider: model.provider, id: model.id, prefix: model.group, source: model.source, name: model.name,
             image: model.input.includes("image"), efforts: model.efforts, defaultEffort: model.defaultEffort,
             blockedUntil: until === undefined ? null : new Date(until).toISOString(),
           };
@@ -5865,6 +5869,7 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
     closeStep = "stopping the reply-action judge";
     await replyActionsJudge?.stop();
     runtimeSettings.close();
+    hostBypassClock.stop();
     db.close();
     ownership.release();
     closeStep = "closed";

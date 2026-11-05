@@ -9,7 +9,8 @@ import type { settingsMessages } from './settings.messages';
 type Messages = ReturnType<typeof settingsMessages>;
 
 export type SettingsSectionId =
-  | 'profile' | 'appearance' | 'connections' | 'channels' | 'device' | 'devices' | 'model' | 'memory' | 'standing-orders' | 'runtimes';
+  | 'profile' | 'appearance' | 'connections' | 'channels' | 'device' | 'devices' | 'model' | 'memory' | 'standing-orders' | 'runtimes'
+  | 'host-bypass';
 
 // 名字在 settings.messages.ts（settingsMessages 的 items、groups），按界面语言取。
 export type SettingsItem = {
@@ -35,6 +36,8 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
       { id: 'model', href: '/settings/model', icon: 'agent' },
       { id: 'memory', href: '/settings/memory', icon: 'database' },
       { id: 'standing-orders', href: '/settings/standing-orders', icon: 'shield-check' },
+      // 用户本人发话时免沙箱（工单 #246）：只有你本人能在这里打开，到点自动关。
+      { id: 'host-bypass', href: '/settings/host-bypass', icon: 'shield' },
     ],
   },
   {
@@ -74,7 +77,7 @@ export function settingsSectionForPath(pathname: string, { desktop }: { desktop:
   const section = segments[1];
   if (section === undefined) return desktop ? 'profile' : null;
   if (section === 'profile' || section === 'appearance' || section === 'connections' || section === 'channels' || section === 'device' || section === 'devices' || section === 'model' || section === 'memory'
-    || section === 'standing-orders' || section === 'runtimes') return section;
+    || section === 'standing-orders' || section === 'runtimes' || section === 'host-bypass') return section;
   return null;
 }
 

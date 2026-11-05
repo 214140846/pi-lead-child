@@ -74,6 +74,7 @@ import {
 import {
   DecisionModelResponseSchema,
   ModelSettingsResponseSchema,
+  MODEL_SETTINGS_GROUPING_QUERY,
   MemoryHindsightResponseSchema,
   MemoryPreferencesResponseSchema,
   SetupResponseSchema,
@@ -84,6 +85,7 @@ import {
   LeadProfileResponseSchema,
   LeadAvatarImageSchema,
   LeadAvatarResponseSchema,
+  HostBypassResponseSchema,
   SlackEmojiPreviewSchema,
   DesignPreferencesResponseSchema,
   RuntimeSettingsResponseSchema,
@@ -98,6 +100,8 @@ import {
   type LeadProfileDto,
   type LeadProfileRequest,
   type LeadAvatarDto,
+  type HostBypassDto,
+  type EnableHostBypassRequest,
   type LeadAvatarImage,
   type LeadAvatarSlackEmojiRequest,
   type LeadAvatarSlot,
@@ -1864,7 +1868,8 @@ export class ControlPlaneClient {
 
   // 设置 → 模型（2026-10-29）：大脑和直觉的分工、服务商和它们的目录。改动走 performUiAction（model_settings）。
   async getModelSettings(signal?: AbortSignal): Promise<ModelSettingsDto> {
-    return (await this.request<{ modelSettings: ModelSettingsDto }>('/v1/models/settings', ModelSettingsResponseSchema, { signal })).modelSettings;
+    // grouping=1：要分组的字段（账号、通道、服务商的「高级」）。不带时网关去掉它们，给旧版的严格 schema。
+    return (await this.request<{ modelSettings: ModelSettingsDto }>(`/v1/models/settings?${MODEL_SETTINGS_GROUPING_QUERY}`, ModelSettingsResponseSchema, { signal })).modelSettings;
   }
 
   // 设置 → 记忆的 Hindsight 部分：摘要模型、写入情况、记忆库的统计。改动走 performUiAction('memory_settings', 'memory', …)。
@@ -1968,6 +1973,26 @@ export class ControlPlaneClient {
   async previewSlackEmoji(code: string, signal?: AbortSignal): Promise<SlackEmojiPreview> {
     const query = new URLSearchParams({ code });
     return this.request<SlackEmojiPreview>(`/v1/lead/avatar/slack-emoji/preview?${query.toString()}`, SlackEmojiPreviewSchema, { signal });
+  }
+
+  // 「用户本人发话时免沙箱」开关（设置 → 免沙箱，契约在 protocol 的 host-bypass.ts，工单 #246）。读要 tickets:view；
+  // 开和关要 tickets:create，都是操作层的 host_bypass：打开只有你本人能做，关 Lead 也能做。
+  async getHostBypass(signal?: AbortSignal): Promise<HostBypassDto> {
+    return (await this.request<{ hostBypass: HostBypassDto }>('/v1/lead/host-bypass', HostBypassResponseSchema, { signal })).hostBypass;
+  }
+
+  async enableHostBypass(request: EnableHostBypassRequest, signal?: AbortSignal): Promise<HostBypassDto> {
+    const payload = await this.request<{ hostBypass: HostBypassDto }>('/v1/lead/host-bypass/enable', HostBypassResponseSchema, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(request), ...(signal ? { signal } : {}),
+    });
+    return payload.hostBypass;
+  }
+
+  async disableHostBypass(signal?: AbortSignal): Promise<HostBypassDto> {
+    const payload = await this.request<{ hostBypass: HostBypassDto }>('/v1/lead/host-bypass/disable', HostBypassResponseSchema, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}', ...(signal ? { signal } : {}),
+    });
+    return payload.hostBypass;
   }
 
   // 界面的外观偏好（设置页「外观」）。

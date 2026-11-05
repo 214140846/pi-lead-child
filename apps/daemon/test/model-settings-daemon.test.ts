@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { Value } from "typebox/value";
 import { MODEL_SETTINGS_RESOURCE, ModelSettingsDtoSchema, serviceUrlHost } from "@pi-lead-child/protocol";
+import { LegacyModelSettingsResponseSchema } from "../../../packages/client/test/legacyModelSettingsSchema.ts";
 import { createPairing, openDb, redeemPairing, type Db } from "@pi-lead-child/store";
 import { tempDir } from "@pi-lead-child/core/testing";
 import { fileKeySource, lazyVault } from "@pi-lead-child/connections";
@@ -190,5 +191,40 @@ describe("settings → models through the gateway", () => {
     expect(config().decision).toMatchObject({ baseUrl: "https://jev.example.com", chain: ["decision-1", "jev"] });
     const read = await http("GET", "/v1/models/settings");
     expect(read.body.modelSettings.fast.models.map((model: any) => [model.id, model.apiKeySet])).toEqual([["jev", false], ["decision-1", true]]);
+  });
+
+  // Lead 模型分组（2026-11-05）：这台假的 vibeproxy 没有详细目录（client_version 回 404），所以 as4/ 先不算账号。
+  // 「高级」里把 accountPrefix 打开、保存以后，下一次读设置就按账号分组（目录缓存清掉了）。
+  it("sends the grouping fields only on request, and regroups at once after the advanced settings are saved", async () => {
+    const { http } = await start(stubLead());
+    // 旧版 Companion 不带 grouping=1：收到原来的形状，它的严格 schema 照样接受。
+    const legacy = await http("GET", "/v1/models/settings");
+    expect(Value.Check(LegacyModelSettingsResponseSchema, legacy.body)).toBe(true);
+    expect(legacy.body.modelSettings.brain.providers[0].models[0]).not.toHaveProperty("group");
+
+    const read = await http("GET", "/v1/models/settings?grouping=1");
+    expect(Value.Check(ModelSettingsDtoSchema, read.body.modelSettings)).toBe(true);
+    expect(Value.Check(LegacyModelSettingsResponseSchema, read.body)).toBe(false);
+    const provider = () => read.body.modelSettings.brain.providers[0];
+    expect(provider()).toMatchObject({ accountPrefix: null, accountPrefixActive: false, capabilities: "auto", catalog: "plain" });
+    expect(provider().models.map((model: any) => [model.id, model.group, model.source])).toEqual([
+      ["as4/claude-sonnet-5-5", null, "anthropic"],
+      ["claude-sonnet-5", null, "anthropic"],
+      ["gemini-3.8-flash-high", null, "antigravity"],
+    ]);
+
+    const saved = await http(...act("save_provider", {
+      name: "vibeproxy", baseUrl: vibeproxyUrl, api: "openai-completions", accountPrefix: true, capabilities: "plain",
+    }));
+    expect(saved.status).toBe(200);
+    expect(config().lead.providers.vibeproxy).toMatchObject({ accountPrefix: true, capabilities: "plain" });
+    const after = await http("GET", "/v1/models/settings?grouping=1");
+    expect(after.body.modelSettings.brain.providers[0]).toMatchObject({ accountPrefix: true, accountPrefixActive: true, capabilities: "plain" });
+    expect(after.body.modelSettings.brain.providers[0].models.find((model: any) => model.id === "as4/claude-sonnet-5-5").group).toBe("as4");
+
+    // 恢复缺省：从 config 里删掉。
+    await http(...act("save_provider", { name: "vibeproxy", baseUrl: vibeproxyUrl, api: "openai-completions", accountPrefix: null, capabilities: "auto" }));
+    expect(config().lead.providers.vibeproxy.accountPrefix).toBeUndefined();
+    expect(config().lead.providers.vibeproxy.capabilities).toBeUndefined();
   });
 });

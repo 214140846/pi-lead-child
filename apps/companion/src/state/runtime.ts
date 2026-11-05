@@ -52,6 +52,8 @@ import type {
   RuntimeSettingsRequest,
   LeadProfileDto,
   LeadProfileRequest,
+  HostBypassDto,
+  HostBypassMinutes,
   LeadAvatarDto,
   LeadAvatarSlackEmojiRequest,
   LeadAvatarSlot,
@@ -205,6 +207,7 @@ export type CompanionTransport = Pick<
   | 'getDecisionModel' | 'updateDecisionModel' | 'testDecisionModel' | 'getModelSettings' | 'getSetup' | 'getWidgets'
   | 'getRuntimeSettings' | 'updateRuntimeSettings'
   | 'getLeadProfile' | 'updateLeadProfile'
+  | 'getHostBypass' | 'enableHostBypass' | 'disableHostBypass'
   | 'getLeadAvatar' | 'getLeadAvatarImage' | 'uploadLeadAvatarSlot' | 'clearLeadAvatarSlot' | 'setLeadAvatarSlackEmoji' | 'previewSlackEmoji'
   | 'getDesignPreferences' | 'updateDesignPreferences'
   | 'getChannelSettings' | 'testChannelSecrets' | 'saveChannelSecrets' | 'clearChannelSecrets' | 'getChannelConnection'
@@ -1456,6 +1459,20 @@ export class CompanionStateRuntime {
     return leadProfile;
   }
 
+  // 「用户本人发话时免沙箱」（设置 → 免沙箱，工单 #246）：打开、关掉。改完马上换成 daemon 回的值；网关之后的
+  // snapshot.required（resource 是 host-bypass）也会触发重取。失败时抛出，原因是 daemon 写的那句话。
+  async enableHostBypass(minutes: HostBypassMinutes): Promise<HostBypassDto> {
+    const hostBypass = await this.memoryClient('enableHostBypass')({ minutes });
+    this.control.setState({ hostBypass });
+    return hostBypass;
+  }
+
+  async disableHostBypass(): Promise<HostBypassDto> {
+    const hostBypass = await this.memoryClient('disableHostBypass')();
+    this.control.setState({ hostBypass });
+    return hostBypass;
+  }
+
   // 设置页的「形象」：上传、去掉一种状态的图，改 Slack 署名的 emoji。改完马上换成 daemon 回的值，再取新图。
   async uploadLeadAvatarSlot(slot: LeadAvatarSlot, request: LeadAvatarUploadRequest): Promise<LeadAvatarDto> {
     return this.applyLeadAvatar(await this.memoryClient('uploadLeadAvatarSlot')(slot, request));
@@ -2008,6 +2025,10 @@ export class CompanionStateRuntime {
       if (typeof this.dependencies.client.getLeadProfile === 'function') {
         tasks.push(this.ensureResource(RESOURCE_KEYS.leadProfile, false).catch(() => {}));
       }
+      // 免沙箱开关：开着时输入框上方要画标记，连上就取。旧 daemon 没有这个接口时当作关着。
+      if (typeof this.dependencies.client.getHostBypass === 'function') {
+        tasks.push(this.ensureResource(RESOURCE_KEYS.hostBypass, false).catch(() => {}));
+      }
       // 外观偏好：连上就取，界面按它画。旧 daemon 没有这个接口时用缺省值。
       if (typeof this.dependencies.client.getDesignPreferences === 'function') {
         tasks.push(this.ensureResource(RESOURCE_KEYS.designPreferences, false).catch(() => {}));
@@ -2415,6 +2436,10 @@ export class CompanionStateRuntime {
         if (!canCommit()) return;
         rememberLeadName(value.name);
         this.control.setState({ leadProfile: value });
+      } else if (key === RESOURCE_KEYS.hostBypass) {
+        const value = await this.memoryClient('getHostBypass')(signal);
+        if (!canCommit()) return;
+        this.control.setState({ hostBypass: value });
       } else if (key === RESOURCE_KEYS.leadAvatar) {
         const value = await this.memoryClient('getLeadAvatar')(signal);
         if (!canCommit()) return;
@@ -2633,6 +2658,9 @@ export class CompanionStateRuntime {
     if (key === RESOURCE_KEYS.leadProfile) {
       return this.scopes.has('tickets:view') && typeof this.dependencies.client.getLeadProfile === 'function';
     }
+    if (key === RESOURCE_KEYS.hostBypass) {
+      return this.scopes.has('tickets:view') && typeof this.dependencies.client.getHostBypass === 'function';
+    }
     if (key === RESOURCE_KEYS.leadAvatar) {
       return this.scopes.has('tickets:view') && this.capabilities.has(LEAD_AVATAR_CAPABILITY)
         && typeof this.dependencies.client.getLeadAvatar === 'function';
@@ -2751,7 +2779,7 @@ export class CompanionStateRuntime {
     }
     if (keys.includes('core')) {
       // lead-profile：界面上处处要用 Lead 的名字，连上就取（不是懒加载的资源）。
-      for (const key of ['overview', 'tickets', 'projects', 'approvals', 'notifications', 'conversation:current', 'lead-profile', 'lead-avatar', 'design-preferences'] as ResourceKey[]) {
+      for (const key of ['overview', 'tickets', 'projects', 'approvals', 'notifications', 'conversation:current', 'lead-profile', 'lead-avatar', 'host-bypass', 'design-preferences'] as ResourceKey[]) {
         expanded.add(key);
       }
       if (this.currentAgendaScope) expanded.add(this.currentAgendaScope.key);
@@ -2882,6 +2910,7 @@ type MemoryClientMethod =
   | 'getDecisionModel' | 'updateDecisionModel' | 'testDecisionModel' | 'getModelSettings' | 'getSetup' | 'getWidgets'
   | 'getRuntimeSettings' | 'updateRuntimeSettings'
   | 'getLeadProfile' | 'updateLeadProfile'
+  | 'getHostBypass' | 'enableHostBypass' | 'disableHostBypass'
   | 'getLeadAvatar' | 'getLeadAvatarImage' | 'uploadLeadAvatarSlot' | 'clearLeadAvatarSlot' | 'setLeadAvatarSlackEmoji' | 'previewSlackEmoji'
   | 'getDesignPreferences' | 'updateDesignPreferences';
 

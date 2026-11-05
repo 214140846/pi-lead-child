@@ -18,6 +18,10 @@ const Nullable = <T extends ReturnType<typeof Type.String>>(schema: T) => Type.U
 const Literals = <T extends readonly string[]>(values: T) =>
   Type.Unsafe<T[number]>(Type.Union(values.map((value) => Type.Literal(value))));
 
+// 派单器开工单的那笔事务里记的活动（kind=decision，payload.decision 是它）：来源、发起人、通道卡。daemon 写，store 读
+// （agent-task-origin.ts：外部消息派的执行要的审批只有用户本人能批）。
+export const AGENT_TASK_STARTED = "agent_task_started";
+
 export const AGENT_TASK_LIMITS = {
   summaryChars: 1_000,
   messageChars: 8_000,

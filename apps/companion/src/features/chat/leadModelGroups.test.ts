@@ -3,55 +3,62 @@ import { describe, expect, it } from 'vitest';
 
 import { effortForModel, groupLeadModels, leadModelLabel } from './leadModelGroups';
 
-function option(model: string, source: string | null, efforts: string[] = []): LeadModelOption {
+// prefix 是 daemon 给的账号（group）：只有服务商的 accountPrefix 生效时才有。
+function option(model: string, source: string | null, efforts: string[] = [], prefix: string | null = null): LeadModelOption {
   const provider = model.slice(0, model.indexOf('/'));
   const id = model.slice(provider.length + 1);
-  const slash = id.indexOf('/');
   return {
-    model, provider, id, prefix: slash > 0 ? id.slice(0, slash) : null, source, name: null,
+    model, provider, id, prefix, source, name: null,
     image: true, efforts, defaultEffort: null, blockedUntil: null,
   };
 }
 
 // 2026-10-26：用户有两个 Anthropic 账号，在 vibeproxy 里加了前缀 as1、as4。选模型时要分得清。
+// 2026-11-05：分组换成和设置页共用的规则（provider → group · channel）。
 describe('groupLeadModels', () => {
-  it('puts each account prefix in its own group first, then the pooled and other sources', () => {
+  it('puts each account in its own section first, in numeric order, then the sections without an account', () => {
     const groups = groupLeadModels([
       option('vibeproxy/claude-sonnet-5', 'anthropic'),
       option('vibeproxy/gemini-3.8-flash-high', 'antigravity'),
-      option('vibeproxy/as4/claude-sonnet-5', 'anthropic'),
-      option('vibeproxy/as1/claude-sonnet-5', 'anthropic'),
-      option('vibeproxy/as1/claude-opus-5-5', 'anthropic'),
-      option('vibeproxy/as10/claude-opus-5-5', 'anthropic'),
-    ], 'en');
+      option('vibeproxy/as4/claude-sonnet-5', 'anthropic', [], 'as4'),
+      option('vibeproxy/as1/claude-sonnet-5', 'anthropic', [], 'as1'),
+      option('vibeproxy/as1/claude-opus-5-5', 'anthropic', [], 'as1'),
+      option('vibeproxy/as10/claude-opus-5-5', 'anthropic', [], 'as10'),
+    ]);
     expect(groups.map((group) => [group.title, group.models.map((model) => model.id)])).toEqual([
-      ['as1 · Anthropic', ['as1/claude-sonnet-5', 'as1/claude-opus-5-5']],
-      ['as4 · Anthropic', ['as4/claude-sonnet-5']],
-      ['as10 · Anthropic', ['as10/claude-opus-5-5']],
-      ['Anthropic · Any account', ['claude-sonnet-5']],
-      ['Antigravity', ['gemini-3.8-flash-high']],
+      ['as1 · anthropic', ['as1/claude-sonnet-5', 'as1/claude-opus-5-5']],
+      ['as4 · anthropic', ['as4/claude-sonnet-5']],
+      ['as10 · anthropic', ['as10/claude-opus-5-5']],
+      ['anthropic', ['claude-sonnet-5']],
+      ['antigravity', ['gemini-3.8-flash-high']],
     ]);
   });
 
-  it('names the provider when there is more than one, and does not call a lone source pooled', () => {
+  it('names the provider when there is more than one, and does not treat a prefix as an account without the daemon saying so', () => {
     const groups = groupLeadModels([
-      option('vibeproxy/claude-sonnet-5', 'anthropic'),
-      option('openrouter/gpt-6', null),
-    ], 'en');
-    expect(groups.map((group) => group.title)).toEqual(['vibeproxy · Anthropic', 'openrouter · Other']);
+      option('vibeproxy/as1/claude-sonnet-5', 'anthropic', [], 'as1'),
+      option('magpie/auto/deepseek-flash', 'deepseek'),
+      option('magpie/deepseek/deepseek-flash', 'deepseek'),
+    ]);
+    expect(groups.map((group) => [group.title, group.models.map((model) => model.id)])).toEqual([
+      ['vibeproxy · as1', ['as1/claude-sonnet-5']],
+      ['magpie', ['auto/deepseek-flash', 'deepseek/deepseek-flash']],
+    ]);
   });
 });
 
 describe('leadModelLabel', () => {
-  it('shows the bare model id and the effort, without the provider or the account prefix', () => {
-    expect(leadModelLabel('vibeproxy/as4/claude-sonnet-5(high)')).toEqual({ id: 'claude-sonnet-5', effort: 'high' });
+  it('shows the model id without the provider, drops the account only when it is known, and shows the effort', () => {
+    expect(leadModelLabel('vibeproxy/as4/claude-sonnet-5(high)', 'as4')).toEqual({ id: 'claude-sonnet-5', effort: 'high' });
     expect(leadModelLabel('vibeproxy/gemini-3.8-flash-high')).toEqual({ id: 'gemini-3.8-flash-high', effort: null });
+    // 前缀不是账号的两个同名模型：显示名分得开。
+    expect(leadModelLabel('magpie/auto/deepseek-flash').id).not.toBe(leadModelLabel('magpie/deepseek/deepseek-flash').id);
   });
 });
 
 describe('effortForModel', () => {
   it('keeps the effort when the new model supports it, and uses the model default otherwise', () => {
-    expect(effortForModel(option('vibeproxy/as4/claude-sonnet-5', 'anthropic', ['low', 'high']), 'high')).toBe('high');
+    expect(effortForModel(option('vibeproxy/as4/claude-sonnet-5', 'anthropic', ['low', 'high'], 'as4'), 'high')).toBe('high');
     expect(effortForModel(option('vibeproxy/gemini-3.8-flash-high', 'antigravity'), 'high')).toBeNull();
   });
 });

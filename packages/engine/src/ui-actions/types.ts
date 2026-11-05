@@ -85,6 +85,9 @@ export interface UiActionServices {
   installs?: InstallServices;
   // 来源的连接方式（daemon 的通道设置，2026-11-02）：登录、换方式、「代你往来源里写」开关。通道接好以后才有。
   channelConnections?: ChannelConnectionService;
+  // 「用户本人发话时免沙箱」到点的定时器（daemon 的 host-bypass-clock.ts）。开、关以后告诉它，它按新的 until 重新排。
+  // 没有时（测试）到点照样不生效（读的时候比较 until），只是 kv 要等下一次读写才置关。
+  hostBypassClock?: { changed(): void };
 }
 
 /** 一个来源的连接方式现在的样子（没有密钥）。 */
@@ -349,9 +352,11 @@ export interface UiActionDefinition<T = any, I = any> {
   // 谁能做。多数是固定的；有的按目标现在的状态算（例如启用：Lead 停用的 Lead 自己能启用），那时 permissionNote 写给 Lead 看。
   permission: ActionPermission | ((target: T, env: UiActionEnv) => ActionPermission);
   permissionNote?: string;
-  // 只属于用户的这个操作仍然只认用户本人这一轮（ui-actions/authority.ts 第 5 条），例如 child 的审批。
+  // 只属于用户的这个操作仍然只认用户本人这一轮（ui-actions/authority.ts 第 5 条），例如代回复风格。
   // 别的 Lead 在哪一轮都能做。加它之前先问用户。
-  userTurnOnly?: boolean;
+  // 按目标算时返回一句话（不带句号），写给 Lead 看：为什么这一次要用户本人；返回 null 表示这次不受限。例如外部消息派的执行
+  // 要的审批（工单 #246 第 6 节）。这时用户本人正在说话的一轮读过外部内容也不例外（拒绝，带确认卡）。
+  userTurnOnly?: boolean | ((target: T, env: UiActionEnv) => string | null);
   // 改规则的操作（external-content.ts）：授权表、投递规则（常设指令）、连接配置、设置页的选项。外部的一轮里 Lead 做不了。
   // 每个操作都要写明。新加的操作属于这几类时写 true。
   changesRules: boolean;
@@ -412,6 +417,16 @@ export function uiIrreversibleOf<T>(definition: Pick<UiActionDefinition<T>, "irr
 export function uiPermissionOf<T>(definition: Pick<UiActionDefinition<T>, "permission">, target: T, env: UiActionEnv): ActionPermission {
   return typeof definition.permission === "string" ? definition.permission : definition.permission(target, env);
 }
+/** 这一次是不是只认用户本人这一轮，和给 Lead 的原因（按目标算的那句；定义里写 true 时为 null）。 */
+export function uiUserTurnOnlyOf<T>(
+  definition: Pick<UiActionDefinition<T>, "userTurnOnly">, target: T, env: UiActionEnv,
+): { on: boolean; why: string | null } {
+  const value = definition.userTurnOnly;
+  if (typeof value !== "function") return { on: value === true, why: null };
+  const why = value(target, env);
+  return { on: why !== null, why };
+}
+
 
 // Lead 被拒时拿到的结构化拒绝：哪个操作、为什么、用户去哪里点。
 export interface UiActionRefusal {

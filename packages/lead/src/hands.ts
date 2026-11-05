@@ -10,18 +10,25 @@
 // 子 agent，结果交回 Lead 审核。拒绝写明这是能力缺口，并给出下一条路（D11、D13）。
 // 只读了连接结果（例如用户自己 PR 的 CI 状态）的一轮、用户本人正在说话的一轮照用（用户 2026-10-29：「起码要让 lead agent
 // 有能力处理」）：命令在沙箱里跑，沙箱挡住凭证和逃出去的路，它才是边界。
+// 免沙箱（docs/ticket-246-user-turn-bypass.md，实施单 C）：开关开着、用户本人正在发话、这一轮没读过外部内容、命令过了
+// 筛查器时，这一次 bash 在沙箱外跑（engine 的 hostBashOperations），结果开头写「（沙箱外）」。每次调用重新判断
+// （hostCommandRoute）。开关开着但这一次退回沙箱时，结果开头写原因；开关关着时什么都不加，和以前一样。
 import { mkdirSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { createBashToolDefinition, type BashOperations, type ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { sandboxPolicy, sandboxPolicyAsync, sandboxToolNote, sandboxWriteBlocker, type SandboxPolicy } from "@pi-lead-child/core";
-import { sandboxedBashOperations } from "@pi-lead-child/engine";
+import {
+  copyScreenedScripts, hostBashOperations, newHostCommandId, sandboxedBashOperations, screenHostCommand, screenReason,
+  type HostCommandRecord,
+} from "@pi-lead-child/engine";
+import type { HostCommandVia } from "@pi-lead-child/protocol";
 import type { Db } from "@pi-lead-child/store";
 import { credentialPathReason, resolveLikePi } from "./credential-guard.js";
 import { tildeHome } from "./home-paths.js";
 import { isLiveUserTurn } from "@pi-lead-child/engine";
-import { authorityTurnId, type LeadTurnOrigin } from "./turn-origin.js";
+import { authorityTurnId, hostBypassActive, type LeadTurnOrigin, type TurnOriginDeps } from "./turn-origin.js";
 
 export const LEAD_HAND_TOOLS = ["bash", "edit", "write"] as const;
 export const LEAD_CODEMODE_TOOL = "codemode";
@@ -89,6 +96,59 @@ export function leadWriteRefusal(path: string, options: { cwd: string; home: str
   return blocker ? `${blocker}（底线）。` : null;
 }
 
+/** 在沙箱外跑的命令，工具结果开头写这一句（设计文档 5.3）。会话里的工具行据此加标记。 */
+export const HOST_RUN_MARK = "（沙箱外）";
+
+/** 开关开着、这一次却退回了沙箱时，工具结果开头写的话。 */
+export function sandboxFallbackNote(why: string): string {
+  return `（沙箱里：免沙箱开着，但这一次没有用——${why}）`;
+}
+
+export type HostCommandRoute =
+  // 在沙箱外跑。run 是真正跑的命令（脚本换成筛查过的副本），record 写进 host_command.started。
+  | { route: "host"; run: string; record: Omit<HostCommandRecord, "cwd" | "timeoutSeconds"> }
+  // 照旧：bash 在沙箱里跑，run_on_host 发确认卡。why 是开关开着时这一次没有免沙箱的原因；开关关着时为 null。
+  | { route: "sandbox"; why: string | null };
+
+type HostCommandRouteInput = {
+  command: string; cwd: string; via: HostCommandVia; spendsMoney: boolean; dataDir: string; home?: string; now?: Date;
+};
+
+/**
+ * 这一条命令在哪里跑（设计文档 3.1、第 4 节）：hostBypassActive 说能免沙箱，而且筛查器说 allow，才在沙箱外跑。
+ * 筛查器的 floor 和 unknown 都退回今天的做法。bash 和 run_on_host 都用它，每次调用都重新算。判断本身出错时也退回。
+ */
+export function hostCommandRoute(db: Db, deps: TurnOriginDeps, input: HostCommandRouteInput): HostCommandRoute {
+  try {
+    return routeOf(db, deps, input);
+  } catch (error) {
+    return { route: "sandbox", why: `判断能不能免沙箱时出错（${error instanceof Error ? error.message : String(error)}）` };
+  }
+}
+
+function routeOf(db: Db, deps: TurnOriginDeps, input: HostCommandRouteInput): HostCommandRoute {
+  const decision = hostBypassActive(db, deps, input.now);
+  if (!decision.active) return { route: "sandbox", why: decision.why };
+  const home = input.home ?? homedir();
+  const screen = screenHostCommand({
+    command: input.command, cwd: input.cwd, allowedRoots: leadWritableRoots(db, input.dataDir), dataDir: input.dataDir, home,
+    spendsMoney: input.spendsMoney,
+    credentialPathReason: (path, context) => credentialPathReason(path, context),
+  });
+  if (screen.verdict !== "allow") {
+    const reason = screenReason(screen, "zh") ?? screen.rule ?? screen.verdict;
+    return { route: "sandbox", why: `命令筛查没有放行（${screen.verdict}）：${reason}` };
+  }
+  return {
+    route: "host",
+    run: screen.scripts.length ? copyScreenedScripts(input.command, screen.scripts, tmpdir()) : input.command,
+    record: {
+      id: newHostCommandId(), turnId: decision.turnId, turnOrigin: decision.turnOrigin, via: input.via, confirmationId: null,
+      command: input.command, screen: { verdict: screen.verdict, rule: screen.rule }, spendsMoney: input.spendsMoney,
+    },
+  };
+}
+
 /**
  * Lead 的 bash 不填 timeout 时的时限（秒）。pi 的 bash 缺省不设时限：2026-11-03 Lead 在仓库根目录跑了一条 grep -r，
  * 扫进了几十个工作树的 node_modules，15 分钟没有结束，这一轮一直停在 Running。要跑更久的命令，模型自己填 timeout。
@@ -114,6 +174,14 @@ export interface LeadHandsOptions {
   bashTimeoutSeconds?: number;
 }
 
+/** 工具结果的第一段文字前面加一句。 */
+function withLeadingNote<T extends { content: Array<{ type: string; text?: string }> }>(result: T, note: string): T {
+  const index = result.content.findIndex((part) => part.type === "text");
+  if (index < 0) return { ...result, content: [{ type: "text", text: note }, ...result.content] };
+  const content = result.content.map((part, at) => (at === index ? { ...part, text: `${note}\n${part.text ?? ""}` } : part));
+  return { ...result, content };
+}
+
 /** pi 扩展：沙箱里的 bash（替换 pi 内置的），以及三个动手工具的检查。 */
 export function leadHandsExtension(options: LeadHandsOptions): ExtensionFactory {
   const scratch = leadScratchDir(options.dataDir);
@@ -121,9 +189,8 @@ export function leadHandsExtension(options: LeadHandsOptions): ExtensionFactory 
   const timeoutSeconds = options.bashTimeoutSeconds ?? LEAD_BASH_DEFAULT_TIMEOUT_SECONDS;
   return (pi) => {
     mkdirSync(scratch, { recursive: true, mode: 0o700 });
-    const bash = createBashToolDefinition(scratch, {
-      operations: withDefaultTimeout(sandboxedBashOperations(() => leadSandboxPolicyAsync(options.db, options.dataDir)), timeoutSeconds),
-    });
+    const sandboxed = sandboxedBashOperations(() => leadSandboxPolicyAsync(options.db, options.dataDir));
+    const bash = createBashToolDefinition(scratch, { operations: withDefaultTimeout(sandboxed, timeoutSeconds) });
     pi.registerTool({
       ...bash,
       // pi 的参数说明写着「没有缺省时限」：换成 Lead 的缺省，模型才知道长命令要自己填。
@@ -132,7 +199,37 @@ export function leadHandsExtension(options: LeadHandsOptions): ExtensionFactory 
         timeout: Type.Optional(Type.Number({
           description: `Timeout in seconds. Without it, the command stops after ${timeoutSeconds} seconds.`,
         })),
+        spends_money: Type.Optional(Type.Boolean({
+          description: "true when you think the command spends money (cloud resources, paid APIs, deploys).",
+        })),
       }),
+      // 每次调用按这一次的命令和目录选沙箱或主机（hostCommandRoute）。pi 的 bash 工具照旧管输出、截断和错误写法。
+      async execute(toolCallId, params, signal, onUpdate, ctx) {
+        let note: string | null = null;
+        const routed: BashOperations = {
+          exec: (command, cwd, run) => {
+            const route = hostCommandRoute(options.db, options, {
+              command, cwd, via: "bash", spendsMoney: (params as { spends_money?: unknown }).spends_money === true,
+              dataDir: options.dataDir, home,
+            });
+            if (route.route === "sandbox") {
+              note = route.why ? sandboxFallbackNote(route.why) : null;
+              return sandboxed.exec(command, cwd, run);
+            }
+            note = HOST_RUN_MARK;
+            options.log?.(`[lead] bash runs outside the sandbox (${route.record.id})`);
+            return hostBashOperations(options.db, { record: route.record, dataDir: options.dataDir }).exec(route.run, cwd, run);
+          },
+        };
+        const call = createBashToolDefinition(scratch, { operations: withDefaultTimeout(routed, timeoutSeconds) });
+        try {
+          const result = await call.execute(toolCallId, params, signal, onUpdate, ctx);
+          return note ? withLeadingNote(result, note) : result;
+        } catch (error) {
+          if (!note || !(error instanceof Error)) throw error;
+          throw new Error(`${note}\n${error.message}`);
+        }
+      },
       // 工具说明每一轮都发给模型服务商：用户目录写成 ~（home-paths.ts，用户 2026-10-30）。
       description: tildeHome(`${bash.description}\n工作目录是 ${scratch}。`
         + `不填 timeout 时，命令跑到 ${timeoutSeconds} 秒就结束；要跑更久的命令（装依赖、跑测试）自己填 timeout。`

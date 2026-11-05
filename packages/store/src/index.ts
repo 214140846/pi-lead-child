@@ -1,5 +1,6 @@
 // @pi-lead-child/store 的公开 API。其他包只能从这里引用本包。
 export * from "./activities.js";
+export * from "./agent-task-origin.js";
 export * from "./approvals.js";
 export * from "./artifacts.js";
 export * from "./attention.js";
@@ -77,6 +78,7 @@ export * from "./lead-profile.js";
 export * from "./lead-avatar.js";
 export * from "./design-preferences.js";
 export * from "./reply-style.js";
+export * from "./host-bypass.js";
 export * from "./channel-connections.js";
 export * from "./channel-catch-up.js";
 export * from "./security-alerts.js";

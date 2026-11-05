@@ -9,22 +9,27 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderWithRuntime, setViewportWidth } from '../../../test/connections';
 import { createCompanionStateRuntime, type CompanionRuntimeDependencies } from '../../state/runtime';
 import { ModelSection } from './ModelSection';
-import { backupsLeft, brainRoles, contextLabel, providerGroup, releaseLabel, untilLabel, withSlot } from './modelSettingsModel';
+import { brainPickerGroups } from './ModelPicker';
+import { backupsLeft, brainModelName, brainRoles, contextLabel, providerGroup, releaseLabel, untilLabel, withSlot } from './modelSettingsModel';
 
 vi.mock('expo-crypto', () => ({ getRandomBytesAsync: vi.fn(), digest: vi.fn(), CryptoDigestAlgorithm: {} }));
 vi.mock('expo-router', () => ({ useRouter: () => ({ push: vi.fn(), replace: vi.fn() }), usePathname: () => '/settings/model', Slot: () => null, Stack: () => null }));
 
 const day = (n: number) => new Date(Date.UTC(2026, 9, n)).toISOString();
 
+// group、source 照 daemon 给的写：vibeproxy 读到了详细目录，as4/ 是账号；通道是 owned_by。
 function model(id: string, at: string | null, extra: Partial<BrainModel> = {}, provider = 'vibeproxy'): BrainModel {
+  const source = provider === 'vibeproxy' ? (id.includes('gemini') ? 'antigravity' : 'anthropic') : provider;
   return {
     model: `${provider}/${id}`, id, name: null, image: true, contextWindow: 500_000, efforts: [], defaultEffort: null,
-    released: at ? { at, source: 'provider' } : null, blockedUntil: null, ...extra,
+    released: at ? { at, source: 'provider' } : null, blockedUntil: null,
+    group: provider === 'vibeproxy' && id.startsWith('as4/') ? 'as4' : null, source, ...extra,
   };
 }
 
 const vibeproxy: ModelProvider = {
   name: 'vibeproxy', baseUrl: 'http://127.0.0.1:8317/v1', api: 'openai-completions', keySet: false, keySource: null, keyHost: null, problem: null,
+  accountPrefix: null, accountPrefixActive: true, capabilities: 'auto', catalog: 'detailed',
   models: [
     model('as4/claude-sonnet-5-5', day(14), { name: 'Claude Sonnet 5.5' }),
     model('claude-sonnet-5-5', day(14), { name: 'Claude Sonnet 5.5' }),
@@ -37,6 +42,7 @@ const vibeproxy: ModelProvider = {
 };
 const openai: ModelProvider = {
   name: 'openai', baseUrl: 'https://api.openai.com/v1', api: 'openai-completions', keySet: true, keySource: 'settings', keyHost: 'api.openai.com', problem: null,
+  accountPrefix: null, accountPrefixActive: false, capabilities: 'auto', catalog: 'plain',
   models: [model('gpt-5.5', day(2), {}, 'openai'), model('gpt-5', '2025-08-07T00:00:00.000Z', {}, 'openai')],
 };
 
@@ -241,7 +247,10 @@ describe('the model library', () => {
     expect(screen.getByTestId('model-row-vibeproxy/as4/claude-sonnet-5-5').textContent).toContain('Primary');
     expect(screen.getByTestId('model-row-vibeproxy/as4/claude-haiku-5-5').textContent).toContain('Intuition fallback');
     expect(screen.queryByTestId('model-row-openai/gpt-5.5')).toBeNull();
-    expect(screen.getByTestId('model-provider-sub-openai').textContent).toBe('api.openai.com · OpenAI compatible · Key is set · 2 models · Latest 2026-10-02');
+    expect(screen.getByTestId('model-provider-sub-openai').textContent).toBe('OpenAI compatible · Key is set · 2 models · Latest 2026-10-02');
+    // 服务商一行不写地址（地址在「设置」里）；按账号分组的写出来。
+    expect(screen.getByTestId('model-provider-sub-vibeproxy').textContent).not.toContain('127.0.0.1');
+    expect(screen.getByTestId('model-provider-sub-vibeproxy').textContent).toContain('Grouped by account');
     expect(screen.queryByTestId('model-row-vibeproxy/claude-3-7-sonnet')).toBeNull();
     fireEvent.click(screen.getByTestId('model-provider-more-vibeproxy'));
     expect(screen.getByTestId('model-row-vibeproxy/claude-3-7-sonnet')).toBeTruthy();
@@ -321,5 +330,86 @@ describe('the model library', () => {
     fireEvent.change(screen.getByTestId('model-fast-url'), { target: { value: 'https://jev2.example.com' } });
     expect(screen.getByTestId('model-fast-host-change').textContent).toContain('The saved key belongs to jev.example.com');
     expect(screen.getByTestId('model-fast-data-note').textContent).toContain('to jev.example.com');
+  });
+});
+
+// Lead 模型分组（用户 2026-11-05，原型 docs/prototypes/model-grouping 的设置页）。
+const magpie: ModelProvider = {
+  name: 'magpie', baseUrl: 'https://magpie.example.com/v1', api: 'openai-completions', keySet: true, keySource: 'settings', keyHost: 'magpie.example.com',
+  problem: null, accountPrefix: null, accountPrefixActive: false, capabilities: 'auto', catalog: 'plain',
+  models: [
+    model('auto/deepseek-flash', day(3), {}, 'magpie'),
+    model('deepseek/deepseek-flash', day(2), {}, 'magpie'),
+    { ...model('bailian/qwen-max', day(1), {}, 'magpie'), source: 'bailian-token-plan' },
+  ].map((entry) => ({ ...entry, source: entry.source === 'magpie' ? 'deepseek' : entry.source })),
+};
+
+describe('grouping by account and channel', () => {
+  const groupTitles = (dto: ModelSettingsDto) => brainPickerGroups(dto, { search: '', showAll: new Set(), slot: -1, selected: null, onPick: () => {} })
+    .map((group) => [group.title, group.options.map((option) => option.key)]);
+
+  it('titles the dropdown sections provider · group · channel when there is more than one provider', () => {
+    expect(groupTitles(settings({ providers: [vibeproxy, magpie] }))).toEqual([
+      ['vibeproxy · as4 · anthropic', ['vibeproxy/as4/claude-sonnet-5-5', 'vibeproxy/as4/claude-haiku-5-5']],
+      // 每个服务商先露最新的 4 个和在用的：claude-sonnet-5 和更旧的收在「显示其余」里。
+      ['vibeproxy · anthropic', ['vibeproxy/claude-sonnet-5-5']],
+      ['vibeproxy · antigravity', ['vibeproxy/gemini-3.8-flash-high']],
+      ['magpie · deepseek', ['magpie/auto/deepseek-flash', 'magpie/deepseek/deepseek-flash']],
+      ['magpie · bailian-token-plan', ['magpie/bailian/qwen-max']],
+    ]);
+    // 只有一个服务商：标题不写它。
+    expect(groupTitles(settings({ providers: [vibeproxy] })).map(([title]) => title))
+      .toEqual(['as4 · anthropic', 'anthropic', 'antigravity']);
+  });
+
+  it('names a model with its account only when the daemon says the prefix is an account', () => {
+    const index = (provider: ModelProvider, id: string) => ({ provider, model: provider.models.find((entry) => entry.id === id)! });
+    expect(brainModelName('vibeproxy/as4/claude-sonnet-5-5', index(vibeproxy, 'as4/claude-sonnet-5-5'))).toBe('Claude Sonnet 5.5 · as4');
+    // magpie：前缀不是账号，没有显示名时写完整的 id，两个同名模型分得开。
+    expect(brainModelName('magpie/auto/deepseek-flash', index(magpie, 'auto/deepseek-flash'))).toBe('auto/deepseek-flash');
+    expect(brainModelName('magpie/deepseek/deepseek-flash', index(magpie, 'deepseek/deepseek-flash'))).toBe('deepseek/deepseek-flash');
+  });
+
+  it('uses the same sections in the brain dropdown, the intuition fallback dropdown and the library', async () => {
+    const { runtime } = modelRuntime(settings({ providers: [vibeproxy, magpie] }));
+    renderWithRuntime(<ModelSection />, runtime);
+    fireEvent.click(screen.getByTestId('model-brain-picker-0-open'));
+    expect(await screen.findByTestId('model-brain-picker-0-group-vibeproxy|as4|anthropic')).toBeTruthy();
+    expect(screen.getByTestId('model-brain-picker-0-group-magpie||deepseek').textContent).toContain('magpie · deepseek');
+    fireEvent.click(screen.getByTestId('model-brain-picker-0-open'));
+    fireEvent.click(screen.getByTestId('model-fallback-picker-open'));
+    expect(await screen.findByTestId('model-fallback-picker-group-magpie||bailian-token-plan')).toBeTruthy();
+    // 模型库：外层是服务商，里面的分段标题不再写服务商。
+    expect(screen.getByTestId('model-section-vibeproxy|as4|anthropic').textContent).toContain('as4 · anthropic');
+  });
+
+  it('changes accountPrefix and capabilities in Advanced and saves them with save_provider', async () => {
+    const { runtime, client } = modelRuntime(settings({ providers: [vibeproxy, magpie] }));
+    renderWithRuntime(<ModelSection />, runtime);
+    fireEvent.click(screen.getByTestId('model-provider-edit-magpie'));
+    expect(screen.getByTestId('model-provider-advanced').textContent).toContain('Prefix is account: no · capabilities: auto');
+    fireEvent.click(screen.getByTestId('model-provider-advanced-toggle'));
+    expect(screen.getByTestId('model-provider-advanced').textContent).toContain('only the plain catalog');
+    fireEvent.click(screen.getByTestId('model-provider-prefix'));
+    expect(screen.getByTestId('model-provider-advanced').textContent).toContain('You set this to "yes"');
+    fireEvent.click(screen.getByText('Configuration'));
+    await act(async () => { fireEvent.click(screen.getByTestId('model-provider-save')); });
+    expect(inputOf(client.performUiAction)).toEqual({
+      name: 'magpie', baseUrl: 'https://magpie.example.com/v1', api: 'openai-completions', accountPrefix: true, capabilities: 'config',
+    });
+  });
+
+  it('restores the default accountPrefix, and sends nothing extra when Advanced did not change', async () => {
+    const declared = { ...vibeproxy, accountPrefix: false, accountPrefixActive: false };
+    const { runtime, client } = modelRuntime(settings({ providers: [declared] }));
+    renderWithRuntime(<ModelSection />, runtime);
+    fireEvent.click(screen.getByTestId('model-provider-edit-vibeproxy'));
+    await act(async () => { fireEvent.click(screen.getByTestId('model-provider-save')); });
+    expect(inputOf(client.performUiAction)).toEqual({ name: 'vibeproxy', baseUrl: 'http://127.0.0.1:8317/v1', api: 'openai-completions' });
+    fireEvent.click(screen.getByTestId('model-provider-advanced-toggle'));
+    fireEvent.click(screen.getByTestId('model-provider-prefix-default'));
+    expect(screen.getByTestId('model-provider-advanced').textContent).toContain('returns the detailed catalog');
+    await act(async () => { fireEvent.click(screen.getByTestId('model-provider-save')); });
+    expect(inputOf(client.performUiAction, 1)).toMatchObject({ accountPrefix: null });
   });
 });

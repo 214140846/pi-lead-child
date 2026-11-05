@@ -53,7 +53,16 @@ export const ModelReleaseSchema = StrictObject({
 });
 export type ModelRelease = Static<typeof ModelReleaseSchema>;
 
+// 模型能力（能不能看图）从哪里读（packages/lead 的 LEAD_CAPABILITY_SOURCES）。auto：有详细目录读详细目录，没有时读普通目录。
+export const ModelCapabilitySourceSchema = Type.Union([
+  Type.Literal("auto"), Type.Literal("detailed"), Type.Literal("plain"), Type.Literal("config"),
+]);
+export type ModelCapabilitySource = Static<typeof ModelCapabilitySourceSchema>;
+
 // 服务商目录里的一个模型。
+//
+// 分组的字段（Lead 模型分组，2026-11-05）都是可选的，而且只在客户端要的时候才给（GET /v1/models/settings?grouping=1）：
+// 旧版 Companion 用严格的 schema 校验，多一个字段就整份拒收。它不带 grouping=1，收到的还是原来的样子（withoutModelGrouping）。
 export const BrainModelSchema = StrictObject({
   // provider/id，不带推理强度。分工里写的就是它。
   model: Type.String({ minLength: 3, maxLength: 300 }),
@@ -69,6 +78,10 @@ export const BrainModelSchema = StrictObject({
   released: Nullable(ModelReleaseSchema),
   // 额度用完、模型自动切换在跳过它，到这个时间（ISO）。没有时为 null。
   blockedUntil: Nullable(IsoTimeSchema),
+  // 账号：id 里第一个斜杠前的部分，只在服务商的 accountPrefix 生效时才有。没有时为 null。
+  group: Type.Optional(Nullable(Type.String({ minLength: 1, maxLength: 120 }))),
+  // 通道：目录的 owned_by（anthropic、antigravity、deepseek）。不知道时为 null。
+  source: Type.Optional(Nullable(Type.String({ minLength: 1, maxLength: 120 }))),
 });
 export type BrainModel = Static<typeof BrainModelSchema>;
 
@@ -84,6 +97,15 @@ export const ModelProviderSchema = StrictObject({
   models: Type.Array(BrainModelSchema, { maxItems: 2000 }),
   // 目录拉不到的原因。没问题时为 null。
   problem: Nullable(Type.String({ maxLength: 500 })),
+  // ── 分组（可选，只在 grouping=1 时给）──
+  // config.json 里写的 accountPrefix。null：没写，按缺省（读到了详细目录就当作是）。
+  accountPrefix: Type.Optional(Nullable(Type.Boolean())),
+  // accountPrefix 的生效值：模型按账号分组。
+  accountPrefixActive: Type.Optional(Type.Boolean()),
+  // config.json 里写的 capabilities。没写时是 auto。
+  capabilities: Type.Optional(ModelCapabilitySourceSchema),
+  // 读到了什么目录：detailed 是 CLIProxyAPI 的详细目录，plain 是普通的 OpenAI 目录，none 是没读到（只有 config 里写的）。
+  catalog: Type.Optional(Type.Union([Type.Literal("detailed"), Type.Literal("plain"), Type.Literal("none")])),
 });
 export type ModelProvider = Static<typeof ModelProviderSchema>;
 
@@ -130,6 +152,23 @@ export type ModelSettingsDto = Static<typeof ModelSettingsDtoSchema>;
 export const ModelSettingsResponseSchema = StrictObject({ modelSettings: ModelSettingsDtoSchema });
 export type ModelSettingsResponse = Static<typeof ModelSettingsResponseSchema>;
 
+// 客户端要分组字段时，GET /v1/models/settings 带的查询参数。
+export const MODEL_SETTINGS_GROUPING_QUERY = "grouping=1";
+
+/** 去掉分组的字段：给不带 grouping=1 的客户端（旧版 Companion 的严格 schema 不认这些字段）。 */
+export function withoutModelGrouping(dto: ModelSettingsDto): ModelSettingsDto {
+  return {
+    ...dto,
+    brain: {
+      ...dto.brain,
+      providers: dto.brain.providers.map(({ accountPrefix: _a, accountPrefixActive: _b, capabilities: _c, catalog: _d, ...provider }) => ({
+        ...provider,
+        models: provider.models.map(({ group: _g, source: _s, ...model }) => model),
+      })),
+    },
+  };
+}
+
 // ── 操作的输入（ui-actions.ts 的 model_settings）──────────────────────────────────
 
 export const SetBrainChainRequestSchema = StrictObject({
@@ -138,11 +177,14 @@ export const SetBrainChainRequestSchema = StrictObject({
 export type SetBrainChainRequest = Static<typeof SetBrainChainRequestSchema>;
 
 // 接入或修改一个服务商。apiKey：字符串是新的 key；null 删掉页面存的 key；不给时不变（换了主机时页面存的 key 删掉）。
+// accountPrefix、capabilities（「高级」）：不给时不变；accountPrefix 为 null、capabilities 为 auto 时回到缺省。
 export const SaveModelProviderRequestSchema = StrictObject({
   name: ModelProviderNameSchema,
   baseUrl: HttpUrlSchema,
   api: ModelProviderApiSchema,
   apiKey: Type.Optional(Nullable(ApiKeySchema)),
+  accountPrefix: Type.Optional(Nullable(Type.Boolean())),
+  capabilities: Type.Optional(ModelCapabilitySourceSchema),
 });
 export type SaveModelProviderRequest = Static<typeof SaveModelProviderRequestSchema>;
 

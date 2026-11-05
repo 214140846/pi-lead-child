@@ -6,13 +6,17 @@
 // 以前 Lead 的 resolve_approval（2026-10-28 删掉，现在是 perform_action）让 Lead 自报 channel，记成「user via <渠道>」，不查用户这一轮。
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { join } from "node:path";
+import { Value } from "typebox/value";
 import { tempDir } from "@pi-lead-child/core/testing";
 import { createCoordinator, updateDesignPreferences } from "@pi-lead-child/engine";
 import { createLeadTools } from "@pi-lead-child/lead";
-import { OWNER_ACTION_PERFORMED_KIND, UI_ACTION_PERFORMED_KIND } from "@pi-lead-child/protocol";
 import {
-  createItem, createLoopbackBinding, createRun, createTurn, getApproval, getItem, insertDecisionRequest, listEvents, openDb,
-  transition, type Db,
+  AGENT_TASK_STARTED, KernelInterventionListResponseSchema, OWNER_ACTION_PERFORMED_KIND, UI_ACTION_PERFORMED_KIND,
+  USER_PR_REVIEW_BOUND, computeRunGrant,
+} from "@pi-lead-child/protocol";
+import {
+  addActivity, createItem, createLoopbackBinding, createRun, createTurn, getApproval, getItem, insertDecisionRequest, insertRunGrant,
+  listEvents, openDb, transition, type Db,
 } from "@pi-lead-child/store";
 import { startDaemon } from "../src/server.js";
 
@@ -224,6 +228,88 @@ describe("approvals through the daemon", () => {
       [`decision:${forUser.id}`, "lead", "on_behalf"],
       [`decision:${forUserToo.id}`, "user", "user"],
     ]);
+  });
+});
+
+// 执行者的审批按派活的起因分（工单 #246 设计第 6 节、实施单 E）：外部消息派的执行要的审批只有用户本人能批。整条路走 daemon：
+// Fairy 的 perform_action、审批卡读的 GET /v1/kernel/interventions、用户在卡上点的 POST，最后重新打开数据库读回结果。
+describe("approvals of a run that an external message started, through the daemon", () => {
+  // Lead 的 perform_action，这一轮用 read_channel_conversation 读过 Slack。
+  const leadAfterSlack = (turnId: string | null) =>
+    createLeadTools({
+      db, dbPath, dataDir: dir, currentTurnId: () => turnId,
+      turnOrigin: () => ({ external: false, timer: null, externalBy: [{ via: "tool", tool: "read_channel_conversation" }] }),
+    }).find((tool: any) => tool.name === "perform_action") as any;
+  const approve = (tool: any, approvalId: number, reason: string) => tool.execute("t", {
+    target_type: "approval", target_id: String(approvalId), action: "resolve", input: { decision: "approve" }, reason,
+  }).then((result: any) => JSON.parse(result.content[0].text));
+
+  it("refuses Lead outside the user's turn, lets the user approve on the card, and keeps Lead's own PR review as before", async () => {
+    const { owner, post } = await boot();
+    // 派单器开的工单（agent-tasks.ts）：system 建、purpose=lookup、记 agent_task_started。
+    const external = createItem(db, { title: "slack 代码 review：Ethan 的请求", brief: "b", createdBy: "system", purpose: "lookup" });
+    const externalRun = createRun(db, { itemId: external, purpose: "lookup" });
+    addActivity(db, {
+      itemId: external, runId: externalRun, actor: "system", kind: "decision",
+      payload: { decision: AGENT_TASK_STARTED, intent: "code_review", source: "slack", requester: "Ethan", ref: "card:7" },
+    });
+    // 用户本人要的 PR 评审：有权限清单，没有 agent_task_started。
+    const review = createItem(db, { title: "评审 acme/x#12", brief: "b", createdBy: "lead" });
+    const reviewRun = createRun(db, { itemId: review });
+    const scope = { pullRequest: { owner: "acme", repo: "x", number: 12 }, reviewEvents: [] };
+    const { grant, dropped } = computeRunGrant({ intent: "code_review", scope, bound: USER_PR_REVIEW_BOUND, resolveLocalRepo: () => null, locale: "zh" });
+    insertRunGrant(db, { runId: reviewRun, itemId: review, grant, bound: USER_PR_REVIEW_BOUND, scope, dropped, actor: "system" });
+
+    const onCard = requestApproval(external, externalRun, "在 PR 上回复 Ethan").approvalId!;
+    const inTurn = requestApproval(external, externalRun, "在 PR 上再回一条").approvalId!;
+    const ownReview = requestApproval(review, reviewRun, "在 acme/x#12 上发评审").approvalId!;
+    db.prepare("UPDATE approvals SET created_at=datetime('now', '-60 seconds')").run();
+
+    // 审批卡读的数据：外部派的那两张带 externalOrigin，评审的不带；整份回答过客户端的校验。
+    const listed = await fetch(`http://127.0.0.1:${daemon!.pairedPort}/v1/kernel/interventions?state=pending`, {
+      headers: { authorization: `Bearer ${owner.accessToken}` },
+    }).then((response) => response.json() as Promise<any>);
+    expect(Value.Check(KernelInterventionListResponseSchema, listed)).toBe(true);
+    expect(Object.fromEntries(listed.items.map((entry: any) => [entry.id, entry.externalOrigin ?? null]))).toEqual({
+      [`approval:${onCard}`]: true, [`approval:${inTurn}`]: true, [`approval:${ownReview}`]: null,
+    });
+
+    // 1. 系统回合（不是用户的一轮）：Fairy 批外部派的，被拒，拒绝写明去哪里点。
+    const woken = await approve(leadTool("perform_action", null), onCard, "工单就是回 Ethan");
+    expect(woken).toMatchObject({
+      refused: true,
+      refusal: { code: "needs_user_turn", where: "会话里的审批卡、工单详情，或者 Slack 消息上的批准按钮" },
+    });
+    expect(woken.refusal.message).toContain("这次执行是 slack 上的外部消息派的（Ethan 的请求），要用户自己批");
+    // 2. 同一张，用户在审批卡上批：成功。
+    expect(await post(`/v1/kernel/interventions/approval:${onCard}/resolve`, { authority: "approval", decision: "approve" }))
+      .toEqual({ status: 200, body: { status: "resolved", interventionId: `approval:${onCard}` } });
+    // 3. 用户本人要的 PR 评审：Fairy 照旧自己批。
+    expect(await approve(leadTool("perform_action", null), ownReview, "用户要的评审")).toMatchObject({ authority: "lead" });
+
+    // 4. 用户本人正在说话的一轮：读过 Slack 时拒绝并带确认卡；同一轮没读过外部内容时代批。
+    createTurn(db, { id: "turn-user", originBindingId: owner.binding.id, originKind: "paired:companion", userText: "批了", state: "streaming" });
+    expect(await approve(leadAfterSlack("turn-user"), inTurn, "用户说批了")).toMatchObject({
+      refused: true, refusal: { code: "external_turn" }, user_action: { kind: "confirm_rule_change" },
+    });
+    expect(getApproval(db, inTurn)?.status).toBe("pending");
+    expect(await approve(leadTool("perform_action", "turn-user"), inTurn, "用户说批了"))
+      .toMatchObject({ authority: "on_behalf", on_behalf_of_turn: "turn-user" });
+
+    // 关掉 daemon，重新打开数据库，读回落盘的结果。
+    await daemon!.close();
+    daemon = null;
+    db.close();
+    const reader = openDb(dbPath);
+    expect(ledgerOf(reader, onCard)).toMatchObject({
+      status: "approved", resolvedBy: `user via paired binding:${owner.binding.id}`, activity: { actor: "user", decision: "approve" },
+    });
+    expect(ledgerOf(reader, inTurn)).toMatchObject({
+      status: "approved", resolvedBy: "lead for user via turn:turn-user",
+      activity: { actor: "lead", decision: "approve", onBehalfOf: "user", sourceTurnId: "turn-user" },
+    });
+    expect(ledgerOf(reader, ownReview)).toMatchObject({ status: "approved", resolvedBy: "lead", activity: { actor: "lead" } });
+    reader.close();
   });
 });
 

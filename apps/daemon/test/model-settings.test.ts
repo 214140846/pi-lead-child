@@ -85,6 +85,42 @@ async function expectRefused(promise: Promise<unknown>, code: string, message?: 
   if (message) expect((error as UiActionError).message).toMatch(message);
 }
 
+// Lead 模型分组（2026-11-05）：设置页的数据带 group、source 和服务商的「高级」。这台假的 vibeproxy 没有详细目录，
+// 所以 as4/ 先不算账号；「高级」里打开 accountPrefix 并保存以后，马上按账号分组。
+describe("ModelSettings: account groups and the advanced settings", () => {
+  it("fills group and source, and regroups at once after save_provider changes accountPrefix and capabilities", async () => {
+    const t = setup();
+    const before = await t.settings.get();
+    const provider = before.brain.providers[0]!;
+    expect(provider).toMatchObject({ accountPrefix: null, accountPrefixActive: false, capabilities: "auto", catalog: "plain" });
+    expect(provider.models.map((model) => [model.id, model.group, model.source])).toEqual([
+      ["as4/claude-sonnet-5-5", null, "anthropic"],
+      ["as4/claude-haiku-5-5", null, "anthropic"],
+      ["claude-sonnet-5", null, "anthropic"],
+      ["gemini-3.8-flash-high", null, "antigravity"],
+    ]);
+
+    await t.settings.saveProvider({
+      name: "vibeproxy", baseUrl: "http://127.0.0.1:8317/v1", api: "openai-completions", accountPrefix: true, capabilities: "config",
+    });
+    const raw = loadPlcConfig(t.dataDir).lead?.providers?.vibeproxy as Record<string, unknown>;
+    expect(raw).toMatchObject({ accountPrefix: true, capabilities: "config" });
+    const after = await t.settings.get();
+    expect(Value.Check(ModelSettingsDtoSchema, after)).toBe(true);
+    expect(after.brain.providers[0]).toMatchObject({ accountPrefix: true, accountPrefixActive: true, capabilities: "config" });
+    expect(after.brain.providers[0]!.models.map((model) => model.group)).toEqual(["as4", "as4", null, null]);
+
+    // 恢复缺省。
+    await t.settings.saveProvider({
+      name: "vibeproxy", baseUrl: "http://127.0.0.1:8317/v1", api: "openai-completions", accountPrefix: null, capabilities: "auto",
+    });
+    const reset = loadPlcConfig(t.dataDir).lead?.providers?.vibeproxy as Record<string, unknown>;
+    expect(reset.accountPrefix).toBeUndefined();
+    expect(reset.capabilities).toBeUndefined();
+    expect((await t.settings.get()).brain.providers[0]!.models.every((model) => model.group === null)).toBe(true);
+  });
+});
+
 describe("ModelSettings: the page's data", () => {
   it("lists each provider's catalog newest first, keeps unknown release dates last, and reads the old decision config as one entry", async () => {
     const t = setup({ decision: { baseUrl: "https://api.typesafe.ai", model: "jev-latest" } });

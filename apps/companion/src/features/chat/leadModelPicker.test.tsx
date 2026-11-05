@@ -30,6 +30,7 @@ function overview(model: string): Overview {
   };
 }
 
+// prefix 是 daemon 给的账号：这个 vibeproxy 读到了详细目录，as1/、as4/ 是账号。
 function option(model: string, source: string, efforts: string[], extra: Partial<LeadModelOption> = {}): LeadModelOption {
   const id = model.slice('vibeproxy/'.length);
   const slash = id.indexOf('/');
@@ -81,16 +82,18 @@ const groupTitles = () => Array.from(screen.getByTestId('lead-model-catalog').qu
   .map((element) => element.getAttribute('data-testid')!.slice('lead-model-group-'.length));
 
 describe('the model picker in the composer', () => {
-  it('shows only the model id and the effort', () => {
+  it('shows only the model id and the effort', async () => {
     setup();
-    expect(screen.getByTestId('composer-model').textContent).toBe('claude-sonnet-5');
+    // 读到目录、知道 as4 是账号以后，只写模型 id。
+    await waitFor(() => expect(screen.getByTestId('composer-model').textContent).toBe('claude-sonnet-5'));
     expect(screen.getByTestId('composer-model-effort').textContent).toBe('high');
   });
 
   it('lists the models by account and source, marks the chosen one, and shows a blocked account', async () => {
     setup();
     await open();
-    expect(groupTitles()).toEqual(['as1 · Anthropic', 'as4 · Anthropic', 'Anthropic · Any account', 'Antigravity']);
+    // 分组和设置页同一个规则（2026-11-05）：账号 · 通道，没有账号的按通道。
+    expect(groupTitles()).toEqual(['as1 · anthropic', 'as4 · anthropic', 'anthropic', 'antigravity']);
     expect(screen.getByTestId('lead-model-option-vibeproxy/as4/claude-sonnet-5').getAttribute('aria-pressed')).toBe('true');
     expect(screen.getByTestId('lead-model-option-vibeproxy/as1/claude-sonnet-5').textContent).toContain('Quota used up');
     // 只标出不能看图的模型。
@@ -98,7 +101,7 @@ describe('the model picker in the composer', () => {
     expect(screen.getByTestId('lead-model-option-vibeproxy/as4/claude-sonnet-5').textContent).not.toContain('read images');
     expect(screen.getByTestId('lead-model-effort-high').getAttribute('aria-pressed')).toBe('true');
     // 最上面写着正在用的是哪个账号的哪个模型。
-    expect(screen.getByTestId('lead-model-selected').textContent).toBe('In use: as4 · Anthropic · claude-sonnet-5 high');
+    expect(screen.getByTestId('lead-model-selected').textContent).toBe('In use: as4 · anthropic · claude-sonnet-5 high');
   });
 
   it('switches to another model, keeping the effort when it supports it, and closes', async () => {

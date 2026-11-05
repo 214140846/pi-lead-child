@@ -7,6 +7,7 @@ import { disposeCorrelatedEvents, recordInboxEvent, recordUserRequestExpired } f
 import {
   createApproval,
   expireStale,
+  externalTaskOriginOf,
   findPendingApprovalProjectionGaps,
   getApproval,
   isSessionExempt,
@@ -72,6 +73,16 @@ function assertOnBehalfTurn(db: Db, actor: InterventionActor, label: string): vo
   if (actor.kind === "lead" && actor.onBehalfOf && !actor.onBehalfOf.sourceTurnId.startsWith(CONFIRM_CARD_TURN_PREFIX)) {
     activePairedUserTurn(db, actor.onBehalfOf.sourceTurnId, label, "approvals:respond");
   }
+}
+
+/**
+ * 外部消息派的执行要的审批（工单 #246 设计第 6 节）：只有用户本人能批。返回给 Fairy 的一句话（不带句号），不是时返回 null。
+ * 操作层（ui-actions 的 approval.resolve）和这里的 resolveApproval 都用它：不经过操作层的调用方也不能让 Lead 自己批。
+ */
+export function externalApprovalWhy(db: Db, approval: Pick<Approval, "item_id">): string | null {
+  if (approval.item_id === null) return null;
+  const origin = externalTaskOriginOf(db, approval.item_id);
+  return origin ? `这次执行是 ${origin.source} 上的外部消息派的（${origin.requester} 的请求），要用户自己批` : null;
 }
 
 function behalfPayload(actor: InterventionActor): { onBehalfOf?: "user"; sourceTurnId?: string } {
@@ -344,7 +355,7 @@ function utcIso<T extends string | null>(value: T): T {
   return (value && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value) ? `${value.replace(" ", "T")}.000Z` : value) as T;
 }
 
-function fullApproval(approval: Approval, actor: "lead" | "user"): KernelIntervention {
+function fullApproval(approval: Approval, actor: "lead" | "user", externalOrigin: boolean): KernelIntervention {
   const pendingActions = actor === "user" && approval.status === "pending"
     ? ["approve", "reject", "approve_session"] as const
     : [];
@@ -371,6 +382,7 @@ function fullApproval(approval: Approval, actor: "lead" | "user"): KernelInterve
     createdAt: utcIso(approval.created_at),
     resolvedBy: approval.resolved_by,
     resolvedAt: utcIso(approval.resolved_at),
+    ...(externalOrigin ? { externalOrigin: true as const } : {}),
   };
 }
 
@@ -529,6 +541,13 @@ export function createInterventionDomainService(args: {
         );
       }
       if (approval.item_id === null) throw new Error("itemless approvals cannot create checkpoint projections");
+      // 外部消息派的执行要的审批：Lead 自己（不是代用户）不能批。代用户的那一轮上面核对过；确认卡由操作层核对过。
+      const externalWhy = input.actor.kind === "lead" && !input.actor.onBehalfOf ? externalApprovalWhy(db, approval) : null;
+      if (externalWhy) {
+        throw new InterventionConflictError(
+          `approval #${approval.id}：${externalWhy}。请用户在会话里的审批卡、工单详情，或者 Slack 消息上的批准按钮里自己批`,
+        );
+      }
       const at = now();
       const status = input.decision === "reject" ? "rejected" : "approved";
       const authority = resolveApprovalAuthority(db, input.approvalId, {
@@ -824,7 +843,7 @@ export function createInterventionDomainService(args: {
         ...allApprovalRows(db).filter((approval) => {
           const ref = approvalRef(approval);
           return ref !== null && matchesQuery(ref, query);
-        }).map((approval) => fullApproval(approval, actor.kind)),
+        }).map((approval) => fullApproval(approval, actor.kind, externalApprovalWhy(db, approval) !== null)),
         ...allDecisionRows(db).filter((request) => matchesQuery(decisionRef(request), query))
           .map((request) => fullDecision(request, actor.kind)),
       ];

@@ -79,7 +79,7 @@ export const modelMessages = defineMessages({
     alreadySlot: (label: string) => `Already used as ${label}`,
     // 模型库
     library: 'Model library',
-    libraryHint: 'Grouped by provider. The newest releases are at the top.',
+    libraryHint: 'Grouped by provider, then by account and channel. The newest releases are at the top.',
     expand: (name: string) => `Expand ${name}`,
     collapse: (name: string) => `Collapse ${name}`,
     settings: 'Settings',
@@ -125,6 +125,25 @@ export const modelMessages = defineMessages({
     testSaved: 'Test the saved settings',
     deleteFast: 'Delete this intuition model',
     fastInChain: (name: string) => `${name} is still in the intuition assignment. Remove it above first.`,
+    // Lead 模型分组（2026-11-05）：服务商的「高级」和模型库的分段。
+    advanced: 'Advanced',
+    advancedSummary: (account: boolean, capabilities: string) => `Prefix is account: ${account ? 'yes' : 'no'} · capabilities: ${capabilities}`,
+    accountPrefix: 'Prefix is an account',
+    accountPrefixHint: 'The part of a model id before the first "/" is an account. Models are grouped by account.',
+    accountPrefixDeclared: (on: boolean) => `You set this to "${on ? 'yes' : 'no'}". It is saved in the configuration.`,
+    accountPrefixDefault: (detailed: boolean) => detailed
+      ? 'Default: this provider returns the detailed catalog, so the prefix is an account.'
+      : 'Default: this provider returns only the plain catalog, so the prefix is not an account.',
+    restoreDefault: 'Restore the default',
+    capabilities: 'Read model capabilities from',
+    capabilityLabels: { auto: 'Auto', detailed: 'Detailed catalog', plain: 'Plain catalog', config: 'Configuration' },
+    capabilitiesNow: (source: 'detailed' | 'plain' | 'config' | 'none') => ({
+      detailed: 'Now it reads the detailed catalog.',
+      plain: 'Now it reads the plain catalog. Images show only for models that the catalog marks.',
+      config: 'Now it reads only the models[].input that the configuration file gives.',
+      none: 'The catalog could not be read. Only the models in the configuration file show.',
+    })[source],
+    groupedByAccount: 'Grouped by account',
   },
   zh: {
     brainName: '大脑',
@@ -194,7 +213,7 @@ export const modelMessages = defineMessages({
     addBackup: '再加一个备用',
     alreadySlot: (label) => `已是${label}`,
     library: '模型库',
-    libraryHint: '按服务商分组，组里最新发布的在上面',
+    libraryHint: '外层按服务商，里面按账号 · 通道分段，最新发布的在上面',
     expand: (name) => `展开 ${name}`,
     collapse: (name) => `收起 ${name}`,
     settings: '设置',
@@ -235,5 +254,23 @@ export const modelMessages = defineMessages({
     testSaved: '测试已保存的配置',
     deleteFast: '删除这条直觉',
     fastInChain: (name) => `${name} 还在直觉的分工里，先在上面移出。`,
+    advanced: '高级',
+    advancedSummary: (account, capabilities) => `前缀是账号：${account ? '是' : '不是'} · capabilities：${capabilities}`,
+    accountPrefix: '前缀是账号',
+    accountPrefixHint: '模型 id 里第一个「/」前面的部分当作账号，按账号分组。',
+    accountPrefixDeclared: (on) => `现在是手动设的「${on ? '是' : '不是'}」，写在配置里。`,
+    accountPrefixDefault: (detailed) => detailed
+      ? '跟随缺省：这家返回了详细目录，所以当作是。'
+      : '跟随缺省：这家只返回普通目录，所以当作不是。',
+    restoreDefault: '恢复缺省',
+    capabilities: '模型能力从哪里读',
+    capabilityLabels: { auto: '自动', detailed: '详细目录', plain: '普通目录', config: '配置文件' },
+    capabilitiesNow: (source) => ({
+      detailed: '现在按详细目录读。',
+      plain: '现在按普通目录读：目录标了能看图的模型才标「看图」。',
+      config: '现在只按配置文件里写的 models[].input 读。',
+      none: '目录读不到，只显示配置文件里写的模型。',
+    })[source],
+    groupedByAccount: '按账号分组',
   },
 });

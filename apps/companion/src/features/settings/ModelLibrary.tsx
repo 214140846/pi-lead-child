@@ -1,5 +1,5 @@
-import { Badge, Button, Card, Column, Dot, Icon, Pressable, Row, SegmentedControl, Text, TextField, useBreakpoint } from '@pi-lead-child/components';
-import type { FastModel, Locale, ModelProvider, ModelProviderApi, ModelSettingsDto } from '@pi-lead-child/protocol';
+import { Badge, Button, Card, Column, Dot, Icon, Pressable, Row, SegmentedControl, Switch, Text, TextField, useBreakpoint } from '@pi-lead-child/components';
+import { modelSectionTitle, type FastModel, type Locale, type ModelProvider, type ModelProviderApi, type ModelSettingsDto } from '@pi-lead-child/protocol';
 import { useState, type ReactNode } from 'react';
 
 import { useLocale } from '@/i18n';
@@ -9,8 +9,9 @@ import { endpointProblem, keyHostChange, keyHostChangeNote, memoryNeedsUser, pen
 import { modelMessages } from './model.messages';
 import { useModelAction } from './useModelAction';
 import {
-  brainIndex, brainInUse, brainModelName, brainRoles, contextLabel, defaultExpanded, fastFormProblem, fastKeyLabel, fastModelSub, fastRoles, groupUseLabel, providerFormProblem, providerGroup, providerSub,
-  releaseLabel, untilLabel, urlHost,
+  accountPrefixOn, advancedChanges, advancedForm, brainIndex, brainInUse, brainModelName, brainRoles, CAPABILITY_SOURCES, capabilitiesNow, contextLabel,
+  defaultExpanded, fastFormProblem, fastKeyLabel, fastModelSub, fastRoles, groupUseLabel, providerFormProblem, providerGroup, providerSub,
+  releaseLabel, untilLabel, urlHost, type AdvancedForm,
 } from './modelSettingsModel';
 import { useServerForm } from './useServerForm';
 
@@ -90,7 +91,17 @@ export function ModelLibrary({ dto }: { dto: ModelSettingsDto }) {
                 </Text>
               ) : null}
               {editingThis ? <ProviderForm dto={dto} provider={provider} onDone={() => setEditing(null)} /> : null}
-              {open ? group.models.map((model) => {
+              {open ? group.sections.map((section) => (
+                <Column key={section.key} testID={`model-section-${section.key}`}>
+                  {/* 分段标题：group · channel（模型库的外层已经是服务商，不再写它）。都没有时不画。 */}
+                  {modelSectionTitle(section, false) ? (
+                    <Row items="center" gap="inline-item" pl="group-indent" pr="row-x" pt="section-label-top" pb="section-label-bottom"
+                      borderTopWidth={1} borderTopColor="border-soft" bg="surface-subtle">
+                      <Text size="meta" weight="semibold" tone="secondary">{modelSectionTitle(section, false)}</Text>
+                      <Text size="meta" tone="muted" mono>{section.total}</Text>
+                    </Row>
+                  ) : null}
+                  {section.models.map((model) => {
                 const roles = brainRoles(dto, model.model, locale);
                 const release = releaseLabel(model.released, locale);
                 return (
@@ -113,7 +124,9 @@ export function ModelLibrary({ dto }: { dto: ModelSettingsDto }) {
                     {release && tablet ? <Text size="meta" tone="muted" mono>{release}</Text> : null}
                   </Row>
                 );
-              }) : null}
+                  })}
+                </Column>
+              )) : null}
               {open && group.hidden > 0 ? (
                 <Row items="center" gap="inline-item" pl="group-indent" pr="row-x" py="row-y" borderTopWidth={1} borderTopColor="border-soft">
                   <Button testID={`model-provider-more-${provider.name}`} label={m.showRest(group.hidden)} variant="link" size="xs"
@@ -237,6 +250,11 @@ function providerFacts(dto: ModelSettingsDto, provider: ModelProvider | null, ba
   return { name: provider.name, keySource: provider.keySource, keyNote, inUse };
 }
 
+// 「高级」只给已经接入、daemon 又给了这些字段的服务商（旧 daemon 不给）。在组件外面算，理由同 providerFacts。
+function withAdvanced(provider: ModelProvider | null): ModelProvider | null {
+  return provider && provider.capabilities !== undefined ? provider : null;
+}
+
 function ProviderForm({ dto, provider, onDone }: { dto: ModelSettingsDto; provider: ModelProvider | null; onDone: () => void }) {
   const locale = useLocale();
   const m = modelMessages(locale);
@@ -244,6 +262,8 @@ function ProviderForm({ dto, provider, onDone }: { dto: ModelSettingsDto; provid
   const isNew = provider === null;
   const { form, setForm, field } = useServerForm({ name: provider?.name ?? '', baseUrl: provider?.baseUrl ?? '', apiKey: '' });
   const [api, setApi] = useState<ModelProviderApi>(provider?.api ?? 'openai-completions');
+  const [advanced, setAdvanced] = useState<AdvancedForm>(() => advancedForm(provider));
+  const advancedProvider = withAdvanced(provider);
   const [message, setMessage] = useState<{ text: string; error: boolean } | null>(null);
   const baseUrl = form.baseUrl.trim();
   const facts = providerFacts(dto, provider, baseUrl, locale);
@@ -256,6 +276,7 @@ function ProviderForm({ dto, provider, onDone }: { dto: ModelSettingsDto; provid
     }
     const outcome = await run('save_provider', {
       name: (facts.name ?? form.name).trim(), baseUrl, api, ...(form.apiKey.trim() ? { apiKey: form.apiKey.trim() } : {}),
+      ...advancedChanges(provider, advanced),
     });
     if (!outcome.ok) {
       setMessage({ text: outcome.error, error: true });
@@ -308,6 +329,7 @@ function ProviderForm({ dto, provider, onDone }: { dto: ModelSettingsDto; provid
       <Text size="note" tone="secondary">
         {m.providerDataNote(baseUrl ? urlHost(baseUrl) : m.thisAddress)}
       </Text>
+      {advancedProvider ? <AdvancedSettings provider={advancedProvider} value={advanced} onChange={setAdvanced} /> : null}
       <Row items="center" gap="actions" flexWrap="wrap">
         <Button testID="model-provider-save" label={isNew ? m.connect : m.save} size="sm" disabled={busy} onPress={() => void save()} />
         <Button label={m.cancel} variant="ghost" tone="neutral" size="sm" onPress={onDone} />
@@ -324,6 +346,66 @@ function ProviderForm({ dto, provider, onDone }: { dto: ModelSettingsDto; provid
         />
       ) : null}
     </FormFrame>
+  );
+}
+
+// 服务商的「高级」（Lead 模型分组，2026-11-05，原型的设置页）：前缀是不是账号、模型能力从哪里读。默认收起，
+// 收起时一行写着现在的值。改了以后点「保存」走 save_provider；daemon 重新拉目录，模型库和下拉马上按新的分组。
+function AdvancedSettings({ provider, value, onChange }: { provider: ModelProvider; value: AdvancedForm; onChange: (next: AdvancedForm) => void }) {
+  const locale = useLocale();
+  const m = modelMessages(locale);
+  const [open, setOpen] = useState(false);
+  const on = accountPrefixOn(provider, value);
+  const capabilityOptions = CAPABILITY_SOURCES.map((source) => ({ value: source, label: m.capabilityLabels[source] }));
+  return (
+    <Column testID="model-provider-advanced" borderWidth={1} borderColor="border" rounded="lg">
+      <Pressable
+        testID="model-provider-advanced-toggle"
+        aria-expanded={open}
+        onPress={() => setOpen((previous) => !previous)}
+        flexDirection="row"
+        items="center"
+        gap="inline-item"
+        px="row-x"
+        py="row-y"
+        feedback="none"
+      >
+        <Icon name={open ? 'chevron-down' : 'chevron-right'} size={14} color="text-muted" />
+        <Text flex={1} size="label" weight="semibold">{m.advanced}</Text>
+        {open ? null : <Text size="meta" tone="muted" numberOfLines={1}>{m.advancedSummary(on, value.capabilities)}</Text>}
+      </Pressable>
+      {open ? (
+        <Column gap="form-field" px="row-x" pb="row-x" pt="card-row" borderTopWidth={1} borderTopColor="border-soft">
+          <Row items="center" gap="side-item">
+            <Column flex={1} minW={0} gap="text-stack">
+              <Row items="center" gap="inline-item">
+                <Text size="body" weight="semibold">{m.accountPrefix}</Text>
+                <Text size="meta" tone="muted" mono>accountPrefix</Text>
+              </Row>
+              <Text size="note" tone="secondary">
+                {m.accountPrefixHint} {value.accountPrefix !== null ? m.accountPrefixDeclared(value.accountPrefix) : m.accountPrefixDefault(provider.catalog === 'detailed')}
+              </Text>
+              {value.accountPrefix !== null ? (
+                <Row>
+                  <Button testID="model-provider-prefix-default" label={m.restoreDefault} variant="link" size="xs"
+                    onPress={() => onChange({ ...value, accountPrefix: null })} />
+                </Row>
+              ) : null}
+            </Column>
+            <Switch testID="model-provider-prefix" value={on} onValueChange={(next) => onChange({ ...value, accountPrefix: next })} />
+          </Row>
+          <Column gap="field">
+            <Row items="center" gap="inline-item">
+              <Text size="body" weight="semibold">{m.capabilities}</Text>
+              <Text size="meta" tone="muted" mono>capabilities</Text>
+            </Row>
+            <SegmentedControl testID="model-provider-capabilities" options={capabilityOptions} value={value.capabilities}
+              onChange={(next) => onChange({ ...value, capabilities: next })} size="sm" />
+            <Text size="note" tone="secondary">{m.capabilitiesNow(capabilitiesNow(provider, value))}</Text>
+          </Column>
+        </Column>
+      ) : null}
+    </Column>
   );
 }
 

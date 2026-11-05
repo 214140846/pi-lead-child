@@ -32,6 +32,8 @@ export interface AuthorityFacts {
   delegatedWhy?: string;
   // 只属于用户、对外、不可逆、托管范围外的操作仍然只认用户这一轮（见文件头第 5 条）。
   userTurnOnly?: boolean;
+  // 只对 userTurnOnly：按目标算出的原因，代替缺省的说法。
+  userTurnOnlyWhy?: string | null;
   // 改规则的操作，和这一轮带不带外部内容（见文件头第 6 条）。
   changesRules?: boolean;
   turnHasExternalContent?: boolean;
@@ -55,7 +57,8 @@ export function leadAuthorityFor(facts: AuthorityFacts): { mode: LeadAuthorityMo
   if (!facts.userTurnOnly) return { mode: "own", why: null, forUser: true };
   return {
     mode: "user_turn",
-    why: facts.external ? "这是对外的操作，每次都要用户在这一轮明确要求，托管也不能代替"
+    why: facts.userTurnOnlyWhy ? facts.userTurnOnlyWhy
+      : facts.external ? "这是对外的操作，每次都要用户在这一轮明确要求，托管也不能代替"
       : facts.irreversible ? "这是不可逆的操作，每次都要用户在这一轮明确要求，托管也不能代替"
       : facts.permission === "delegated"
         ? facts.delegatedWhy ?? "这张工单没有托管给你，或者这一次不在托管范围内，只有用户在这一轮明确要求时你才能代他做"

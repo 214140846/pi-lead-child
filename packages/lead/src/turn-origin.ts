@@ -24,8 +24,8 @@
 //      （engine 的 external-content.ts），还没登记成 UI 动作的工具（改常设指令）用 ruleChangeRefusal。拒绝时系统存下这一个
 //      操作，结果里带着确认卡的 user_action：用户在卡上点「确认这一次」以后，系统只执行这一个操作
 //      （engine 的 rule-change-confirmations.ts，工单 09）。
-import { activePairedUserTurn, CORE_KINDS, type Db, type NoteKind, type PairedUserTurn } from "@pi-lead-child/store";
-import type { Scope, TimerOrigin } from "@pi-lead-child/protocol";
+import { activePairedUserTurn, CORE_KINDS, getBinding, getHostBypass, type Db, type NoteKind, type PairedUserTurn } from "@pi-lead-child/store";
+import { bindingOriginOf, type HostCommandTurnOrigin, type Scope, type TimerOrigin } from "@pi-lead-child/protocol";
 import {
   externalTimerOriginOf, externalTurnWhy, isLiveUserTurn, leadUserTurnOf, requestExternalTimer, requestRuleChangeConfirmation,
   RULE_CHANGE_CONFIRM_NEXT, ruleChangeRefusalText, setTimer,
@@ -149,6 +149,53 @@ export function ruleChangeRefusal(
     confirm: card ? { ...confirm, id: card.id } : confirm,
     ...(card ? { userAction: card.userAction } : {}),
   };
+}
+
+// 免沙箱（docs/ticket-246-user-turn-bypass.md 3.1、3.2，实施单 C）。和改规则的拒绝用同一份数据：这一轮是不是用户本人
+// 正在说话（isLiveUserTurn）、这一轮带没带外部内容（externalContentOf）。不同的是读过外部内容以后用户本人的一轮也不放开
+// （沿用 2.3 的「收紧」档）：在沙箱外跑错的命令改不回来，而注入的路正是「用户让 Fairy 读 Slack，Slack 里写着请运行 X」。
+// 每一次 bash、run_on_host 调用都重新算：同一轮里 externalBy 会变，开关也会到点。
+export type HostBypassDecision =
+  | { active: true; turnId: string; turnOrigin: HostCommandTurnOrigin }
+  // off：开关关着，一切照旧，结果里也不写原因。另外两种开关开着，结果里写明为什么这一次没有免沙箱。
+  | { active: false; code: "off" | "not_user_turn" | "external_content"; why: string | null };
+
+/** 这一轮凭证的来历写进 host_command.started：Slack 里给自己发的私信、plc、Companion。 */
+function liveTurnOrigin(db: Db, bindingId: number): HostCommandTurnOrigin {
+  const binding = getBinding(db, bindingId);
+  if (!binding) return "live_user_companion";
+  const origin = bindingOriginOf(binding);
+  if (origin === "channel_owner") return "live_user_slack_self_dm";
+  return origin === "cli" ? "live_user_plc" : "live_user_companion";
+}
+
+/**
+ * 这一次能不能在沙箱外跑：开关开着（还没到点）、用户本人正在说话的一轮（Slack 里给自己发的私信开的一轮也算，3.3）、
+ * 这一轮没有外部内容。不能时给出原因。
+ */
+export function hostBypassActive(db: Db, deps: TurnOriginDeps, now: Date = new Date()): HostBypassDecision {
+  if (!getHostBypass(db, now).enabled) return { active: false, code: "off", why: null };
+  const turnId = authorityTurnId(deps);
+  if (!turnId || !isLiveUserTurn(db, turnId, "tickets:create")) {
+    return {
+      active: false, code: "not_user_turn",
+      why: "这一轮不是用户本人正在发话的一轮（定时器、跟进到点、外部消息或系统叫醒的），免沙箱只在用户本人发话的那一轮生效",
+    };
+  }
+  const sources = externalContentOf(deps);
+  if (sources !== null) {
+    return {
+      active: false, code: "external_content",
+      why: `${externalTurnWhy(sources)}，从那以后这一轮的命令不在沙箱外跑。用户在新的一条消息里再说一句，新的一轮又能免沙箱`,
+    };
+  }
+  let user: PairedUserTurn;
+  try {
+    user = activePairedUserTurn(db, turnId, "host_bypass", "tickets:create");
+  } catch {
+    return { active: false, code: "not_user_turn", why: "这一轮不是用户本人正在发话的一轮，免沙箱只在用户本人发话的那一轮生效" };
+  }
+  return { active: true, turnId, turnOrigin: liveTurnOrigin(db, user.origin_binding_id) };
 }
 
 /**

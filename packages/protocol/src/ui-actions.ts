@@ -25,6 +25,7 @@ import { CoreMemoryUpdateRequestSchema } from "./core-memory.ts";
 import { AddLocalMcpRequestSchema, AddRemoteMcpRequestSchema, InstallSkillRequestSchema } from "./lead-installs.ts";
 import { ReminderRescheduleRequestSchema } from "./reminders.ts";
 import { ReplyStyleExtractRequestSchema, ReplyStyleUpdateRequestSchema } from "./reply-style.ts";
+import { DisableHostBypassRequestSchema, EnableHostBypassRequestSchema } from "./host-bypass.ts";
 import { RuleChangeDecisionSchema } from "./rule-change-confirmations.ts";
 import { TimerRequestDecisionSchema } from "./timer-origins.ts";
 import {
@@ -89,11 +90,12 @@ export const ActionPermissionSchema = Type.Union([
 //   connection  一个连接：请用户授权、断开。编号是连接的 key（GET /v1/connections 的 key，例如 notion、custom-3）。
 //   skills  PLC 自己的 skill 目录（~/Library/Application Support/Bytezard Lead/skills，2026-11-02）：从 GitHub 装一个。编号只有 skills。
 //   skill  PLC 装的一个 skill：卸载。编号是 skill 的名字。
+//   host_bypass  「用户本人发话时免沙箱」开关（设置 → 免沙箱，工单 #246，host-bypass.ts）。编号只有 lead。
 export const UI_ACTION_TARGET_TYPES = [
   "runtime", "device", "approval", "decision", "channel_card", "channel_conversation", "channel_policy", "channel_handbook", "lead_model",
   "reminder", "workspace", "milestone", "rule_change", "lead_queue", "timer", "timer_request", "follow_up", "reply_style",
   "model_settings", "memory_settings", "core_memory", "core_memory_change", "memory_fact", "setup_hint",
-  "widget_board", "widget", "channel_connection", "connections", "connection", "skills", "skill",
+  "widget_board", "widget", "channel_connection", "connections", "connection", "skills", "skill", "host_bypass",
 ] as const;
 export type UiActionTargetType = typeof UI_ACTION_TARGET_TYPES[number];
 
@@ -367,6 +369,12 @@ export const UI_ACTION_INPUT_SCHEMAS = {
   skill: {
     // 卸载 PLC 装的这个 skill：删掉它的目录。
     uninstall: Empty,
+  },
+  host_bypass: {
+    // 打开免沙箱：minutes 只能是 15、30、60、120、240。授予 Lead 权力，只有你本人能做。
+    enable: EnableHostBypassRequestSchema,
+    // 关掉免沙箱。你和 Lead 都能关。
+    disable: DisableHostBypassRequestSchema,
   },
 } as const satisfies Record<UiActionTargetType, Record<string, TSchema>>;
 

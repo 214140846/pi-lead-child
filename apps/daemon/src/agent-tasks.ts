@@ -17,7 +17,7 @@ import {
   type AgentTaskToolLimits, type LookupSessionFactory,
 } from "@pi-lead-child/lead";
 import {
-  AgentTaskRequestSchema, computeRunGrant, DEFAULT_INTENT_GRANT_BOUNDS, describeRunGrant, redactSecretText,
+  AGENT_TASK_STARTED, AgentTaskRequestSchema, computeRunGrant, DEFAULT_INTENT_GRANT_BOUNDS, describeRunGrant, redactSecretText,
   type AgentTaskAction, type AgentTaskDispatch, type AgentTaskDispatcher, type AgentTaskOutcome, type AgentTaskRequest,
   type GrantLocalRepo, type RunGrant,
 } from "@pi-lead-child/protocol";
@@ -29,7 +29,6 @@ import {
 import { closeLookupItem } from "./lookup.js";
 
 export const DEFAULT_AGENT_TASK_TIMEOUT_MS = 20 * 60_000;
-export const AGENT_TASK_STARTED = "agent_task_started";
 export const AGENT_TASK_FINISHED = "agent_task_finished";
 const RESTART_MESSAGE = "daemon 重启，子 agent 被打断";
 // 没有登记回调时最多留多少个结果（例如重启时找回来的，通道还没登记回调）。

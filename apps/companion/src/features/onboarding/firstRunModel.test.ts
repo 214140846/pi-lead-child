@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   customProviderName, firstRunModelList, firstRunProviderFacts, firstRunProviderRequest, firstRunRuntimeRequests, firstRunRuntimeRows,
-  firstRunStep, recommendedBrainModel, type FirstRunStepInput,
+  firstRunStep, modelPrefixes, prefixAnswerRequest, prefixQuestion, recommendedBrainModel, type FirstRunStepInput,
 } from './firstRunModel';
 
 function model(id: string, extra: Partial<BrainModel> = {}): BrainModel {
@@ -128,5 +128,35 @@ describe('the runtime choice', () => {
     expect(firstRunRuntimeRequests(claudeOff, {})).toEqual([]);
     expect(firstRunRuntimeRequests(claudeOff, { claude: true })).toEqual([{ runtime: 'claude', enabled: true }]);
     expect(firstRunRuntimeRequests(null, {})).toEqual([]);
+  });
+});
+
+// Lead 模型分组（用户 2026-11-05）：vibeproxy 预设和「前缀是账号吗」。
+describe('the vibeproxy preset and the prefix question', () => {
+  it('connects vibeproxy at the local port by default, takes another address, and writes accountPrefix: true', () => {
+    expect(firstRunProviderRequest({ preset: 'vibeproxy', apiKey: '', baseUrl: '', api: 'openai-completions' }, [], 'en')).toEqual({
+      ok: true, input: { name: 'vibeproxy', baseUrl: 'http://127.0.0.1:8317/v1', api: 'openai-completions', accountPrefix: true },
+    });
+    expect(firstRunProviderRequest({ preset: 'vibeproxy', apiKey: 'k', baseUrl: 'http://127.0.0.1:9000/v1/', api: 'openai-responses' }, [], 'en'))
+      .toEqual({ ok: true, input: { name: 'vibeproxy', baseUrl: 'http://127.0.0.1:9000/v1', api: 'openai-completions', apiKey: 'k', accountPrefix: true } });
+    expect(firstRunProviderRequest({ preset: 'vibeproxy', apiKey: '', baseUrl: 'localhost:8317', api: 'openai-completions' }, [], 'en').ok).toBe(false);
+  });
+
+  it('asks only when ids have a slash and the catalog is not detailed, with the two first prefixes of this service', () => {
+    const plain = (ids: string[], catalog: ModelProvider['catalog']): ModelProvider => ({
+      ...provider(ids.map((id) => model(id))), name: 'example', baseUrl: 'https://magpie.example.com/v1', api: 'openai-completions', catalog,
+    });
+    const magpie = plain(['auto/deepseek-flash', 'deepseek/deepseek-v4', 'auto/qwen', 'bailian/qwen-max'], 'plain');
+    expect(modelPrefixes(magpie.models)).toEqual(['auto', 'deepseek', 'bailian']);
+    expect(prefixQuestion(magpie, 'custom')).toEqual(['auto', 'deepseek']);
+    expect(prefixQuestion(plain(['as4/claude-opus-5-5'], 'detailed'), 'custom')).toBeNull();
+    expect(prefixQuestion(plain(['gpt-5.5'], 'plain'), 'custom')).toBeNull();
+    expect(prefixQuestion(magpie, 'vibeproxy')).toBeNull();
+    // 旧 daemon 不给 catalog：存不了 accountPrefix，不问。
+    expect(prefixQuestion({ ...magpie, catalog: undefined }, 'custom')).toBeNull();
+    expect(prefixAnswerRequest(magpie, true)).toEqual({
+      name: 'example', baseUrl: 'https://magpie.example.com/v1', api: 'openai-completions', accountPrefix: true,
+    });
+    expect(prefixAnswerRequest(magpie, false).accountPrefix).toBe(false);
   });
 });
