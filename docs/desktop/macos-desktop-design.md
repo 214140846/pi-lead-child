@@ -491,6 +491,14 @@ App 名写在 Info.plist 里。装好以后再改 Info.plist 会让签名失效�
 
 旧名字 `~/.pi-lead-child`、`com.pi-lead-child.supervisor`、`com.pi-lead-child.hindsight` 只在迁移代码和「旧 label」清单里保留（P0-8）。
 
+**版本号和构建号（用户 2026-11-05）。** 关于窗口显示「版本 1.1.0 (202611050930)」：
+
+- 版本号是 semver，来自 release 的 tag（`CFBundleShortVersionString`、package.json 的 `version`、运行包的 `release.json.version`）。npm、electron-builder、运行包的目录名和新旧比较都按 semver，所以不用四段的 `1.1.0.202611050930`；macOS 的版本号也最多三段。
+- 构建号是 UTC 的年月日时分（`scripts/desktop/lib/release.ts` 的 `buildNumber`）。`release-macos.yml` 把它设成 `CFBundleVersion`（electron-builder 的 `buildVersion`），并和提交号一起写进 App 的 package.json 的 `buildInfo`。
+- 关于窗口的说明一栏写提交号的前 7 位和后台服务（运行包）的版本（`desktop/src/build-info.ts`）。设置 → 设备 → 本设备显示同样几行，再加上网页的构建；「复制诊断信息」的开头也是这几行。
+- 本机打的包排在最近一次发布之后、下一个补丁版本之前：`1.1.0` 之后是 `1.1.1-local.<构建号>`（`scripts/desktop/local-version.ts`）。时间一律用 UTC。
+- 打包配置的文件名是 `desktop/desktop-builder.yml`（用户 2026-11-05 改名）。
+
 ### 8.6 通知
 
 现状（P0-7 以后）：
@@ -713,9 +721,9 @@ P2-*                       ← 对应的 P1
 ### P0-4 Electron 壳
 
 - 目标：`desktop/` 下的 Electron App：首次打开装好服务，然后打开 Companion 网页；失败时能看懂、能重试；窗口标题是 Lead 名字。
-- 改：`desktop/package.json`、`desktop/src/main.ts`、`desktop/src/preload.ts`、`desktop/src/install.ts`、`desktop/src/*.messages.ts`、`desktop/electron-builder.yml`、`desktop/test/`；Companion 设置 `document.title` 的地方（`apps/companion/src/`）。
+- 改：`desktop/package.json`、`desktop/src/main.ts`、`desktop/src/preload.ts`、`desktop/src/install.ts`、`desktop/src/*.messages.ts`、`desktop/desktop-builder.yml`、`desktop/test/`；Companion 设置 `document.title` 的地方（`apps/companion/src/`）。
 - 验收：
-  - `electron-builder.yml` 里 `appId` 是 `com.bytezard.plc`，`productName` 是 `Bytezard Lead`；打出的 Info.plist 里 `CFBundleName` 是 `Bytezard Lead`，`CFBundleIdentifier` 是 `com.bytezard.plc`。
+  - `desktop-builder.yml` 里 `appId` 是 `com.bytezard.plc`，`productName` 是 `Bytezard Lead`；打出的 Info.plist 里 `CFBundleName` 是 `Bytezard Lead`，`CFBundleIdentifier` 是 `com.bytezard.plc`。
   - `ready` 之前把 `userData` 设到 `<数据目录>/shell`；数据目录的根下没有 Chromium 的文件。
   - 不在「应用程序」里时，提示并能调用 `app.moveToApplicationsFolder()`。
   - 解包先到 `.partial` 目录，校验通过后才 rename；中途退出再打开时能从头恢复，不留半个版本。
@@ -730,7 +738,7 @@ P2-*                       ← 对应的 P1
 ### P0-5 GitHub Actions、dmg 和安装说明
 
 - 目标：发布 release 时自动打出 arm64 的 dmg 和运行包，挂到 release 上；用户照着说明能打开未签名的 App。
-- 改：`.github/workflows/release-macos.yml`（新）、`desktop/electron-builder.yml`（dmg 背景、`identity: "-"`、`hardenedRuntime: false`、`npmRebuild: false`、`artifactName`）、`desktop/assets/dmg-background.png`（及 `@2x`）、`README.md`（安装和「打不开怎么办」）、`docs/desktop/release-notes-template.md`。
+- 改：`.github/workflows/release-macos.yml`（新）、`desktop/desktop-builder.yml`（dmg 背景、`identity: "-"`、`hardenedRuntime: false`、`npmRebuild: false`、`artifactName`）、`desktop/assets/dmg-background.png`（及 `@2x`）、`README.md`（安装和「打不开怎么办」）、`docs/desktop/release-notes-template.md`。
 - 验收：
   - workflow 只有一个 arm64 job（`macos-15`），没有构建矩阵。
   - 在一个测试 release 上，workflow 由 `release: published` 触发，`bytezard-lead-<版本>-arm64.dmg`、运行包 tar.gz、`manifest.json` 出现在 release 附件里。

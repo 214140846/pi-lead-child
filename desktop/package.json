@@ -10,7 +10,7 @@
     "start": "npm run build && electron .",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "cd .. && vitest run desktop/test",
-    "dist": "npm run build && electron-builder --config electron-builder.yml"
+    "dist": "npm run build && electron-builder --config desktop-builder.yml"
   },
   "devDependencies": {
     "electron": "45.2.1",

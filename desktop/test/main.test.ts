@@ -109,6 +109,7 @@ function fakeElectron(o: { packaged?: boolean; inApplications?: boolean; languag
     getVersion: () => "1.3.0",
     isInApplicationsFolder: () => o.inApplications ?? true,
     moveToApplicationsFolder: vi.fn(() => true),
+    setAboutPanelOptions: vi.fn(),
     quit: vi.fn(),
   });
   const electron = {
@@ -345,6 +346,44 @@ describe("startShell", () => {
     });
   });
 
+  // 版本、构建号、提交和运行包的版本（build-info.ts，用户 2026-11-05）：关于窗口显示「版本 1.3.0 (202611050930)」，
+  // 说明一栏写提交和运行包；设置 → 本设备经 about 接口读同一份，只有网关的网页读得到。
+  it("does not repeat the build number of a local build in About", async () => {
+    const dataDir = join(tempDir("plc-desktop-main-"), "Application Support", "Bytezard Lead");
+    mkdirSync(join(dataDir, "runtime", "current"), { recursive: true });
+    writeFileSync(join(dataDir, "runtime", "current", "release.json"), JSON.stringify({ version: "1.1.1-local.202611050212" }));
+    const shell = setup({ packaged: true, inApplications: true, dataDir, createUpdater: () => ({
+      status: () => ({ state: "none" as const }), checkIfDue: async () => {}, check: async () => ({ kind: "current" as const }),
+      dismiss: () => {}, apply: async () => {}, cleanup: () => {},
+    }) });
+    (shell.app as unknown as { getVersion: () => string }).getVersion = () => "1.1.1-local.202611050212";
+    writeFileSync(join(shell.distDir, "..", "package.json"), JSON.stringify({ buildInfo: { build: "202611050212", commit: "1f9375ea8d5e" } }));
+    await shell.ready();
+    expect(shell.app.setAboutPanelOptions).toHaveBeenLastCalledWith({
+      applicationVersion: "1.1.1-local", version: "202611050212", credits: "Commit 1f9375e\nBackground service 1.1.1-local",
+    });
+  });
+
+  it("shows the build number, the commit and the runtime version in About and to the gateway page", async () => {
+    const dataDir = join(tempDir("plc-desktop-main-"), "Application Support", "Bytezard Lead");
+    mkdirSync(join(dataDir, "runtime", "current"), { recursive: true });
+    writeFileSync(join(dataDir, "runtime", "current", "release.json"), JSON.stringify({ version: "1.3.0" }));
+    const shell = setup({ packaged: true, inApplications: true, dataDir, createUpdater: () => ({
+      status: () => ({ state: "none" as const }), checkIfDue: async () => {}, check: async () => ({ kind: "current" as const }),
+      dismiss: () => {}, apply: async () => {}, cleanup: () => {},
+    }) });
+    writeFileSync(join(shell.distDir, "..", "package.json"), JSON.stringify({ version: "1.3.0", buildInfo: { build: "202611050930", commit: "8965d9a79f9ce9aca6adf2a871c6155e78de825c" } }));
+    await shell.ready();
+    expect(shell.app.setAboutPanelOptions).toHaveBeenLastCalledWith({
+      applicationVersion: "1.3.0", version: "202611050930", credits: "Commit 8965d9a\nBackground service 1.3.0",
+    });
+    expect(await shell.invoke(IPC.about, "http://127.0.0.1:47130/")).toEqual({
+      version: "1.3.0", build: "202611050930", commit: "8965d9a", runtimeVersion: "1.3.0",
+    });
+    expect(await shell.invoke(IPC.about, shell.installPageUrl)).toBeNull();
+    expect(await shell.invoke(IPC.about, "https://evil.example.com/")).toBeNull();
+  });
+
   it("does not look for updates when it runs from the repository", async () => {
     const createUpdater = vi.fn();
     const shell = setup({ packaged: false, createUpdater });
@@ -373,7 +412,8 @@ describe("startShell", () => {
     expect(shell.shell.openPath).toHaveBeenLastCalledWith(join(shell.dataDir, "logs"));
 
     await shell.invoke(IPC.act, shell.installPageUrl, "diagnostics");
-    expect(shell.clipboard.writeText).toHaveBeenCalledWith("doctor output\n");
+    // 开头是版本：开发时没有构建号和提交，也没有装好的运行包。
+    expect(shell.clipboard.writeText).toHaveBeenCalledWith("App 1.3.0\ncommit -\nruntime -\n\ndoctor output\n");
     expect(shell.windows[0]!.webContents.lastView().status).toBe("The diagnostics are on the clipboard.");
   });
 

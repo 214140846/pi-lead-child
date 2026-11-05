@@ -26,6 +26,23 @@ node --import tsx scripts/desktop/smoke-runtime.ts out/runtime
 
 如果机器要经过 HTTP 代理才能访问 nodejs.org，运行脚本时加 `NODE_USE_ENV_PROXY=1`。Node 的 `fetch` 缺省不读 `HTTPS_PROXY`。
 
+### 在本机打一个能装的 dmg
+
+本机打的包要排在最近一次发布之后，App 和运行包才会按新版本安装（设计文档第 8.5 节「版本号和构建号」）。`--after` 写最近发布的版本：
+
+1. 算出版本号和构建号：`node --import tsx scripts/desktop/local-version.ts --after 1.1.0`。它输出 `{"version":"1.1.1-local.202611050930","build":"202611050930"}`。
+2. 用这个版本号运行上面的 `pack-runtime.ts` 和 `smoke-runtime.ts`。
+3. 在 `desktop/` 里写版本号和构建信息，再打 dmg：
+
+   ```sh
+   npm version "$VERSION" --no-git-tag-version --allow-same-version
+   npm pkg set "buildInfo.build=$BUILD" "buildInfo.commit=$(git rev-parse HEAD)"
+   CSC_IDENTITY_AUTO_DISCOVERY=false npm run dist -- --mac dmg --arm64 --publish never "-c.buildVersion=$BUILD"
+   ```
+
+4. 在仓库根把 dmg 记进 manifest：`node --import tsx scripts/desktop/add-dmg.ts --manifest out/manifest.json --dmg "out/desktop/bytezard-lead-$VERSION-arm64.dmg"`。
+5. 打完以后用 `git checkout -- desktop/package.json desktop/package-lock.json` 还原第 3 步的改动。
+
 ## 产出
 
 ```

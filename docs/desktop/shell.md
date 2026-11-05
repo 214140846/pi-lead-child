@@ -25,7 +25,7 @@ npm run dist         # electron-builder，输出到仓库根的 out/desktop/
 发版时 `.github/workflows/release-macos.yml` 打 dmg，步骤见 [release-notes-template.md](release-notes-template.md)。本地打 dmg 用 `npm run dist -- --mac dmg --arm64 --publish never`，附件名是 `bytezard-lead-<版本>-arm64.dmg`，版本号取 `desktop/package.json`。
 
 - 安装说明的文字只有一份：`desktop/src/install-guide.messages.ts`，有 `en` 和 `zh`。`README.md`、`README.zh-CN.md` 和 release 说明模板里标出的那一段由它生成。改了文字以后，在仓库根运行 `node --import tsx desktop/scripts/install-guide.ts`。
-- dmg 的背景图是 `desktop/assets/dmg-background.png` 和 `@2x`，文字也来自同一个文件。窗口尺寸和图标位置在 `desktop/src/dmg-background.ts` 的 `DMG_LAYOUT`，要和 `electron-builder.yml` 的 `dmg` 一致。改了文字或布局以后，在仓库根运行 `node --import tsx desktop/scripts/dmg-background.ts` 重画（要用 macOS 自带的 `swift`）。
+- dmg 的背景图是 `desktop/assets/dmg-background.png` 和 `@2x`，文字也来自同一个文件。窗口尺寸和图标位置在 `desktop/src/dmg-background.ts` 的 `DMG_LAYOUT`，要和 `desktop-builder.yml` 的 `dmg` 一致。改了文字或布局以后，在仓库根运行 `node --import tsx desktop/scripts/dmg-background.ts` 重画（要用 macOS 自带的 `swift`）。
 - 两处都有测试核对：文件里的内容和生成的不一致时，`desktop/test/install-guide.test.ts` 或 `dmg-config.test.ts` 失败。
 
 PLC 执行器的沙箱里，`hdiutil create` 报 `Device not configured`，所以那里只能打到 `.app`，打不出 dmg。

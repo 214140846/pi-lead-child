@@ -8,7 +8,7 @@ import { DMG_LAYOUT, dmgBackgroundSpec } from "../src/dmg-background.js";
 import { dmgFileName } from "../src/install-guide.js";
 
 const DESKTOP = join(import.meta.dirname, "..");
-const builder = parse(readFileSync(join(DESKTOP, "electron-builder.yml"), "utf8")) as {
+const builder = parse(readFileSync(join(DESKTOP, "desktop-builder.yml"), "utf8")) as {
   npmRebuild: boolean;
   mac: { identity: string; hardenedRuntime: boolean; notarize: boolean; target: Array<{ target: string; arch: string[] }> };
   dmg: {

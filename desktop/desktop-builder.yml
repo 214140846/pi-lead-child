@@ -2,7 +2,8 @@
 # appId 和 productName 决定 Info.plist 的 CFBundleIdentifier 和 CFBundleName。App 名固定，不跟着用户配置的 Lead 名字变：
 # 装好以后再改 Info.plist 会让签名失效。
 # 没有 Apple 证书：identity "-" 是 ad-hoc 签名，Hardened Runtime 和公证都关掉（第 8.2 节）。
-# App 的版本号来自 package.json：发版的 workflow（.github/workflows/release-macos.yml）先用 npm version 把它改成 tag 的版本。
+# App 的版本号来自 package.json：发版的 workflow（.github/workflows/release-macos.yml）先用 npm version 把它改成 tag 的版本，
+# 构建号（UTC 的年月日时分）用 -c.buildVersion 传进来，成为 Info.plist 的 CFBundleVersion（设计第 8.5 节）。
 appId: com.bytezard.plc
 productName: Bytezard Lead
 directories:
@@ -25,6 +26,8 @@ mac:
       arch:
         - arm64
   category: public.app-category.productivity
+  # App 图标「π 水母」（用户 2026-11-05 选定）。原稿和生成脚本在 docs/design/app-icon/。
+  icon: assets/AppIcon.icns
   identity: "-"
   hardenedRuntime: false
   notarize: false

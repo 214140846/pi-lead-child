@@ -16,7 +16,7 @@ PLC 执行器的沙箱里做不了这些实测：
 
    ```sh
    cd desktop && npm ci && npm run build
-   CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --config electron-builder.yml --mac dir --arm64 --publish never
+   CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --config desktop-builder.yml --mac dir --arm64 --publish never
    ```
 
    App 在 `out/desktop/mac-arm64/Bytezard Lead.app`。`codesign -dv` 应该显示 `Signature=adhoc`、`Identifier=com.bytezard.plc`。
@@ -338,7 +338,7 @@ p9 已经卸掉。同一轮还发了 Electron 和 osascript 测试通知，结�
 3. 换一次构建，再跑第 1 步。`extraMetadata.version` 改了 `app.asar` 里的版本号，签名摘要就变了：
 
    ```sh
-   cd desktop && CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --config electron-builder.yml --mac dir --arm64 --publish never -c.extraMetadata.version=0.0.1-m6 && cd ..
+   cd desktop && CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --config desktop-builder.yml --mac dir --arm64 --publish never -c.extraMetadata.version=0.0.1-m6 && cd ..
    ```
 
    看第 1 步的 `shasum` 变了没有，通知还显示不显示，系统有没有再弹权限卡。

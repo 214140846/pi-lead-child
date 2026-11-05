@@ -15,6 +15,7 @@ import {
   selectTicketIds,
   selectWorkItemIds,
 } from './selectors';
+import type { ShellAbout } from './shellAbout';
 import type { ShellUpdateStatus } from './shellUpdate';
 import { RESOURCE_KEYS, type MessagePart, type ResourceKey } from './types';
 import { servedWebVersion, webUpdateAvailable } from './webVersion';
@@ -76,6 +77,21 @@ export function useShellUpdate(): { status: ShellUpdateStatus; apply(): void; di
 }
 
 const NO_SHELL_UPDATE: ShellUpdateStatus = { state: 'none' };
+
+// 设置 → 本设备的版本：桌面 App 的版本、构建号、提交和后台服务的版本（./shellAbout），加上这个网页的构建
+// （由 daemon 提供时构建时内联的版本，./webVersion）。读一次：App 更新以后会重新打开。不在桌面 App 里时 app 为 null。
+export function useVersionFacts(): { app: ShellAbout | null; web: string | null } {
+  const runtime = useCompanionRuntime();
+  const source = runtime.dependencies.shellAbout ?? null;
+  const [app, setApp] = useState<ShellAbout | null>(null);
+  useEffect(() => {
+    if (!source) return undefined;
+    let live = true;
+    source().then((value) => { if (live) setApp(value); }, () => {});
+    return () => { live = false; };
+  }, [source]);
+  return { app, web: runtime.dependencies.webBuild?.current ?? null };
+}
 
 export function useOverview() {
   return useControlPlaneStore((state) => state.overview);

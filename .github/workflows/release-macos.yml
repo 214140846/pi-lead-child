@@ -40,6 +40,8 @@ jobs:
             exit 1
           fi
           echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
+          # 构建号：UTC 的年月日时分。关于窗口显示成「版本 1.1.0 (202611050930)」（scripts/desktop/lib/release.ts 的 buildNumber）。
+          echo "BUILD=$(date -u +%Y%m%d%H%M)" >> "$GITHUB_ENV"
 
       - name: Check out the tag
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -72,9 +74,13 @@ jobs:
         working-directory: desktop
         run: npm version "$VERSION" --no-git-tag-version --allow-same-version
 
+      - name: Record the build number and the commit in the App (About, settings, diagnostics)
+        working-directory: desktop
+        run: npm pkg set "buildInfo.build=$BUILD" "buildInfo.commit=$GITHUB_SHA"
+
       - name: Build the dmg
         working-directory: desktop
-        run: npm run dist -- --mac dmg --arm64 --publish never
+        run: npm run dist -- --mac dmg --arm64 --publish never "-c.buildVersion=$BUILD"
 
       - name: Add the dmg to manifest.json (the App updates itself from it)
         run: node --import tsx scripts/desktop/add-dmg.ts --manifest out/manifest.json --dmg "out/desktop/bytezard-lead-${VERSION}-arm64.dmg"

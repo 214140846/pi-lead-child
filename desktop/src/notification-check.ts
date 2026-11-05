@@ -12,7 +12,7 @@ import { createHash } from "node:crypto";
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
-/** electron-builder.yml 的 appId。系统设置的通知页按它找到 App。 */
+/** desktop-builder.yml 的 appId。系统设置的通知页按它找到 App。 */
 export const APP_BUNDLE_ID = "com.bytezard.plc";
 const SETTINGS_URL = "x-apple.systempreferences:com.apple.Notifications-Settings.extension";
 

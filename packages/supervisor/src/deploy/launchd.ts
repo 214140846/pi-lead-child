@@ -24,7 +24,7 @@ export interface PlistOpts {
 // 它是指向 bin/lead-agent 的软链接，名叫「Bytezard Lead」：「允许在后台」显示的是 plist 里这个路径的文件名，
 // 进程名跟着真实文件 lead-agent 走（docs/desktop/macos-desktop-design.md 第 8.7 节，做法 1b，2026-11-04 实测 4）。
 export const DESKTOP_AGENT_LAUNCHER = ["bin", "Bytezard Lead"] as const;
-// Bytezard Lead App 的 bundle id（desktop/electron-builder.yml 的 appId）。plist 的 AssociatedBundleIdentifiers 用它。
+// Bytezard Lead App 的 bundle id（desktop/desktop-builder.yml 的 appId）。plist 的 AssociatedBundleIdentifiers 用它。
 // 实测 3：ad-hoc 签名下这个键不改变登录项的显示，留着给以后有 Developer ID 签名时用（P2-4）。
 export const DESKTOP_APP_BUNDLE_ID = "com.bytezard.plc";
 

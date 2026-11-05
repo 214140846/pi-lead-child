@@ -9,6 +9,7 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type * as ElectronModule from "electron";
+import { aboutText, displayVersion, shellAbout } from "./build-info.js";
 import { collectDiagnostics as realCollectDiagnostics, runInstall as realRunInstall, type InstallProgress } from "./install.js";
 import { installView, isInstallAction, type InstallScreen, type InstallView, type NotificationCheckPhase } from "./install-view.js";
 import { readLeadName, rememberLeadName } from "./lead-name.js";
@@ -40,6 +41,7 @@ export const IPC = {
   updateStatus: "update:status",
   updateApply: "update:apply",
   updateDismiss: "update:dismiss",
+  about: "shell:about",
 } as const;
 
 export const SHELL_VERSION_ARG = "--bytezard-shell-version=";
@@ -130,6 +132,23 @@ export function startShell(electron: ShellElectron, options: ShellOptions): void
   // 只有网关的网页能调更新的 IPC。
   const fromGateway = (event: ElectronModule.IpcMainInvokeEvent) =>
     gatewayOrigin !== null && originOf(event.senderFrame?.url ?? "") === gatewayOrigin;
+  // 版本、构建号、提交和运行包的版本（build-info.ts）。package.json 在 dist/ 的上一级（打包后是 app.asar 的根）。
+  const about = () => shellAbout({ version: app.getVersion(), appRoot: join(options.distDir, ".."), paths });
+  // 关于窗口：「版本 1.1.0 (202611050930)」，说明一栏写提交和运行包的版本。装好以后运行包可能换了，再设一次。
+  const refreshAboutPanel = () => {
+    if (!app.isPackaged) return;
+    const current = about();
+    const m = shellMessages(locale).about;
+    app.setAboutPanelOptions({
+      applicationVersion: displayVersion(current.version, current.build),
+      ...(current.build ? { version: current.build } : {}),
+      credits: [
+        current.commit ? m.commit(current.commit) : null,
+        current.runtimeVersion ? m.service(displayVersion(current.runtimeVersion, current.build)) : null,
+      ]
+        .filter((line): line is string => line !== null).join("\n"),
+    });
+  };
   const pushUpdate = (status: ShellUpdateStatus) => {
     if (!window || window.isDestroyed() || gatewayOrigin === null) return;
     if (originOf(window.webContents.getURL()) === gatewayOrigin) window.webContents.send(IPC.updateStatus, status);
@@ -241,6 +260,7 @@ export function startShell(electron: ShellElectron, options: ShellOptions): void
       lastProgress = progress;
       screen = { kind: "progress", progress };
       pushView();
+      refreshAboutPanel();
       if (progress.stage === "ready" && progress.gatewayUrl) afterInstall(progress.gatewayUrl);
     } finally {
       installing = false;
@@ -283,7 +303,7 @@ export function startShell(electron: ShellElectron, options: ShellOptions): void
       busy = true;
       pushView();
       try {
-        clipboard.writeText(await collectDiagnostics(paths, readOrNull));
+        clipboard.writeText(`${aboutText(about())}\n\n${await collectDiagnostics(paths, readOrNull)}`);
         status = m.diagnosticsCopied;
       } finally {
         busy = false;
@@ -331,6 +351,7 @@ export function startShell(electron: ShellElectron, options: ShellOptions): void
   ipcMain.handle(IPC.updateDismiss, (event) => {
     if (fromGateway(event)) updater?.dismiss();
   });
+  ipcMain.handle(IPC.about, (event) => (fromGateway(event) ? about() : null));
   ipcMain.handle(IPC.act, async (event, action: unknown) => {
     if (!fromInstallPage(event) || !isInstallAction(action) || busy) return;
     await act(action);
@@ -384,6 +405,7 @@ export function startShell(electron: ShellElectron, options: ShellOptions): void
   void app.whenReady().then(async () => {
     locale = pickLocale(app.getPreferredSystemLanguages());
     leadName = readLeadName(paths.leadNameFile);
+    refreshAboutPanel();
     // 只用系统的菜单角色：菜单里的 App 名来自 Info.plist（Bytezard Lead），没有 Electron 缺省菜单里的帮助链接。
     // App 菜单照 appMenu 角色的顺序写出来，在「关于」下面加「检查更新…」（用户 2026-11-05）。
     Menu.setApplicationMenu(Menu.buildFromTemplate([

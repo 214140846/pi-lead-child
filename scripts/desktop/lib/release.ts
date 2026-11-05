@@ -79,6 +79,28 @@ export function assertVersion(version: string): void {
   if (!VERSION.test(version)) throw new UsageError(`--version 要是 x.y.z 形式的版本号，收到 ${version}`);
 }
 
+/**
+ * 构建号：UTC 的年月日时分，例如 202611050930。写进 Info.plist 的 CFBundleVersion 和 App 的 buildInfo，
+ * 关于窗口显示成「版本 1.1.0 (202611050930)」。版本号本身只用 semver：npm、electron-builder、运行包的目录名和
+ * 新旧比较都按 semver（四段的 1.1.0.202611050930 它们都不认）。
+ */
+export function buildNumber(now: Date): string {
+  return now.toISOString().replace(/[-:T]/g, "").slice(0, 12);
+}
+
+/**
+ * 本机构建的版本号：排在 after（最近发布的版本）之后、下一个补丁版本之前，例如 1.1.0 → 1.1.1-local.202611050930。
+ * 这样本机打的包能装在发布版上面，以后发布的 1.1.1 又能装在它上面。时间用 UTC：本地时间和 UTC 混用时，新旧会比反
+ * （2026-11-05 打包时踩过）。
+ */
+export function localVersion(after: string, now: Date): string {
+  assertVersion(after);
+  const [core, prerelease] = [after.split("-")[0]!, after.includes("-")];
+  const [major, minor, patch] = core.split(".").map(Number) as [number, number, number];
+  // after 本身是本机构建（1.1.1-local.…）时，它已经在 1.1.1 之前了：补丁号不再加。
+  return `${major}.${minor}.${prerelease ? patch : patch + 1}-local.${buildNumber(now)}`;
+}
+
 function assertHttpUrl(value: string, flag: string): void {
   let url: URL;
   try { url = new URL(value); } catch { throw new UsageError(`${flag} 不是合法的地址：${value}`); }
@@ -144,7 +166,7 @@ export interface UpdateManifest {
   dmg?: { file: string; size: number; sha256: string };
 }
 
-/** dmg 的附件名：electron-builder.yml 的 artifactName，App 的更新也按这个名字找（desktop/src/updater.ts 的 dmgFileName）。 */
+/** dmg 的附件名：desktop-builder.yml 的 artifactName，App 的更新也按这个名字找（desktop/src/updater.ts 的 dmgFileName）。 */
 export function dmgName(version: string): string {
   assertVersion(version);
   return `${PRODUCT}-${version}-${SUPPORTED_ARCH}.dmg`;

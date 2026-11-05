@@ -1,4 +1,4 @@
-// dmg 窗口的布局和背景图的内容（设计第 8.3 节第 2 条）。electron-builder.yml 的 dmg.window 和 dmg.contents 用同样的数字，
+// dmg 窗口的布局和背景图的内容（设计第 8.3 节第 2 条）。desktop-builder.yml 的 dmg.window 和 dmg.contents 用同样的数字，
 // 测试核对两边一致。背景图是一张图，所以中英文两行都画上；文字来自 install-guide.messages.ts，和 README 的步骤同一份。
 // 颜色和字体按 docs/design/themes/default.md：白底（surface）、次要文字（text-strong）、弱化的箭头（text-muted）、
 // 分隔线（border-soft），英文用 Plus Jakarta Sans，中文用系统的苹方。

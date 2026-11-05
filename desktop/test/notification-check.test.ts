@@ -50,7 +50,7 @@ describe("the notification check", () => {
   });
 
   it("opens the notification settings of this App, with the bundle id from the packaging config", () => {
-    const builder = readFileSync(join(DESKTOP, "electron-builder.yml"), "utf8");
+    const builder = readFileSync(join(DESKTOP, "desktop-builder.yml"), "utf8");
     expect(builder).toMatch(new RegExp(`^appId: ${APP_BUNDLE_ID.replaceAll(".", "\\.")}$`, "m"));
     expect(notificationSettingsUrl(true)).toBe("x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=com.bytezard.plc");
     expect(notificationSettingsUrl(false)).toBe("x-apple.systempreferences:com.apple.Notifications-Settings.extension");

@@ -57,6 +57,11 @@ export const shellMessages = defineMessages({
       installStopped: (reason: string) => `The installation stopped: ${reason}`,
       noReason: "no details",
     },
+    // 关于窗口的说明一栏（build-info.ts）。
+    about: {
+      commit: (commit: string) => `Commit ${commit}`,
+      service: (version: string) => `Background service ${version}`,
+    },
     // App 菜单里的「检查更新」（updater.ts）。
     update: {
       menu: "Check for Updates…",
@@ -128,6 +133,10 @@ export const shellMessages = defineMessages({
       devNotRunning: "这台电脑上有一份开发版 Bytezard Lead，但它没有在运行。先启动它，再点重试。",
       installStopped: (reason) => `安装停下了：${reason}`,
       noReason: "没有详情",
+    },
+    about: {
+      commit: (commit) => `提交 ${commit}`,
+      service: (version) => `后台服务 ${version}`,
     },
     update: {
       menu: "检查更新…",

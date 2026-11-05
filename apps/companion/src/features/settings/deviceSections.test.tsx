@@ -31,7 +31,7 @@ type FakeClient = {
   forget: ReturnType<typeof vi.fn>;
 };
 
-function setup(client: Partial<FakeClient>, phase: ControlPlanePhase = 'ready') {
+function setup(client: Partial<FakeClient>, phase: ControlPlanePhase = 'ready', extra: Partial<CompanionRuntimeDependencies> = {}) {
   const fake: FakeClient = {
     getOwnBinding: vi.fn(async () => thisDevice),
     listBindings: vi.fn(async () => []),
@@ -43,6 +43,7 @@ function setup(client: Partial<FakeClient>, phase: ControlPlanePhase = 'ready') 
     client: fake as unknown as CompanionRuntimeDependencies['client'],
     credentials: {} as CompanionRuntimeDependencies['credentials'],
     scheduler: { schedule: () => 0, cancel: () => {}, now: () => 0 },
+    ...extra,
   });
   // 配对时保存的凭证。真实运行时由 credentials.load() 读出。
   (runtime as unknown as { credentials: unknown }).credentials = {
@@ -182,3 +183,38 @@ describe('This device', () => {
     expect(fake.getOwnBinding).not.toHaveBeenCalled();
   });
 });
+
+// 版本（用户 2026-11-05）：桌面 App 里写 App 的版本和构建号、提交、后台服务的版本；网页由 daemon 提供时写网页的构建。
+describe('versions on This device', () => {
+  const webBuild = { current: '2b2c1f81423ee45cb8a2bcb229ef07998f783f57', served: async () => null };
+
+  it('shows the App version with its build number, the commit, the service and the web page in the desktop App', async () => {
+    const { runtime } = setup({}, 'ready', {
+      webBuild,
+      shellAbout: async () => ({ version: '1.1.0', build: '202611050930', commit: '8965d9a', runtimeVersion: '1.1.0' }),
+    });
+    render(<DeviceSection />, runtime);
+    expect((await screen.findByTestId('device-app-version')).textContent).toBe('1.1.0 (202611050930)');
+    expect(screen.getByTestId('device-commit').textContent).toBe('8965d9a');
+    expect(screen.getByTestId('device-service-version').textContent).toBe('1.1.0');
+    expect(screen.getByTestId('device-web-build').textContent).toBe('2b2c1f81');
+  });
+
+  it('does not repeat the build number of a local build', async () => {
+    const { runtime } = setup({}, 'ready', {
+      shellAbout: async () => ({ version: '1.1.1-local.202611050212', build: '202611050212', commit: '1f9375e', runtimeVersion: '1.1.1-local.202611050212' }),
+    });
+    render(<DeviceSection />, runtime);
+    expect((await screen.findByTestId('device-app-version')).textContent).toBe('1.1.1-local (202611050212)');
+    expect(screen.getByTestId('device-service-version').textContent).toBe('1.1.1-local');
+  });
+
+  it('shows only the web page in a browser', async () => {
+    const { runtime } = setup({}, 'ready', { webBuild });
+    render(<DeviceSection />, runtime);
+    expect((await screen.findByTestId('device-web-build')).textContent).toBe('2b2c1f81');
+    expect(screen.queryByTestId('device-app-version')).toBeNull();
+    expect(screen.queryByTestId('device-service-version')).toBeNull();
+  });
+});
+

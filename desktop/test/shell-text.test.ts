@@ -43,7 +43,7 @@ describe("shell messages", () => {
 });
 
 describe("packaging", () => {
-  const builder = readFileSync(join(DESKTOP, "electron-builder.yml"), "utf8");
+  const builder = readFileSync(join(DESKTOP, "desktop-builder.yml"), "utf8");
   const line = (key: string) => builder.split("\n").find((text) => text.trimStart().startsWith(`${key}:`))?.split(":").slice(1).join(":").trim();
 
   it("sets the bundle id and the App name", () => {

@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { tempDir } from "@pi-lead-child/core/testing";
 import {
-  dmgName, hashFiles, parseNodeVersionFile, parsePackArgs, releaseManifest, runtimeArchiveName, sha256File, updateManifest, UsageError, withDmg,
+  buildNumber, dmgName, hashFiles, localVersion, parseNodeVersionFile, parsePackArgs, releaseManifest, runtimeArchiveName, sha256File, updateManifest, UsageError, withDmg,
 } from "../lib/release.js";
 
 const valid = ["--arch", "arm64", "--version", "1.3.0", "--repository", "acme/x"];
@@ -97,3 +97,26 @@ describe("the dmg in manifest.json", () => {
     expect(() => withDmg(manifest, { file: "bytezard-lead-1.3.0-arm64.dmg", size: 9, sha256: "xyz" })).toThrow();
   });
 });
+
+// 版本号和构建号（用户 2026-11-05：关于窗口显示「版本 1.1.0 (202611050930)」；本机构建要排在最近的发布之后）。
+describe("version and build number", () => {
+  const now = new Date("2026-11-05T09:30:59.000Z");
+
+  it("writes the build number as the UTC year, month, day, hour and minute", () => {
+    expect(buildNumber(now)).toBe("202611050930");
+    expect(buildNumber(new Date("2026-11-05T01:05:00.000+08:00"))).toBe("202611041705");
+  });
+
+  it("puts a local build after the last release and before the next patch release", async () => {
+    const { compareVersions } = await import("../../../desktop/src/runtime-bundle.js");
+    const local = localVersion("1.1.0", now);
+    expect(local).toBe("1.1.1-local.202611050930");
+    expect(compareVersions(local, "1.1.0")).toBe(1);
+    expect(compareVersions(local, "1.1.1")).toBe(-1);
+    expect(compareVersions(localVersion("1.1.0", new Date("2026-11-05T09:31:00.000Z")), local)).toBe(1);
+    // 在本机构建上再打一次包：还在 1.1.1 之前。
+    expect(localVersion("1.1.1-local.202611050800", now)).toBe("1.1.1-local.202611050930");
+    expect(() => localVersion("1.1.0.202611050930", now)).toThrow();
+  });
+});
+

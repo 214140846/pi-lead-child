@@ -76,6 +76,16 @@ describe("release-macos workflow", () => {
     expect(job.env.CSC_IDENTITY_AUTO_DISCOVERY).toBe("false");
   });
 
+  // 关于窗口显示「版本 1.1.0 (202611050930)」：构建号是 UTC 的年月日时分，进 CFBundleVersion 和 App 的 buildInfo。
+  it("gives the App a UTC build number and the commit", () => {
+    expect(job.steps[0]!.run).toContain('echo "BUILD=$(date -u +%Y%m%d%H%M)" >> "$GITHUB_ENV"');
+    const record = job.steps.find((step) => step.run?.startsWith("npm pkg set "))!;
+    expect(record.run).toBe('npm pkg set "buildInfo.build=$BUILD" "buildInfo.commit=$GITHUB_SHA"');
+    expect(record["working-directory"]).toBe("desktop");
+    expect(job.steps.indexOf(record)).toBeLessThan(stepIndex(/npm run dist /));
+    expect(job.steps[stepIndex(/npm run dist /)]!.run).toContain('"-c.buildVersion=$BUILD"');
+  });
+
   it("reads no secret and pins every action to a commit SHA", () => {
     expect(SOURCE).not.toMatch(/secrets\./);
     const uses = job.steps.flatMap((step) => (step.uses ? [step.uses] : []));
@@ -123,9 +133,9 @@ describe("release-macos tag check", () => {
     return { ok: true, env: readFileSync(envFile, "utf8") };
   }
 
-  it("turns a version tag into VERSION without the leading v", () => {
-    expect(check("v1.3.0")).toEqual({ ok: true, env: "VERSION=1.3.0\n" });
-    expect(check("1.3.0-rc.1")).toEqual({ ok: true, env: "VERSION=1.3.0-rc.1\n" });
+  it("turns a version tag into VERSION without the leading v, and adds a UTC build number", () => {
+    expect(check("v1.3.0")).toMatchObject({ ok: true, env: expect.stringMatching(/^VERSION=1\.3\.0\nBUILD=\d{12}\n$/) });
+    expect(check("1.3.0-rc.1")).toMatchObject({ ok: true, env: expect.stringMatching(/^VERSION=1\.3\.0-rc\.1\nBUILD=\d{12}\n$/) });
   });
 
   it("stops on a tag that is not a version, before any other step runs", () => {

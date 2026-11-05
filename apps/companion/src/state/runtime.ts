@@ -141,6 +141,7 @@ import { createStreamCoordinator, type StreamCoordinator, type StreamScheduler }
 import { createStreamStore } from './streams/store';
 import { createWorkspaceStore } from './workspace/store';
 import { createWebVersionStore } from './webVersion';
+import type { ShellAboutSource } from './shellAbout';
 import type { ShellUpdateSource } from './shellUpdate';
 import { DAEMON_OLDER_THAN_WEB, RESOURCE_KEYS, type ResourceKey, type ResourceLoadState } from './types';
 
@@ -236,6 +237,8 @@ export interface CompanionRuntimeDependencies {
   reloadApp?: () => void;
   // 桌面 App 的一键更新（./shellUpdate）：只有桌面 App 里的网页有。
   shellUpdate?: ShellUpdateSource;
+  // 桌面 App 的版本、构建号、提交和后台服务的版本（./shellAbout）：只有桌面 App 里的网页有。
+  shellAbout?: ShellAboutSource;
 }
 
 // 网页的版本（protocol 的 web-build.ts）：current 是构建时内联进页面的，served() 读 daemon 现在提供的。

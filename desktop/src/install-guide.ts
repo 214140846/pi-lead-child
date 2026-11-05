@@ -4,7 +4,7 @@
 import { installGuideMessages } from "./install-guide.messages.js";
 import type { Locale } from "./locale.js";
 
-/** dmg 附件的名字，和 electron-builder.yml 的 dmg.artifactName 一致。只出 arm64（设计第 9 节决定 1）。 */
+/** dmg 附件的名字，和 desktop-builder.yml 的 dmg.artifactName 一致。只出 arm64（设计第 9 节决定 1）。 */
 export function dmgFileName(version: string): string {
   return `bytezard-lead-${version}-arm64.dmg`;
 }

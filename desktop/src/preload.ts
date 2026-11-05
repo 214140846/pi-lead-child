@@ -1,6 +1,7 @@
 // 网页能看到的壳的东西（设计第 8.4 节）：只有几个值和几个按钮，不暴露 Node 能力。
 //   - 所有网页：window.bytezardLead.shellVersion（App 版本）。
-//   - 网关的网页（http:）：window.bytezardLead.update，App 的一键更新（updater.ts）：读状态、收状态的变化、「更新」「以后」。
+//   - 网关的网页（http:）：window.bytezardLead.update，App 的一键更新（updater.ts）：读状态、收状态的变化、「更新」「以后」；
+//     window.bytezardLead.about()：版本、构建号、提交和运行包的版本（build-info.ts，设置 → 本设备用）。
 //   - 只有安装页（file:）：window.bytezardInstaller，读安装页的画面、点按钮。
 // 主进程按发送方的地址再查一遍。IPC 的名字和 main.ts 的 IPC 一样（preload 单独打包，不 import main.ts）。
 import { contextBridge, ipcRenderer } from "electron";
@@ -17,7 +18,9 @@ const update = globalThis.location?.protocol === "file:" ? null : Object.freeze(
   },
 });
 
-contextBridge.exposeInMainWorld("bytezardLead", Object.freeze({ shellVersion, update }));
+const about = globalThis.location?.protocol === "file:" ? null : () => ipcRenderer.invoke("shell:about");
+
+contextBridge.exposeInMainWorld("bytezardLead", Object.freeze({ shellVersion, update, about }));
 
 if (globalThis.location?.protocol === "file:") {
   contextBridge.exposeInMainWorld("bytezardInstaller", Object.freeze({
