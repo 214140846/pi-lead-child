@@ -92,5 +92,6 @@ jobs:
           gh release upload "$TAG"
           "out/desktop/bytezard-lead-${VERSION}-arm64.dmg"
           "out/bytezard-lead-runtime-${VERSION}-arm64.tar.gz"
+          "out/bytezard-lead-sourcemaps-${VERSION}-arm64.tar.gz"
           out/manifest.json
           --clobber --repo "$GITHUB_REPOSITORY"

@@ -8,7 +8,7 @@ import { tempDir } from "@pi-lead-child/core/testing";
 import { DAEMON_EXTERNALS } from "../../../apps/daemon/scripts/externals.js";
 import { AGENT_BINARY, AGENT_LAUNCHER, AGENT_SIGN_ID, AGENT_STAGING } from "../lib/agent-bundle.js";
 import { packRuntime, PLC_WRAPPER, REQUIRED_BUILD_FILES } from "../lib/pack.js";
-import { hashFiles, type ReleaseManifest, type UpdateManifest } from "../lib/release.js";
+import { hashComponents, hashFiles, type ReleaseManifest, type UpdateManifest } from "../lib/release.js";
 import type { FetchLike } from "../lib/node-dist.js";
 import { CPU, thinMachO } from "./fixtures.js";
 
@@ -108,6 +108,7 @@ describe("packRuntime", () => {
     expect(signed.at(-1)).toEqual({ path: join(runtime, AGENT_STAGING), identifier: AGENT_SIGN_ID });
     expect(existsSync(join(runtime, "Bytezard Lead.app"))).toBe(false);
     expect(readlinkSync(join(runtime, "bin/node"))).toBe("lead-agent");
+    expect(readlinkSync(join(runtime, "bin/Bytezard Lead Memory"))).toBe("lead-agent");
     expect(readFileSync(join(runtime, "bin/plc"), "utf8")).toBe(PLC_WRAPPER);
     expect(PLC_WRAPPER).toContain('exec "$ROOT/bin/lead-agent" "$ROOT/apps/cli/dist/cli.mjs" "$@"');
     expect(statSync(join(runtime, "bin/plc")).mode & 0o111).toBe(0o111);
@@ -116,7 +117,10 @@ describe("packRuntime", () => {
     expect(JSON.parse(readFileSync(join(runtime, "package.json"), "utf8")).workspaces).toEqual([]);
     expect(JSON.parse(readFileSync(join(runtime, "apps/daemon/package.json"), "utf8"))).toEqual({ name: "@pi-lead-child/daemon", private: true, type: "module" });
     for (const file of REQUIRED_BUILD_FILES) expect(existsSync(join(runtime, file)), file).toBe(true);
-    expect(existsSync(join(runtime, "apps/daemon/dist/supervisor.mjs.map"))).toBe(true);
+    // 源码映射不进运行包，另打成附件（设计第 7.5.7 节）。
+    expect(existsSync(join(runtime, "apps/daemon/dist/supervisor.mjs.map"))).toBe(false);
+    expect(result.sourceMaps).toBe(join(out, "bytezard-lead-sourcemaps-1.3.0-arm64.tar.gz"));
+    expect(execFileSync("tar", ["-tzf", result.sourceMaps!], { encoding: "utf8" }).trim().split("\n")).toEqual(["apps/daemon/dist/supervisor.mjs.map"]);
     expect(existsSync(join(runtime, "apps/daemon/dist/build-info.json"))).toBe(false);
     expect(existsSync(join(runtime, "apps/daemon/dist/.web-staging-123"))).toBe(false);
 
@@ -140,13 +144,21 @@ describe("packRuntime", () => {
     });
     expect(release.files).toEqual(await hashFiles(runtime, Object.keys(release.files)));
     expect(Object.keys(release.files)).toEqual(expect.arrayContaining(["bin/lead-agent", "node_modules/better-sqlite3/build/Release/better_sqlite3.node"]));
+    // 五个组成的内容哈希（设计第 7.5.1 节）：和磁盘上算的一样。
+    expect(Object.keys(release.components).sort()).toEqual(["cli", "node", "node_modules", "service", "web"]);
+    expect(release.components).toEqual(hashComponents(runtime));
 
     // 附件：bytezard-lead-runtime-<版本>-arm64.tar.gz 和 manifest.json。
-    expect(readdirSync(out).sort()).toEqual(["bytezard-lead-runtime-1.3.0-arm64.tar.gz", "cache", "manifest.json", "runtime"]);
+    expect(readdirSync(out).sort()).toEqual([
+      "bytezard-lead-runtime-1.3.0-arm64.tar.gz", "bytezard-lead-sourcemaps-1.3.0-arm64.tar.gz", "cache", "manifest.json", "runtime",
+    ]);
     const archive = join(out, "bytezard-lead-runtime-1.3.0-arm64.tar.gz");
     const manifest = JSON.parse(readFileSync(join(out, "manifest.json"), "utf8")) as UpdateManifest;
     expect(manifest).toMatchObject({ schema: 1, product: "bytezard-lead", version: "1.3.0", arch: "arm64", schemaVersion: 63 });
     expect(manifest.runtime).toEqual({ file: "bytezard-lead-runtime-1.3.0-arm64.tar.gz", size: statSync(archive).size, sha256: sha(readFileSync(archive)) });
+    expect(manifest.components).toEqual(release.components);
+    // release.json 是压缩包的第一项：壳先只读它（设计第 7.5.4 节）。
+    expect(execFileSync("tar", ["-tzf", archive], { encoding: "utf8" }).split("\n")[0]).toBe("./release.json");
 
     // tar.gz 解开就是运行包目录：软链接还在，哈希对得上，没有 ._ 文件。
     const unpacked = tempDir("plc-desktop-unpack-");
@@ -156,6 +168,33 @@ describe("packRuntime", () => {
     expect(readlinkSync(join(unpacked, "bin/node"))).toBe("lead-agent");
     expect(readlinkSync(join(unpacked, "bin/Bytezard Lead"))).toBe("lead-agent");
     expect(await hashFiles(unpacked, Object.keys(release.files))).toEqual(release.files);
+  });
+
+  it("gives the same component hashes for the same build, and changes only the web hash when only the pages change", async () => {
+    const repo = fakeRepo();
+    const first = await pack(repo, join(tempDir("plc-desktop-out-"), "out"), fakeNodeDist().fetchImpl);
+    const again = await pack(repo, join(tempDir("plc-desktop-out-"), "out"), fakeNodeDist().fetchImpl);
+    expect(again.release.components).toEqual(first.release.components);
+    write(join(repo, "apps/daemon/dist/web/index.html"), "<html>new pages</html>");
+    const web = await pack(repo, join(tempDir("plc-desktop-out-"), "out"), fakeNodeDist().fetchImpl);
+    const changed = Object.keys(web.release.components).filter((name) =>
+      web.release.components[name as keyof typeof web.release.components] !== first.release.components[name as keyof typeof first.release.components]);
+    expect(changed).toEqual(["web"]);
+  });
+
+  it("fails when a file in the runtime belongs to no component", async () => {
+    const repo = fakeRepo();
+    write(join(repo, "apps/cli/dist/cli.mjs"), "// cli\n");
+    const out = join(tempDir("plc-desktop-out-"), "out");
+    // pack 把 apps/<app>/dist 复制进运行包；在 Node 下载站之前放一个不归类的文件进去。
+    const dist = fakeNodeDist();
+    const fetchImpl: FetchLike = async (url) => {
+      mkdirSync(join(out, "runtime"), { recursive: true });
+      write(join(out, "runtime", "extra", "tool"), "x");
+      return dist.fetchImpl(url);
+    };
+    await expect(pack(repo, out, fetchImpl)).rejects.toThrow(/不属于任何组成.*extra\/tool/);
+    expect(existsSync(join(out, "manifest.json"))).toBe(false);
   });
 
   it("fails when the Node download does not match SHASUMS256.txt", async () => {

@@ -1,7 +1,9 @@
 // Hindsight 记忆服务的托管（2026-10-16 用户决定：先接 Hindsight，由 daemon 负责初始化好它）。
-// - 它是一个独立的 launchd 任务（com.bytezard.plc.hindsight），不是 daemon 或 supervisor 的子进程。
-//   所以 daemon 重启、升级，supervisor 重装，都不会重启它。daemon 只在期望状态变了时重启它（热重载）：
-//   版本、端口、数据库、embedding、reranker、LLM，或者密钥换了。
+// - 2026-11-05 起它由 supervisor 拉起（../hindsight-child.ts），不再是独立的 launchd 任务 com.bytezard.plc.hindsight：
+//   macOS 给每个 LaunchAgent 在「登录项与扩展」里列一行，用户不要单独的一行（设计第 8.7 节）。daemon 写 run.json
+//   （ensureHindsightService），supervisor 按它拉起、重启、停掉。它是 supervisor 的子进程，不是 daemon 的：
+//   daemon 重启不会重启它。daemon 只在期望状态变了时重启它（热重载）：版本、端口、数据库、embedding、reranker、LLM，
+//   或者密钥换了。以前的独立任务由新的 daemon 停掉、删掉 plist（removeLegacyHindsightJob）。
 // - 用什么模型由 daemon 决定（apps/daemon 的 memory-controller.ts，用户在设置页选）。这里只接收决定好的配置：
 //   embedding 是本地模型或者 OpenAI 兼容的远程接口；reranker 是决策模型（TypeSafe 协议）、本地模型或者不用。
 //   本地模型由 daemon 预先下载好（hindsight-models.ts）。Hindsight 离线运行（HF_HUB_OFFLINE），自己不下载任何东西：
@@ -13,11 +15,11 @@
 //   免得以后装了 Postgres 时，Hindsight 换到一个空库上。
 //   同一个库里不能混用两个 embedding（向量维度和向量空间都不同），所以库名带上 embedding 的指纹：
 //   换了 embedding 就是一个新库，notes 从头同步一遍（engine 的 NotesMemory），旧库留着，可以删。
-// - 密钥不进 plist（spec §B3）。daemon 把密钥加密写进 <dataDir>/hindsight/secrets.sealed，launchd 运行的
+// - 密钥不进 run.json（spec §B3）。daemon 把密钥加密写进 <dataDir>/hindsight/secrets.sealed，supervisor 运行的
 //   hindsight-main（apps/daemon）用保险库的密钥解开，算出环境变量，再用 uvx 启动固定版本的 hindsight-api。
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { dataDir as currentDataDir, isPreRenameDataDir, PRE_RENAME_HINDSIGHT_LABEL } from "@pi-lead-child/core";
@@ -271,40 +273,66 @@ export function findUvx(env: Record<string, string | undefined> = process.env): 
   return dirs.map((dir) => join(dir, "uvx")).find((path) => existsSync(path)) ?? null;
 }
 
-const xmlEscape = (s: string): string => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+/** run.json：daemon 写，supervisor 读（../hindsight-child.ts）。 */
+export interface HindsightRun {
+  programArguments: string[];
+  /** 加在继承的环境变量上面：数据目录、PATH 和期望状态的指纹。没有密钥。 */
+  env: Record<string, string>;
+  cwd: string;
+  /** 期望状态的指纹：变了就重启。 */
+  spec: string;
+}
 
-// launchd 的 plist。环境变量里只有数据目录、PATH 和期望状态的指纹，没有密钥。
-// 指纹随 service.json 和启动命令变化，所以期望状态一变，plist 就变，daemon 才会重启服务。
-export function hindsightPlist(o: {
-  programArguments: string[]; dataDir: string; logDir: string; service: HindsightServiceFile;
-}): string {
-  const fingerprint = sha({ service: o.service, program: o.programArguments }, 16);
+export const HINDSIGHT_RUN_FILE = "run.json";
+
+export function hindsightRunPath(dataDir: string): string {
+  return join(hindsightDir(dataDir), HINDSIGHT_RUN_FILE);
+}
+
+/** 读 run.json。没有、读不了或者形状不对时为 null（当作不要跑）。 */
+export function readHindsightRun(dataDir: string): HindsightRun | null {
+  try {
+    const value = JSON.parse(readFileSync(hindsightRunPath(dataDir), "utf8")) as Partial<HindsightRun>;
+    const args = value.programArguments;
+    if (!Array.isArray(args) || !args.length || !args.every((arg) => typeof arg === "string" && arg.length > 0)) return null;
+    if (typeof value.cwd !== "string" || !value.cwd || typeof value.spec !== "string" || !value.spec) return null;
+    const env = value.env && typeof value.env === "object" && !Array.isArray(value.env) ? value.env : {};
+    if (!Object.values(env).every((item) => typeof item === "string")) return null;
+    return { programArguments: args, env: env as Record<string, string>, cwd: value.cwd, spec: value.spec };
+  } catch {
+    return null;
+  }
+}
+
+// supervisor 怎样运行 Hindsight。环境变量里只有数据目录、PATH 和期望状态的指纹，没有密钥。
+// 指纹随 service.json 和启动命令变化，所以期望状态一变，run.json 就变，supervisor 才会重启服务。
+export function hindsightRun(o: { programArguments: string[]; dataDir: string; service: HindsightServiceFile }): HindsightRun {
+  const spec = sha({ service: o.service, program: o.programArguments }, 16);
   const path = [dirname(o.service.uvx), "/usr/bin", "/bin", "/usr/sbin", "/sbin"].join(":");
-  const args = o.programArguments.map((arg) => `    <string>${xmlEscape(arg)}</string>`).join("\n");
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key><string>${hindsightLabel(o.dataDir)}</string>
-  <key>ProgramArguments</key>
-  <array>
-${args}
-  </array>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>PLC_DATA_DIR</key><string>${xmlEscape(o.dataDir)}</string>
-    <key>PATH</key><string>${xmlEscape(path)}</string>
-    <key>PLC_HINDSIGHT_SPEC</key><string>${fingerprint}</string>
-  </dict>
-  <key>WorkingDirectory</key><string>${xmlEscape(hindsightDir(o.dataDir))}</string>
-  <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
-  <key>ThrottleInterval</key><integer>30</integer>
-  <key>StandardOutPath</key><string>${xmlEscape(join(o.logDir, "hindsight.out.log"))}</string>
-  <key>StandardErrorPath</key><string>${xmlEscape(join(o.logDir, "hindsight.err.log"))}</string>
-</dict>
-</plist>
-`;
+  return {
+    programArguments: o.programArguments,
+    env: { PLC_DATA_DIR: o.dataDir, PATH: path, PLC_HINDSIGHT_SPEC: spec },
+    cwd: hindsightDir(o.dataDir),
+    spec,
+  };
+}
+
+/**
+ * 2026-11-05 以前的独立 launchd 任务：bootout，等它卸载完（hindsight-api 停 pg0 要几秒，端口要先空出来），删掉 plist。
+ * 没有这个任务时什么也不做。返回有没有删掉一个。
+ */
+export async function removeLegacyHindsightJob(o: {
+  label: string; plistPath: string; launchctl?: Launchctl; sleep?: (ms: number) => Promise<void>;
+}): Promise<boolean> {
+  if (!existsSync(o.plistPath)) return false;
+  const ctl = o.launchctl ?? launchctl;
+  const target = `gui/${process.getuid!()}/${o.label}`;
+  if ((await ctl(["print", target])).ok) {
+    await ctl(["bootout", target]);
+    await waitUntilUnloaded(ctl, target, o.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))));
+  }
+  rmSync(o.plistPath, { force: true });
+  return true;
 }
 
 export interface EnsureHindsightOptions {
@@ -343,34 +371,16 @@ export interface HindsightEndpoint {
 type Launchctl = (args: string[]) => Promise<{ ok: boolean; out: string }>;
 
 // launchctl bootout 发出停止信号就返回。Hindsight 下面挂着 uvx、Python 和 Postgres，要几秒才卸载完；
-// 卸载完之前 bootstrap 会失败（Bootstrap failed: 5: Input/output error，2026-10-26）。
+// 卸载完以前它还占着端口（2026-10-26）。
 const UNLOAD_POLL_MS = 250;
 const UNLOAD_TIMEOUT_MS = 30_000;
-const BOOTSTRAP_ATTEMPTS = 5;
-const BOOTSTRAP_RETRY_MS = 1_000;
 
-// 等 bootout 卸载完：print 找不到这个任务为止。超时也接着 bootstrap，由它的重试和报错说明原因。
+// 等 bootout 卸载完：print 找不到这个任务为止。超时也接着往下做：supervisor 拉起的新服务起不来时会隔一会儿重试。
 async function waitUntilUnloaded(ctl: Launchctl, target: string, sleep: (ms: number) => Promise<void>): Promise<void> {
   for (let waited = 0; waited < UNLOAD_TIMEOUT_MS; waited += UNLOAD_POLL_MS) {
     if (!(await ctl(["print", target])).ok) return;
     await sleep(UNLOAD_POLL_MS);
   }
-}
-
-// bootstrap 失败时先等任务卸载完，再重试，最多 BOOTSTRAP_ATTEMPTS 次。
-async function bootstrap(ctl: Launchctl, target: string, plist: string, sleep: (ms: number) => Promise<void>): Promise<void> {
-  const label = target.slice(target.lastIndexOf("/") + 1);
-  let out = "";
-  for (let attempt = 1; attempt <= BOOTSTRAP_ATTEMPTS; attempt += 1) {
-    const r = await ctl(["bootstrap", `gui/${process.getuid!()}`, plist]);
-    if (r.ok) return;
-    out = r.out;
-    if (attempt < BOOTSTRAP_ATTEMPTS) {
-      await sleep(BOOTSTRAP_RETRY_MS);
-      await waitUntilUnloaded(ctl, target, sleep);
-    }
-  }
-  throw new Error(`launchctl bootstrap ${label} failed after ${BOOTSTRAP_ATTEMPTS} attempts: ${out}`);
 }
 
 // 让服务处在期望状态。期望状态没变、任务在跑时什么也不做。不等服务就绪：客户端用 /health 判断它能不能用。
@@ -408,32 +418,24 @@ export async function ensureHindsightService(o: EnsureHindsightOptions): Promise
   };
   writeServiceFile(o.dataDir, service);
 
-  const logDir = join(o.dataDir, "logs");
-  mkdirSync(logDir, { recursive: true });
+  // 以前的独立 launchd 任务先停掉、删掉：同一个端口只能有一个 Hindsight。
   const label = hindsightLabel(o.dataDir);
-  const plist = o.plistPath ?? hindsightPlistPath(label);
-  const content = hindsightPlist({ programArguments: o.programArguments, dataDir: o.dataDir, logDir, service });
-  const ctl = o.launchctl ?? launchctl;
-  const sleep = o.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
-  const target = `gui/${process.getuid!()}/${label}`;
-  const installed = existsSync(plist) ? readFileSync(plist, "utf8") : null;
-  const loaded = (await ctl(["print", target])).ok;
-  let restarted = false;
+  let restarted = await removeLegacyHindsightJob({
+    label, plistPath: o.plistPath ?? hindsightPlistPath(label),
+    ...(o.launchctl ? { launchctl: o.launchctl } : {}), ...(o.sleep ? { sleep: o.sleep } : {}),
+  });
+  if (restarted) log(`[hindsight] removed the separate launchd job ${label}; the supervisor runs Hindsight from now on`);
+  const runPath = hindsightRunPath(o.dataDir);
+  const content = `${JSON.stringify(hindsightRun({ programArguments: o.programArguments, dataDir: o.dataDir, service }), null, 2)}\n`;
+  const installed = existsSync(runPath) ? readFileSync(runPath, "utf8") : null;
   if (installed !== content) {
-    mkdirSync(dirname(plist), { recursive: true });
-    writeFileSync(plist, content);
-    if (loaded) {
-      await ctl(["bootout", target]);
-      await waitUntilUnloaded(ctl, target, sleep);
-    }
-    await bootstrap(ctl, target, plist, sleep);
+    mkdirSync(dirname(runPath), { recursive: true });
+    const temp = `${runPath}.${process.pid}.tmp`;
+    writeFileSync(temp, content);
+    renameSync(temp, runPath);
     restarted = true;
-    log(`[hindsight] ${installed === null ? "installed" : "updated and restarted"} ${label} `
+    log(`[hindsight] asked the supervisor to ${installed === null ? "start" : "restart"} Hindsight `
       + `(hindsight-api ${HINDSIGHT_VERSION}, port ${port}, embedding ${describeEmbedding(o.embedding)}, reranker ${describeReranker(o.reranker)})`);
-  } else if (!loaded) {
-    await bootstrap(ctl, target, plist, sleep);
-    restarted = true;
-    log(`[hindsight] started ${label}`);
   }
   return { url: `http://127.0.0.1:${port}`, index: sha(databaseUrl, 8), restarted };
 }
@@ -460,12 +462,15 @@ export function describeReranker(reranker: HindsightReranker): string {
   return reranker.provider === "none" ? "不用" : reranker.provider === "local" ? `本地 ${reranker.model}` : `决策模型 ${reranker.model}`;
 }
 
-// 停掉服务（例如用户把 embedding 关掉了），删掉 plist。数据和密钥留着。plc daemon uninstall 也用它。
+// 停掉服务（例如用户把 embedding 关掉了）：删掉 run.json，supervisor 停掉它；以前的独立任务也停掉、删掉 plist。
+// 数据和密钥留着。plc daemon uninstall 也用它。
 export async function uninstallHindsightService(opts: {
-  plistPath?: string; launchctl?: (args: string[]) => Promise<{ ok: boolean; out: string }>; label?: string;
+  plistPath?: string; launchctl?: (args: string[]) => Promise<{ ok: boolean; out: string }>; label?: string; dataDir?: string;
 } = {}): Promise<void> {
   const ctl = opts.launchctl ?? launchctl;
-  const label = opts.label ?? hindsightLabel(currentDataDir());
+  const dataDir = opts.dataDir ?? currentDataDir();
+  const label = opts.label ?? hindsightLabel(dataDir);
+  rmSync(hindsightRunPath(dataDir), { force: true });
   await ctl(["bootout", `gui/${process.getuid!()}/${label}`]);
   rmSync(opts.plistPath ?? hindsightPlistPath(label), { force: true });
 }

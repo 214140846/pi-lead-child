@@ -1,13 +1,13 @@
 // App 的一键更新（updater.ts）。网络和系统命令换成假的：fetch 回 manifest 和 dmg 的字节，hdiutil 把一个假的 App
 // 放进挂载点，ditto 照原样复制，plutil 从假 App 的 Info.plist（这里写成 JSON）里读值。
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { rename } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { tempDir } from "@pi-lead-child/core/testing";
 import type { ExecFile } from "../src/process.js";
 import {
-  appBundleOf, createUpdater, dmgFileName, parseUpdateManifest, updateBaseUrl, UPDATE_CHECK_INTERVAL_MS, UPDATE_STAGING_PREFIX,
+  appBundleOf, createUpdater, dmgFileName, LSREGISTER, parseUpdateManifest, updateBaseUrl, UPDATE_CHECK_INTERVAL_MS, UPDATE_STAGING_PREFIX,
   type ShellUpdateStatus, type UpdaterDeps,
 } from "../src/updater.js";
 import { sha256 } from "./fixtures.js";
@@ -52,6 +52,7 @@ function setup(o: {
   failRename?: boolean;
   appBundle?: string | null;
   shellUserData?: string;
+  prepareRuntime?: UpdaterDeps["prepareRuntime"];
 } = {}): Setup {
   const root = tempDir("plc-desktop-update-");
   const applications = join(root, "Applications");
@@ -104,6 +105,7 @@ function setup(o: {
       if (o.failRename && from.endsWith("new.app")) throw new Error("EPERM");
       await rename(from, to);
     },
+    ...(o.prepareRuntime ? { prepareRuntime: o.prepareRuntime } : {}),
   });
   return result;
 }
@@ -224,14 +226,61 @@ describe("applying an update", () => {
     expect(run.urls.at(-1)).toBe(`https://github.com/${REPO}/releases/latest/download/${dmgFileName("1.1.0")}`);
     expect([...new Set(run.statuses.map((status) => status.state))]).toEqual(["available", "downloading", "installing"]);
     const files = run.commands.map((command) => command[0]);
-    expect(files).toEqual(["/usr/bin/hdiutil", "/usr/bin/ditto", "/usr/bin/hdiutil", "/usr/bin/plutil", "/usr/bin/plutil", "/usr/bin/plutil", "/usr/bin/codesign", "/usr/bin/xattr"]);
+    expect(files).toEqual([
+      "/usr/bin/hdiutil", "/usr/bin/ditto", "/usr/bin/hdiutil", "/usr/bin/plutil", "/usr/bin/plutil", "/usr/bin/plutil", "/usr/bin/codesign", "/usr/bin/xattr",
+      LSREGISTER,
+    ]);
     // 旧 App 留在隐藏的暂存目录里，新 App 打开时 cleanup 删掉它和下载目录。
     const staging = readdirSync(run.applications).filter((name) => name.startsWith(UPDATE_STAGING_PREFIX));
     expect(staging).toHaveLength(1);
     expect(appVersion(join(run.applications, staging[0]!, "old.app"))).toBe("1.0.0");
-    run.updater.cleanup();
+    await run.updater.cleanup();
     expect(readdirSync(run.applications)).toEqual(["Bytezard Lead.app"]);
     expect(existsSync(join(run.shellUserData, "updates"))).toBe(false);
+  });
+
+  // 设计第 7.5.6 节：换掉 App 以前先解好新版本的运行包，新 App 打开时只要换 current。
+  it("prepares the runtime of the new App before it replaces the App, and still updates when that fails", async () => {
+    const prepared: Array<{ staged: string; appVersionThen: string; stagedVersion: string }> = [];
+    const run = setup({
+      prepareRuntime: async (staged) => {
+        prepared.push({ staged, appVersionThen: appVersion(run.app), stagedVersion: appVersion(staged) });
+        return "{\"version\":\"unpacked\"}";
+      },
+    });
+    await run.updater.check();
+    await run.updater.apply();
+    expect(prepared).toEqual([{ staged: expect.stringMatching(/new\.app$/), appVersionThen: "1.0.0", stagedVersion: "1.1.0" }]);
+    expect(run.relaunches).toBe(1);
+    expect(readFileSync(join(run.shellUserData, "update.log"), "utf8")).toMatch(/prepared the runtime of 1\.1\.0 in \d+ ms: \{"version":"unpacked"\}/);
+
+    const failing = setup({ prepareRuntime: async () => { throw new Error("no space left on the disk"); } });
+    await failing.updater.check();
+    await failing.updater.apply();
+    expect(failing.relaunches).toBe(1);
+    expect(appVersion(failing.app)).toBe("1.1.0");
+    expect(readFileSync(join(failing.shellUserData, "update.log"), "utf8")).toContain("the new App unpacks it itself: no space left on the disk");
+  });
+
+  // 2026-11-05：换了 App 图标以后，通知还是 Electron 的图标。macOS 按 bundle id 找图标，LaunchServices 里记着 17 份同一个
+  // bundle id 的 App，其中有更新时挪进暂存目录的旧 App（目录早就删了，登记还在），换上的 App 的修改时间又是打包时的。
+  it("registers the new App again after the swap, with a fresh modification time", async () => {
+    const run = setup();
+    await run.updater.check();
+    await run.updater.apply();
+    expect(run.commands.at(-1)).toEqual([LSREGISTER, "-f", run.app]);
+    expect(statSync(run.app).mtimeMs).toBe(run.clock.now.getTime());
+  });
+
+  it("removes the registration of the old App before it deletes the staging folder", async () => {
+    const run = setup();
+    await run.updater.check();
+    await run.updater.apply();
+    const staging = readdirSync(run.applications).find((name) => name.startsWith(UPDATE_STAGING_PREFIX))!;
+    run.commands.length = 0;
+    await run.updater.cleanup();
+    expect(run.commands).toEqual([[LSREGISTER, "-u", join(run.applications, staging, "old.app")]]);
+    expect(readdirSync(run.applications)).toEqual(["Bytezard Lead.app"]);
   });
 
   it("keeps the old App when the download does not match the manifest", async () => {
@@ -288,7 +337,7 @@ describe("applying an update", () => {
     expect(readAvailable()).toMatchObject({ version: "1.1.0" });
     const after = setup({ current: "1.1.0", shellUserData: before.shellUserData });
     expect(after.updater.status()).toEqual({ state: "none" });
-    after.updater.cleanup();
+    await after.updater.cleanup();
     expect(readAvailable()).toBeNull();
   });
 });

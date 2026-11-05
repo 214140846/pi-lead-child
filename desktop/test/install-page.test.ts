@@ -13,6 +13,7 @@ function progress(extra: Partial<InstallProgress>): InstallProgress {
     backgroundNotice: true,
     error: null,
     gatewayUrl: null,
+    takeoverKind: null,
     ...extra,
   };
 }
@@ -65,6 +66,20 @@ describe("the install page", () => {
     expect(page.root.querySelector("li[data-step=takeover]")?.textContent).toBe("接手已有的数据和设置失败");
     expect(page.root.querySelector("[role=alert]")?.textContent).toContain("已经恢复原样");
     expect([...page.root.querySelectorAll("button")].map((button) => button.textContent)).toEqual(["重试", "查看日志", "复制诊断信息"]);
+  });
+
+  // 普通升级原来也显示「接手已有的数据和设置」，用户读成要搬数据（2026-11-05）。换版本要重启时写备份和换版本
+  // （设计第 7.5.2 节）；不重启时这一行跳过，不显示。
+  it("labels an upgrade that restarts as a backup and a switch, not a takeover, and hides the row when nothing restarts", () => {
+    const upgrading = progress({ steps: { unpack: "done", takeover: "running", service: "pending", start: "pending" }, takeoverKind: "upgrade" });
+    expect(draw(installView({ kind: "progress", progress: upgrading }, { leadName: "Nina", locale: "en" })).root
+      .querySelector("li[data-step=takeover]")?.textContent).toBe("Back up the data and switch to the new versionIn progress");
+    expect(draw(installView({ kind: "progress", progress: upgrading }, { leadName: "Nina", locale: "zh" })).root
+      .querySelector("li[data-step=takeover]")?.textContent).toBe("备份数据，换到新版本进行中");
+
+    const keepsRunning = progress({ steps: { unpack: "done", takeover: "skipped", service: "done", start: "running" }, takeoverKind: "upgrade" });
+    const { root } = draw(installView({ kind: "progress", progress: keepsRunning }, { leadName: "Nina", locale: "en" }));
+    expect([...root.querySelectorAll("li")].map((li) => li.dataset.step)).toEqual(["unpack", "service", "start"]);
   });
 
   it("shows the failure and three actions; the buttons call back with their action", () => {

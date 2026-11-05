@@ -41,7 +41,7 @@ function runtime() {
 }
 
 async function start(opts: {
-  webRoot?: string;
+  webRoot?: string | (() => string);
   allowLoopbackAutoPair?: boolean;
   loopbackAutoPairOrigins?: string[];
   loopbackAutoPairShellKey?: string;
@@ -82,6 +82,22 @@ function lanAddress(): string | undefined {
 }
 
 describe("paired gateway web UI", () => {
+  // 桌面版只改了网页的更新不重启 daemon（docs/desktop/macos-desktop-design.md 第 7.5.3 节）：网页目录每次请求时再问一次。
+  it("asks for the web folder on every request when it is given as a function", async () => {
+    const next = join(root, "web-next");
+    mkdirSync(next, { recursive: true });
+    writeFileSync(join(next, "index.html"), "<html>new pages</html>");
+    let folder = webRoot;
+    const server = await start({ webRoot: () => folder });
+    try {
+      expect(await (await fetch(`${server.base}/`)).text()).toBe(INDEX_HTML);
+      folder = next;
+      expect(await (await fetch(`${server.base}/`)).text()).toBe("<html>new pages</html>");
+    } finally {
+      await server.close();
+    }
+  });
+
   it("serves index.html at / and a bundle asset with its content type", async () => {
     const server = await start({ webRoot });
     try {

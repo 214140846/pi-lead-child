@@ -86,10 +86,11 @@ export function installView(screen: InstallScreen, o: { leadName: string; locale
     ...base,
     heading: m.heading,
     body: null,
-    // 「接手已有的数据和设置」只在接管时出现（设计第 12.7 节）。
+    // 「接手已有的数据和设置」只在接管时出现（设计第 12.7 节）。换版本要重启时这一行写「备份数据，换到新版本」，
+    // 不说接手（设计第 7.5.2 节）；不重启时跳过，不出现。
     steps: INSTALL_STEPS.filter((id) => id !== "takeover" || !["pending", "skipped"].includes(progress.steps[id])).map((id) => ({
       id,
-      label: m.steps[id],
+      label: id === "takeover" && progress.takeoverKind === "upgrade" ? m.steps.upgrade : m.steps[id],
       state: progress.steps[id],
       stateLabel: m.stepStates[progress.steps[id]],
     })),

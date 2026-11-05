@@ -1,4 +1,5 @@
-// launchd 任务 com.bytezard.plc.hindsight 的入口（supervisor 的 deploy/hindsight.ts）。
+// Hindsight 记忆服务的入口：supervisor 按 daemon 写的 run.json 拉起它（supervisor 的 hindsight-child.ts、deploy/hindsight.ts）。
+// 2026-11-05 以前它是独立的 launchd 任务 com.bytezard.plc.hindsight。
 // 解开 daemon 写的 secrets.sealed（保险库的密钥在 Keychain 里），按 service.json 算出 Hindsight 的环境变量，
 // 再用 uvx 启动固定版本的 hindsight-api。子进程的环境只有白名单里的变量和我们算的这些（hindsightEnvironment）：
 // 这里不读 config.json 的 env 段，也不把 Keychain 读进环境。LLM 的 key 由 daemon 解析好放在 secrets.sealed 里。
@@ -38,7 +39,7 @@ const child = spawn(service.uvx, [
   `hindsight-api@${service.version}`, "--host", "127.0.0.1", "--port", String(service.port),
 ], { env, cwd: hindsightDir(dir), stdio: ["ignore", "pipe", "pipe"] });
 
-// launchd 把这个进程的 stdout/stderr 写进 hindsight.out.log / hindsight.err.log。
+// supervisor 把这个进程的 stdout/stderr 写进 hindsight.out.log / hindsight.err.log。
 const secretValues = hindsightSecretValues(secrets);
 for (const [from, to] of [[child.stdout!, process.stdout], [child.stderr!, process.stderr]] as const) {
   createInterface({ input: from, crlfDelay: Infinity }).on("line", (line) => {

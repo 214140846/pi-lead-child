@@ -354,7 +354,7 @@ describe("startShell", () => {
     writeFileSync(join(dataDir, "runtime", "current", "release.json"), JSON.stringify({ version: "1.1.1-local.202611050212" }));
     const shell = setup({ packaged: true, inApplications: true, dataDir, createUpdater: () => ({
       status: () => ({ state: "none" as const }), checkIfDue: async () => {}, check: async () => ({ kind: "current" as const }),
-      dismiss: () => {}, apply: async () => {}, cleanup: () => {},
+      dismiss: () => {}, apply: async () => {}, cleanup: async () => {},
     }) });
     (shell.app as unknown as { getVersion: () => string }).getVersion = () => "1.1.1-local.202611050212";
     writeFileSync(join(shell.distDir, "..", "package.json"), JSON.stringify({ buildInfo: { build: "202611050212", commit: "1f9375ea8d5e" } }));
@@ -370,7 +370,7 @@ describe("startShell", () => {
     writeFileSync(join(dataDir, "runtime", "current", "release.json"), JSON.stringify({ version: "1.3.0" }));
     const shell = setup({ packaged: true, inApplications: true, dataDir, createUpdater: () => ({
       status: () => ({ state: "none" as const }), checkIfDue: async () => {}, check: async () => ({ kind: "current" as const }),
-      dismiss: () => {}, apply: async () => {}, cleanup: () => {},
+      dismiss: () => {}, apply: async () => {}, cleanup: async () => {},
     }) });
     writeFileSync(join(shell.distDir, "..", "package.json"), JSON.stringify({ version: "1.3.0", buildInfo: { build: "202611050930", commit: "8965d9a79f9ce9aca6adf2a871c6155e78de825c" } }));
     await shell.ready();

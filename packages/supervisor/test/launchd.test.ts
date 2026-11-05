@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { describe, it, expect } from "vitest";
-import { HINDSIGHT_LABEL, hindsightLabel, hindsightPlist } from "../src/deploy/hindsight.js";
+import { HINDSIGHT_LABEL, hindsightLabel } from "../src/deploy/hindsight.js";
 import {
   activeLaunchdLabel, launchAgentsDir, DESKTOP_AGENT_LAUNCHER, DESKTOP_APP_BUNDLE_ID, desktopPlistOptions, LAUNCHD_LABEL, plistContent, plistWorkingDirectory, PRE_RENAME_LAUNCHD_LABEL, preRenamePlistPaths,
 } from "../src/deploy/launchd.js";
@@ -92,13 +92,10 @@ describe("launchd labels", () => {
     expect(activeLaunchdLabel("/tmp/plc-test", home)).toBe(LAUNCHD_LABEL);
   });
 
-  it("names the Hindsight task after the data folder in the same way", () => {
+  // Hindsight 已经不是独立的 launchd 任务（2026-11-05）。这个名字只用来找到以前的任务，停掉它、删掉它的 plist。
+  it("names the old Hindsight task after the data folder in the same way", () => {
     const old = join(homedir(), ".pi-lead-child");
     expect(hindsightLabel(old)).toBe("com.pi-lead-child.hindsight");
     expect(hindsightLabel(join(homedir(), "Library", "Application Support", "Bytezard Lead"))).toBe(HINDSIGHT_LABEL);
-    expect(hindsightPlist({
-      programArguments: ["/n", "/e"], dataDir: old, logDir: "/l",
-      service: { uvx: "/opt/homebrew/bin/uvx" } as never,
-    })).toContain("<key>Label</key><string>com.pi-lead-child.hindsight</string>");
   });
 });

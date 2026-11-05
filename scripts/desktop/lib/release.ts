@@ -1,8 +1,9 @@
 // 桌面版运行包的名字、参数和两份清单（docs/desktop/macos-desktop-design.md 第 2.3 节、第 7.3 节）。
 // 这里只有纯函数：打包脚本（pack.ts）和测试都用它。
 import { createHash } from "node:crypto";
-import { createReadStream } from "node:fs";
+import { createReadStream, lstatSync, readdirSync, readFileSync, readlinkSync } from "node:fs";
 import { join } from "node:path";
+import { RUNTIME_COMPONENTS, type RuntimeComponent } from "@pi-lead-child/supervisor";
 
 export const PRODUCT = "bytezard-lead";
 // 只出 Apple 芯片版（设计文档第 9 节决定 1）。
@@ -119,6 +120,60 @@ export function runtimeArchiveName(version: string): string {
   return `${PRODUCT}-runtime-${version}-${SUPPORTED_ARCH}.tar.gz`;
 }
 
+/** 源码映射的附件名（设计第 7.5.7 节）：不进运行包，查问题时下载。 */
+export function sourceMapArchiveName(version: string): string {
+  assertVersion(version);
+  return `${PRODUCT}-sourcemaps-${version}-${SUPPORTED_ARCH}.tar.gz`;
+}
+
+// 组成（设计第 7.5.1 节）：变了要不要重启服务，由 supervisor 的 update-kind.ts 按这里算的哈希判断。
+const NODE_FILES = new Set(["bin/lead-agent", "bin/node", "bin/Bytezard Lead", "bin/Bytezard Lead Memory"]);
+const CLI_FILES = new Set(["bin/plc"]);
+
+/** 运行包里的一个文件（相对路径，用 / 分隔）属于哪个组成。不属于任何一个时为 null：打包失败，要先给它归类。 */
+export function componentOf(path: string): RuntimeComponent | null {
+  if (NODE_FILES.has(path)) return "node";
+  if (CLI_FILES.has(path) || path.startsWith("apps/cli/")) return "cli";
+  if (path.startsWith("node_modules/")) return "node_modules";
+  if (path.startsWith("apps/daemon/dist/web/")) return "web";
+  if (path.startsWith("apps/daemon/") || path === "package.json") return "service";
+  return null;
+}
+
+function listFiles(root: string, dir = ""): string[] {
+  return readdirSync(join(root, dir), { withFileTypes: true }).flatMap((entry) => {
+    const rel = dir ? `${dir}/${entry.name}` : entry.name;
+    return entry.isDirectory() ? listFiles(root, rel) : [rel];
+  });
+}
+
+/**
+ * 给运行包的每个组成算内容哈希。每个文件一行「类型 可执行位 路径 内容」，按路径排好序再算 SHA-256：
+ * 类型是 f（文件）或 l（软链接）；内容是文件的 SHA-256，或者软链接的目标。不含时间，同样的内容总是同样的哈希。
+ * release.json 自己不算。有文件不属于任何组成时抛错。
+ */
+export function hashComponents(root: string): Record<RuntimeComponent, string> {
+  const lines = new Map<RuntimeComponent, string[]>(RUNTIME_COMPONENTS.map((name) => [name, []]));
+  const unknown: string[] = [];
+  for (const path of listFiles(root).filter((file) => file !== RELEASE_FILE).sort()) {
+    const component = componentOf(path);
+    if (!component) {
+      unknown.push(path);
+      continue;
+    }
+    const full = join(root, path);
+    const stat = lstatSync(full);
+    const line = stat.isSymbolicLink()
+      ? `l - ${path} ${readlinkSync(full)}`
+      : `f ${stat.mode & 0o100 ? "x" : "-"} ${path} ${createHash("sha256").update(readFileSync(full)).digest("hex")}`;
+    lines.get(component)!.push(line);
+  }
+  if (unknown.length) throw new Error(`运行包里这些文件不属于任何组成，先在 componentOf 里给它们归类：${unknown.join("、")}`);
+  return Object.fromEntries(
+    RUNTIME_COMPONENTS.map((name) => [name, createHash("sha256").update(`${lines.get(name)!.join("\n")}\n`).digest("hex")]),
+  ) as Record<RuntimeComponent, string>;
+}
+
 export interface ReleaseManifest {
   schema: typeof RELEASE_SCHEMA;
   product: typeof PRODUCT;
@@ -130,11 +185,13 @@ export interface ReleaseManifest {
   builtAt: string;
   updateSource: { type: "github"; repository: string };
   files: Record<string, string>;
+  /** 组成 → 内容哈希（设计第 7.5.1 节）。 */
+  components: Record<RuntimeComponent, string>;
 }
 
 export function releaseManifest(o: {
   version: string; node: string; schemaVersion: number; sourceTree: string; builtAt: Date;
-  repository: string; files: Record<string, string>;
+  repository: string; files: Record<string, string>; components: Record<RuntimeComponent, string>;
 }): ReleaseManifest {
   return {
     schema: RELEASE_SCHEMA,
@@ -147,6 +204,7 @@ export function releaseManifest(o: {
     builtAt: o.builtAt.toISOString(),
     updateSource: { type: "github", repository: o.repository },
     files: o.files,
+    components: o.components,
   };
 }
 
@@ -163,6 +221,8 @@ export interface UpdateManifest {
   sourceTree: string;
   builtAt: string;
   runtime: { file: string; size: number; sha256: string };
+  /** 和 release.json 的一样。以后只下载运行包时按它判断（设计第 7.5.9 节）。 */
+  components: Record<RuntimeComponent, string>;
   dmg?: { file: string; size: number; sha256: string };
 }
 
@@ -192,6 +252,7 @@ export function updateManifest(release: ReleaseManifest, archive: { file: string
     sourceTree: release.sourceTree,
     builtAt: release.builtAt,
     runtime: archive,
+    components: release.components,
   };
 }
 

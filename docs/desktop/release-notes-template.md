@@ -1,6 +1,6 @@
 # release 说明模板
 
-发布 Bytezard Lead 的 release 时，把下面两条横线之间的内容贴进 release 说明，把 `<version>` 和 `<版本>` 换成这次的版本号（tag 去掉开头的 `v`，例如 `1.3.0`）。设计见 [macos-desktop-design.md](macos-desktop-design.md) 第 8.1、8.3 节。
+发布 Bytezard Lead 的 release 时，把下面两条横线之间的内容贴进 release 说明，把 `<version>` 换成这次的版本号（tag 去掉开头的 `v`，例如 `1.3.0`）。GitHub 上的 commit 和 release 都只用英文（用户 2026-11-05）：前面加一节英文的「What's new in <version>」，不写中文。设计见 [macos-desktop-design.md](macos-desktop-design.md) 第 8.1、8.3 节。
 
 ## 发版的步骤
 
@@ -34,18 +34,5 @@ Bytezard Lead needs a Mac with Apple silicon.
 Bytezard Lead is not signed with an Apple certificate yet. You do these steps only once.
 <!-- install-guide:en:end -->
 
-<!-- install-guide:zh:start -->
-## 安装 Bytezard Lead
-
-Bytezard Lead 需要 Apple 芯片的 Mac。
-
-1. 下载 `bytezard-lead-<版本>-arm64.dmg`。
-2. 打开 dmg，把 **Bytezard Lead** 拖到「应用程序」。
-3. 打开 Bytezard Lead。macOS 提示无法验证开发者，点「完成」。
-4. 打开「系统设置 → 隐私与安全性」，向下滚动，点「仍要打开」。
-5. 警告再次出现时，点「打开」。
-
-Bytezard Lead 还没有 Apple 证书签名。这几步只需要做一次。
-<!-- install-guide:zh:end -->
 
 ---

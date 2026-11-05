@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { writeFileSync } from "node:fs";
+import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tempDir } from "@pi-lead-child/core/testing";
 import { hindsightProgram, summaryModels } from "../src/memory-backend.js";
@@ -60,6 +60,17 @@ describe("summaryModels", () => {
 });
 
 describe("hindsightProgram", () => {
+  // 「允许在后台」显示 plist 里程序的文件名：直接写 Node 时显示 lead-agent（用户 2026-11-05）。
+  it("starts Hindsight through the Bytezard Lead Memory link next to Node, and through Node when there is no link", () => {
+    const bin = join(tempDir("plc-memory-launcher-"), "bin");
+    mkdirSync(bin, { recursive: true });
+    const node = join(bin, "lead-agent");
+    writeFileSync(node, "node");
+    expect(hindsightProgram({ PLC_DEV: "1" }, node)[0]).toBe(node);
+    symlinkSync("lead-agent", join(bin, "Bytezard Lead Memory"));
+    expect(hindsightProgram({ PLC_DEV: "1" }, node)[0]).toBe(join(bin, "Bytezard Lead Memory"));
+  });
+
   it("runs the source through tsx in PLC_DEV", () => {
     const args = hindsightProgram({ PLC_DEV: "1" });
     expect(args[0]).toBe(process.execPath);

@@ -12,6 +12,8 @@ export * from "./deploy/keychain.js";
 export * from "./deploy/launchd.js";
 export * from "./deploy/readiness.js";
 export * from "./deploy/release.js";
+export * from "./deploy/update-kind.js";
+export * from "./hindsight-child.js";
 export * from "./instance-lock.js";
 export * from "./protocol.js";
 export { itemsBlockingMaintenance } from "./server.js";

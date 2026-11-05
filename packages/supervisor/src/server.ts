@@ -16,6 +16,7 @@ import {
 import { deployReadiness, type DeployReadiness } from "./deploy/readiness.js";
 import { databaseSchemaVersion } from "./deploy/release.js";
 import { backupSqlite } from "./deploy/backup.js";
+import { startHindsightChild, type HindsightChildOptions } from "./hindsight-child.js";
 import { findRuntimeExecutable, runtimeSearchPath } from "@pi-lead-child/runtime";
 import type {
   MaintenanceRequest,
@@ -56,6 +57,8 @@ export interface SupervisorOptions {
   daemonStatusPatienceMs?: number;
   // daemon 开始停机以后，最多等多久它退出（缺省 DEFAULT_DAEMON_STOP_TIMEOUT_MS）。
   daemonStopTimeoutMs?: number;
+  // Hindsight 记忆服务（hindsight-child.ts）：按 daemon 写的 run.json 拉起它。测试里调快时间，或者给 false 不管它。
+  hindsight?: false | Pick<HindsightChildOptions, "pollMs" | "throttleMs" | "stopTimeoutMs">;
 }
 
 export interface Deployment {
@@ -219,6 +222,10 @@ async function runSupervisor(opts: SupervisorOptions, lock: InstanceLock): Promi
   let daemonErrFd: number | null = null;
 
   const persist = () => saveSupervisorState(statePath, state);
+  // Hindsight 是 supervisor 的子进程，不是 daemon 的：daemon 重启时它照常跑（设计第 8.7 节，2026-11-05）。
+  const hindsight = opts.hindsight === false ? null : startHindsightChild({
+    dataDir: opts.dataDir, logsDir, log, env: opts.env ?? process.env, ...(opts.hindsight ?? {}),
+  });
 
   const daemonStatus = async (): Promise<Record<string, unknown> | null> => {
     try {
@@ -718,7 +725,11 @@ async function runSupervisor(opts: SupervisorOptions, lock: InstanceLock): Promi
     closing = true;
     clearInterval(timer);
     if (restartTimer) clearTimeout(restartTimer);
-    await stopDaemon(false).catch((error) => log(`daemon stop during supervisor close failed: ${error.message}`));
+    // daemon 和 Hindsight 一起停：launchd 停这个任务时只等一会儿（ExitTimeOut），过了就强杀整个进程组。
+    await Promise.all([
+      stopDaemon(false).catch((error) => log(`daemon stop during supervisor close failed: ${error.message}`)),
+      hindsight?.close().catch((error: Error) => log(`hindsight stop during supervisor close failed: ${error.message}`)),
+    ]);
     for (const client of clients) client.destroy();
     clients.clear();
     await new Promise<void>((resolve) => server.close(() => resolve()));

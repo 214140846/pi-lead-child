@@ -8,6 +8,7 @@ export const shellMessages = defineMessages({
     steps: {
       unpack: "Copy the program files",
       takeover: "Take over the data and settings that are already on this Mac",
+      upgrade: "Back up the data and switch to the new version",
       service: "Set up the background service",
       start: "Start the service (on a busy Mac, this can take several minutes)",
     },
@@ -85,6 +86,7 @@ export const shellMessages = defineMessages({
     steps: {
       unpack: "复制程序文件",
       takeover: "接手已有的数据和设置",
+      upgrade: "备份数据，换到新版本",
       service: "设置后台服务",
       start: "启动服务（电脑忙的时候可能要几分钟）",
     },

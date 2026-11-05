@@ -90,7 +90,7 @@ describe("MemoryController: nothing runs or downloads until the user chooses", (
   it("keeps Hindsight off and downloads nothing without an embedding choice", async () => {
     const t = setup();
     await t.controller.start();
-    expect(t.harness.launchctl).not.toContain("bootstrap");
+    expect(t.harness.service).not.toContain("start");
     expect(t.harness.downloads().started).toEqual([]);
     expect(t.controller.get()).toMatchObject({
       embedding: { mode: "unset", local: { model: DEFAULT_LOCAL_EMBEDDING, download: { state: "idle" } }, remote: { apiKeySet: false, apiKeyHost: null } },
@@ -120,7 +120,7 @@ describe("MemoryController: nothing runs or downloads until the user chooses", (
     const t = setup();
     writePlcConfig({ memory: { embedding: { remote: { baseUrl: REMOTE.baseUrl, model: REMOTE.model } } } }, t.dataDir);
     await t.controller.start();
-    expect(t.harness.launchctl).toEqual(["print", "bootstrap"]);
+    expect(t.harness.service).toEqual(["start"]);
     expect(t.controller.get().service.embedding).toBe("远程 text-embedding-3-small（api.example.com）");
   });
 
@@ -133,7 +133,7 @@ describe("MemoryController: nothing runs or downloads until the user chooses", (
       writePlcConfig({ memory: { embedding: { mode: "local" } } }, dataDir);
       await t.controller.start();
       expect(harness.downloads().started).toEqual([]);
-      expect(harness.launchctl).not.toContain("bootstrap");
+      expect(harness.service).not.toContain("start");
       if (value === "off") expect(t.logs.join("\n")).toMatch(/treating it as sqlite/);
       // 设置页据此说「这台 Mac 上关掉了记忆」，而不是「先选 embedding」（2026-10-16 发布评审）。
       expect(t.controller.get().service).toMatchObject({ state: "off", backend: "sqlite" });
@@ -150,11 +150,11 @@ describe("MemoryController: local models download in the background, pinned and 
     expect(t.harness.downloads().revisions).toEqual([PINNED_MODEL_REVISIONS[DEFAULT_LOCAL_EMBEDDING]]);
     expect(saved.embedding.local.download.state).toBe("downloading");
     expect(saved.service.state).toBe("off");
-    expect(t.harness.launchctl).not.toContain("bootstrap");
+    expect(t.harness.service).not.toContain("start");
 
     t.harness.downloads().finish(DEFAULT_LOCAL_EMBEDDING);
     await vi.waitFor(() => expect(t.controller.get().service.embedding).toBe("本地 intfloat/multilingual-e5-large"));
-    expect(t.harness.launchctl.filter((call) => call === "bootstrap")).toHaveLength(1);
+    expect(t.harness.service.filter((call) => call === "start")).toHaveLength(1);
     expect(t.notes.backends.at(-1)).toBeInstanceOf(HindsightBackend);
     // Hindsight 从快照目录离线加载，用的就是固定的 commit。
     const revision = PINNED_MODEL_REVISIONS[DEFAULT_LOCAL_EMBEDDING]!;
@@ -260,7 +260,7 @@ describe("MemoryController: switches that affect what comes next wait for the us
     const t = setup();
     await runningLocal(t);
     t.notes.index = { notes: 12, indexed: 12 };
-    const restarts = t.harness.launchctl.length;
+    const restarts = t.harness.service.length;
 
     const saved = await t.controller.update({ embedding: { ...REMOTE, apiKey: "sk-test-123" } });
     const pending = saved.pendingSwitch!;
@@ -271,7 +271,7 @@ describe("MemoryController: switches that affect what comes next wait for the us
     expect(pending.summary).toBe("embedding 换成远程 text-embedding-3-small（api.example.com）");
     expect(pending.reason).toContain("12 条笔记会发给 api.example.com");
     expect(pending.reason).toContain("重建索引");
-    expect(t.harness.launchctl).toHaveLength(restarts);
+    expect(t.harness.service).toHaveLength(restarts);
     expect(saved.service.embedding).toBe("本地 intfloat/multilingual-e5-large");
     const asked = t.memoryInbox().find((row) => row.payload.state === "pending")!;
     expect(asked.payload).toMatchObject({ kind: "memory_switch", switch: pending.id, wakeLead: true, needsUser: false });
@@ -288,7 +288,7 @@ describe("MemoryController: switches that affect what comes next wait for the us
     expect(applied).toMatchObject({ id: pending.id, state: "applied" });
     expect(confirmed.pendingSwitch).toBeNull();
     expect(confirmed.service.embedding).toContain("api.example.com");
-    expect(t.harness.launchctl.slice(restarts)).toEqual(["print", "bootout", "print", "bootstrap"]);
+    expect(t.harness.service.slice(restarts)).toEqual(["restart"]);
     expect(t.sealed().embeddingApiKey).toBe("sk-test-123");
     expect(t.memoryInbox().find((row) => row.payload.state === "applied" && row.payload.switch === pending.id)?.summary)
       .toContain("user via web 确认了记忆切换");
@@ -393,7 +393,7 @@ describe("MemoryController: the external decision-model reranker needs the user'
     await runningLocal(t);
     t.notes.index = { notes: 5, indexed: 5 };
     const index = t.notes.backends.at(-1);
-    const restarts = () => t.harness.launchctl.filter((call) => call === "bootstrap").length;
+    const restarts = () => t.harness.service.filter((call) => call === "start" || call === "restart").length;
 
     const decision = await t.controller.updateDecisionModel({ baseUrl: "https://decide.example.com", model: "decision-1", apiKey: "dec-1" });
     expect(decision).toEqual({
@@ -559,14 +559,14 @@ describe("MemoryController: a daemon restart does not restart Hindsight", () => 
     await runningLocal(t);
     t.notes.index = { notes: 3, indexed: 3 };
     const { pendingSwitch } = await t.controller.update({ embedding: { ...REMOTE, apiKey: "sk-new" } });
-    const before = t.harness.launchctl.length;
+    const before = t.harness.service.length;
     t.controller.stop();
 
     // 新的 daemon 进程：同一个数据目录、同一个 Hindsight。
     const again = setup({ dataDir: t.dataDir, db: t.db, vault: t.vault, harness: t.harness });
     again.notes.index = { notes: 3, indexed: 3 };
     await again.controller.start();
-    expect(t.harness.launchctl.slice(before)).toEqual(["print"]);
+    expect(t.harness.service.slice(before)).toEqual([]);
     expect(again.controller.get().service.embedding).toMatch(E5);
     expect(again.controller.get().pendingSwitch?.id).toBe(pendingSwitch!.id);
     expect(again.sealed().embeddingApiKey).toBeUndefined();
@@ -595,10 +595,10 @@ describe("MemoryController: summary models", () => {
     const t = setup();
     await runningLocal(t);
     expect(readServiceFile(t.dataDir)).toMatchObject({ llm: { model: "claude-haiku-5-5" }, consolidationLlm: null, observations: true, missions: { retain: expect.stringMatching(/not only coding/) } });
-    const before = t.harness.launchctl.length;
+    const before = t.harness.service.length;
     const change = await t.controller.setSummaryModel({ slot: "consolidation", model: "anthropic/claude-sonnet-5-5" });
     expect(change).toEqual({ summary: "整理观察的模型改成 anthropic/claude-sonnet-5-5", note: "记忆服务正在重启，几秒里召回只用全文检索" });
-    expect(t.harness.launchctl.slice(before)).toEqual(["print", "bootout", "print", "bootstrap"]);
+    expect(t.harness.service.slice(before)).toEqual(["restart"]);
     expect(loadPlcConfig(t.dataDir).memory?.llm).toEqual({ consolidation: "anthropic/claude-sonnet-5-5" });
     expect(readServiceFile(t.dataDir)?.consolidationLlm).toEqual({ provider: "anthropic", baseUrl: "https://api.anthropic.example/v1", model: "claude-sonnet-5-5" });
     expect(t.sealed()).toMatchObject({ llmApiKey: "vibe-key", consolidationLlmApiKey: "anthropic-key" });
@@ -617,11 +617,11 @@ describe("MemoryController: summary models", () => {
   it("refuses a model whose provider the Lead does not have, and changes nothing", async () => {
     const t = setup();
     await runningLocal(t);
-    const before = t.harness.launchctl.length;
+    const before = t.harness.service.length;
     await expect(t.controller.setSummaryModel({ slot: "default", model: "openrouter/haiku" }))
       .rejects.toMatchObject({ code: "invalid_input", message: expect.stringMatching(/服务商 openrouter 不在/) });
     expect(loadPlcConfig(t.dataDir).memory?.llm).toBeUndefined();
-    expect(t.harness.launchctl.length).toBe(before);
+    expect(t.harness.service.length).toBe(before);
   });
 
   it("shows each slot's model and how it was chosen, the writes, and tests a slot's model with its own key", async () => {

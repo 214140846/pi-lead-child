@@ -16,7 +16,7 @@
 // - key 绑定主机：存 key 时记下主机，只发给这个主机。baseUrl 换到别的主机、请求里又没带新 key 时，旧 key 删掉。
 //   Keychain 或环境变量里的 TYPESAFE_API_KEY 只发给 api.typesafe.ai。
 //
-// 切换（热重载）：只重启 Hindsight 这个 launchd 任务，daemon 和 Lead 不动；重启的几秒里 search_notes 退回全文检索。
+// 切换（热重载）：只重启 Hindsight（supervisor 拉起的子进程），daemon 和 Lead 不动；重启的几秒里 search_notes 退回全文检索。
 // - 自动切换，事后告诉用户：换本地 reranker、换决策模型的 key、第一次启用 embedding（还没有索引）、关掉 Hindsight。
 // - 要用户确认：
 //   - 已经有索引时换 embedding（建新库、全部笔记重新提取：每条一次 LLM 调用，重建完之前召回不完整）；
@@ -151,7 +151,7 @@ export interface MemoryControllerOptions {
   externalSecret: (name: string) => string | null;
   // Hindsight 的两个摘要模型、地址和 key（memory-backend.ts 的 summaryModels），按设置页的选择算。
   summaryModels: (settings: SummaryModelSettings) => Promise<SummaryModels>;
-  // launchd 运行 hindsight-main 的命令。
+  // supervisor 运行 hindsight-main 的命令（写进 run.json）。
   programArguments: string[];
   env?: Record<string, string | undefined>;
   // 测试注入。
@@ -200,7 +200,7 @@ export class MemoryController implements MemoryService {
   private lastModels: SummaryModels | null = null;
   private serviceState: "off" | "starting" | "healthy" | "down" = "off";
   private serviceMessage: string | null = null;
-  // 没起来的期望状态（launchctl 失败）。健康检查按它重试，直到服务起来或者设置变了。
+  // 没起来的期望状态（例如 run.json 写不下、旧的 launchd 任务停不掉）。健康检查按它重试，直到服务起来或者设置变了。
   private retry: Desired | null = null;
   private lastProgressPublish = 0;
   private healthTimer: ReturnType<typeof setInterval> | null = null;
@@ -452,7 +452,7 @@ export class MemoryController implements MemoryService {
 
   // 让 Hindsight 处在期望状态：一样时什么也不做；要确认时记下待切换并告诉 Lead；否则马上切换。
   private async reconcile(origin: "startup" | "settings" | "download"): Promise<void> {
-    // daemon 重启时 Hindsight 一般还在跑（它是独立的 launchd 任务）。先重新连上它：ensure 在期望状态没变时不重启服务。
+    // daemon 重启时 Hindsight 一般还在跑（它是 supervisor 的子进程）。先重新连上它：ensure 在期望状态没变时不重启服务。
     // 然后再和新的期望状态比较：daemon 停着的时候用户可能改了 config.json。
     if (origin === "startup" && !this.applied) {
       const running = this.runningService();

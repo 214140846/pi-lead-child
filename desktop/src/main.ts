@@ -5,7 +5,7 @@
 // 打包好的 App 每天检查一次新版，网页里点「更新」就换成新版并重开（updater.ts）。App 菜单里也能马上检查一次。
 //
 // Electron 由 index.ts 传进来，单元测试换成假的（desktop/test/main.test.ts），所以这里只 import electron 的类型。
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type * as ElectronModule from "electron";
@@ -23,7 +23,7 @@ import {
 } from "./notification-check.js";
 import { subscribeDesktopNotifications as realSubscribeNotifications, type DesktopNotifications } from "./notifications.js";
 import { shellPaths } from "./paths.js";
-import { findBundledRuntime } from "./runtime-bundle.js";
+import { findBundledRuntime, installedVersion, needsUnpack, unpackRuntime } from "./runtime-bundle.js";
 import { shellMessages } from "./shell.messages.js";
 import { execFile as realExecFile } from "./process.js";
 import { pairingHeaders, readShellPairingKey } from "./shell-pairing.js";
@@ -117,6 +117,22 @@ export function startShell(electron: ShellElectron, options: ShellOptions): void
   let testNotification: ElectronModule.Notification | null = null;
   // 一键更新：只有打包好的 App 才有（ready 以后建）。
   let updater: Updater | null = null;
+
+  // App 的图标（electron-builder 放在 Resources/icon.icns）：解包时设成后台程序的访达图标（runtime-bundle.ts 的 setAgentIcon）。
+  // 没打包时没有。
+  const appIcon = (): string | null => {
+    if (!app.isPackaged) return null;
+    const icon = join(options.runtimeDir, "..", "icon.icns");
+    return existsSync(icon) ? icon : null;
+  };
+  // 解包用了多久、复用了什么（install.ts、updater.ts 的 prepareRuntime）。写不下不影响安装。
+  const logInstall = (line: string) => {
+    try {
+      appendFileSync(join(paths.shellUserData, "install.log"), `[${new Date().toISOString()}] ${line}\n`);
+    } catch {
+      // 见上。
+    }
+  };
 
   const currentView = (): InstallView | null => (screen ? installView(screen, { leadName, locale, status, busy }) : null);
   const pushView = () => {
@@ -249,7 +265,7 @@ export function startShell(electron: ShellElectron, options: ShellOptions): void
     status = null;
     try {
       const progress = await runInstall(
-        { paths, bundled: findBundledRuntime(options.runtimeDir), locale },
+        { paths, bundled: findBundledRuntime(options.runtimeDir), locale, log: logInstall, icon: appIcon() },
         (next) => {
           lastProgress = next;
           screen = { kind: "progress", progress: next };
@@ -449,8 +465,16 @@ export function startShell(electron: ShellElectron, options: ShellOptions): void
           app.exit(0);
         },
         onStatus: pushUpdate,
+        // 换掉 App 以前先解好新版本的运行包，不换 current（设计第 7.5.6 节）：新 App 打开时只要换 current。
+        prepareRuntime: async (staged) => {
+          const bundled = findBundledRuntime(join(staged, "Contents", "Resources", "runtime"));
+          if (!bundled || !needsUnpack(bundled, installedVersion(paths))) return null;
+          const icon = join(staged, "Contents", "Resources", "icon.icns");
+          const result = await unpackRuntime({ bundled, paths, execFile: realExecFile, switchCurrent: false, icon: existsSync(icon) ? icon : null });
+          return JSON.stringify(result);
+        },
       });
-      updater.cleanup();
+      void updater.cleanup();
       const due = () => void updater?.checkIfDue();
       due();
       setInterval(due, UPDATE_TICK_MS).unref();

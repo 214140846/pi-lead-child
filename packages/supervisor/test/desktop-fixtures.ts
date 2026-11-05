@@ -11,8 +11,14 @@ import { LAUNCHD_LABEL } from "../src/deploy/launchd.js";
 
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
 
-/** 往 <安装根>/versions/<version>/ 放一份运行包。 */
-export function addRuntimeVersion(installRoot: string, version: string): string {
+/**
+ * 往 <安装根>/versions/<version>/ 放一份运行包。components 是 release.json 的组成哈希（第 7.5.1 节）；不给时没有这一项，
+ * 和 2026-11-05 以前打的包一样。
+ */
+export function addRuntimeVersion(
+  installRoot: string, version: string,
+  o: { components?: Record<string, string>; schemaVersion?: number } = {},
+): string {
   const dir = join(installRoot, "versions", version);
   const files: Record<string, string> = {
     "bin/lead-agent": "node binary",
@@ -23,17 +29,23 @@ export function addRuntimeVersion(installRoot: string, version: string): string 
     writeFileSync(join(dir, file), content);
   }
   writeFileSync(join(dir, "release.json"), JSON.stringify({
-    schema: 1, product: "bytezard-lead", version, arch: process.arch, schemaVersion: LATEST_SCHEMA_VERSION,
+    schema: 1, product: "bytezard-lead", version, arch: process.arch, schemaVersion: o.schemaVersion ?? LATEST_SCHEMA_VERSION,
     files: Object.fromEntries(Object.entries(files).map(([file, content]) => [file, sha256(content)])),
+    ...(o.components ? { components: o.components } : {}),
   }));
   return dir;
 }
 
+/** 一套组成哈希，overrides 换掉其中几个。 */
+export function runtimeComponents(overrides: Record<string, string> = {}): Record<string, string> {
+  return { node: "1".repeat(64), node_modules: "2".repeat(64), service: "3".repeat(64), web: "4".repeat(64), cli: "5".repeat(64), ...overrides };
+}
+
 // 一份装好的运行包：<数据目录>/runtime/versions/1.3.0/，current 指向它（和壳一样是相对的软链接）。
-export function installedRuntime(parent = tempDir("plc-desktop-")) {
+export function installedRuntime(parent = tempDir("plc-desktop-"), o: Parameters<typeof addRuntimeVersion>[2] = {}) {
   const dataDir = join(parent, "Bytezard Lead");
   const installRoot = join(dataDir, "runtime");
-  const version = addRuntimeVersion(installRoot, "1.3.0");
+  const version = addRuntimeVersion(installRoot, "1.3.0", o);
   symlinkSync(join("versions", "1.3.0"), join(installRoot, "current"));
   return { dataDir, installRoot, root: join(installRoot, "current"), version };
 }

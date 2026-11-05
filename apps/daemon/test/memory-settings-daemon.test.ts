@@ -207,12 +207,12 @@ describe("memory settings through the daemon", () => {
       at: expect.stringMatching(/Z$/),
     }]);
 
-    const before = harness.launchctl.length;
+    const before = harness.service.length;
     const changed = await call("POST", "/v1/actions/memory_settings/memory/set_summary_model", {
       input: { slot: "consolidation", model: "anthropic/claude-sonnet-5-5" },
     });
     expect(changed.status).toBe(200);
-    expect(harness.launchctl.slice(before)).toContain("bootstrap");
+    expect(harness.service.slice(before)).toContain("restart");
     expect(loadPlcConfig(dir).memory?.llm).toEqual({ consolidation: "anthropic/claude-sonnet-5-5" });
     expect(readServiceFile(dir)?.consolidationLlm).toMatchObject({ model: "claude-sonnet-5-5" });
     expect(readFileSync(join(dir, "config.json"), "utf8")).not.toContain("anthropic-key");

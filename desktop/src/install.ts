@@ -33,6 +33,11 @@ export interface InstallProgress {
   backgroundNotice: boolean;
   error: { code: string; message: string } | null;
   gatewayUrl: string | null;
+  /**
+   * 「接手」一行写什么（设计第 7.5.2 节）：takeover 是接管别的安装（第 12 节情况 A、B），upgrade 是换版本时备份、重启
+   * （情况 C）。desktop-install 的 detect 一步说了是哪种。不重启的更新跳过这一行，不显示。
+   */
+  takeoverKind: "takeover" | "upgrade" | null;
 }
 
 // desktop-install 的步骤归到安装页的几行里（设计第 4.1、12.7 节的样子）。「接手」一行只在接管时出现。
@@ -58,6 +63,10 @@ export interface InstallDeps {
   /** launchd 的 supervisor plist 指向这份 App 的 <安装根>/current。缺省读 paths.supervisorPlist。 */
   serviceUsesThisRuntime?(): boolean;
   now?(): Date;
+  /** 记一行日志：解包用了多久、复用了什么（设计第 7.5.4 节）。 */
+  log?(line: string): void;
+  /** App 的图标文件：解包时设成 bin/lead-agent 的访达图标（runtime-bundle.ts 的 setAgentIcon）。 */
+  icon?: string | null;
 }
 
 export interface InstallOptions {
@@ -73,6 +82,7 @@ function initialProgress(): InstallProgress {
     backgroundNotice: false,
     error: null,
     gatewayUrl: null,
+    takeoverKind: null,
   };
 }
 
@@ -118,6 +128,7 @@ interface OpsEvent {
   message: string;
   code?: string;
   gatewayUrl?: string;
+  takeover?: string;
 }
 
 function parseOpsEvent(line: string): OpsEvent | null {
@@ -130,6 +141,7 @@ function parseOpsEvent(line: string): OpsEvent | null {
       message: value.message,
       ...(typeof value.code === "string" ? { code: value.code } : {}),
       ...(typeof value.gatewayUrl === "string" ? { gatewayUrl: value.gatewayUrl } : {}),
+      ...(typeof value.takeover === "string" ? { takeover: value.takeover } : {}),
     };
   } catch {
     return null;
@@ -187,8 +199,10 @@ export async function runInstall(deps: InstallDeps, onProgress: (progress: Insta
   if (unpack && deps.bundled) {
     progress.steps.unpack = "running";
     emit();
+    const started = Date.now();
     try {
-      await unpackRuntime({ bundled: deps.bundled, paths: deps.paths, execFile });
+      const result = await unpackRuntime({ bundled: deps.bundled, paths: deps.paths, execFile, icon: deps.icon ?? null });
+      deps.log?.(`unpacked ${deps.bundled.version} in ${Date.now() - started} ms: ${JSON.stringify(result)}`);
     } catch (error) {
       const code = error instanceof UnpackError ? error.code : "unpack_failed";
       const reason = error instanceof Error ? error.message : String(error);
@@ -217,6 +231,7 @@ export async function runInstall(deps: InstallDeps, onProgress: (progress: Insta
     if (!group) return;
     progress.detail = event.message;
     if (event.code === "dev_install_detected") devInstall = true;
+    if (event.step === "detect" && event.takeover) progress.takeoverKind = event.takeover === "upgrade" ? "upgrade" : "takeover";
     if (event.state === "failed") {
       failed = event;
       return;

@@ -36,7 +36,11 @@ describe("agent launcher", () => {
       placeBinary: (dest) => { calls.push(`place ${dest}`); copyFileSync("/usr/bin/true", dest); },
       sign: async (path, identifier) => { calls.push(`sign ${path} ${identifier}`); },
     });
-    expect(result).toEqual({ binary: join(root, "bin", "lead-agent"), launcher: join(root, "bin", "Bytezard Lead") });
+    expect(result).toEqual({
+      binary: join(root, "bin", "lead-agent"), launcher: join(root, "bin", "Bytezard Lead"), memoryLauncher: join(root, "bin", "Bytezard Lead Memory"),
+    });
+    // Hindsight 记忆服务的 plist 写这个软链接：「允许在后台」显示 Bytezard Lead Memory，不再显示 lead-agent（用户 2026-11-05）。
+    expect(readlinkSync(result.memoryLauncher)).toBe("lead-agent");
     // 先在临时位置放好、签好，再 rename 过去：正在用旧副本运行的进程不受影响。
     expect(calls).toEqual([`place ${staged}`, `sign ${staged} com.bytezard.plc.agent`]);
     expect(existsSync(staged)).toBe(false);

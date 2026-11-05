@@ -56,10 +56,12 @@ describe("release-macos workflow", () => {
     expect(job.if).toBeUndefined();
   });
 
-  it("uploads the dmg, the runtime archive and manifest.json, replacing old copies", () => {
+  it("uploads the dmg, the runtime archive, the source maps and manifest.json, replacing old copies", () => {
     const upload = job.steps.at(-1)!.run!;
     expect(upload).toContain('"out/desktop/bytezard-lead-${VERSION}-arm64.dmg"');
     expect(upload).toContain('"out/bytezard-lead-runtime-${VERSION}-arm64.tar.gz"');
+    // 源码映射不进运行包，单独作为附件（设计第 7.5.7 节）。
+    expect(upload).toContain('"out/bytezard-lead-sourcemaps-${VERSION}-arm64.tar.gz"');
     expect(upload).toContain("out/manifest.json");
     expect(upload).toContain("--clobber");
     expect(upload).toContain('--repo "$GITHUB_REPOSITORY"');

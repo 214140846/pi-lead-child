@@ -279,7 +279,8 @@ export interface PairedServerOptions {
   loopbackAutoPairShellKey?: string;
   // companion web UI 的静态导出目录（npm run build:web → dist/web）。设置后网关在 / 下提供它，
   // 并且信任自己的回环 origin 来做 loopback 自动配对。未设置时没有任何非 /v1 路由。
-  webRoot?: string;
+  // 发布模式下是一个函数：每次提供网页前问它目录在哪里（supervisor 的 servedWebRoot，桌面版只改了网页的更新不重启 daemon）。
+  webRoot?: string | (() => string);
   pairingHandshakeTimeoutMs?: number;
   outboxPollMs?: number;
   // WebSocket 的心跳间隔。一个连接两个间隔里都没有回 pong（也没有发任何消息），就断开它。
@@ -1315,7 +1316,7 @@ export async function startPairedServer(
         (req.method === "GET" || req.method === "HEAD") &&
         !isApiPath(url.pathname)
       ) {
-        serveWebFile(req, res, opts.webRoot, url.pathname);
+        serveWebFile(req, res, typeof opts.webRoot === "function" ? opts.webRoot() : opts.webRoot, url.pathname);
         return;
       }
 

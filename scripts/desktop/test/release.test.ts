@@ -1,10 +1,13 @@
-import { writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { tempDir } from "@pi-lead-child/core/testing";
 import {
-  buildNumber, dmgName, hashFiles, localVersion, parseNodeVersionFile, parsePackArgs, releaseManifest, runtimeArchiveName, sha256File, updateManifest, UsageError, withDmg,
+  buildNumber, componentOf, dmgName, hashComponents, hashFiles, localVersion, parseNodeVersionFile, parsePackArgs, releaseManifest,
+  runtimeArchiveName, sha256File, updateManifest, UsageError, withDmg,
 } from "../lib/release.js";
+
+const components = { node: "1".repeat(64), node_modules: "2".repeat(64), service: "3".repeat(64), web: "4".repeat(64), cli: "5".repeat(64) };
 
 const valid = ["--arch", "arm64", "--version", "1.3.0", "--repository", "acme/x"];
 
@@ -56,16 +59,55 @@ describe("names and manifests", () => {
   it("writes release.json with the product name and the repository it was given", () => {
     const release = releaseManifest({
       version: "1.3.0", node: "24.22.2", schemaVersion: 63, sourceTree: "a".repeat(40),
-      builtAt: new Date("2026-11-03T08:00:00Z"), repository: "acme/x", files: { "bin/lead-agent": "b".repeat(64) },
+      builtAt: new Date("2026-11-03T08:00:00Z"), repository: "acme/x", files: { "bin/lead-agent": "b".repeat(64) }, components,
     });
     expect(release).toEqual({
       schema: 1, product: "bytezard-lead", version: "1.3.0", arch: "arm64", node: "24.22.2", schemaVersion: 63,
       sourceTree: "a".repeat(40), builtAt: "2026-11-03T08:00:00.000Z",
-      updateSource: { type: "github", repository: "acme/x" }, files: { "bin/lead-agent": "b".repeat(64) },
+      updateSource: { type: "github", repository: "acme/x" }, files: { "bin/lead-agent": "b".repeat(64) }, components,
     });
     expect(updateManifest(release, { file: "f.tar.gz", size: 3, sha256: "c".repeat(64) })).toMatchObject({
-      product: "bytezard-lead", version: "1.3.0", arch: "arm64", schemaVersion: 63, runtime: { file: "f.tar.gz", size: 3 },
+      product: "bytezard-lead", version: "1.3.0", arch: "arm64", schemaVersion: 63, runtime: { file: "f.tar.gz", size: 3 }, components,
     });
+  });
+
+  // 组成（设计第 7.5.1 节）：每个文件归到一个组成；不认识的文件让打包失败。
+  it("puts every file of the runtime into one component", () => {
+    expect(componentOf("bin/lead-agent")).toBe("node");
+    expect(componentOf("bin/Bytezard Lead")).toBe("node");
+    expect(componentOf("bin/Bytezard Lead Memory")).toBe("node");
+    expect(componentOf("bin/plc")).toBe("cli");
+    expect(componentOf("apps/cli/dist/cli.mjs")).toBe("cli");
+    expect(componentOf("node_modules/better-sqlite3/package.json")).toBe("node_modules");
+    expect(componentOf("apps/daemon/dist/web/index.html")).toBe("web");
+    expect(componentOf("apps/daemon/dist/coordinatord.mjs")).toBe("service");
+    expect(componentOf("apps/daemon/package.json")).toBe("service");
+    expect(componentOf("package.json")).toBe("service");
+    expect(componentOf("bin/uv")).toBeNull();
+  });
+
+  it("hashes each component by path, mode, link target and content, not by time", () => {
+    const dir = tempDir("plc-desktop-components-");
+    const write = (file: string, text: string) => {
+      mkdirSync(join(dir, file, ".."), { recursive: true });
+      writeFileSync(join(dir, file), text);
+    };
+    write("bin/lead-agent", "node");
+    symlinkSync("lead-agent", join(dir, "bin", "node"));
+    write("apps/daemon/dist/web/index.html", "<html>");
+    write("apps/daemon/dist/ops.mjs", "ops");
+    write("release.json", "{}");
+    const first = hashComponents(dir);
+    utimesSync(join(dir, "apps/daemon/dist/ops.mjs"), new Date(0), new Date(0));
+    expect(hashComponents(dir)).toEqual(first);
+    chmodSync(join(dir, "bin/lead-agent"), 0o755);
+    const executable = hashComponents(dir);
+    expect(executable.node).not.toBe(first.node);
+    expect({ ...executable, node: first.node }).toEqual(first);
+    write("node_modules/x/index.js", "x");
+    expect(hashComponents(dir).node_modules).not.toBe(first.node_modules);
+    write("extra.txt", "?");
+    expect(() => hashComponents(dir)).toThrow(/extra\.txt/);
   });
 
   it("hashes files and names the one that is missing", async () => {
@@ -83,6 +125,7 @@ describe("the dmg in manifest.json", () => {
     schema: 1, product: "bytezard-lead", version: "1.3.0", arch: "arm64", node: "24.22.2", schemaVersion: 63,
     sourceTree: "a".repeat(40), builtAt: "2026-11-05T00:00:00.000Z",
     runtime: { file: "bytezard-lead-runtime-1.3.0-arm64.tar.gz", size: 3, sha256: "b".repeat(64) },
+    components,
   } as const;
 
   it("adds the dmg of the same version", () => {

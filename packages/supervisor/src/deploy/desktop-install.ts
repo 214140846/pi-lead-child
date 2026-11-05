@@ -3,7 +3,8 @@
 //   preflight         运行包在安装根的 current 下面，release.json 和文件哈希对得上，socket 路径不超过 macOS 的上限
 //   detect            看已有的是哪种安装（第 12.2 节）；库比运行包新时不装
 //   takeover          自动接管存量安装（第 12 节）：改名以前的安装、跑开发 checkout 的安装、换了版本的安装。
-//                     复用 data-dir-migration.ts，失败自动回滚。设了 PLC_KEEP_DEV_INSTALL=1 时保留开发安装、直接打开它
+//                     复用 data-dir-migration.ts，失败自动回滚。设了 PLC_KEEP_DEV_INSTALL=1 时保留开发安装、直接打开它。
+//                     换了版本时按更新的种类（update-kind.ts，第 7.5.2 节）：服务没变（none、web）不重启、不备份
 //   login_shell_path  读登录 shell 的 PATH，写进 <数据目录>/login-shell-path.json
 //   launchd           写 plist，launchctl bootstrap gui/<uid>
 //   supervisor        等 supervisor.sock 能回答（60 秒）
@@ -24,7 +25,8 @@ import {
 import { desktopInstallMessages } from "./desktop-install.messages.js";
 import { desktopPlistOptions, plistContent, plistWorkingDirectory } from "./launchd.js";
 import { databaseSchemaVersion, readReleaseManifest, RELEASE_MANIFEST_FILE, releaseReadiness } from "./release.js";
-import { pruneRuntimeVersions } from "./runtime-versions.js";
+import { pruneRuntimeVersions, pruneSharedNodeModules } from "./runtime-versions.js";
+import { restartsService, updateKind, type UpdateKind } from "./update-kind.js";
 
 export const DESKTOP_INSTALL_STEPS = [
   "preflight", "detect", "takeover", "login_shell_path", "launchd", "supervisor", "daemon", "done",
@@ -47,6 +49,10 @@ export interface DesktopInstallEvent {
   gatewayUrl?: string;
   /** takeover 这一步里迁移模块正在做的那一步（安装页不用它，给诊断看）。 */
   phase?: DataDirMigrationEvent["step"];
+  /** detect：已有的是哪种安装。安装页按它选「接手」一行的文字（第 7.5.2 节）。 */
+  takeover?: TakeoverCase["kind"];
+  /** detect：换了版本时是哪种更新。 */
+  update?: UpdateKind;
 }
 
 /** 已有的是哪种安装（第 12.2 节）。 */
@@ -79,7 +85,10 @@ export interface DesktopInstallDeps {
   /** PLC_KEEP_DEV_INSTALL=1：不接管改名以前的安装和开发安装，直接打开在跑的那份（第 12.8 节）。 */
   keepDevInstall?: boolean;
   /** 接管用的迁移模块（data-dir-migration.ts）要的 launchctl、排空、等进程退出和健康检查。 */
-  takeover: Pick<DataDirMigrationDeps, "launchAgentsDir" | "uid" | "launchctl" | "freeBytes" | "drain" | "waitStopped" | "health" | "afterStep">;
+  takeover: Pick<
+    DataDirMigrationDeps,
+    "launchAgentsDir" | "uid" | "launchctl" | "freeBytes" | "drain" | "waitStopped" | "health" | "afterStep" | "backupDatabase"
+  >;
   /** 进程还活着（install.lock 用）。缺省用 process.kill(pid, 0)。 */
   processAlive?(pid: number): boolean;
   locale: Locale;
@@ -130,6 +139,13 @@ interface InstallState {
   installedVersion?: string;
   /** installedVersion 之前装的版本：回滚要用，删旧版本时留着它（runtime-versions.ts）。 */
   previousVersion?: string;
+  /**
+   * 后台服务跑在哪个版本上：服务没变的更新不重启（第 7.5.2 节），服务就还在更早的版本目录里。删旧版本时留着它。
+   * 没有这一项时（更早的 install-state.json）就是 installedVersion：那时每次换版本都重启。
+   */
+  serviceVersion?: string;
+  /** 上一次换版本是哪种更新（诊断用）。 */
+  lastUpdate?: UpdateKind;
   /** 这次装好以后删掉的旧版本（诊断用）。 */
   prunedVersions?: string[];
   startedAt: string;
@@ -261,6 +277,7 @@ export async function runDesktopInstall(deps: DesktopInstallDeps): Promise<Deskt
     version: 1, root: deps.root, startedAt: now(), updatedAt: now(), outcome: "running", steps: {}, lastError: null,
     ...(typeof previousState?.installedVersion === "string" ? { installedVersion: previousState.installedVersion } : {}),
     ...(typeof previousState?.previousVersion === "string" ? { previousVersion: previousState.previousVersion } : {}),
+    ...(typeof previousState?.serviceVersion === "string" ? { serviceVersion: previousState.serviceVersion } : {}),
   };
   // 安装状态写不下（例如磁盘满了）不挡住安装：进度行照样输出，App 靠它显示。
   const saveState = () => {
@@ -331,23 +348,40 @@ export async function runDesktopInstall(deps: DesktopInstallDeps): Promise<Deskt
     if (dbVersion !== null && dbVersion > manifest.schemaVersion) {
       throw new StepFailure("schema_ahead", m.errors.schemaAhead(dbVersion, manifest.schemaVersion));
     }
+    // 换了版本：按两个版本的 release.json 定是哪种更新。库还没升级到这个版本时一定要重启，让新代码升级它。
+    let update: UpdateKind | undefined;
+    if (found?.kind === "upgrade") {
+      update = updateKind(previousManifest(deps.installRoot, found.from), manifest);
+      if (!restartsService(update) && dbVersion !== null && dbVersion !== manifest.schemaVersion) update = "schema";
+      state.lastUpdate = update;
+    }
+    const restart = found !== null && (update === undefined || restartsService(update));
     emit({
       step, state: "done",
       message: !found ? m.detect.done
         : found.kind === "pre_rename" ? m.detect.preRename
         : found.kind === "dev" ? m.detect.dev
-        : m.detect.upgrade(found.from, found.to),
+        : restart ? m.detect.upgrade(found.from, found.to)
+        : m.detect.upgradeKeepsService(found.from, found.to),
+      ...(found ? { takeover: found.kind } : {}),
+      ...(update ? { update } : {}),
     });
 
     // ── takeover ──
     step = "takeover";
+    // 这一次（重新）启动了后台服务：接管或者换版本重启过，或者 launchd 一步重新加载了任务。
+    let restarted = false;
     if (!found) {
       emit({ step, state: "skipped", message: m.takeover.notNeeded });
+    } else if (!restart) {
+      emit({ step, state: "skipped", message: m.takeover.keepsRunning });
     } else {
-      emit({ step, state: "running", message: m.takeover.starting });
+      const upgrading = found.kind === "upgrade";
+      emit({ step, state: "running", message: upgrading ? m.upgrade.starting : m.takeover.starting });
       const result = await takeOver(deps, found, root, (event) => emit(event));
-      if (!result.ok) throw takeoverFailure(m, result);
-      emit({ step, state: "done", message: m.takeover.done });
+      if (!result.ok) throw takeoverFailure(m, result, upgrading);
+      restarted = true;
+      emit({ step, state: "done", message: upgrading ? m.upgrade.done(manifest.version) : m.takeover.done });
     }
 
     // ── login_shell_path ──：读不到不算失败，supervisor 和 daemon 还有已知目录兜底。
@@ -378,6 +412,7 @@ export async function runDesktopInstall(deps: DesktopInstallDeps): Promise<Deskt
       } catch (error) {
         throw new StepFailure("launchd_bootstrap_failed", m.errors.bootstrapFailed, error instanceof Error ? error.message : String(error));
       }
+      restarted = true;
       emit({ step, state: "done", message: m.launchd.done });
     }
 
@@ -403,18 +438,23 @@ export async function runDesktopInstall(deps: DesktopInstallDeps): Promise<Deskt
     if (!status) throw new StepFailure("daemon_timeout", m.errors.daemonTimeout);
     emit({ step, state: "done", message: m.daemon.done });
 
-    // 只留这次的和上一个运行包版本（runtime-versions.ts）。换了版本时，上一个就是上次装好的；再装一次同一个版本时沿用记着的。
-    // 不知道上一个是哪个（第一次安装、更早的 install-state.json）时不删：分不清哪个是回滚要用的。
+    // 服务跑在哪个版本上：这次重启过就是这个版本；没重启时沿用记着的（更早的记录里没有时，就是上次装好的版本）。
+    const serviceVersion = restarted ? manifest.version : state.serviceVersion ?? state.installedVersion ?? manifest.version;
+    state.serviceVersion = serviceVersion;
+    // 只留这次的、上一个和服务正在用的运行包版本（runtime-versions.ts）。换了版本时，上一个就是上次装好的；再装一次同一个
+    // 版本时沿用记着的。不知道上一个是哪个（第一次安装、更早的 install-state.json）时不删：分不清哪个是回滚要用的。
     const previousVersion = state.installedVersion && state.installedVersion !== manifest.version ? state.installedVersion : state.previousVersion;
     if (previousVersion) {
       state.previousVersion = previousVersion;
       const pruned = pruneRuntimeVersions({
         versionsDir: join(deps.installRoot, "versions"),
-        keep: [manifest.version, previousVersion],
+        keep: [manifest.version, previousVersion, serviceVersion],
         ...(deps.runningCommands ? { runningCommands: deps.runningCommands } : {}),
       });
       if (pruned.removed.length) state.prunedVersions = pruned.removed;
     }
+    // 共用的 node_modules（第 7.5.4 节）：没有版本再指向的删掉。
+    pruneSharedNodeModules(deps.installRoot);
 
     step = "done";
     state.installedVersion = manifest.version;
@@ -454,13 +494,24 @@ async function takeOver(
   });
 }
 
-function takeoverFailure(m: ReturnType<typeof desktopInstallMessages>, result: DataDirMigrationResult): StepFailure {
+function takeoverFailure(m: ReturnType<typeof desktopInstallMessages>, result: DataDirMigrationResult, upgrading: boolean): StepFailure {
   const reason = result.error ?? result.code ?? "";
-  if (result.code === "rolled_back") return new StepFailure("takeover_rolled_back", m.takeover.rolledBack(reason), reason);
+  // 换版本不是接管：失败时说「没能换到新版本」（第 7.5.2 节）。
+  const t = upgrading ? m.upgrade : m.takeover;
+  if (result.code === "rolled_back") return new StepFailure("takeover_rolled_back", t.rolledBack(reason), reason);
   if (result.code === "rollback_failed") {
-    return new StepFailure("takeover_rollback_failed", m.takeover.rollbackFailed(reason, result.backupPath ?? "-"), reason);
+    return new StepFailure("takeover_rollback_failed", t.rollbackFailed(reason, result.backupPath ?? "-"), reason);
   }
   const refused = result.code ? REFUSED[result.code] : undefined;
-  if (refused) return new StepFailure("takeover_refused", m.takeover.refused[refused], reason);
-  return new StepFailure("takeover_failed", m.takeover.failed(reason), reason);
+  if (refused && !(upgrading && refused === "other")) return new StepFailure("takeover_refused", m.takeover.refused[refused], reason);
+  return new StepFailure(refused ? "takeover_refused" : "takeover_failed", t.failed(reason), reason);
+}
+
+/** 上次装好的版本的 release.json。读不了时为 null：按服务变了处理（update-kind.ts）。 */
+function previousManifest(installRoot: string, version: string) {
+  try {
+    return readReleaseManifest(join(installRoot, "versions", version));
+  } catch {
+    return null;
+  }
 }

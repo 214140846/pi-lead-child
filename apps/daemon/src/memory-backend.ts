@@ -1,15 +1,29 @@
 // Hindsight 记忆服务的两样启动参数（memory-controller.ts 用）：launchd 运行的命令，和 Hindsight 的摘要模型。
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, lstatSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { distDir, packageSource, projectRoot } from "@pi-lead-child/core";
 import { listConfiguredLeadModelSpecs, loadLeadModelConfig, newestModelSpec, parseModelName, resolveLeadApiKey } from "@pi-lead-child/lead";
 import type { SummaryModelSlot, SummaryModelSource } from "@pi-lead-child/protocol";
+import { AGENT_MEMORY_LAUNCH_NAME } from "@pi-lead-child/supervisor";
 
-// launchd 运行的命令。和 supervisor 运行 daemon 的方式一样：有构建产物用它，PLC_DEV 或者没构建时经 tsx 跑源码。
-export function hindsightProgram(env: Record<string, string | undefined> = process.env): string[] {
+// supervisor 运行 Hindsight 的命令（写进 run.json）。和 supervisor 运行 daemon 的方式一样：有构建产物用它，PLC_DEV 或者
+// 没构建时经 tsx 跑源码。程序是 Node 旁边的软链接 Bytezard Lead Memory（运行包和装过后台服务的开发机都有，supervisor 的
+// agent-binary.ts），ps 和日志里一眼看得出是记忆服务。它以前是独立的 launchd 任务，「允许在后台」显示程序的文件名
+// （用户 2026-11-05）。没有这个软链接时用 Node 本身。
+export function hindsightProgram(env: Record<string, string | undefined> = process.env, execPath: string = process.execPath): string[] {
+  const node = memoryLauncher(execPath) ?? execPath;
   const dist = join(distDir(), "hindsight.mjs");
-  if (existsSync(dist) && !env.PLC_DEV) return [process.execPath, dist];
-  return [process.execPath, join(projectRoot(), "node_modules", "tsx", "dist", "cli.mjs"), packageSource("daemon", "hindsight-main.ts")];
+  if (existsSync(dist) && !env.PLC_DEV) return [node, dist];
+  return [node, join(projectRoot(), "node_modules", "tsx", "dist", "cli.mjs"), packageSource("daemon", "hindsight-main.ts")];
+}
+
+function memoryLauncher(execPath: string): string | null {
+  const launcher = join(dirname(execPath), AGENT_MEMORY_LAUNCH_NAME);
+  try {
+    return lstatSync(launcher).isSymbolicLink() ? launcher : null;
+  } catch {
+    return null;
+  }
 }
 
 // 一个摘要模型：服务商、模型 id、地址和 key。地址和 key 在 daemon 里按 Lead 的服务商配置解析好（key 进 secrets.sealed）：

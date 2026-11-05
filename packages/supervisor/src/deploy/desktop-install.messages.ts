@@ -15,9 +15,12 @@ export const desktopInstallMessages = defineMessages({
       preRename: "Found an installation with the old name. Next, Bytezard Lead moves its data and settings to the new place.",
       dev: "Found a developer installation. Next, Bytezard Lead takes over its data and settings.",
       upgrade: (from: string, to: string) => `Next, Bytezard Lead changes from version ${from} to ${to}.`,
+      upgradeKeepsService: (from: string, to: string) =>
+        `Next, Bytezard Lead changes from version ${from} to ${to}. The background service did not change, so it keeps running.`,
     },
     takeover: {
       notNeeded: "There is no earlier installation to take over.",
+      keepsRunning: "The background service did not change, so it keeps running without a restart.",
       starting: "Taking over the data and settings that are already on this Mac.",
       phases: {
         precheck: "Checking that the takeover can start.",
@@ -45,6 +48,15 @@ export const desktopInstallMessages = defineMessages({
       rolledBack: (reason: string) => `Bytezard Lead could not take over the earlier installation, so it put everything back as it was. Your data did not change, and the earlier service runs as before. Reason: ${reason}. Try again.`,
       rollbackFailed: (reason: string, backup: string) =>
         `Bytezard Lead could not take over the earlier installation, and a problem occurred when it put things back: ${reason}. No data was deleted. The backup of the database is ${backup}. Copy the diagnostics and send them to support.`,
+    },
+    // 情况 C：换了版本、要重启（第 7.5.2 节）。不是接管，不说「接手」。
+    upgrade: {
+      starting: "Making a backup of your data, then switching to the new version.",
+      done: (version: string) => `Bytezard Lead now runs version ${version}.`,
+      failed: (reason: string) => `Bytezard Lead could not switch to the new version: ${reason}. Nothing changed, and the earlier version runs as before. Try again.`,
+      rolledBack: (reason: string) => `Bytezard Lead could not switch to the new version, so it went back to the earlier version. Your data did not change. Reason: ${reason}. Try again.`,
+      rollbackFailed: (reason: string, backup: string) =>
+        `Bytezard Lead could not switch to the new version, and a problem occurred when it went back: ${reason}. No data was deleted. The backup of the database is ${backup}. Copy the diagnostics and send them to support.`,
     },
     loginShellPath: {
       running: "Reading the command search path of your login shell.",
@@ -95,9 +107,11 @@ export const desktopInstallMessages = defineMessages({
       preRename: "找到了旧名字的安装。接下来把它的数据和设置搬到新位置。",
       dev: "找到了开发版的安装。接下来由 Bytezard Lead 接手它的数据和设置。",
       upgrade: (from, to) => `接下来从 ${from} 版换到 ${to} 版。`,
+      upgradeKeepsService: (from, to) => `接下来从 ${from} 版换到 ${to} 版。后台服务没有变，不用重启。`,
     },
     takeover: {
       notNeeded: "没有要接手的旧安装。",
+      keepsRunning: "后台服务没有变，照常运行，不重启。",
       starting: "正在接手这台电脑上已有的数据和设置。",
       phases: {
         precheck: "正在检查能不能接手。",
@@ -125,6 +139,14 @@ export const desktopInstallMessages = defineMessages({
       rolledBack: (reason) => `没能接手原来的安装，已经恢复原样：数据没有改动，原来的服务照常运行。原因：${reason}。请点重试。`,
       rollbackFailed: (reason, backup) =>
         `没能接手原来的安装，恢复原样时也出了问题：${reason}。数据没有删除，数据库的备份在 ${backup}。请点「复制诊断信息」发给我们。`,
+    },
+    upgrade: {
+      starting: "正在备份数据，然后换到新版本。",
+      done: (version) => `已经换到 ${version} 版。`,
+      failed: (reason) => `没能换到新版本：${reason}。什么都没改，原来的版本照常运行。请点重试。`,
+      rolledBack: (reason) => `没能换到新版本，已经换回原来的版本：数据没有改动。原因：${reason}。请点重试。`,
+      rollbackFailed: (reason, backup) =>
+        `没能换到新版本，换回原来的版本时也出了问题：${reason}。数据没有删除，数据库的备份在 ${backup}。请点「复制诊断信息」发给我们。`,
     },
     loginShellPath: {
       running: "正在读取登录 shell 的命令搜索路径。",

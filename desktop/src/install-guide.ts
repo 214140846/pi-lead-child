@@ -53,12 +53,10 @@ export interface GuideBlock extends GuideOptions {
 export const GUIDE_TARGETS: ReadonlyArray<{ file: string; blocks: readonly GuideBlock[] }> = [
   { file: "README.md", blocks: [{ name: "en", locale: "en", headingLevel: 2, troubleshooting: true }] },
   { file: "README.zh-CN.md", blocks: [{ name: "zh", locale: "zh", headingLevel: 2, troubleshooting: true }] },
+  // GitHub 上的 release 只用英文（用户 2026-11-05）：模板里只有英文的安装说明。中文的在 README.zh-CN。
   {
     file: "docs/desktop/release-notes-template.md",
-    blocks: [
-      { name: "en", locale: "en", headingLevel: 2, troubleshooting: false },
-      { name: "zh", locale: "zh", headingLevel: 2, troubleshooting: false },
-    ],
+    blocks: [{ name: "en", locale: "en", headingLevel: 2, troubleshooting: false }],
   },
 ];
 

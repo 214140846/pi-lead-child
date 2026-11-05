@@ -30,7 +30,9 @@
 //           库的 schema 可以比安装包旧（新版本启动时升级它，停服务后另存一份 -stopped.db 给回滚用）。
 //   情况 B  已经迁移、跑开发 checkout：oldDir 和 newDir 相同（「原地」），数据不动，只换 com.bytezard.plc.supervisor。
 //           不做 scan、move、rewrite，不碰 Hindsight 的任务。
-//   情况 C  已经是安装包、换了版本：同 B；回滚时还把 current 指回上一个版本。
+//   情况 C  已经是安装包、换了版本：同 B；回滚时还把 current 指回上一个版本。备份只留一份 backups/pre-upgrade.db
+//           （第 7.5.5 节）：schema 不变时在排空以前在线备份；schema 要升级时停服务以后备份，回滚用它恢复库。
+//           新的一份核对完整以后才换掉旧的一份，然后删掉以前按时间存的升级备份。不复制 plist（内容没变）。
 //
 // 有副作用的部分（launchctl、排空、等进程退出、放 Node、健康检查）由调用方注入，集成测试换成假的；文件和库用真的。
 import Database from "better-sqlite3";
@@ -41,7 +43,7 @@ import { dirname, join } from "node:path";
 import { DESKTOP_APP_ENTRIES, PRE_RENAME_HINDSIGHT_LABEL, PRE_RENAME_SUPERVISOR_LABEL } from "@pi-lead-child/core";
 import type { Locale } from "@pi-lead-child/protocol";
 import { LATEST_SCHEMA_VERSION, ledgerGuardedTables, openExistingDb } from "@pi-lead-child/store";
-import { backupSqlite } from "./backup.js";
+import { backupSqlite, removeLegacyUpgradeBackups, replaceBackup } from "./backup.js";
 import { dataDirMigrationMessages } from "./data-dir-migration.messages.js";
 import { socketPathTooLong } from "./desktop-install.js";
 import { HINDSIGHT_LABEL } from "./hindsight.js";
@@ -100,7 +102,7 @@ export type MigrationService =
     /** supervisor 的入口：<checkout>/apps/daemon/dist/supervisor.mjs。 */
     entry: string;
     /** 把开发机的 Node 复制到 <dataDir>/bin/lead-agent 并重签，建软链接。返回 plist 要写的软链接路径。 */
-    placeAgent(dataDir: string): Promise<{ binary: string; launcher: string }>;
+    placeAgent(dataDir: string): Promise<{ binary: string; launcher: string; memoryLauncher?: string }>;
   }
   | {
     /** 安装包的运行目录（desktop-install 的接管，第 12 节）。 */
@@ -132,6 +134,8 @@ export interface DataDirMigrationDeps {
   now?: () => Date;
   /** 测试注入：每一步做完以后调用，抛错就是这一步之后出了故障。 */
   afterStep?(step: DataDirMigrationStep): void | Promise<void>;
+  /** 测试注入：复制库（缺省是 backup.ts 的在线备份）。 */
+  backupDatabase?(source: string, destination: string): Promise<void>;
 }
 
 export interface DataDirMigrationResult {
@@ -145,6 +149,8 @@ export interface DataDirMigrationResult {
 }
 
 const CONFIG_FILE = "config.json";
+/** 情况 C 唯一的一份升级前备份，相对数据目录（第 7.5.5 节）。 */
+export const UPGRADE_BACKUP = join("backups", "pre-upgrade.db");
 const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const quote = (name: string) => `"${name}"`;
 const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -319,10 +325,13 @@ export async function runDataDirMigration(deps: DataDirMigrationDeps): Promise<D
     : [[PRE_RENAME_HINDSIGHT_LABEL, oldHindsightPlist], [PRE_RENAME_SUPERVISOR_LABEL, oldSupervisorPlist]];
   const newLabels = inPlace ? [LAUNCHD_LABEL] : [LAUNCHD_LABEL, HINDSIGHT_LABEL];
   const suffix = inPlace ? ".pre-takeover" : ".pre-rename";
-  const backupPrefix = !inPlace ? "pre-rename" : service.kind === "desktop" && service.previousVersion ? "pre-upgrade" : "pre-takeover";
+  // 情况 C：换了版本。备份只留一份（UPGRADE_BACKUP）。
+  const upgrade = inPlace && service.kind === "desktop" && service.previousVersion !== undefined;
+  const backupPrefix = !inPlace ? "pre-rename" : "pre-takeover";
   const gui = `gui/${deps.uid}`;
   const emit = (event: DataDirMigrationEvent) => deps.emit(event);
   const after = async (step: DataDirMigrationStep) => { await deps.afterStep?.(step); };
+  const backupOptions = deps.backupDatabase ? { backup: deps.backupDatabase } : {};
 
   // ── precheck：不过就退出，什么都不改 ──
   emit({ step: "precheck", state: "running", message: m.precheck.running });
@@ -355,9 +364,9 @@ export async function runDataDirMigration(deps: DataDirMigrationDeps): Promise<D
   if (schemaBefore !== null && schemaBefore > LATEST_SCHEMA_VERSION) {
     return stop("schema_ahead", m.errors.schemaAhead(schemaBefore, LATEST_SCHEMA_VERSION));
   }
-  // schema 要升级时，停服务后再存一份库给回滚用：空间按两份算。
+  // schema 要升级时，停服务后再存一份库给回滚用：空间按两份算。情况 C 只存一份。
   const upgradesSchema = desktop && schemaBefore !== null && schemaBefore < LATEST_SCHEMA_VERSION;
-  const needed = (existsSync(oldDb) ? statSync(oldDb).size : 0) * (upgradesSchema ? 2 : 1);
+  const needed = (existsSync(oldDb) ? statSync(oldDb).size : 0) * (upgradesSchema && !upgrade ? 2 : 1);
   const free = deps.freeBytes(existingAncestor(newDir));
   if (free < needed) return stop("disk_space", m.errors.diskSpace(needed, free));
   const tooLong = socketPathTooLong(newDir);
@@ -479,17 +488,29 @@ export async function runDataDirMigration(deps: DataDirMigrationDeps): Promise<D
   try {
     // ── backup：daemon 还在运行时在线备份 ──
     emit({ step, state: "running", message: m.backup.running });
-    if (existsSync(oldDb)) {
+    // 情况 C、schema 要升级：停服务以后再备份（stop_old），这时没有进程在写库。
+    const backupAfterStop = upgrade && upgradesSchema;
+    if (existsSync(oldDb) && !backupAfterStop) {
       mkdirSync(join(oldDir, "backups"), { recursive: true });
-      backupRel = join("backups", `${backupPrefix}-${stamp}.db`);
-      await backupSqlite(oldDb, join(oldDir, backupRel));
+      if (upgrade) {
+        await replaceBackup(oldDb, join(oldDir, UPGRADE_BACKUP), backupOptions);
+        backupRel = UPGRADE_BACKUP;
+        removeLegacyUpgradeBackups(join(oldDir, "backups"));
+      } else {
+        backupRel = join("backups", `${backupPrefix}-${stamp}.db`);
+        await backupSqlite(oldDb, join(oldDir, backupRel));
+      }
     }
-    // 原地接管：开发安装的 plist 也留一份，开发者要回到开发安装时参考（第 12.4 节）。
-    if (inPlace) {
+    // 接管开发安装：它的 plist 也留一份，开发者要回到开发安装时参考（第 12.4 节）。
+    if (inPlace && !upgrade) {
       mkdirSync(join(oldDir, "backups"), { recursive: true });
       copyFileSync(newSupervisorPlist, join(oldDir, "backups", `${backupPrefix}-${stamp}.supervisor.plist`));
     }
-    emit({ step, state: "done", message: m.backup.done(backupPath() ?? "-"), ...(backupRel ? { backupPath: backupPath() } : {}) });
+    emit({
+      step, state: "done",
+      message: backupAfterStop && existsSync(oldDb) ? m.backup.afterStop : m.backup.done(backupPath() ?? "-"),
+      ...(backupRel ? { backupPath: backupPath() } : {}),
+    });
     await after(step);
 
     // ── scan ──（原地时没有要改的目录）
@@ -530,7 +551,13 @@ export async function runDataDirMigration(deps: DataDirMigrationDeps): Promise<D
       oldPlistsMoved = [...oldPlistsMoved, plist];
     }
     // 没有进程在写库了：这一份就是停服务时的原样。新版本会升级库，回滚时用它。
-    if (upgradesSchema) {
+    if (upgradesSchema && upgrade && existsSync(oldDb)) {
+      mkdirSync(join(oldDir, "backups"), { recursive: true });
+      await replaceBackup(oldDb, join(oldDir, UPGRADE_BACKUP), backupOptions);
+      stoppedRel = UPGRADE_BACKUP;
+      backupRel = UPGRADE_BACKUP;
+      removeLegacyUpgradeBackups(join(oldDir, "backups"));
+    } else if (upgradesSchema && !upgrade) {
       stoppedRel = join("backups", `${backupPrefix}-${stamp}-stopped.db`);
       await backupSqlite(oldDb, join(oldDir, stoppedRel));
     }
@@ -590,8 +617,8 @@ export async function runDataDirMigration(deps: DataDirMigrationDeps): Promise<D
     let supervisorPlist: string;
     if (service.kind === "dev") {
       const hadBin = new Set(existsSync(join(newDir, "bin")) ? readdirSync(join(newDir, "bin")) : []);
-      const { launcher, binary } = await service.placeAgent(newDir);
-      agentPlaced = [binary, launcher]
+      const { launcher, binary, memoryLauncher } = await service.placeAgent(newDir);
+      agentPlaced = [binary, launcher, ...(memoryLauncher ? [memoryLauncher] : [])]
         .filter((path) => !hadBin.has(path.slice(join(newDir, "bin").length + 1)))
         .map((path) => path.slice(newDir.length + 1));
       supervisorPlist = plistContent({ nodeBin: launcher, entry: service.entry, cwd: service.checkout, logDir });

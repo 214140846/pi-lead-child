@@ -3,9 +3,10 @@
 // <out>/runtime/                     运行包目录，冒烟脚本（smoke-runtime.ts）直接跑它
 // <out>/bytezard-lead-runtime-<版本>-arm64.tar.gz   运行包目录的内容，解开就是 versions/<版本>/
 // <out>/manifest.json               更新检查读的清单，带 tar.gz 的大小和 SHA-256
+// <out>/bytezard-lead-sourcemaps-<版本>-arm64.tar.gz   dist 里的源码映射，不进运行包（设计第 7.5.7 节）
 // <out>/cache/                      下载的 Node，哈希对得上时下次复用
 import { execFile } from "node:child_process";
-import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { AGENT_BINARY, installAgent, type SignFn } from "./agent-bundle.js";
@@ -13,8 +14,8 @@ import { copyExternals, externalClosure, type ClosureEntry, type Lockfile } from
 import { assertMachOArch } from "./macho.js";
 import { extractNodeBinary, fetchVerifiedNode, type FetchLike } from "./node-dist.js";
 import {
-  hashFiles, MANIFEST_FILE, RELEASE_FILE, releaseManifest, runtimeArchiveName, sha256File, SUPPORTED_ARCH, updateManifest,
-  type ReleaseManifest, type UpdateManifest,
+  hashComponents, hashFiles, MANIFEST_FILE, RELEASE_FILE, releaseManifest, runtimeArchiveName, sha256File, sourceMapArchiveName,
+  SUPPORTED_ARCH, updateManifest, type ReleaseManifest, type UpdateManifest,
 } from "./release.js";
 
 const execFileAsync = promisify(execFile);
@@ -31,8 +32,10 @@ export const REQUIRED_BUILD_FILES = [
   "apps/cli/dist/cli.mjs",
 ] as const;
 
-// dist 里不进运行包的东西：开发模式的构建记录（发布模式看 release.json），build:web 中途留下的临时目录。
-const SKIPPED_DIST_ENTRIES = [/^build-info\.json$/, /^\.web-staging-/, /^\.web-previous-/];
+const SOURCE_MAP = /\.map$/;
+// dist 里不进运行包的东西：开发模式的构建记录（发布模式看 release.json），build:web 中途留下的临时目录，
+// 源码映射（约 54 MB，运行时用不到，另打成附件，设计第 7.5.7 节）。
+const SKIPPED_DIST_ENTRIES = [/^build-info\.json$/, /^\.web-staging-/, /^\.web-previous-/, SOURCE_MAP];
 
 // bin/plc：用运行包自带的 Node 运行 plc。从 PATH 上的软链接调用时也先解开链接，找到运行包根。
 export const PLC_WRAPPER = `#!/bin/sh
@@ -62,6 +65,8 @@ export interface PackOptions {
 export interface PackResult {
   runtimeDir: string;
   archive: string;
+  /** 源码映射的附件；dist 里没有源码映射时为 null。 */
+  sourceMaps: string | null;
   manifestPath: string;
   release: ReleaseManifest;
   manifest: UpdateManifest;
@@ -96,8 +101,9 @@ export async function packRuntime(o: PackOptions): Promise<PackResult> {
   const archiveName = runtimeArchiveName(o.version);
   const archive = join(outDir, archiveName);
   const manifestPath = join(outDir, MANIFEST_FILE);
+  const sourceMapArchive = join(outDir, sourceMapArchiveName(o.version));
   // 只清掉这个脚本自己产出的东西，cache 留着。
-  for (const path of [runtimeDir, archive, manifestPath]) rmSync(path, { recursive: true, force: true });
+  for (const path of [runtimeDir, archive, manifestPath, sourceMapArchive]) rmSync(path, { recursive: true, force: true });
   mkdirSync(join(runtimeDir, "bin"), { recursive: true });
 
   // Node：官方二进制，校验哈希，改名为 lead-agent（设计文档第 9 节决定 6、7），用自己的标识重新做 ad-hoc 签名，
@@ -136,15 +142,24 @@ export async function packRuntime(o: PackOptions): Promise<PackResult> {
 
   const release = releaseManifest({
     version: o.version, node: o.nodeVersion, schemaVersion: o.schemaVersion, sourceTree: o.sourceTree,
-    builtAt: o.now ?? new Date(), repository: o.repository, files: await hashFiles(runtimeDir),
+    builtAt: o.now ?? new Date(), repository: o.repository, files: await hashFiles(runtimeDir), components: hashComponents(runtimeDir),
   });
   writeJson(join(runtimeDir, RELEASE_FILE), release);
 
   // COPYFILE_DISABLE：macOS 的 tar 不往包里塞 ._ 开头的扩展属性文件。
-  await execFileAsync("tar", ["-czf", archive, "-C", runtimeDir, "."], { env: { ...process.env, COPYFILE_DISABLE: "1" } });
+  // release.json 放在第一项：壳解包时先只读它，按 components 决定哪些部分不用解（设计第 7.5.4 节）。
+  const entries = ["./release.json", ...readdirSync(runtimeDir).filter((name) => name !== RELEASE_FILE).sort().map((name) => `./${name}`)];
+  const tarEnv = { env: { ...process.env, COPYFILE_DISABLE: "1" } };
+  await execFileAsync("tar", ["-czf", archive, "-C", runtimeDir, ...entries], tarEnv);
   const manifest = updateManifest(release, { file: archiveName, size: statSync(archive).size, sha256: await sha256File(archive) });
   writeJson(manifestPath, manifest);
+
+  const maps = ["daemon", "cli"].flatMap((app) => {
+    const dist = join(repoRoot, "apps", app, "dist");
+    return readdirSync(dist).filter((name) => SOURCE_MAP.test(name)).map((name) => `apps/${app}/dist/${name}`);
+  });
+  if (maps.length) await execFileAsync("tar", ["-czf", sourceMapArchive, "-C", repoRoot, ...maps], tarEnv);
   log(`运行包：${runtimeDir}`);
-  log(`附件：${archive}、${manifestPath}`);
-  return { runtimeDir, archive, manifestPath, release, manifest, externals };
+  log(`附件：${archive}、${manifestPath}${maps.length ? `、${sourceMapArchive}` : ""}`);
+  return { runtimeDir, archive, sourceMaps: maps.length ? sourceMapArchive : null, manifestPath, release, manifest, externals };
 }

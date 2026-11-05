@@ -76,11 +76,13 @@ describe("generated install guide", () => {
     expect(zh).toContain("### 打不开怎么办");
   });
 
-  it("puts both languages and no troubleshooting in the release notes template", () => {
+  // GitHub 上的 commit 和 release 只用英文（用户 2026-11-05）：两条横线之间贴进 release 的部分没有中文。
+  it("puts only the English guide, and no troubleshooting, in the part of the template that goes into a release", () => {
     const template = readFileSync(join(ROOT, "docs/desktop/release-notes-template.md"), "utf8");
-    expect(template).toContain("## Install Bytezard Lead");
-    expect(template).toContain("## 安装 Bytezard Lead");
-    expect(template).not.toContain("xattr");
+    const release = template.split(/^---$/m)[1]!;
+    expect(release).toContain("## Install Bytezard Lead");
+    expect(release).not.toMatch(/[\u3400-\u9fff]/);
+    expect(release).not.toContain("xattr");
     expect(template).not.toMatch(/Fairy/);
   });
 

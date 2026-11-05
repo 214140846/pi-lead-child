@@ -1,9 +1,9 @@
 // 运行包的旧版本（runtime-versions.ts）：只留这次的和上一个；还有进程在用的、名字不是版本号的不删；看不出谁在用时一个都不删。
-import { existsSync, mkdirSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { tempDir } from "@pi-lead-child/core/testing";
-import { pruneRuntimeVersions } from "../src/deploy/runtime-versions.js";
+import { pruneRuntimeVersions, pruneSharedNodeModules, sharedNodeModulesDir } from "../src/deploy/runtime-versions.js";
 
 function versionsDir(names: string[]) {
   const dir = join(tempDir("plc-runtime-versions-"), "Bytezard Lead", "runtime", "versions");
@@ -37,5 +37,35 @@ describe("pruneRuntimeVersions", () => {
   it("does nothing when there is no versions folder", () => {
     expect(pruneRuntimeVersions({ versionsDir: join(tempDir("plc-runtime-versions-"), "missing"), keep: [] }))
       .toEqual({ removed: [], inUse: [], failed: [] });
+  });
+});
+
+// 共用的 node_modules（docs/desktop/macos-desktop-design.md 第 7.5.4 节）：版本目录里的 node_modules 指向
+// shared/node_modules/<哈希>/node_modules。删完旧版本以后，没有版本再指向的那一份删掉。
+describe("pruneSharedNodeModules", () => {
+  it("removes the copies that no version folder points at, and keeps the rest", () => {
+    const installRoot = join(tempDir("plc-shared-modules-"), "Bytezard Lead", "runtime");
+    const shared = sharedNodeModulesDir(installRoot);
+    const [a, b, c] = ["a", "b", "c"].map((char) => char.repeat(64));
+    for (const name of [a!, b!, c!, `${c}.partial`]) mkdirSync(join(shared, name, "node_modules"), { recursive: true });
+    const version = (name: string, target: string | null) => {
+      const dir = join(installRoot, "versions", name);
+      mkdirSync(dir, { recursive: true });
+      if (target) symlinkSync(join("..", "..", "shared", "node_modules", target, "node_modules"), join(dir, "node_modules"));
+    };
+    version("1.3.0", a!);
+    // 解了一半的版本也算：壳正在用它。
+    version("1.4.0.partial", b!);
+    // 旧版 App 整个解出的版本：node_modules 是真目录，不指向任何一份。
+    version("1.2.0", null);
+    mkdirSync(join(installRoot, "versions", "1.2.0", "node_modules"));
+
+    expect(pruneSharedNodeModules(installRoot)).toEqual([c]);
+    expect(readdirSync(shared).sort()).toEqual([a, b, `${c}.partial`].sort());
+    expect(existsSync(join(installRoot, "versions", "1.2.0", "node_modules"))).toBe(true);
+  });
+
+  it("does nothing when there is no shared folder", () => {
+    expect(pruneSharedNodeModules(join(tempDir("plc-shared-modules-"), "runtime"))).toEqual([]);
   });
 });

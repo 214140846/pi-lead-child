@@ -7,13 +7,17 @@
 //   3. 更新：下载 dmg 到 <shell>/updates/，按 manifest 的大小和 SHA-256 校验；hdiutil 只读挂载；把里面的 App 复制到
 //      App 所在目录下的隐藏暂存目录；核对版本号、bundle id 和签名；卸载 dmg；两次 rename 换掉 App
 //      （旧的先挪进暂存目录，第二次失败时挪回去）；然后重开 App。
+//      换掉 App 以前，先把新 App 带的运行包解到 versions/<新版本>/，不换 current（prepareRuntime，设计第 7.5.6 节）：
+//      新 App 打开时只要换 current。这一步失败不挡更新，新 App 自己再解。
 //   4. 新 App 打开时照常跑安装流程：它带的运行包比装着的新，就解包，desktop-install 按「换了版本」（设计第 12.5 节）
-//      先备份数据库、重启到新版本，失败自动回滚。数据目录不动。
+//      和更新的种类（第 7.5.2 节）决定要不要备份、重启，失败自动回滚。数据目录不动。
 // 用 Node 写的文件不带 com.apple.quarantine，换上的 App 不会被 Gatekeeper 当成刚下载的（设计第 7.4 节）；保险起见仍去掉一次。
+// macOS 按 bundle id 找 App 的图标（通知、Dock）。所以换好 App 以后让 LaunchServices 重新登记它，删暂存目录以前先去掉旧 App
+// 的登记（2026-11-05：换了图标以后通知还是 Electron 的图标，LaunchServices 里记着 17 份同一个 bundle id 的 App）。
 // 所有子进程都用参数数组，不经 shell（App 的路径里有空格）。
 import { createHash } from "node:crypto";
-import { appendFileSync, createWriteStream, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { access, constants, mkdir, mkdtemp, readdir, rename, rm } from "node:fs/promises";
+import { appendFileSync, createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { access, constants, mkdir, mkdtemp, readdir, rename, rm, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { ShellPaths } from "./paths.js";
@@ -27,6 +31,8 @@ export const UPDATE_TICK_MS = 3_600_000;
 export const UPDATE_STAGING_PREFIX = ".bytezard-lead-update-";
 /** 本机验证用：把 manifest 和 dmg 的地址换成这个目录（只收 https，或者本机的 http）。 */
 export const UPDATE_URL_ENV = "BYTEZARD_UPDATE_URL";
+/** LaunchServices 的登记工具（系统自带）。 */
+export const LSREGISTER = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
 const DMG_MAX_BYTES = 2 * 1024 ** 3;
 const SHA256 = /^[0-9a-f]{64}$/;
 const REPOSITORY = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
@@ -157,6 +163,11 @@ export interface UpdaterDeps {
   now?(): Date;
   /** 测试换成假的：模拟换 App 的第二次 rename 失败。 */
   rename?(from: string, to: string): Promise<void>;
+  /**
+   * 换掉 App 以前，把暂存的新 App（.app 的路径）带的运行包解好，不换 current（设计第 7.5.6 节）。返回给日志看的一句话。
+   * 没有时不做：新 App 打开时自己解。
+   */
+  prepareRuntime?(stagedApp: string): Promise<string | null>;
 }
 
 export interface Updater {
@@ -169,8 +180,8 @@ export interface Updater {
   dismiss(): void;
   /** 「更新」：下载、校验、换掉 App、重开。失败时状态是 failed，可以再点一次。 */
   apply(): Promise<void>;
-  /** 新 App 打开时删掉上次更新留下的暂存目录和 dmg。 */
-  cleanup(): void;
+  /** 新 App 打开时删掉上次更新留下的暂存目录（先去掉旧 App 在 LaunchServices 里的登记）和 dmg。 */
+  cleanup(): Promise<void>;
 }
 
 export function createUpdater(deps: UpdaterDeps): Updater {
@@ -367,6 +378,18 @@ export function createUpdater(deps: UpdaterDeps): Updater {
     }
   };
 
+  // 换上的 App 的修改时间是打包时的（ditto 保留时间），IconServices 会当它没变、接着用缓存里的旧图标。所以改成现在，
+  // 再让 LaunchServices 重新登记它。做不成不算更新失败。
+  const registerAgain = async (app: string) => {
+    try {
+      const at = now();
+      await utimes(app, at, at);
+      await deps.execFile(LSREGISTER, ["-f", app], { timeoutMs: 30_000 });
+    } catch (error) {
+      log(`could not register ${app} again: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+
   const apply = async () => {
     const update = state.available;
     if (!newer(update) || (working && working.state !== "failed")) return;
@@ -394,7 +417,17 @@ export function createUpdater(deps: UpdaterDeps): Updater {
       await mkdir(staging);
       const staged = await stageApp(dmg, staging);
       await verifyApp(staged, version, app);
+      if (deps.prepareRuntime) {
+        const started = Date.now();
+        try {
+          const note = await deps.prepareRuntime(staged);
+          log(`prepared the runtime of ${version} in ${Date.now() - started} ms${note ? `: ${note}` : ""}`);
+        } catch (error) {
+          log(`could not prepare the runtime of ${version}; the new App unpacks it itself: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
       await replaceApp(app, staged, staging);
+      await registerAgain(app);
       await rm(dmg, { force: true }).catch(() => {});
       log(`replaced the App with ${version}; relaunching`);
       deps.relaunch();
@@ -407,12 +440,20 @@ export function createUpdater(deps: UpdaterDeps): Updater {
     }
   };
 
-  const cleanup = () => {
+  const cleanup = async () => {
     const app = deps.appBundle;
     if (app) {
       try {
         for (const name of readdirSync(dirname(app))) {
-          if (name.startsWith(UPDATE_STAGING_PREFIX)) rmSync(join(dirname(app), name), { recursive: true, force: true });
+          if (!name.startsWith(UPDATE_STAGING_PREFIX)) continue;
+          const staging = join(dirname(app), name);
+          // 先去掉登记：目录删了以后，LaunchServices 里还记着这份同一个 bundle id、可能是旧图标的 App。
+          for (const copy of ["old.app", "new.app"].map((entry) => join(staging, entry)).filter((path) => existsSync(path))) {
+            await deps.execFile(LSREGISTER, ["-u", copy], { timeoutMs: 30_000 }).catch((error: unknown) => {
+              log(`could not unregister ${copy}: ${error instanceof Error ? error.message : String(error)}`);
+            });
+          }
+          rmSync(staging, { recursive: true, force: true });
         }
       } catch (error) {
         log(`could not remove the old staging folders: ${error instanceof Error ? error.message : String(error)}`);

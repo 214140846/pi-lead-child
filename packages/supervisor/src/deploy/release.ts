@@ -14,6 +14,15 @@ export const RELEASE_PRODUCT = "bytezard-lead";
 const RELEASE_SCHEMA = 1;
 const SHA256 = /^[0-9a-f]{64}$/;
 
+/**
+ * 运行包的五个组成（设计第 7.5.1 节）。打包脚本（scripts/desktop/lib/release.ts 的 componentOf）把每个文件归到一个组成，
+ * 给每个组成算一个内容哈希，写进 release.json 和 manifest.json 的 components。
+ */
+export const RUNTIME_COMPONENTS = ["node", "node_modules", "service", "web", "cli"] as const;
+export type RuntimeComponent = typeof RUNTIME_COMPONENTS[number];
+/** 这几个组成变了要重启服务（第 7.5.2 节）。web、cli 变了不重启。 */
+export const SERVICE_COMPONENTS: ReadonlyArray<RuntimeComponent> = ["node", "node_modules", "service"];
+
 export interface ReleaseManifest {
   schema: 1;
   product: string;
@@ -27,6 +36,8 @@ export interface ReleaseManifest {
   updateSource?: { type: string; repository: string };
   // 相对运行包根目录的路径 → SHA-256（小写十六进制）。
   files: Record<string, string>;
+  // 组成 → 内容哈希（第 7.5.1 节）。2026-11-05 以前打的包没有。
+  components?: Partial<Record<RuntimeComponent, string>>;
 }
 
 // status 里给人看的发布信息。
@@ -85,7 +96,22 @@ export function readReleaseManifest(root: string): ReleaseManifest {
     }
   }
   if (problems.length) throw new Error(`${path} 的内容不对：${problems.join("；")}。`);
-  return value as unknown as ReleaseManifest;
+  const manifest = value as unknown as ReleaseManifest;
+  // components 只用来判断要不要重启、能不能复用，不用来核对文件：认识的组成、形状对的哈希才留下，其余的当作没有。
+  const components = releaseComponents(value.components);
+  if (components) manifest.components = components;
+  else delete manifest.components;
+  return manifest;
+}
+
+/** release.json 的 components：只留认识的组成和形状对的哈希。一个都没有时为 undefined。 */
+export function releaseComponents(value: unknown): Partial<Record<RuntimeComponent, string>> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const entries = RUNTIME_COMPONENTS.flatMap((name) => {
+    const hash = (value as Record<string, unknown>)[name];
+    return typeof hash === "string" && SHA256.test(hash) ? [[name, hash] as const] : [];
+  });
+  return entries.length ? Object.fromEntries(entries) : undefined;
 }
 
 function sha256File(path: string): string {

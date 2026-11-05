@@ -43,14 +43,16 @@
         apps/daemon/dist/web/            ← Companion 静态导出
         apps/cli/dist/cli.mjs
         node_modules/                    ← 只有 esbuild 的 external：better-sqlite3、pi、sandbox-runtime 及其依赖
+                                           2026-11-05 起是软链接，指向 ../../shared/node_modules/<哈希>/node_modules（第 7.5 节）
       1.2.0/                             ← 上一个版本，留作回滚
+    shared/node_modules/<哈希>/node_modules/   ← 按内容哈希存的 node_modules，内容一样的版本共用一份（第 7.5 节）
     current -> versions/1.3.0
     install-state.json                   ← 安装向导的进度和最后一次错误
   shell/                                 ← Electron 的 userData（缓存、窗口状态），和业务数据分开
 
 ~/Library/LaunchAgents/com.bytezard.plc.supervisor.plist
   ProgramArguments = [ <安装根>/current/bin/lead-agent, <安装根>/current/apps/daemon/dist/supervisor.mjs ]
-~/Library/LaunchAgents/com.bytezard.plc.hindsight.plist   ← Hindsight 的独立任务（P1）
+~/Library/LaunchAgents/com.bytezard.plc.hindsight.plist   ← Hindsight 的独立任务（P1）；2026-11-05 起不再有，Hindsight 由 supervisor 拉起（第 8.7 节）
 ```
 
 - daemon 由 supervisor 拉起，不单独注册 launchd 任务。supervisor 用自己的 `process.execPath` 启动 daemon，所以 daemon 的进程名也是 `lead-agent`。
@@ -120,6 +122,7 @@ P0-2 的实现没有再跑一次 `npm install`：它按根 `package-lock.json` �
 - 安装根放在数据目录下面，这样一个产品只有一个目录。卸载时只删 `runtime/` 和 `shell/`，数据默认保留（第 4.4 节）。
 - 每个版本一个目录 `versions/<版本>/`，装好后不再改。`current` 是软链接。换版本时先建临时软链接，再 `rename` 覆盖 `current`，这一步是原子的。
 - 保留两个版本：`current` 和上一个，留作回滚。更早的版本在升级成功后删掉：`desktop-install` 装好、daemon 回答以后删（`packages/supervisor/src/deploy/runtime-versions.ts`，2026-11-05）。还有进程在用的版本不删（daemon、Hindsight 和接管过来的执行器从 `versions/<版本>/` 运行）；不知道上一个是哪个版本时一个都不删。
+- 服务正在用的版本也不删（`install-state.json` 的 `serviceVersion`）：只改了网页的更新不重启服务，服务可能还跑在更早的版本上（第 7.5 节）。删完版本以后，`shared/node_modules/` 里没有版本再指向的项也删掉。
 - 开发安装和桌面安装用同一个数据目录。开发机从旧名字迁过来，见 P0-8。
 - plist 里写 `current` 的路径，不写具体版本。Node 运行 `import.meta.url` 时会解开软链接，所以 `ops.mjs desktop-install` 要显式接收 `--root <安装根>/current`，不能靠 `projectRoot()` 推出来。
 - 新路径里有空格（`Application Support`、`Bytezard Lead`）。所有路径都用 `execFile` 的参数数组传，不拼进 shell 命令。给模型看的文字里，命令要带引号，例如 `sqlite3 -readonly ~/"Library/Application Support/Bytezard Lead/plc.db"`。
@@ -329,10 +332,13 @@ App 菜单「卸载 Bytezard Lead…」（P1）调用 `ops.mjs desktop-uninstall
 2. manifest 的版本比这份 App 新时，网页顶栏写新版本号和「更新」（主题 11.14 第 5 项）。「明天再提醒」：这个版本 24 小时内不再提示。
 3. 点「更新」：下载 dmg（Electron 的 `net.fetch`，走系统代理），按大小和 SHA-256 校验；`hdiutil` 只读挂载，把里面的 App 用 `ditto` 复制到 App 所在目录下的隐藏暂存目录；核对版本号、bundle id，`codesign --verify`；卸载 dmg；两次 `rename` 换掉 App，第二次失败时把旧的挪回去；`app.relaunch()`。
 4. 新 App 打开时照常跑第 4.2 节的流程：它带的运行包比装着的新，解包，`desktop-install` 按情况 C（第 12.5 节）先备份数据库、重启到新版本，失败自动回滚。数据目录不动。暂存目录和下载的 dmg 在新 App 打开时删掉。
+   - 2026-11-05 补充：macOS 按 bundle id 找 App 的图标（通知、Dock）。换好 App 以后，把它的修改时间改成现在，再用 `lsregister -f` 重新登记它（ditto 保留打包时的时间，IconServices 会当它没变）。新 App 删暂存目录以前，先用 `lsregister -u` 去掉旧 App 的登记。起因：换了 App 图标以后通知还是 Electron 的图标，LaunchServices 里记着 17 份同一个 bundle id 的 App（删掉的暂存副本、别的工作区打出的 App、挂着的旧 dmg）。
 5. App 菜单的「检查更新…」（用户 2026-11-05）：马上查一次，用对话框说结果。有新版时对话框给「更新」和「以后」，「更新」和网页里的是同一个动作；点过「明天再提醒」的版本也再提示。已经是最新版、查不了（没网）、不知道从哪里取更新时，各写一句。
 6. 本机验证时用 `BYTEZARD_UPDATE_URL` 换掉 manifest 和 dmg 的地址（只收 https，或者 127.0.0.1、localhost 上的 http）。
 
 代码在 `desktop/src/updater.ts`；网页那一侧在 `apps/companion/src/state/shellUpdate.ts`。这个按钮调的是 App 壳，不是 daemon，所以 Lead 现在不能替用户点它（第 7.3 节的「检查更新」「更新」操作还没做）。
+
+**2026-11-05 改成增量更新（用户要求），见第 7.5 节。** 更新的单位还是整个 dmg，但是没变的部分不再重写，只改了网页时不停服务，只留一份升级前的备份。
 
 ### 7.3 运行包的更新流程
 
@@ -355,6 +361,144 @@ App 菜单「卸载 Bytezard Lead…」（P1）调用 `ops.mjs desktop-uninstall
 - P1 下载走 HTTPS，校验 SHA-256（第 9 节决定 5）。`manifest.json` 和运行包来自同一个 release，所以哈希只能发现损坏，不能证明来源。这和用户手动下载 dmg 的信任程度相同。
 - P2 再加签名：CI 用 Ed25519 私钥给 `manifest.json` 签名，公钥打进 App。私钥放进 GitHub Actions 的 secret。好处是仓库附件被换掉时，App 能发现；代价是多管一把密钥，丢了要发新版换公钥。
 - 用 Node 下载的文件不会带 `com.apple.quarantine` 属性，所以换运行包不会再触发 Gatekeeper。**未在干净机器上实测**，P1 验收要测。
+
+### 7.5 增量更新（2026-11-05）
+
+用户 2026-11-05 要求：更新时没变的部分不重写；只改了网页时不停服务；只在服务的代码或者库的 schema 变了时才停服务；只在需要时备份，并且只留一份备份。这一节写下做法。
+
+一键更新（第 7.2 节）在真的 App 上实测（2026-11-05，两个本机构建之间）：
+
+| 项 | 实测 |
+|---|---|
+| 解包（「复制程序文件」一行） | 约 113 秒 |
+| 接管（停服务、换版本、启动） | 14 秒 |
+| 其余步骤 | 约 11 秒 |
+| 一个版本的运行包 | 17,169 个文件，412 MB |
+| 和上一个版本逐字节相同的部分 | `node_modules`（17,071 个文件，208 MB）、`bin/lead-agent`（116 MB） |
+| `apps/` | 94 个文件，88 MB，其中 6 个源码映射文件占 54 MB |
+| `<数据目录>/backups/` | 5.7 GB，每次升级多一份约 230 MB 的 `pre-upgrade-<时间>.db` |
+
+同一台机器上又量了几种复用的办法：
+
+| 办法 | 耗时 |
+|---|---|
+| 解出运行包里 `node_modules` 和 `bin/lead-agent` 以外的部分 | 0.9 秒 |
+| 用 APFS 克隆逐个复制 `node_modules`（`cp -cR`，18,685 项） | 11.4 秒 |
+| 用硬链接逐个复制 `node_modules`（`pax -rwl`） | 7.5 秒 |
+| 用 APFS 克隆复制 `bin/lead-agent`（`cp -c`） | 0.005 秒 |
+
+文件多时，每建一个文件都慢（这台机器装了安全软件）。所以 `node_modules` 不再逐个复制，改成各个版本共用一份。
+
+#### 7.5.1 运行包的五个组成
+
+打包脚本（`scripts/desktop/lib/release.ts` 的 `componentOf`）把运行包里的每个文件归到一个组成，给每个组成算一个内容哈希，写进 `release.json` 和 `manifest.json` 的 `components`。哈希按「路径、文件或软链接、可执行位、内容的 SHA-256 或软链接的目标」排好序再算，不含时间。
+
+| 组成 | 包括 | 变了以后 |
+|---|---|---|
+| `node` | `bin/lead-agent`、`bin/node`、`bin/Bytezard Lead` | 重启服务 |
+| `node_modules` | `node_modules/` 下的全部 | 重启服务 |
+| `service` | `apps/daemon/` 下除了 `dist/web/` 的全部、根目录的 `package.json` | 重启服务 |
+| `web` | `apps/daemon/dist/web/` | 不重启 |
+| `cli` | `apps/cli/`、`bin/plc` | 不重启 |
+
+- 有文件不属于任何组成时，打包失败。以后往运行包里加东西（例如 uv），要先决定它属于哪个组成。
+- 哈希直接按内容算，所以 Node 版本（`desktop/node-version`）、架构、依赖变了，`node` 或 `node_modules` 的哈希都跟着变，不只看根目录的 lockfile。
+- `release.json.schemaVersion` 照旧，库的 schema 单独比较。
+- 旧的 `release.json` 没有 `components`。这时按「服务变了」处理：重启，备份。
+
+#### 7.5.2 更新的种类
+
+`desktop-install` 发现换了版本（第 12.5 节，情况 C）以后，拿上次装好的版本（`versions/<旧版本>/release.json`）和这次的比，得出更新的种类（`packages/supervisor/src/deploy/update-kind.ts`）：
+
+| 种类 | 怎样判断 | 停服务 | 备份 | 安装页 |
+|---|---|---|---|---|
+| `none` | 五个组成和 `schemaVersion` 都一样（只换了 App 壳） | 不停 | 不备份 | 没有「备份数据，换到新版本」一行 |
+| `web` | 只有 `web`、`cli` 变了 | 不停 | 不备份 | 同上 |
+| `service` | `node`、`node_modules`、`service` 有一个变了，`schemaVersion` 一样 | 排空后停，重启 | 在线备份 | 「备份数据，换到新版本」 |
+| `schema` | `schemaVersion` 变了 | 排空后停，重启 | 停服务以后备份（必须） | 同上 |
+
+- 不停服务的种类还要满足一条：库的 schema 版本等于新版本的 `schemaVersion`。不满足时按 `service` 处理。
+- 停的只有服务的进程（supervisor、daemon）。执行器在 daemon 重启以后由新的 daemon 接管，不停。
+- 不重启时，服务还跑在旧版本的目录上。`install-state.json` 记下服务跑在哪个版本（`serviceVersion`），删旧版本时留着它。
+- 安装页原来对普通升级也显示「接手已有的数据和设置」，用户读成要搬数据。现在只有情况 A、B 显示这一行；情况 C 要重启时显示「备份数据，换到新版本」，不重启时不显示。`detect` 一步的进度行带上 `takeover`（`pre_rename`、`dev`、`upgrade`）和 `update`（上表的种类），壳按它选这一行的文字。
+
+#### 7.5.3 网页从 current 提供，由 daemon 自己核对
+
+原来 daemon 从自己所在的版本目录提供网页（`defaultWebRoot()` 是 `versions/<版本>/apps/daemon/dist/web`）。只换 `current` 时，在跑的 daemon 照旧给旧网页。
+
+现在发布模式下，daemon 每次提供网页前（结果缓存 2 秒）看 `<安装根>/current/release.json`：
+
+- `current` 的 `node`、`node_modules`、`service` 和 `schemaVersion` 都和 daemon 自己的一样：用 `current` 的网页。这时新网页和在跑的 daemon 出自同样的服务代码，所以新网页不需要更新的 daemon。
+- 不一样，或者有一边没有 `components`：用 daemon 自己的网页。所以换版本到重启之间（排空最长 30 分钟），旧 daemon 不会给出要新 daemon 的网页。
+
+网页的版本提示（`apps/companion/src/state/webVersion.ts`）读 `/web-build.json`，它也来自 `current`，所以已经打开的页面会提示「有新版本，刷新」。
+
+#### 7.5.4 解包时复用没变的部分
+
+壳解包（`desktop/src/runtime-bundle.ts`）时先只读出压缩包里的 `release.json`（打包时把它放在压缩包的第一项），再按 `components` 决定：
+
+- `node_modules`：放在 `<安装根>/shared/node_modules/<哈希>/node_modules/`，版本目录里的 `node_modules` 是指向它的相对软链接。共享目录里已经有这个哈希时只建软链接。没有、但别的版本目录里有同样哈希的真目录（例如旧版 App 在后台整个解出的版本，第 7.5.6 节）时，用 APFS 克隆复制一份进去。都没有时，从压缩包只解出 `node_modules`，先解到 `<哈希>.partial`，再 rename。
+- `bin/lead-agent`：别的版本的 `node` 哈希一样时，用 APFS 克隆复制（`COPYFILE_FICLONE`，不是 APFS 时退回普通复制），不从压缩包解。
+- 其余的从压缩包解出，跳过上面两项。然后照旧核对 `release.json.files`（经过软链接也核对 better-sqlite3 的原生模块），去掉 quarantine，rename，换 `current`。
+
+共享目录里的项装好后不再改。版本目录照旧各自完整：回滚到上一个版本时，它的软链接指的那一份还在。共用一份 `node_modules` 不影响模块解析：Node 解开软链接以后，包和包之间在同一个 `node_modules` 里互相找到。`desktop-install` 删完旧版本以后，删掉共享目录里没有版本目录再指向的项。
+
+目标是只改了网页或服务代码时，解包在几秒内完成。依赖变了时，`node_modules` 照旧要整个解出来。旧格式的压缩包（没有 `components`）照旧整个解。
+
+#### 7.5.5 只留一份升级前的备份
+
+- 情况 C 的备份只写一个文件：`<数据目录>/backups/pre-upgrade.db`。先写到 `pre-upgrade.db.partial`，用 `PRAGMA integrity_check` 核对，结果是 `ok` 才 rename 覆盖旧的一份。没核对过以前不删旧的。核对不过时删掉临时文件，这次升级停在停服务以前，什么都不改。
+- `service`：排空以前在线备份（服务还在跑）。
+- `schema`：停服务以后备份。这时没有进程在写库，这一份就是升级前的原样，回滚用它恢复库。不再另做在线备份，也不再写 `-stopped.db`。
+- 新的一份放好以后，删掉以前按时间命名的升级备份：`pre-upgrade-<时间>.db`、`pre-upgrade-<时间>-stopped.db`、`pre-upgrade-<时间>.supervisor.plist`。别的备份都不动：`pre-takeover-*`、`pre-rename-*`、supervisor 维护时的 `plc-pre-*`、手动做的备份。
+- 情况 C 不再复制 supervisor 的 plist：它的内容没变。情况 B 照旧复制（开发者要回到开发安装时参考）。
+- 不停服务的种类（`none`、`web`）不备份。
+
+#### 7.5.6 在后台先解好新的运行包
+
+点「更新」以后，壳下载、校验 dmg，把新 App 复制到暂存目录。现在多一步：换掉 App 以前，从暂存的新 App 里取出运行包，解到 `versions/<新版本>/`，不换 `current`。这一步失败不挡更新，新 App 打开时自己再解。新 App 打开时看到这个版本已经解好、文件完整，就只换 `current`。用户等的只有重开和切换。
+
+这一步由正在跑的旧 App 做，所以从带这个改动的 App 开始的下一次更新才用上。
+
+#### 7.5.7 源码映射不进运行包
+
+`apps/daemon/dist/*.map` 和 `apps/cli/dist/*.map` 不再放进运行包（约 54 MB）。运行时没有用到它们：没有进程开 `--enable-source-maps`。打包脚本把它们另打成 `bytezard-lead-sourcemaps-<版本>-arm64.tar.gz`，作为 release 的附件，查问题时下载。
+
+#### 7.5.8 实测（改动以后，2026-11-05）
+
+在同一台机器上打了三个运行包：A 是这个改动本身；B 只多了一个空提交（网页的版本号不同）；C 改了 daemon 的一句用法说明。三次构建的 `node`、`node_modules`、`cli` 哈希都一样；B 只有 `web` 变了，C 的 `service` 和 `web` 变了。所以本机重新构建是确定的，A→B 是 `web` 更新，B→C 是 `service` 更新。
+
+解包都在隔离的临时数据目录里做（不碰装着的 App）：
+
+| 解包 | 改动以前 | 改动以后 |
+|---|---|---|
+| 第一次装（共享目录是空的） | 93 秒 | 107–144 秒（多读一次压缩包；时间随磁盘忙闲变） |
+| A→B，只改了网页 | 103 秒 | 1.1–1.4 秒 |
+| B→C，服务变了 | 没量（同样整个解） | 1.5 秒 |
+
+- 压缩包从 100.7 MB 变成 88.9 MB，运行包目录从 412 MB 变成 380 MB。源码映射另打成 11.9 MB 的附件。
+- 隔离的数据目录里（临时 HOME、假 `launchctl`，和冒烟脚本一样）从 A 启动 supervisor 和 daemon，再用壳的解包换 `current`：换到 B 以后，同一个 daemon 进程（pid 不变）给出 B 的网页（`/web-build.json` 是 B 的版本号）；换到 C 以后，它给回自己 A 的网页，因为 C 的服务和它不一样。
+- 备份：243 MB 的库，复制加 `integrity_check` 一共 1.1 秒，只留一个文件。
+- 停服务、换版本的那一段（接管，14 秒）和以前一样，没有量。不重启的更新不经过这一段。
+
+用户同意以后，在真的 App 上做了一次端到端（2026-11-05）。三个包的版本号改成 `1.1.2-local.*`，排在装着的 1.1.1 之后；更新的入口是网页的「更新」：
+
+| 更新 | 从点「更新」到窗口打开 | 其中 |
+|---|---|---|
+| 1.1.1 → A（`service`，共享目录第一次建） | 1 分 56 秒 | 下载和换 App 6 秒，解包 72 秒，desktop-install 32 秒（排空、备份、重启） |
+| A → B（`web`） | 27 秒 | 旧 App 在后台解好新版本 1.1 秒，新 App 解包 0.35 秒（直接用），desktop-install 15 秒，其中 12 秒在删 1.1.1 的整个目录 |
+| B → C（`service`） | 28 秒 | 后台解包 1.1 秒，新 App 解包 0.33 秒，接管 12 秒（排空、备份、停服务、启动、健康检查） |
+
+- A→B：daemon 的进程号不变，没有新的备份，安装页没有「备份数据，换到新版本」一行，网页是 B 的版本。
+- 1.1.1→A：只留一个 `pre-upgrade.db`（252 MB），删掉了 14 个以前按时间存的升级备份文件，`backups/` 从 6.31 GB 变成 4.87 GB。
+- B→C：daemon 重启了，`pre-upgrade.db` 换成了新的一份，还是只有一份；A 被删掉（服务换到了 C）。
+- 删旧版本时，这个改动以前解出的版本里是真的 `node_modules`，删它要十几秒；以后的版本只有软链接，删得快。
+
+#### 7.5.9 没做的和没核实的
+
+- 只下载运行包（App 壳没变时不下载整个 dmg，第 7.3 节）：还没做。`manifest.json.components` 已经有了，以后按它判断。
+- CI 上每次构建的 `better_sqlite3.node`、`bin/lead-agent`（重签以后）是不是逐字节一样：没核实。本机两次构建是一样的。不一样时只是多重启一次、多解一次 `node_modules`，不会出错。
+- 这个改动以后的第一次更新，共享目录还是空的：上一个版本没有 `components`，所以 `node_modules` 还要整个解一次，服务照旧重启。
 
 ## 8. GitHub Actions、Gatekeeper、命名和通知（问题 7、8）
 
@@ -622,6 +766,14 @@ App 名写在 Info.plist 里。装好以后再改 Info.plist 会让签名失效�
 
 - ad-hoc 签名没有 Team ID。macOS 的隐私授权（例如访问「文稿」文件夹）对这种程序按签名的哈希记。每个运行包版本的哈希都不一样，所以运行包更新以后，用户给过的隐私授权可能要重新给。有 Apple 证书以后（P2-4）用 Developer ID 签名就没有这个问题。
 - Hindsight 的后台项目（`com.bytezard.plc.hindsight`，P1-2）由 uv 启动，登录项里显示的是 uv 或 Python 的签名，不是 Bytezard Lead。P1-2 要用同样的办法处理，或者由 supervisor 拉起它、不单独注册。
+  - 2026-11-05 实际情况：daemon 用 `[process.execPath, hindsight.mjs]` 写这个 plist，`process.execPath` 是解开软链接以后的 `versions/<版本>/bin/lead-agent`，所以「允许在后台」多了一项 `lead-agent`，图标是通用的 exec 图标（用户截图）。改法和 supervisor 一样：运行包多一个软链接 `bin/Bytezard Lead Memory -> lead-agent`，daemon 的 `hindsightProgram` 有这个软链接时写它（`apps/daemon/src/memory-backend.ts`），这一项显示 Bytezard Lead Memory。路径还是版本目录里的，换了服务代码时 plist 跟着变，Hindsight 跟着重启。
+- 图标（用户 2026-11-05 实测）：给 `bin/lead-agent` 设一个访达里的自定义图标（App 的 `icon.icns`，用 `NSWorkspace setIcon:forFile:options:`）以后，「允许在后台」里的这几项显示 App 的水母图标；不设时是通用的 exec 图标。自定义图标写在文件的扩展属性里，不改文件内容，ad-hoc 签名照样对得上，程序照样能运行。所以壳每次解包或者直接用已经解好的版本时，都把自己的 `icon.icns` 设给 `versions/<版本>/bin/lead-agent`（`desktop/src/runtime-bundle.ts` 的 `setAgentIcon`，用 `osascript -l JavaScript`，路径从参数传）。设不上不算解包失败，结果记进 `<数据目录>/shell/install.log`。
+- **用户 2026-11-05 定：Hindsight 不再单独注册后台任务，由 supervisor 拉起（「登录项与扩展」里少一行）。** 只留 Bytezard Lead.app 一行做不到：macOS 只在 App 自己用 `SMAppService` 注册、或者签名属于同一个开发者（有 Team ID）时，才把后台项目归到 App 名下（见上面方向 b、c）。所以先去掉记忆服务那一行，剩 Bytezard Lead 和 Bytezard Lead.app 两行；后者是 macOS 给 App 本身的记录，删不掉。做法：
+  - daemon 照旧决定 Hindsight 的期望状态（`apps/daemon/src/memory-controller.ts`），只是不再写 launchd 的 plist，改写 `<数据目录>/hindsight/run.json`：程序、环境变量（没有密钥）和期望状态的指纹。关掉记忆时删掉这个文件。
+  - supervisor 每 2 秒看一次 `run.json`（`packages/supervisor/src/hindsight-child.ts`）：有文件、没在跑时拉起；指纹变了时先停旧的再起新的；进程退出了，距上次启动满 30 秒再拉起（和原来 plist 的 `ThrottleInterval` 一样）；文件没了时停掉。supervisor 停机时一起停掉它。
+  - 它还是 supervisor 的子进程，daemon 重启（Lead 请求的重启、崩溃）不碰它，和原来的独立任务一样。supervisor 重启时它跟着重启：换了服务代码的更新本来就会重启它（程序路径带版本号）。
+  - 只有 daemon、没有 supervisor 时（开发时直接跑 daemon），没有人拉起 Hindsight，记忆不可用。
+  - 已经装过的机器：新的 daemon 第一次写 `run.json` 时，bootout 旧的 `com.bytezard.plc.hindsight` 任务并删掉它的 plist。开发机上旧的 supervisor 不认识 `run.json`：要 `plc daemon install` 一次。
 - 「已添加后台项目」通知在这台机器上一直没出现。这台机器装了 MDM 和安全软件，提示可能被压掉了。要在一台没装这些软件的 Mac 上再看一次。
 - 探测时系统弹过两条以 `node` 署名的隐私提示：「"node" was prevented from modifying apps」和「"node" tried to access your data from other apps and was blocked」。探测脚本不读别的 App 的数据，也不改 App，所以触发者还没确认，可能是开发机上别的 node 进程（执行器在用户目录里工作）。改用自己的签名以后，正式版里这类提示的署名会是 `lead-agent` 或 Bytezard Lead，不再是 `node`（未实测）。要用 TCC 日志确认触发的进程路径。
 
@@ -982,7 +1134,8 @@ P2-*                       ← 对应的 P1
 App 带的运行包比装着的新时，壳先解包、把 `current` 换到新版本，再运行 `desktop-install`。plist 写的是 `current`，内容没变，原来不会重启服务，旧版本的进程会一直跑。现在按情况 B 的原地方式重启一次：
 
 - 判断依据：`desktop-install` 每次装好时把运行包的版本写进 `install-state.json` 的 `installedVersion`。这次的版本和它不同就是换了版本。#234 以前的安装没有这一项，第一次换版本照旧不重启。
-- 备份：`<数据目录>/backups/pre-upgrade-<时间>.db`；schema 要升级时，停服务后再复制一份 `-stopped.db`。
+- 备份：`<数据目录>/backups/pre-upgrade-<时间>.db`；schema 要升级时，停服务后再复制一份 `-stopped.db`。2026-11-05 起改成只留一份 `pre-upgrade.db`，见第 7.5 节。
+- 2026-11-05 起按更新的种类决定要不要重启（第 7.5 节）：只改了网页、命令行或者 App 壳时不重启，也不备份。
 - 回滚：除了情况 B 的几步，还把 `current` 指回上一个版本 `versions/<旧版本>/`，再 bootstrap。
 
 ### 12.6 不重复迁移

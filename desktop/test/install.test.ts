@@ -108,6 +108,28 @@ describe("runInstall", () => {
     expect(progress).toMatchObject({ stage: "ready", steps: { takeover: "done", service: "done", start: "done" } });
   });
 
+  it("remembers from the detect step whether the row is a takeover or an upgrade", async () => {
+    const run = async (takeover: string) => {
+      const { paths, resources } = setup();
+      await installed(paths, resources, "1.3.0");
+      const ops = fakeOps([
+        { step: "detect", state: "done", message: "Next, Bytezard Lead changes from version 1.2.0 to 1.3.0.", takeover, update: "service" },
+        { step: "takeover", state: "running", phase: "backup", message: "Making a backup of the database." },
+        { step: "takeover", state: "done", message: "Bytezard Lead now runs version 1.3.0." },
+        { step: "done", state: "done", message: "Bytezard Lead is installed.", gatewayUrl: "http://127.0.0.1:47130" },
+      ]);
+      return runInstall(
+        {
+          paths, bundled: findBundledRuntime(resources), locale: "en", execFile: exec().execFile, spawnLines: ops.spawnLines,
+          daemonStatus: async () => null, serviceUsesThisRuntime: () => false,
+        },
+        () => {},
+      );
+    };
+    expect(await run("upgrade")).toMatchObject({ stage: "ready", takeoverKind: "upgrade" });
+    expect(await run("dev")).toMatchObject({ stage: "ready", takeoverKind: "takeover" });
+  });
+
   it("puts a failed takeover on its own row with the plain reason", async () => {
     const { paths, resources } = setup();
     await installed(paths, resources, "1.3.0");

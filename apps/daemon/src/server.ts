@@ -189,7 +189,9 @@ import { repairTerminalHandoffFailures } from "@pi-lead-child/engine";
 import { repairStoppedRunCrashCheckpoints } from "@pi-lead-child/engine";
 import { repairOutcomeSnapshots } from "@pi-lead-child/engine";
 import { reregisterFinishedRuns } from "@pi-lead-child/engine";
-import { claimInstanceLock, daemonLockPath, hasReleaseManifest, readKeychainSecret, readKeychainSecretAsync, supervisorRequest } from "@pi-lead-child/supervisor";
+import {
+  claimInstanceLock, daemonLockPath, hasReleaseManifest, readKeychainSecret, readKeychainSecretAsync, servedWebRoot, supervisorRequest,
+} from "@pi-lead-child/supervisor";
 import { loadOrCreateShellPairingKey, loopbackAutoPairMode } from "./shell-pairing.js";
 import { DesktopNotifier, desktopSubscription, osascriptNotifier } from "./desktop-notifier.js";
 import type { InstanceLock, MaintenanceRequest } from "@pi-lead-child/supervisor";
@@ -560,7 +562,9 @@ export interface DaemonOpts {
   gatewayPort?: number;
   // 按发布模式启动（测试用）。缺省看运行包根目录有没有 release.json。
   releaseMode?: boolean;
-  webRoot?: string; // paired 平面在 / 下提供的 companion web UI（缺省 dist/web，由 npm run build:web 生成）
+  // paired 平面在 / 下提供的 companion web UI（缺省 dist/web，由 npm run build:web 生成）。发布模式下缺省按 current 选
+  // （supervisor 的 servedWebRoot，桌面设计第 7.5.3 节）。
+  webRoot?: string | (() => string);
   artifactRepairOptions?: ArtifactRepairOptions;
   // 没有客户端连着时的桌面通知（blocker、兜底通知、审批、aish 配对失效）在 App 不在时的出口，参数是 (正文, Lead 名字)。
   // 缺省是 osascript（desktop-notifier.ts）。App 订阅了 plc.sock 时通知交给 App，不调它。
@@ -5330,7 +5334,8 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
     });
   });
   // 桌面版的运行包（根目录有 release.json）缺省打开回环自动配对，但要带口令（shell-pairing.ts）。
-  const autoPairMode = loopbackAutoPairMode(process.env, opts.releaseMode ?? hasReleaseManifest(projectRoot()));
+  const releaseMode = opts.releaseMode ?? hasReleaseManifest(projectRoot());
+  const autoPairMode = loopbackAutoPairMode(process.env, releaseMode);
   const devLoopbackAutoPairOrigins = process.env.PLC_DEV === "1"
     ? ["http://localhost:8081", "http://127.0.0.1:8081"]
     : [];
@@ -5525,7 +5530,7 @@ async function runDaemon(opts: DaemonOpts, ownership: InstanceLock): Promise<Dae
         allowLoopbackAutoPair: autoPairMode !== "off" ? true : undefined,
         ...(autoPairMode === "shell_only" ? { loopbackAutoPairShellKey: shellPairingKey() } : {}),
         loopbackAutoPairOrigins: loopbackAutoPairOrigins.length ? loopbackAutoPairOrigins : undefined,
-        webRoot: opts.webRoot ?? defaultWebRoot(),
+        webRoot: opts.webRoot ?? (releaseMode ? servedWebRoot({ root: projectRoot(), ownWebRoot: defaultWebRoot() }) : defaultWebRoot()),
       }), gatewayPlan, log);
   publishControlEvent = paired.publish;
   gatewayChatListeners = paired.chatListenerCount;

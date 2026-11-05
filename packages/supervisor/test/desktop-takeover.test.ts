@@ -1,6 +1,6 @@
 // 装桌面版时自动接管存量安装（docs/desktop/macos-desktop-design.md 第 12 节，#234）。
 // 走 runDesktopInstall 的完整流程：文件、目录、库和 plist 都是真的（临时 home 下面），launchctl、排空和健康检查换成假的。
-import { existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { tempDir } from "@pi-lead-child/core/testing";
@@ -10,7 +10,7 @@ import {
   INSTALL_LOCK_FILE, runDesktopInstall, type DesktopInstallDeps,
 } from "../src/deploy/desktop-install.js";
 import { desktopPlistOptions, LAUNCHD_LABEL, plistContent, plistWorkingDirectory } from "../src/deploy/launchd.js";
-import { addRuntimeVersion, fakeHost, installedRuntime, installState } from "./desktop-fixtures.js";
+import { addRuntimeVersion, fakeHost, installedRuntime, installState, runtimeComponents, type Runtime } from "./desktop-fixtures.js";
 
 const OLD_SUPERVISOR = "com.pi-lead-child.supervisor";
 const OLD_HINDSIGHT = "com.pi-lead-child.hindsight";
@@ -306,26 +306,47 @@ describe("taking over an installation that runs a developer checkout (case B)", 
 });
 
 describe("restarting on a new version of the runtime (case C)", () => {
-  function upgradedMachine() {
-    const runtime = installedRuntime();
+  // 上一次装的是 1.2.0；壳刚把 current 换到 1.3.0。from、to 是两个版本的 release.json 里的组成哈希（第 7.5.1 节），
+  // 不给时没有 components，和 2026-11-05 以前打的包一样。
+  function upgradedMachine(o: { from?: Record<string, string>; to?: Record<string, string>; fromSchema?: number } = {}) {
+    const runtime = installedRuntime(undefined, o.to ? { components: o.to } : {});
     seedLedger(runtime.dataDir);
-    const env = fakeHost(runtime);
+    const env = fakeHost(runtime, { runningCommands: () => [] });
     mkdirSync(env.agentsDir, { recursive: true });
     writeFileSync(env.plistPath, plistContent(desktopPlistOptions(runtime.root, join(runtime.dataDir, "logs"))));
     env.host.loaded = true;
-    // 上一次装的是 1.2.0；壳刚把 current 换到 1.3.0。
-    addRuntimeVersion(runtime.installRoot, "1.2.0");
+    addRuntimeVersion(runtime.installRoot, "1.2.0", {
+      ...(o.from ? { components: o.from } : {}), ...(o.fromSchema ? { schemaVersion: o.fromSchema } : {}),
+    });
     writeFileSync(join(runtime.installRoot, "install-state.json"), JSON.stringify({ version: 1, outcome: "installed", installedVersion: "1.2.0" }));
-    return { ...env, runtime };
+    return { ...env, runtime, backups: join(runtime.dataDir, "backups") };
   }
+  /** 壳又换了一个版本：放好 versions/<version>，把 current 指过去。 */
+  function shellSwitchesTo(runtime: Runtime, version: string, components?: Record<string, string>) {
+    addRuntimeVersion(runtime.installRoot, version, components ? { components } : {});
+    rmSync(runtime.root);
+    symlinkSync(join("versions", version), runtime.root);
+  }
+  const detectDone = (events: Array<{ step: string; state: string }>) => events.find((event) => event.step === "detect" && event.state === "done");
+  const itemCount = (dir: string, db = "plc.db") => {
+    const conn = openExistingDb(join(dir, db), { readonly: true });
+    try {
+      return (conn.prepare("SELECT COUNT(*) AS n FROM items").get() as { n: number }).n;
+    } finally {
+      conn.close();
+    }
+  };
 
   it("restarts the service once on the new version and records it, so the next run does not restart again", async () => {
     const f = upgradedMachine();
     expect(await runDesktopInstall(f.deps)).toMatchObject({ ok: true, outcome: "installed" });
     expect(f.host.calls).toEqual(expect.arrayContaining(["drain", `launchctl bootout ${LAUNCHD_LABEL}`, `launchctl bootstrap ${LAUNCHD_LABEL}`, "health"]));
-    expect(readdirSync(join(f.runtime.dataDir, "backups")).some((name) => /^pre-upgrade-.*Z\.db$/.test(name))).toBe(true);
-    expect(f.host.events.find((event) => event.step === "detect" && event.state === "done")!.message).toBe("Next, Bytezard Lead changes from version 1.2.0 to 1.3.0.");
-    expect(installState(f.runtime.installRoot).installedVersion).toBe("1.3.0");
+    // 只有一份升级前的备份，也不再复制没变的 plist（第 7.5.5 节）。
+    expect(listing(f.backups)).toEqual(["pre-upgrade.db"]);
+    expect(detectDone(f.host.events)).toMatchObject({ message: "Next, Bytezard Lead changes from version 1.2.0 to 1.3.0.", takeover: "upgrade", update: "service" });
+    expect(installState(f.runtime.installRoot)).toMatchObject({ installedVersion: "1.3.0", serviceVersion: "1.3.0", lastUpdate: "service" });
+    // 安装页说的是换版本，不是接手（用户 2026-11-05）。
+    expect(takeoverMessages(f.host.events).at(-1)).toBe("Bytezard Lead now runs version 1.3.0.");
 
     f.host.calls.length = 0;
     expect(await runDesktopInstall(f.deps)).toMatchObject({ ok: true });
@@ -340,6 +361,102 @@ describe("restarting on a new version of the runtime (case C)", () => {
     expect(f.host.loaded).toBe(true);
     // 没装成：记着的还是上一个版本，下次打开 App 再试。
     expect(installState(f.runtime.installRoot).installedVersion).toBe("1.2.0");
+    expect(f.host.events.at(-1)!.message).toContain("could not switch to the new version, so it went back to the earlier version");
+  });
+
+  it("does not stop the service or make a backup when only the pages changed, and keeps the version the service runs on", async () => {
+    const f = upgradedMachine({ from: runtimeComponents(), to: runtimeComponents({ web: "a".repeat(64), cli: "b".repeat(64) }) });
+    addRuntimeVersion(f.runtime.installRoot, "1.1.0");
+    expect(await runDesktopInstall(f.deps)).toMatchObject({ ok: true, outcome: "installed" });
+    expect(f.host.calls).toEqual(["capture", "ensure_running"]);
+    expect(existsSync(f.backups)).toBe(false);
+    expect(detectDone(f.host.events)).toMatchObject({
+      takeover: "upgrade", update: "web",
+      message: "Next, Bytezard Lead changes from version 1.2.0 to 1.3.0. The background service did not change, so it keeps running.",
+    });
+    expect(f.host.events.find((event) => event.step === "takeover")).toMatchObject({ state: "skipped" });
+    expect(installState(f.runtime.installRoot)).toMatchObject({ installedVersion: "1.3.0", serviceVersion: "1.2.0", lastUpdate: "web" });
+    expect(listing(join(f.runtime.installRoot, "versions"))).toEqual(["1.2.0", "1.3.0"]);
+
+    // 再来一次只改了网页的更新：服务还跑在 1.2.0 上，1.2.0 留着；回滚要用的 1.3.0 也留着。
+    shellSwitchesTo(f.runtime, "1.4.0", runtimeComponents({ web: "c".repeat(64) }));
+    f.host.calls.length = 0;
+    expect(await runDesktopInstall(f.deps)).toMatchObject({ ok: true });
+    expect(f.host.calls).toEqual(["capture", "ensure_running"]);
+    expect(installState(f.runtime.installRoot)).toMatchObject({ installedVersion: "1.4.0", previousVersion: "1.3.0", serviceVersion: "1.2.0" });
+    expect(listing(join(f.runtime.installRoot, "versions"))).toEqual(["1.2.0", "1.3.0", "1.4.0"]);
+  });
+
+  it("does not restart when only the App changed", async () => {
+    const f = upgradedMachine({ from: runtimeComponents(), to: runtimeComponents() });
+    expect(await runDesktopInstall(f.deps)).toMatchObject({ ok: true });
+    expect(f.host.calls).toEqual(["capture", "ensure_running"]);
+    expect(detectDone(f.host.events)).toMatchObject({ update: "none" });
+  });
+
+  it("restarts when the service code changed, keeps one backup, and replaces it on the next update", async () => {
+    const f = upgradedMachine({ from: runtimeComponents(), to: runtimeComponents({ service: "a".repeat(64) }) });
+    mkdirSync(f.backups, { recursive: true });
+    const legacy = ["pre-upgrade-2026-11-04T17-18-57-250Z.db", "pre-upgrade-2026-11-04T17-18-57-250Z.supervisor.plist", "pre-upgrade-2026-11-05T02-28-58-884Z-stopped.db"];
+    const others = ["pre-takeover-2026-11-04T15-39-05-311Z.db", "plc-pre-restart-2026-11-04T07-43-41-753Z.db", "plc.db.pre-a0659e6f-20261104-1352"];
+    for (const name of [...legacy, ...others]) writeFileSync(join(f.backups, name), "x");
+
+    expect(await runDesktopInstall(f.deps)).toMatchObject({ ok: true });
+    expect(f.host.calls).toEqual(expect.arrayContaining(["drain", `launchctl bootout ${LAUNCHD_LABEL}`, `launchctl bootstrap ${LAUNCHD_LABEL}`]));
+    expect(detectDone(f.host.events)).toMatchObject({ update: "service" });
+    expect(listing(f.backups)).toEqual(["pre-upgrade.db", ...others].sort());
+    expect(itemCount(f.backups, "pre-upgrade.db")).toBe(1);
+
+    // 下一次换服务代码：新的一份换掉旧的一份，还是只有一份。
+    const db = openExistingDb(join(f.runtime.dataDir, "plc.db"));
+    createItem(db, { title: "Draft the reply to Ethan", brief: "b", createdBy: "user" });
+    db.close();
+    shellSwitchesTo(f.runtime, "1.4.0", runtimeComponents({ service: "b".repeat(64) }));
+    expect(await runDesktopInstall(f.deps)).toMatchObject({ ok: true });
+    expect(listing(f.backups)).toEqual(["pre-upgrade.db", ...others].sort());
+    expect(itemCount(f.backups, "pre-upgrade.db")).toBe(2);
+  });
+
+  it("changes nothing and keeps the old backup when the new backup is damaged", async () => {
+    const f = upgradedMachine({ from: runtimeComponents(), to: runtimeComponents({ node_modules: "a".repeat(64) }) });
+    mkdirSync(f.backups, { recursive: true });
+    writeFileSync(join(f.backups, "pre-upgrade.db"), "the backup of the last update");
+    const plist = readFileSync(f.plistPath, "utf8");
+    f.deps.takeover.backupDatabase = async (_from, to) => { writeFileSync(to, "not a database"); };
+    expect(await runDesktopInstall(f.deps)).toMatchObject({ ok: false, code: "takeover_failed" });
+    expect(f.host.calls.filter((call) => call.startsWith("launchctl") || call === "drain")).toEqual([]);
+    expect(readFileSync(join(f.backups, "pre-upgrade.db"), "utf8")).toBe("the backup of the last update");
+    expect(listing(f.backups)).toEqual(["pre-upgrade.db"]);
+    expect(readFileSync(f.plistPath, "utf8")).toBe(plist);
+    expect(f.host.events.at(-1)!.message).toContain("Nothing changed, and the earlier version runs as before");
+    expect(installState(f.runtime.installRoot).installedVersion).toBe("1.2.0");
+  });
+
+  it("backs up after the stop when the schema changes, and restores that backup when the new version fails", async () => {
+    const f = upgradedMachine({ from: runtimeComponents(), to: runtimeComponents({ service: "a".repeat(64) }), fromSchema: LATEST_SCHEMA_VERSION - 1 });
+    const upgrade = setSchemaBehind(f.runtime.dataDir);
+    let backupAtHealth: number | null = null;
+    f.deps.takeover.health = async () => {
+      // 停服务以后做的备份：还是旧的 schema。
+      backupAtHealth = databaseSchemaVersion(join(f.backups, "pre-upgrade.db"));
+      upgrade(); // 新版本启动时升级了库
+      throw new Error("the new daemon did not answer status");
+    };
+    expect(await runDesktopInstall(f.deps)).toMatchObject({ ok: false, code: "takeover_rolled_back" });
+    expect(detectDone(f.host.events)).toMatchObject({ update: "schema" });
+    expect(backupAtHealth).toBe(LATEST_SCHEMA_VERSION - 1);
+    expect(databaseSchemaVersion(join(f.runtime.dataDir, "plc.db"))).toBe(LATEST_SCHEMA_VERSION - 1);
+    expect(readlinkSync(f.runtime.root)).toBe(join("versions", "1.2.0"));
+    expect(listing(f.backups)).toEqual(["pre-upgrade.db"]);
+  });
+
+  it("restarts to upgrade the database even when the release says the service did not change", async () => {
+    const f = upgradedMachine({ from: runtimeComponents(), to: runtimeComponents({ web: "a".repeat(64) }) });
+    setSchemaBehind(f.runtime.dataDir);
+    f.deps.takeover.health = async () => {};
+    await runDesktopInstall(f.deps);
+    expect(detectDone(f.host.events)).toMatchObject({ update: "schema" });
+    expect(f.host.calls).toEqual(expect.arrayContaining(["drain", `launchctl bootout ${LAUNCHD_LABEL}`]));
   });
 });
 

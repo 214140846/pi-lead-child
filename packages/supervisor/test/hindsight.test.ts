@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { tempDir } from "@pi-lead-child/core/testing";
 import {
-  embeddingFingerprint, ensureHindsightService, HINDSIGHT_MISSIONS, hindsightSecretValues, hindsightTuning, maskSecrets, pg0Url, pg0UrlWithPassword, findPostgres, hindsightEnvironment, preparePostgresDatabase, readServiceFile,
+  embeddingFingerprint, ensureHindsightService, HINDSIGHT_MISSIONS, hindsightRunPath, hindsightSecretValues, hindsightTuning, maskSecrets, pg0Url,
+  pg0UrlWithPassword, findPostgres, hindsightEnvironment, preparePostgresDatabase, readHindsightRun, readServiceFile, uninstallHindsightService,
   HINDSIGHT_LABEL, HINDSIGHT_RESOLVED_BEFORE, HINDSIGHT_VERSION,
   type CommandRunner, type EnsureHindsightOptions, type HindsightEmbedding, type HindsightServiceFile,
 } from "../src/deploy/hindsight.js";
@@ -68,7 +69,9 @@ const LLM = { provider: "vibeproxy", baseUrl: "http://127.0.0.1:8317/v1", model:
 const SECRETS = { apiKey: "uuid-key", databasePassword: "pg-password-123" };
 const REMOTE: HindsightEmbedding = { provider: "openai", baseUrl: "https://api.openai.com/v1", model: "text-embedding-3-small", dimensions: null };
 
-describe("ensureHindsightService: a launchd job of its own, restarted only when its desired state changes", () => {
+// 2026-11-05 起 Hindsight 由 supervisor 拉起（../src/hindsight-child.ts）：daemon 写 run.json，不再写 launchd 的 plist。
+// 「登录项与扩展」里每个 LaunchAgent 一行，用户不要记忆服务单独一行（设计第 8.7 节）。
+describe("ensureHindsightService: asks the supervisor to run it, restarted only when its desired state changes", () => {
   function setup() {
     const dataDir = tempDir("plc-hindsight-");
     const plistPath = join(dataDir, "LaunchAgents", `${HINDSIGHT_LABEL}.plist`);
@@ -86,25 +89,29 @@ describe("ensureHindsightService: a launchd job of its own, restarted only when 
       programArguments: ["/usr/local/bin/node", "/repo/apps/daemon/dist/hindsight.mjs"],
       embedding: LOCAL, reranker: { provider: "none" }, llm: LLM, secretsVersion: 1,
       findPostgres: async () => ({ found: null, reasons: [] }),
+      sleep: async () => {},
     };
     return { dataDir, plistPath, calls, base, setLoaded: (value: boolean) => { loaded = value; } };
   }
 
-  it("installs once, then leaves a running service alone on every daemon start", async () => {
-    const { plistPath, calls, base } = setup();
+  it("writes run.json once, then leaves a running service alone on every daemon start, without launchd", async () => {
+    const { dataDir, plistPath, calls, base } = setup();
     expect(await ensureHindsightService(base)).toMatchObject({ url: "http://127.0.0.1:47188", restarted: true });
-    expect(calls.map((args) => args[0])).toEqual(["print", "bootstrap"]);
-    calls.length = 0;
     expect(await ensureHindsightService(base)).toMatchObject({ restarted: false });
-    expect(calls.map((args) => args[0])).toEqual(["print"]);
-    const plist = readFileSync(plistPath, "utf8");
-    expect(plist).toContain("<key>KeepAlive</key><true/>");
-    expect(plist).not.toMatch(/api[_-]?key/i);
+    expect(calls).toEqual([]);
+    expect(existsSync(plistPath)).toBe(false);
+    const run = readHindsightRun(dataDir)!;
+    expect(run).toMatchObject({
+      programArguments: base.programArguments, cwd: join(dataDir, "hindsight"),
+      env: { PLC_DATA_DIR: dataDir, PATH: "/Users/u/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin", PLC_HINDSIGHT_SPEC: run.spec },
+    });
+    expect(readFileSync(hindsightRunPath(dataDir), "utf8")).not.toMatch(/api[_-]?key|uuid-key/i);
   });
 
   it("hot-reloads on a reranker, LLM or secrets change, and keeps the index when the embedding is the same", async () => {
-    const { calls, base } = setup();
+    const { dataDir, base } = setup();
     const first = await ensureHindsightService(base);
+    let spec = readHindsightRun(dataDir)!.spec;
     for (const change of [
       { reranker: { provider: "typesafe" as const, baseUrl: "https://api.typesafe.ai", model: "jev-latest", maxCandidates: 50 } },
       { llm: { ...LLM, model: "claude-haiku-6" } },
@@ -112,59 +119,36 @@ describe("ensureHindsightService: a launchd job of its own, restarted only when 
       // 日志调优项经 service.json 带给 hindsight-main：改了就重启。
       { env: { HINDSIGHT_API_LOG_LEVEL: "debug" } },
     ]) {
-      calls.length = 0;
       const next = await ensureHindsightService({ ...base, ...change });
-      // bootout 之后先用 print 确认任务卸载完了，再 bootstrap。
-      expect(calls.map((args) => args[0])).toEqual(["print", "bootout", "print", "bootstrap"]);
+      expect(next).toMatchObject({ restarted: true });
+      expect(readHindsightRun(dataDir)!.spec).not.toBe(spec);
+      spec = readHindsightRun(dataDir)!.spec;
       expect(next?.index).toBe(first?.index);
     }
   });
 
-  // 2026-10-26：launchctl bootout 发出停止信号就返回，Hindsight（uvx、Python、Postgres）要几秒才卸载完。
-  // 卸载完之前 bootstrap 会失败（Bootstrap failed: 5: Input/output error），确认切换时设置页收到 500，服务也没有再起来。
-  it("waits until bootout has unloaded the job before bootstrapping it again", async () => {
-    const { calls, base } = setup();
-    await ensureHindsightService(base);
-    // 任务在跑；bootout 之后还要被 print 看到三次才卸载完，卸载完之前 bootstrap 失败。
-    let loaded = true;
-    let unloading = 0;
-    const waits: number[] = [];
-    const launchctl = async (args: string[]) => {
-      calls.push(args);
-      if (args[0] === "print") {
-        if (unloading > 0 && --unloading === 0) loaded = false;
-        return { ok: loaded, out: "" };
-      }
-      if (args[0] === "bootout") { unloading = 3; return { ok: true, out: "" }; }
-      if (args[0] === "bootstrap") {
-        if (loaded) return { ok: false, out: "Bootstrap failed: 5: Input/output error" };
-        loaded = true;
-      }
-      return { ok: true, out: "" };
-    };
-    calls.length = 0;
-    const next = await ensureHindsightService({ ...base, secretsVersion: 2, launchctl, sleep: async (ms) => { waits.push(ms); } });
-    expect(next).toMatchObject({ restarted: true });
-    expect(calls.map((args) => args[0])).toEqual(["print", "bootout", "print", "print", "print", "bootstrap"]);
-    expect(waits.length).toBeGreaterThan(0);
+  // 以前的独立任务还在跑时，两个 Hindsight 会抢同一个端口：先 bootout，等它卸载完（端口空出来），删掉 plist。
+  it("removes the separate launchd job of earlier versions before the supervisor takes over", async () => {
+    const { dataDir, plistPath, calls, base, setLoaded } = setup();
+    mkdirSync(join(plistPath, ".."), { recursive: true });
+    writeFileSync(plistPath, "<plist/>");
+    setLoaded(true);
+    const lines: string[] = [];
+    expect(await ensureHindsightService({ ...base, log: (line) => lines.push(line) })).toMatchObject({ restarted: true });
+    expect(calls.map((args) => args[0])).toEqual(["print", "bootout", "print"]);
+    expect(calls[1]).toEqual(["bootout", `gui/${process.getuid!()}/${HINDSIGHT_LABEL}`]);
+    expect(existsSync(plistPath)).toBe(false);
+    expect(readHindsightRun(dataDir)).not.toBeNull();
+    expect(lines.some((line) => line.includes("removed the separate launchd job"))).toBe(true);
   });
 
-  it("retries a bootstrap that fails although the job is gone, and says why when it never comes up", async () => {
-    const { calls, base } = setup();
-    let failures = 2;
-    const flaky = async (args: string[]) => {
-      calls.push(args);
-      if (args[0] === "print") return { ok: false, out: "" };
-      if (args[0] === "bootstrap" && failures > 0) { failures -= 1; return { ok: false, out: "Bootstrap failed: 5: Input/output error" }; }
-      return { ok: true, out: "" };
-    };
-    expect(await ensureHindsightService({ ...base, launchctl: flaky, sleep: async () => {} })).toMatchObject({ restarted: true });
-    expect(calls.filter((args) => args[0] === "bootstrap")).toHaveLength(3);
-
-    const broken = async (args: string[]) => (args[0] === "bootstrap"
-      ? { ok: false, out: "Bootstrap failed: 5: Input/output error" } : { ok: args[0] !== "print", out: "" });
-    await expect(ensureHindsightService({ ...base, secretsVersion: 3, launchctl: broken, sleep: async () => {} }))
-      .rejects.toThrow(/launchctl bootstrap com\.bytezard\.plc\.hindsight failed after \d+ attempts: Bootstrap failed: 5: Input\/output error/);
+  it("stops the service by removing run.json and the old job", async () => {
+    const { dataDir, plistPath, calls, base } = setup();
+    await ensureHindsightService(base);
+    await uninstallHindsightService({ dataDir, plistPath, launchctl: base.launchctl, label: HINDSIGHT_LABEL });
+    expect(readHindsightRun(dataDir)).toBeNull();
+    expect(existsSync(hindsightRunPath(dataDir))).toBe(false);
+    expect(calls.map((args) => args[0])).toEqual(["bootout"]);
   });
 
   it("pins the embedded Postgres to 127.0.0.1 on its own port", () => {
@@ -202,12 +186,12 @@ describe("ensureHindsightService: a launchd job of its own, restarted only when 
   });
 
   it("needs uv to host Hindsight", async () => {
-    const { calls, plistPath, base } = setup();
+    const { calls, dataDir, base } = setup();
     const lines: string[] = [];
     expect(await ensureHindsightService({ ...base, uvx: null, log: (line) => lines.push(line) })).toBeNull();
     expect(lines[0]).toMatch(/install uv/);
     expect(calls).toEqual([]);
-    expect(existsSync(plistPath)).toBe(false);
+    expect(existsSync(hindsightRunPath(dataDir))).toBe(false);
   });
 });
 

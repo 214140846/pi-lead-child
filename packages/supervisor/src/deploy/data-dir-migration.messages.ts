@@ -13,6 +13,7 @@ export const dataDirMigrationMessages = defineMessages({
     backup: {
       running: "Making an online backup of the database.",
       done: (path: string) => `Backed up the database to ${path}.`,
+      afterStop: "The database changes its format in the new version, so the backup is made after the service stops.",
     },
     scan: {
       running: "Looking for the old folder in the database and in config.json.",
@@ -72,6 +73,7 @@ export const dataDirMigrationMessages = defineMessages({
     backup: {
       running: "在线备份数据库。",
       done: (path: string) => `数据库已备份到 ${path}。`,
+      afterStop: "新版本要升级数据库的格式，所以停服务以后再备份。",
     },
     scan: {
       running: "在数据库和 config.json 里找旧目录。",

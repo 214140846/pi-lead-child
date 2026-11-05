@@ -1,9 +1,9 @@
 // 记忆设置测试用的替身：launchd、模型下载、Hindsight 的 /health 和远程 embedding。
-// ensure 用真的 ensureHindsightService，只换掉 launchctl、plist 的位置、uvx 和 Postgres 探测，
+// ensure 用真的 ensureHindsightService，只换掉以前那个 launchd 任务的 plist 位置和 launchctl、uvx 和 Postgres 探测，
 // 所以「期望状态不变就不重启」走的是真代码。
 import { join } from "node:path";
 import {
-  ensureHindsightService, HINDSIGHT_LABEL,
+  ensureHindsightService, HINDSIGHT_LABEL, readHindsightRun,
   type EnsureHindsightOptions, type ModelDownloads, type ModelDownloadState, type ModelKind,
 } from "@pi-lead-child/supervisor";
 import type { SummaryModelSlot } from "@pi-lead-child/protocol";
@@ -85,8 +85,9 @@ export class FakeDownloads {
 
 export interface MemoryHarness {
   hooks: MemoryControllerHooks;
-  // launchctl 的子命令，按调用顺序：print / bootstrap / bootout；stopService 记成 uninstall。
-  launchctl: string[];
+  // supervisor 看到的变化，按顺序（2026-11-05 起 Hindsight 由 supervisor 按 run.json 拉起）：
+  // start（run.json 第一次写下）、restart（期望状态的指纹变了）、uninstall（stopService）。期望状态没变时什么也不记。
+  service: string[];
   downloads(): FakeDownloads;
   // Hindsight 和远程 embedding 收到的请求（不含 /health）。redirect 是请求带的重定向策略。
   requests: Array<{ url: string; authorization: string | null; body: unknown; redirect: RequestRedirect | undefined }>;
@@ -96,7 +97,7 @@ export interface MemoryHarness {
 }
 
 export function memoryHarness(dataDir: string): MemoryHarness {
-  const launchctl: string[] = [];
+  const service: string[] = [];
   const requests: MemoryHarness["requests"] = [];
   const external = new Map<string, string>();
   let loaded = false;
@@ -118,7 +119,7 @@ export function memoryHarness(dataDir: string): MemoryHarness {
     return Response.json({});
   }) as typeof fetch;
   return {
-    launchctl,
+    service,
     requests,
     downloads: () => downloads!,
     failNext: (error) => { failure = error; },
@@ -130,18 +131,21 @@ export function memoryHarness(dataDir: string): MemoryHarness {
       externalSecret: (name) => external.get(name) ?? null,
       summaryModels: async (settings) => fakeSummaryModels(settings),
       downloads: (onChange) => (downloads = new FakeDownloads(onChange)) as unknown as ModelDownloads,
-      stopService: async () => { launchctl.push("uninstall"); loaded = false; },
-      ensure: (options: EnsureHindsightOptions) => ensureHindsightService({
-        ...options, plistPath, uvx: "/Users/u/.local/bin/uvx",
-        findPostgres: async () => ({ found: null, reasons: [] }),
-        launchctl: async (args) => {
-          launchctl.push(args[0]!);
-          if (args[0] === "print") return { ok: loaded, out: "" };
-          if (args[0] === "bootstrap") loaded = true;
-          if (args[0] === "bootout") loaded = false;
-          return { ok: true, out: "" };
-        },
-      }),
+      stopService: async () => { service.push("uninstall"); loaded = false; },
+      ensure: async (options: EnsureHindsightOptions) => {
+        const before = readHindsightRun(options.dataDir)?.spec ?? null;
+        const endpoint = await ensureHindsightService({
+          ...options, plistPath, uvx: "/Users/u/.local/bin/uvx",
+          findPostgres: async () => ({ found: null, reasons: [] }),
+          launchctl: async () => ({ ok: false, out: "" }),
+        });
+        const after = readHindsightRun(options.dataDir)?.spec ?? null;
+        if (after !== null && after !== before) {
+          service.push(before === null ? "start" : "restart");
+          loaded = true;
+        }
+        return endpoint;
+      },
     },
   };
 }

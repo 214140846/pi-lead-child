@@ -50,6 +50,7 @@ out/
   runtime/                                   运行包目录，冒烟脚本直接跑它
   bytezard-lead-runtime-<版本>-arm64.tar.gz  runtime/ 的内容，解开就是 versions/<版本>/
   manifest.json                             更新检查读的清单
+  bytezard-lead-sourcemaps-<版本>-arm64.tar.gz  dist 里的源码映射，不进运行包（设计文档第 7.5.7 节）
   cache/node/                                下载的 Node，哈希对得上时下次复用
 ```
 
@@ -58,12 +59,14 @@ out/
 - `bin/lead-agent`：nodejs.org 的 Node 二进制，版本写在 `desktop/node-version`。脚本用同一个版本目录里的 `SHASUMS256.txt` 校验下载的 tar.gz，对不上时删掉文件并失败。
   脚本用 `codesign --force --sign - --identifier com.bytezard.plc.agent` 重新做 ad-hoc 签名，去掉 Node 原来的签名，「登录项与扩展」才不把它归到「Node.js Foundation」下面（设计第 8.7 节）。
 - `bin/Bytezard Lead`：指向 `lead-agent` 的软链接。launchd 的 plist 写这个路径：「允许在后台」显示它的名字 Bytezard Lead，进程名还是 `lead-agent`（设计第 8.7 节，做法 1b）。
+- `bin/Bytezard Lead Memory`：指向 `lead-agent` 的软链接。supervisor 用它拉起 Hindsight 记忆服务（设计文档第 8.7 节），`ps` 里看得出是记忆服务。
 - `bin/node`：指向 `lead-agent` 的软链接。
 - `bin/plc`：shell 包装，用 `bin/lead-agent` 运行 `apps/cli/dist/cli.mjs`。
 - `package.json`（`workspaces: []`）、`apps/daemon/package.json`、`apps/cli/package.json`：让 `projectRoot()` 和 `workspaceDir()` 照旧找到目录。
-- `apps/daemon/dist/`、`apps/cli/dist/`：构建产物。`build-info.json` 和 `build:web` 的临时目录不复制。
+- `apps/daemon/dist/`、`apps/cli/dist/`：构建产物。`build-info.json`、`build:web` 的临时目录和源码映射（`*.map`）不复制。源码映射另打成 `bytezard-lead-sourcemaps-<版本>-arm64.tar.gz`，CI 把它挂到 release 上。
 - `node_modules/`：见下一节。
-- `release.json`：设计文档第 2.3 节的格式。`files` 里是 10 个关键文件的 SHA-256，列表在 `scripts/desktop/lib/release.ts` 的 `HASHED_FILES`。
+- `release.json`：设计文档第 2.3 节的格式。`files` 里是 10 个关键文件的 SHA-256，列表在 `scripts/desktop/lib/release.ts` 的 `HASHED_FILES`。`components` 里是五个组成（`node`、`node_modules`、`service`、`web`、`cli`）的内容哈希，换版本时按它决定要不要重启、哪些部分不用再解（设计文档第 7.5 节）。每个文件归哪个组成见 `componentOf`；有文件不属于任何组成时打包失败。
+- 压缩包的第一项是 `./release.json`：App 解包时先只读它。
 
 `manifest.json` 的格式：
 
@@ -77,9 +80,12 @@ out/
   "schemaVersion": 63,
   "sourceTree": "<git tree 哈希>",
   "builtAt": "2026-11-03T08:00:00.000Z",
-  "runtime": { "file": "bytezard-lead-runtime-1.3.0-arm64.tar.gz", "size": 105472554, "sha256": "<sha256>" }
+  "runtime": { "file": "bytezard-lead-runtime-1.3.0-arm64.tar.gz", "size": 105472554, "sha256": "<sha256>" },
+  "components": { "node": "<sha256>", "node_modules": "<sha256>", "service": "<sha256>", "web": "<sha256>", "cli": "<sha256>" }
 }
 ```
+
+`components` 和 `release.json` 的一样。CI 打出 dmg 以后，`add-dmg.ts` 再加上 `dmg` 一项。
 
 P1-4 会加 `shellVersion` 和 `minShellVersion`。
 
@@ -134,7 +140,7 @@ App 解出运行包、切好 `current` 以后运行（P0-3，设计文档第 4.2
 
 - `--root` 必须正好是 `<安装根>/current`。`<安装根>` 是 `installRoot()`（`packages/core/src/config.ts`），等于 `dataDir()` 下的 `runtime/`。P0-8 改数据目录以后，它就是 `~/Library/Application Support/Bytezard Lead/runtime`。
 - `--locale` 是 `en` 或 `zh`，缺省是 `en`。安装时还没有库，读不到用户选的界面语言。文案在 `packages/supervisor/src/deploy/desktop-install.messages.ts`。
-- stdout 每行一个 JSON：`{step, state, message}`，失败时带 `code`，最后一行带 `gatewayUrl`。装好时 `install-state.json` 记下 `installedVersion`。同样的内容写进 `<安装根>/install-state.json`，失败时 `lastError.detail` 里有 launchctl 的原文。
+- stdout 每行一个 JSON：`{step, state, message}`，失败时带 `code`，最后一行带 `gatewayUrl`。`detect` 做完的那一行带 `takeover`（`pre_rename`、`dev`、`upgrade`），换了版本时还带 `update`（`none`、`web`、`service`、`schema`，设计文档第 7.5.2 节）。装好时 `install-state.json` 记下 `installedVersion` 和后台服务跑在哪个版本上（`serviceVersion`）。同样的内容写进 `<安装根>/install-state.json`，失败时 `lastError.detail` 里有 launchctl 的原文。
 - 退出码：0 是装好了，或者发现了开发安装；1 是失败；2 是参数不对。
 
 步骤按顺序是：
@@ -143,7 +149,7 @@ App 解出运行包、切好 `current` 以后运行（P0-3，设计文档第 4.2
 |---|---|---|
 | `preflight` | 同时只跑一个（`<安装根>/install.lock`）；`--root` 的位置、`release.json` 和文件哈希、数据目录里 socket 路径的长度（最多 103 字节） | `install_running`、`root_invalid`、`release_invalid`、`socket_path_too_long` |
 | `detect` | 认出已有的是哪种安装（设计文档第 12.2 节）；库比运行包新时不装。设了 `PLC_KEEP_DEV_INSTALL=1` 时保留开发安装、直接打开它 | `schema_ahead`、`dev_install_detected`（退出码 0） |
-| `takeover` | 自动接管存量安装：改名以前的、跑开发 checkout 的、换了版本的（设计文档第 12 节）。没有要接管的时是 `skipped`。进度行带 `phase`（迁移模块的步骤） | `takeover_refused`（什么都没改）、`takeover_failed`（停服务以前失败，什么都没改）、`takeover_rolled_back`、`takeover_rollback_failed` |
+| `takeover` | 自动接管存量安装：改名以前的、跑开发 checkout 的、换了版本的（设计文档第 12 节）。没有要接管的时，或者换版本时服务没变（`none`、`web`），是 `skipped`。进度行带 `phase`（迁移模块的步骤） | `takeover_refused`（什么都没改）、`takeover_failed`（停服务以前失败，什么都没改）、`takeover_rolled_back`、`takeover_rollback_failed` |
 | `login_shell_path` | 读登录 shell 的 PATH，写进 `<数据目录>/login-shell-path.json`。读不到时是 `skipped`，安装继续 | `login_shell_path_unavailable` |
 | `launchd` | 写 plist，bootout 再 bootstrap。plist 没变、服务在跑时不重启 | `launchd_unchanged`、`launchd_bootstrap_failed` |
 | `supervisor` | 等 `supervisor.sock` 回答（60 秒） | `supervisor_timeout` |
