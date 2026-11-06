@@ -81,9 +81,13 @@ export function addInbox(
         // 配额计数曾写在 items.notify_quota_used，该列已随 Item 模型删除：它是一份可以从
         // inbox 自身推导出来的冗余状态。现在直接按 dedup_scope 在本表内统计一小时内的
         // blocker 行数（spec §5.5），被吞掉的条数记在聚合通知的 payload.suppressedCount 上。
+        // 复用时间窗里的熔断行，Lead 处理过的也算（#266）：以前只找 pending 的，Lead 一处理完，下一条又开一行新熔断、
+        // 又叫醒 Lead，blocker 一直来就一直叫醒。时间窗之外还 pending 的熔断行照旧复用。
         const fuse = db.prepare(
-          "SELECT id, payload FROM inbox WHERE dedup_scope = ? AND severity = 'blocker' AND state = 'pending' AND summary LIKE '%异常频繁%' LIMIT 1",
-        ).get(scope) as { id: number; payload: string } | undefined;
+          `SELECT id, payload FROM inbox WHERE dedup_scope = ? AND severity = 'blocker' AND summary LIKE '%异常频繁%'
+             AND (state = 'pending' OR created_at > datetime('now', ?))
+           ORDER BY id DESC LIMIT 1`,
+        ).get(scope, `-${Math.floor(fuseLimits.windowMs / 1000)} seconds`) as { id: number; payload: string } | undefined;
         // 被折叠的每一条原文都作为一条事件留在日志里（工单 01 第 5 步），聚合行上只有计数和最新的摘要。
         if (fuse) {
           const p = JSON.parse(fuse.payload || "{}");
@@ -251,7 +255,7 @@ function appendInboxEvent(db: Db, build: () => InboxEventArgs): void {
 }
 
 /**
- * 给一行不经过 addInbox 写进来的 inbox 记事件（engine 里两处直接 INSERT 的地方：审批和决定的 inbox、编排预算）。
+ * 给一行不经过 addInbox 写进来的 inbox 记事件（engine 里直接 INSERT 的地方：审批和决定的 inbox）。
  * 必须在写这一行的同一个事务里调用。它走 appendEventGuarded：事件出错时改记 system.event_rejected，这一行照常提交。
  */
 export function recordInboxEvent(db: Db, inboxId: number, options: { sourceRef?: string } = {}): void {

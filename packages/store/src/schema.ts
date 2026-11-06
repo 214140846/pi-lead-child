@@ -82,6 +82,12 @@ CREATE TABLE ${ifNotExists ? "IF NOT EXISTS " : ""}${table} (
   -- 只有提醒有，store 的 reminders.ts 在写入时校验；NULL 是缺省设置（tell、不提前、不重复）。
   -- 和 display_title 一样放在最后：老库用 ALTER 补在末尾，新库和老库的列顺序一致。不是执行列，不进 C2 的 CHECK。
   reminder_policy TEXT,
+  -- total_tokens 按计费拆开的几部分（v64，ADR 0001）：未缓存的输入、缓存写、缓存读、输出。以前的用量没有拆分，
+  -- total_tokens 减去这四列是未拆分的部分。放在最后，老库用 ALTER 补在末尾。提醒没有 Run，这四列一直是 0，不进 C2。
+  uncached_input_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_write_tokens    INTEGER NOT NULL DEFAULT 0,
+  cache_read_tokens     INTEGER NOT NULL DEFAULT 0,
+  output_tokens         INTEGER NOT NULL DEFAULT 0,
 
   CHECK (kind = 'task' OR workflow_kind = 'generic'),
 

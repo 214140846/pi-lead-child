@@ -108,7 +108,62 @@ describe('ChatInput', () => {
       spy.mockRestore();
     }
   });
+
+  // 工单 #264：以前每输入一个字，先把输入框的高度清零再量。清零那一刻会话列表的可视区变高，贴底的列表被浏览器往下拉了一截。
+  // 现在在影子 textarea 里量：页面上的输入框只在高度真的变了时写一次，不经过更矮的高度。
+  it('measures without shrinking the visible input first', () => {
+    let content = 48;
+    const spy = vi.spyOn(HTMLTextAreaElement.prototype, 'scrollHeight', 'get').mockImplementation(() => content);
+    try {
+      renderUI(<Controlled />);
+      fireEvent.change(textarea(), { target: { value: '第一行很长，折到了第二行' } });
+      expect(textarea().style.height).toBe('48px');
+      const heights = recordHeights(textarea(), () => {
+        fireEvent.change(textarea(), { target: { value: '第一行很长，折到了第二行，又多打了几个字' } });
+        content = 72;
+        fireEvent.change(textarea(), { target: { value: '第一行很长，折到了第二行，又多打了几个字，到了第三行' } });
+      });
+      // 两行时再打字：高度不写；长到三行：从 48 直接写成 72。
+      expect(heights).toEqual(['72px']);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('removes its measuring textarea when it unmounts', () => {
+    const view = renderUI(<Controlled />);
+    const shadows = () => [...document.body.querySelectorAll('textarea[aria-hidden="true"]')];
+    expect(shadows()).toHaveLength(1);
+    expect(shadows()[0]!.style.visibility).toBe('hidden');
+    view.unmount();
+    expect(shadows()).toHaveLength(0);
+  });
 });
+
+// 在 run 里依次写给 node 的高度（style.height 的每一次改动）。
+function recordHeights(node: HTMLElement, run: () => void): string[] {
+  const observer = new MutationObserver(() => {});
+  observer.observe(node, { attributes: true, attributeFilter: ['style'], attributeOldValue: true });
+  const before = node.style.height;
+  run();
+  const records = observer.takeRecords();
+  observer.disconnect();
+  // 每条记录的 oldValue 是改之前的 style；连起来再加上最后的值，就是高度依次经过的值。
+  const values = [...records.map((record) => heightIn(record.oldValue)), node.style.height];
+  const heights: string[] = [];
+  let previous = before;
+  for (const value of values.slice(1)) {
+    if (value !== previous) heights.push(value);
+    previous = value;
+  }
+  return heights;
+}
+
+function heightIn(style: string | null): string {
+  const probe = document.createElement('div');
+  probe.setAttribute('style', style ?? '');
+  return probe.style.height;
+}
 
 describe('ImageThumbnail', () => {
   it('shows the image in a 64×64 box and removes it from the corner button', () => {

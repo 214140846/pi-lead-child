@@ -138,7 +138,7 @@ describe("the ops entry", () => {
     expect(JSON.parse(readFileSync(join(dir, "runtime", "install-state.json"), "utf8")).lastError).toMatchObject({ code: "root_invalid" });
   }, OPS_RUN_MS);
 
-  it("selfcheck loads better-sqlite3 and reports that a checkout has no release.json", async () => {
+  it("selfcheck loads better-sqlite3, finds the runtime assets in the source and reports that a checkout has no release.json", async () => {
     const result = await ops(["selfcheck"]);
     expect(result.code).toBe(1);
     const report = JSON.parse(result.stdout) as { ok: boolean; checks: Array<{ name: string; ok: boolean }> };
@@ -146,6 +146,7 @@ describe("the ops entry", () => {
     expect(report.checks).toEqual([
       expect.objectContaining({ name: "better-sqlite3", ok: true }),
       expect.objectContaining({ name: "release.json", ok: false }),
+      expect.objectContaining({ name: "runtime assets", ok: true, detail: expect.stringContaining("found in source") }),
     ]);
   }, OPS_RUN_MS);
 

@@ -331,6 +331,12 @@ describe("startShell", () => {
       await click(current.shell);
       expect(lastMessage(current.shell).message).toBe("Bytezard Lead is up to date.");
 
+      // 没有清单不算最新（2026-11-05：更新源写错时，菜单说过「已是最新」）。
+      const noInfo = packagedWith({ kind: "no_info", source: "https://github.com/acme/lead/releases/latest/download" });
+      await noInfo.shell.ready();
+      await click(noInfo.shell);
+      expect(lastMessage(noInfo.shell).message).toBe("Bytezard Lead could not find update information.");
+
       const failed = packagedWith({ kind: "failed", reason: "HTTP 502" });
       await failed.shell.ready();
       await click(failed.shell);

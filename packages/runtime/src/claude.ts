@@ -116,69 +116,173 @@ interface ResultState {
   errorMessage: string | null;
 }
 
+// 一个进程或一次响应的用量，分成计费不同的四部分（ADR 0001）。cacheWrite1h 是 cacheWrite 里 1 小时的那部分，只用来按价目分成本，不报出去。
+interface UsageParts {
+  uncached: number;
+  cacheWrite: number;
+  cacheWrite1h: number;
+  cacheRead: number;
+  output: number;
+}
+
+// 报给 usage.updated 的形状：inputTokens 照旧含缓存读写，另外报其中的缓存读、缓存写。
 interface NormalizedUsage {
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+}
+
+// 一条 result 里一组按模型给的用量（modelUsage 或 model_usage_since_last_result）的合计。
+interface ModelUsageTotal {
+  parts: UsageParts;
+  costUsd: number | null;
 }
 
 // 一个 Claude 进程的用量（工单 #102，2026-10-21）。规则按 Run #118 的原始输出核对（Claude Code 2.1.258）：
 // - stream-json 把一次 API 响应按内容块拆成几行 assistant。每行带同一份 usage，output_tokens 只是流开始时的值。
 //   所以按 parent_tool_use_id 和 message.id 去重，一次响应只算一次。后台子 agent 的响应也在这些行里。
 // - result.usage 只算本回合的主线程，不是进程的累计。一个进程可以有几个回合，例如后台任务的通知开了新回合。
-// - result.modelUsage 是整个进程的累计，含子 agent，和 total_cost_usd 对得上。它是权威的总量。
-// 运行中报去重后的估计（输出偏少），result 到了用 modelUsage 替换它。两种都按 cumulative 报。
-// 没有 modelUsage 的旧版本：取估计和各回合 result.usage 之和里较大的那个。
+// - result.modelUsage 是整个会话的累计，含子 agent，和 total_cost_usd 对得上。
+// - 续接的进程（--resume）：Claude Code 把被续接会话存下的累计恢复进来，modelUsage 和 total_cost_usd 是
+//   「以前的进程 + 这个进程」（Claude Code 2.1.318 实测；#180 的 Run #306 只调了 2 次 API，记成了 2 亿）。
+// - result.model_usage_since_last_result（2.1.318 有）：上一条 result 以后这个进程的用量，不含恢复进来的那份。
+//   有它时，进程的总量是各条 result 的它之和，这是权威的数。
+// 运行中报去重后的估计（输出偏少），result 到了用上面的总量替换它。两种都按 cumulative 报。
+// 没有 model_usage_since_last_result 的旧版本：没续接时用 modelUsage；续接时第一条 result 定下恢复进来的那份
+// （modelUsage 减去这个进程自己的用量），以后每条都减去它。都没有时取估计和各回合 result.usage 之和里较大的那个。
 class ClaudeUsageLedger {
   // 最近一条 result 给出的总量，和它已经包含的响应。
-  private settled: NormalizedUsage = emptyUsage();
+  private settled: UsageParts = emptyParts();
+  private settledCost: number | null = null;
   private readonly settledResponses = new Set<string>();
   // 最近一条 result 之后的响应。
-  private readonly pending = new Map<string, NormalizedUsage>();
-  private turns: NormalizedUsage = emptyUsage();
+  private readonly pending = new Map<string, UsageParts>();
+  private turns: UsageParts = emptyParts();
+  // 各条 result 的 model_usage_since_last_result 之和。
+  private sinceTotal: ModelUsageTotal | null = null;
+  // 续接时恢复进来的那份（旧版本的兜底）。第一条 result 时定下。
+  private restored: ModelUsageTotal | null = null;
+
+  constructor(private readonly resumed: boolean) {}
 
   // 一行 assistant。总量变了时返回新的总量。
-  response(key: string, usage: NormalizedUsage | null): NormalizedUsage | null {
+  response(key: string, usage: UsageParts | null): NormalizedUsage | null {
     if (!usage || this.settledResponses.has(key)) return null;
     const previous = this.pending.get(key);
-    const merged = previous ? largerUsage(previous, usage) : usage;
-    if (previous && merged.inputTokens === previous.inputTokens && merged.outputTokens === previous.outputTokens) {
-      return null;
-    }
+    const merged = previous ? largerParts(previous, usage) : usage;
+    if (previous && sameParts(merged, previous)) return null;
     this.pending.set(key, merged);
-    return this.running();
+    return reported(this.running());
   }
 
-  // 一条 result。返回进程到目前的总量。
-  result(turn: NormalizedUsage | null, process: NormalizedUsage | null): NormalizedUsage {
-    if (turn) this.turns = addUsage(this.turns, turn);
-    this.settled = process ?? largerUsage(this.running(), this.turns);
+  // 一条 result。返回进程到目前的总量和成本。
+  result(input: {
+    turn: UsageParts | null;
+    session: ModelUsageTotal | null;
+    sinceLast: ModelUsageTotal | null;
+    totalCostUsd: number | null;
+  }): NormalizedUsage & { costUsd: number | null } {
+    const { turn, session, sinceLast } = input;
+    if (turn) this.turns = addParts(this.turns, turn);
+    if (sinceLast) {
+      this.sinceTotal = addModelUsage(this.sinceTotal, sinceLast);
+      this.settled = this.sinceTotal.parts;
+      this.settledCost = this.sinceTotal.costUsd;
+    } else if (session && this.resumed) {
+      // 这个进程自己到这条 result 的用量：本回合主线程的 result.usage，加上子 agent 的响应（键以 parent_tool_use_id 开头）。
+      if (!this.restored) {
+        let own = turn ?? emptyParts();
+        for (const [key, usage] of this.pending) if (!key.startsWith(":")) own = addParts(own, usage);
+        this.restored = restoredShare(session, own, input.totalCostUsd);
+      }
+      this.settled = subtractParts(session.parts, this.restored.parts);
+      const cost = input.totalCostUsd ?? session.costUsd;
+      this.settledCost = cost === null ? null : Math.max(0, cost - (this.restored.costUsd ?? 0));
+    } else if (session) {
+      this.settled = session.parts;
+      this.settledCost = input.totalCostUsd ?? session.costUsd;
+    } else {
+      this.settled = largerTotal(this.running(), this.turns);
+      this.settledCost = input.totalCostUsd;
+    }
     for (const key of this.pending.keys()) this.settledResponses.add(key);
     this.pending.clear();
-    return this.settled;
+    return { ...reported(this.settled), costUsd: this.settledCost };
   }
 
-  private running(): NormalizedUsage {
+  private running(): UsageParts {
     let total = this.settled;
-    for (const usage of this.pending.values()) total = addUsage(total, usage);
+    for (const usage of this.pending.values()) total = addParts(total, usage);
     return total;
   }
 }
 
-function emptyUsage(): NormalizedUsage {
-  return { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+// 恢复进来的那份：会话的累计减去这个进程自己的用量。成本按价目的比例分：缓存读是未缓存输入的 0.1 倍，
+// 5 分钟缓存写 1.25 倍，1 小时缓存写 2 倍，输出 5 倍（实测的两个进程都精确对得上）。几个模型时按合计分，是近似。
+function restoredShare(session: ModelUsageTotal, own: UsageParts, totalCostUsd: number | null): ModelUsageTotal {
+  const parts = subtractParts(session.parts, own);
+  parts.cacheWrite1h = Math.min(parts.cacheWrite1h, parts.cacheWrite);
+  const cost = totalCostUsd ?? session.costUsd;
+  const weight = priceWeight(session.parts);
+  return { parts, costUsd: cost === null || weight === 0 ? null : cost * (priceWeight(parts) / weight) };
 }
 
-function usageOf(inputTokens: number, outputTokens: number): NormalizedUsage {
-  return { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens };
+function priceWeight(parts: UsageParts): number {
+  const write5m = Math.max(0, parts.cacheWrite - parts.cacheWrite1h);
+  return parts.uncached + 1.25 * write5m + 2 * parts.cacheWrite1h + 0.1 * parts.cacheRead + 5 * parts.output;
 }
 
-function addUsage(left: NormalizedUsage, right: NormalizedUsage): NormalizedUsage {
-  return usageOf(left.inputTokens + right.inputTokens, left.outputTokens + right.outputTokens);
+function emptyParts(): UsageParts {
+  return { uncached: 0, cacheWrite: 0, cacheWrite1h: 0, cacheRead: 0, output: 0 };
 }
 
-function largerUsage(left: NormalizedUsage, right: NormalizedUsage): NormalizedUsage {
-  return usageOf(Math.max(left.inputTokens, right.inputTokens), Math.max(left.outputTokens, right.outputTokens));
+const PART_KEYS = ["uncached", "cacheWrite", "cacheWrite1h", "cacheRead", "output"] as const;
+
+function combineParts(left: UsageParts, right: UsageParts, combine: (a: number, b: number) => number): UsageParts {
+  const parts = emptyParts();
+  for (const key of PART_KEYS) parts[key] = combine(left[key], right[key]);
+  return parts;
+}
+
+function addParts(left: UsageParts, right: UsageParts): UsageParts {
+  return combineParts(left, right, (a, b) => a + b);
+}
+
+function largerParts(left: UsageParts, right: UsageParts): UsageParts {
+  return combineParts(left, right, Math.max);
+}
+
+function subtractParts(left: UsageParts, right: UsageParts): UsageParts {
+  return combineParts(left, right, (a, b) => Math.max(0, a - b));
+}
+
+// 估计和各回合之和里较大的那个（旧版本的兜底）：输入的几部分一起取输入较大的那边，输出取较大的。
+function largerTotal(left: UsageParts, right: UsageParts): UsageParts {
+  const input = (parts: UsageParts) => parts.uncached + parts.cacheWrite + parts.cacheRead;
+  return { ...(input(left) >= input(right) ? left : right), output: Math.max(left.output, right.output) };
+}
+
+function sameParts(left: UsageParts, right: UsageParts): boolean {
+  return PART_KEYS.every((key) => left[key] === right[key]);
+}
+
+function addModelUsage(left: ModelUsageTotal | null, right: ModelUsageTotal): ModelUsageTotal {
+  if (!left) return right;
+  const costUsd = left.costUsd === null && right.costUsd === null ? null : (left.costUsd ?? 0) + (right.costUsd ?? 0);
+  return { parts: addParts(left.parts, right.parts), costUsd };
+}
+
+function reported(parts: UsageParts): NormalizedUsage {
+  const inputTokens = parts.uncached + parts.cacheWrite + parts.cacheRead;
+  return {
+    inputTokens,
+    outputTokens: parts.output,
+    totalTokens: inputTokens + parts.output,
+    cacheReadTokens: parts.cacheRead,
+    cacheWriteTokens: parts.cacheWrite,
+  };
 }
 
 type JsonRecord = Record<string, unknown>;
@@ -359,7 +463,7 @@ export class ClaudeRuntime implements AgentRuntime {
     }
     return this.supervise(
       proc,
-      { runId: request.runId, model: request.model, toolChannel: request.mcpServer !== undefined },
+      { runId: request.runId, model: request.model, toolChannel: request.mcpServer !== undefined, resumed: Boolean(request.resumeSessionId) },
       mcpConfig,
     );
   }
@@ -370,15 +474,15 @@ export class ClaudeRuntime implements AgentRuntime {
   async attach(request: RuntimeAttachRequest): Promise<RuntimeHandle> {
     return this.supervise(
       attachProcess(request.launch, { hasStdin: false }),
-      { runId: request.runId, model: request.model, toolChannel: request.toolChannel },
+      { runId: request.runId, model: request.model, toolChannel: request.toolChannel, resumed: Boolean(request.resumeSessionId) },
       null,
     );
   }
 
-  // toolChannel：启动时有没有给 plc 工具通道。初始化消息里要检查它的状态。
+  // toolChannel：启动时有没有给 plc 工具通道。初始化消息里要检查它的状态。resumed：进程是不是 --resume 起的（用量要减去恢复进来的那份）。
   private supervise(
     proc: LaunchedProcess,
-    request: Pick<RuntimeStartRequest, "runId" | "model"> & { toolChannel: boolean },
+    request: Pick<RuntimeStartRequest, "runId" | "model"> & { toolChannel: boolean; resumed: boolean },
     mcpConfig: { remove(): void } | null,
   ): RuntimeHandle {
     const queue = new AsyncEventQueue<ReturnType<RuntimeEventSequencer["event"]>>();
@@ -398,7 +502,7 @@ export class ClaudeRuntime implements AgentRuntime {
     let generatedMessageId = 0;
     let killTimer: ReturnType<typeof setTimeout> | undefined;
     const toolNames = new Map<string, string>();
-    const usage = new ClaudeUsageLedger();
+    const usage = new ClaudeUsageLedger(request.resumed);
 
     let resolveWait!: (exit: RuntimeExit) => void;
     const waitPromise = new Promise<RuntimeExit>((resolve) => {
@@ -683,15 +787,15 @@ export class ClaudeRuntime implements AgentRuntime {
 
     if (type !== "result") return;
     context.rememberSession(message);
-    const turnUsage = normalizeUsage(message.usage);
-    const processUsage = normalizeModelUsage(message.modelUsage);
-    const costUsd = numberValue(message.total_cost_usd);
-    if (turnUsage || processUsage || costUsd !== null) {
+    const turn = normalizeUsage(message.usage);
+    const session = normalizeModelUsage(message.modelUsage);
+    const sinceLast = normalizeModelUsage(message.model_usage_since_last_result);
+    const totalCostUsd = numberValue(message.total_cost_usd);
+    if (turn || session || sinceLast || totalCostUsd !== null) {
       context.emit({
         type: "usage.updated",
         mode: "cumulative",
-        ...context.usage.result(turnUsage, processUsage),
-        costUsd,
+        ...context.usage.result({ turn, session, sinceLast, totalCostUsd }),
       });
     }
 
@@ -758,7 +862,7 @@ function attachBoundedLineReader(
   });
 }
 
-function normalizeUsage(value: unknown): NormalizedUsage | null {
+function normalizeUsage(value: unknown): UsageParts | null {
   const usage = jsonRecord(value);
   if (!usage) return null;
   const fields = [
@@ -768,23 +872,34 @@ function normalizeUsage(value: unknown): NormalizedUsage | null {
     numberValue(usage.output_tokens),
   ];
   if (fields.every((field) => field === null)) return null;
-  const inputTokens = (fields[0] ?? 0) + (fields[1] ?? 0) + (fields[2] ?? 0);
-  const outputTokens = fields[3] ?? 0;
-  return { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens };
+  const creation = jsonRecord(usage.cache_creation);
+  return {
+    uncached: fields[0] ?? 0,
+    cacheWrite: fields[1] ?? 0,
+    cacheWrite1h: numberValue(creation?.ephemeral_1h_input_tokens) ?? 0,
+    cacheRead: fields[2] ?? 0,
+    output: fields[3] ?? 0,
+  };
 }
 
-// result.modelUsage：每个模型一项，整个进程的累计。没有任何一项时返回 null。
-function normalizeModelUsage(value: unknown): NormalizedUsage | null {
+// result.modelUsage 或 model_usage_since_last_result：每个模型一项。各模型相加。没有任何一项时返回 null。
+function normalizeModelUsage(value: unknown): ModelUsageTotal | null {
   const models = jsonRecord(value);
   if (!models) return null;
-  let total: NormalizedUsage | null = null;
+  let total: ModelUsageTotal | null = null;
   for (const entry of Object.values(models)) {
     const model = jsonRecord(entry);
     if (!model) continue;
-    const inputTokens = (numberValue(model.inputTokens) ?? 0)
-      + (numberValue(model.cacheCreationInputTokens) ?? 0)
-      + (numberValue(model.cacheReadInputTokens) ?? 0);
-    total = addUsage(total ?? emptyUsage(), usageOf(inputTokens, numberValue(model.outputTokens) ?? 0));
+    total = addModelUsage(total, {
+      parts: {
+        uncached: numberValue(model.inputTokens) ?? 0,
+        cacheWrite: numberValue(model.cacheCreationInputTokens) ?? 0,
+        cacheWrite1h: numberValue(model.cacheCreationEphemeral1hInputTokens) ?? 0,
+        cacheRead: numberValue(model.cacheReadInputTokens) ?? 0,
+        output: numberValue(model.outputTokens) ?? 0,
+      },
+      costUsd: numberValue(model.costUSD),
+    });
   }
   return total;
 }

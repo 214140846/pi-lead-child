@@ -1,5 +1,7 @@
 // 运行包的冒烟测试（设计文档 P0-2、第 8.1 节）：从运行包启动 supervisor，等 daemon 在 plc.sock 上回答 status，
 // 检查两个进程的名字都是 lead-agent，再停掉。另外检查 pi 和 plc 能用运行包自带的 Node 运行。
+// 运行时按路径加载的文件（工单 #260：1.1.1、1.1.2 的运行包里没有 pi 扩展，pi 执行器起不来）：每一项都要在包里，
+// 运行包自己的 ops selfcheck 要从 dist 里找到它们，pi 要真的加载全部扩展和 skill 目录。
 //
 // 隔离：这台机器上可能有用户正在用的服务，冒烟不能碰它们。
 // - 数据目录（PLC_DATA_DIR）和 HOME 都是新建的临时目录。daemon 用全新的数据目录启动时，记忆模块会卸载 Hindsight 的
@@ -13,11 +15,13 @@
 //   也不让 Node 去读系统钥匙串里的根证书（去掉 NODE_USE_SYSTEM_CA）。冒烟结束时，假 security 只要收到过 add-generic-password
 //   就判失败。
 import { spawn, execFile, type ChildProcess } from "node:child_process";
+import { RUNTIME_ASSETS } from "@pi-lead-child/core";
 import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, delimiter, join } from "node:path";
 import { promisify } from "node:util";
+import { RUNTIME_ASSET_FILES } from "./pack.js";
 import { PRODUCT, RELEASE_FILE } from "./release.js";
 
 const execFileAsync = promisify(execFile);
@@ -164,6 +168,79 @@ function recordedDaemonPid(dataDir: string): number | null {
   }
 }
 
+/** 运行包自己的 ops selfcheck（apps/daemon/src/ops.ts）。不通过时抛错，错误里带每一项检查。 */
+export async function runtimeSelfcheck(leadAgent: string, runtime: string, env: NodeJS.ProcessEnv, cwd: string): Promise<string> {
+  const ops = join(runtime, "apps", "daemon", "dist", "ops.mjs");
+  let stdout: string;
+  try {
+    stdout = (await execFileAsync(leadAgent, [ops, "selfcheck"], { cwd, env, timeout: 30_000 })).stdout;
+  } catch (error) {
+    stdout = (error as { stdout?: string }).stdout ?? "";
+    if (!stdout) throw new Error(`ops selfcheck 没有运行：${(error as Error).message}`);
+  }
+  const report = JSON.parse(stdout) as { ok?: boolean; checks?: Array<{ name: string; ok: boolean; detail: string }> };
+  const checks = report.checks ?? [];
+  const assets = checks.find((check) => check.name === "runtime assets");
+  if (!report.ok || !assets) {
+    throw new Error(`ops selfcheck 没有通过：${checks.map((check) => `${check.name} ${check.ok ? "ok" : "失败"}（${check.detail}）`).join("；") || stdout}`);
+  }
+  // 运行包里只有 dist，没有源码。
+  if (!/ in dist$/.test(assets.detail)) throw new Error(`ops selfcheck 没有从 dist 解析运行时资源：${assets.detail}`);
+  return assets.detail;
+}
+
+export interface PiLoadResult {
+  extensions: string[];
+  skills: string[];
+}
+
+/**
+ * 用运行包的 Node 以 RPC 模式起一次 pi，加载全部扩展和 skill 目录，问一次 get_commands。
+ * pi 加载扩展失败时直接退出（退出码 1，stderr 是 "Failed to load extension"），没有回答；skill 出现在 get_commands 里。
+ */
+export function piLoadsExtensions(o: {
+  leadAgent: string; pi: string; extensions: string[]; skillDirs: string[]; cwd: string; env: NodeJS.ProcessEnv; timeoutMs: number;
+}): Promise<PiLoadResult> {
+  return new Promise((resolve, reject) => {
+    const args = [o.pi, "--mode", "rpc", "--no-session", "-ne", ...o.extensions.flatMap((path) => ["-e", path]), ...o.skillDirs.flatMap((dir) => ["--skill", dir])];
+    const child = spawn(o.leadAgent, args, { cwd: o.cwd, env: o.env, stdio: ["pipe", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const finish = (error: Error | null, value?: PiLoadResult) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.stdin.end();
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+      if (error) reject(error);
+      else resolve(value!);
+    };
+    const timer = setTimeout(() => finish(new Error(`pi 在 ${Math.round(o.timeoutMs / 1000)} 秒内没有回答 get_commands：${stderr.trim()}`)), o.timeoutMs);
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk: string) => { stderr += chunk; });
+    child.stdout.on("data", (chunk: string) => {
+      stdout += chunk;
+      for (let newline = stdout.indexOf("\n"); newline >= 0; newline = stdout.indexOf("\n")) {
+        const line = stdout.slice(0, newline);
+        stdout = stdout.slice(newline + 1);
+        let message: { type?: string; id?: string; success?: boolean; error?: string; data?: { commands?: Array<{ name: string; source?: string; sourceInfo?: { path?: string } }> } };
+        try { message = JSON.parse(line); } catch { continue; }
+        if (message.type !== "response" || message.id !== "smoke-commands") continue;
+        if (!message.success) return finish(new Error(`pi 的 get_commands 失败：${message.error ?? line}`));
+        const skills = (message.data?.commands ?? []).filter((command) => command.source === "skill");
+        const empty = o.skillDirs.filter((dir) => !skills.some((skill) => skill.sourceInfo?.path?.startsWith(`${dir}/`)));
+        if (empty.length) return finish(new Error(`pi 没有从这些目录加载到 skill：${empty.join("、")}`));
+        return finish(null, { extensions: o.extensions.map((path) => basename(path)), skills: skills.map((skill) => skill.name) });
+      }
+    });
+    child.once("error", (error) => finish(error));
+    child.once("exit", (code, signal) => finish(new Error(`pi 在回答 get_commands 以前退出了（${code ?? signal}）：${stderr.trim()}`)));
+    child.stdin.write(`${JSON.stringify({ id: "smoke-commands", type: "get_commands" })}\n`);
+  });
+}
+
 export interface SmokeOptions {
   runtimeDir: string;
   // 临时目录建在这里，缺省是系统的临时目录。
@@ -179,6 +256,9 @@ export interface SmokeResult {
   daemonPid: number;
   processNames: { supervisor: string; daemon: string };
   piVersion: string;
+  /** ops selfcheck 对运行时资源的说明，例如 "8 found in dist"。 */
+  runtimeAssets: string;
+  piLoad: PiLoadResult;
   statusAfterMs: number;
   stubCalls: string[];
 }
@@ -193,7 +273,7 @@ export async function smokeRuntime(o: SmokeOptions): Promise<SmokeResult> {
   if (release.product !== PRODUCT) throw new Error(`${releasePath} 的 product 是 ${release.product}，不是 ${PRODUCT}`);
   const leadAgent = join(runtime, "bin", PROCESS_NAME);
   const supervisorEntry = join(runtime, "apps", "daemon", "dist", "supervisor.mjs");
-  for (const path of [leadAgent, supervisorEntry, join(runtime, "bin", "plc")]) {
+  for (const path of [leadAgent, supervisorEntry, join(runtime, "bin", "plc"), ...RUNTIME_ASSET_FILES.map((file) => join(runtime, file))]) {
     if (!existsSync(path)) throw new Error(`运行包里缺少 ${path}`);
   }
 
@@ -220,6 +300,17 @@ export async function smokeRuntime(o: SmokeOptions): Promise<SmokeResult> {
     const piVersion = `${pi.stdout}${pi.stderr}`.match(/\d+\.\d+\.\d+\S*/)?.[0];
     if (!piVersion) throw new Error(`pi --version 没有输出版本号：${pi.stdout}${pi.stderr}`);
     log(`pi --version：${piVersion}`);
+    const runtimeAssets = await runtimeSelfcheck(leadAgent, runtime, env, work);
+    log(`ops selfcheck 通过，运行时资源：${runtimeAssets}`);
+    // 和 pi 执行器一样的扩展（runtime 的 pi.ts）加上 Lead 的 sol-pi-lead；skill 是执行者的 child-skills 和 Lead 的 skill。
+    const asset = (name: keyof typeof RUNTIME_ASSETS) => join(runtime, "apps", "daemon", "dist", ...RUNTIME_ASSETS[name].dist);
+    const piLoad = await piLoadsExtensions({
+      leadAgent, pi: join(runtime, "node_modules", ".bin", "pi"), cwd: work, env, timeoutMs,
+      extensions: Object.entries(RUNTIME_ASSETS).filter(([, entry]) => entry.kind === "extension")
+        .map(([name]) => asset(name as keyof typeof RUNTIME_ASSETS)),
+      skillDirs: [join(asset("child-skills"), "executor", "skills"), asset("lead-skills")],
+    });
+    log(`pi 加载了扩展 ${piLoad.extensions.join("、")}，skill ${piLoad.skills.length} 个`);
     await execFileAsync(join(runtime, "bin", "plc"), ["--help"], { cwd: work, env, timeout: 30_000 });
     log("bin/plc --help 正常退出");
 
@@ -263,7 +354,7 @@ export async function smokeRuntime(o: SmokeOptions): Promise<SmokeResult> {
     if (writes.length) throw new Error(`冒烟进程想往钥匙串里写密钥：${writes.join("；")}`);
     succeeded = true;
     return {
-      ok: true, version: release.version ?? "", supervisorPid, daemonPid, processNames, piVersion, statusAfterMs, stubCalls,
+      ok: true, version: release.version ?? "", supervisorPid, daemonPid, processNames, piVersion, runtimeAssets, piLoad, statusAfterMs, stubCalls,
     };
   } catch (error) {
     const logs = [`--- supervisor 输出（${supervisorLog}）---`, tail(supervisorLog)];

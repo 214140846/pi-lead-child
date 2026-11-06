@@ -322,8 +322,11 @@ function legacyAddInbox(
         "SELECT COUNT(*) AS n FROM inbox WHERE dedup_scope = ? AND severity = 'blocker' AND created_at > datetime('now','-1 hour')",
       ).get(scope) as { n: number }).n;
       if (recent >= FUSE_THRESHOLD - 1) {
+        // #266 改了这一条规则：时间窗里的熔断行处理过了也复用，不再只找 pending 的（inbox.ts）。
         const fuse = legacy.prepare(
-          "SELECT id, payload FROM inbox WHERE dedup_scope = ? AND severity = 'blocker' AND state = 'pending' AND summary LIKE '%异常频繁%' LIMIT 1",
+          `SELECT id, payload FROM inbox WHERE dedup_scope = ? AND severity = 'blocker' AND summary LIKE '%异常频繁%'
+             AND (state = 'pending' OR created_at > datetime('now','-1 hour'))
+           ORDER BY id DESC LIMIT 1`,
         ).get(scope) as { id: number; payload: string } | undefined;
         if (fuse) {
           const p = JSON.parse(fuse.payload || "{}");
@@ -383,7 +386,7 @@ describe("compared with the inbox rules before they moved", () => {
         continue;
       }
       if (roll < 0.15) {
-        // Lead 处理掉了几行：合并只并进 pending 的行，熔断也只复用 pending 的聚合行。
+        // Lead 处理掉了几行：合并只并进 pending 的行；熔断复用 pending 的聚合行，和时间窗里处理过的聚合行。
         const pending = (db.prepare("SELECT id FROM inbox WHERE state = 'pending'").all() as { id: number }[]).map((row) => row.id);
         const chosen = pending.filter(() => next() < 0.5);
         markInbox(db, chosen, "consumed");

@@ -12,7 +12,7 @@
 // 没有某个角色的目录时，这个角色不加载任何 skill。
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { packageSource } from "@pi-lead-child/core";
+import { runtimeAsset } from "@pi-lead-child/core";
 
 export type ChildSkillRole = "executor" | "reviewer";
 
@@ -25,7 +25,7 @@ export interface ChildSkill {
 
 // 所有角色目录的上一级。runtime 的选项可以换成别的目录（测试），null 表示不加载任何 skill。
 export function defaultChildSkillsRoot(): string {
-  return packageSource("engine", "child-skills");
+  return runtimeAsset("child-skills");
 }
 
 // 一个角色的插件目录。root 为 null，或者这个角色没有目录时返回 null。

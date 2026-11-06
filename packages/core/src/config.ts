@@ -53,6 +53,47 @@ export function packageSource(pkg: string, ...segments: string[]): string {
   return join(workspaceDir(pkg), "src", ...segments);
 }
 
+// 运行时按路径加载、不在入口 bundle 里的文件：pi 扩展、skill 目录、辅助脚本（工单 #260）。
+// 源码 checkout 里照旧用源码（pi 用自己的加载器直接读 TypeScript）。桌面版的运行包里没有 packages/，
+// 用构建时放进 dist/assets/ 的那一份：extension 由 apps/daemon/scripts/build.ts 打成 bundle，copy 原样复制。
+// 打包（scripts/desktop/lib/pack.ts）、运行包自检（ops selfcheck）和冒烟（scripts/desktop/lib/smoke.ts）按这张表检查每一项都在。
+export interface RuntimeAsset {
+  kind: "extension" | "copy";
+  pkg: string;
+  // 在包的 src/ 下的位置。
+  source: readonly string[];
+  // 在 daemon 的 dist/ 下的位置。
+  dist: readonly string[];
+}
+
+export const RUNTIME_ASSETS = {
+  "ticket-tools": { kind: "extension", pkg: "engine", source: ["extension", "ticket-tools.ts"], dist: ["assets", "extensions", "ticket-tools.js"] },
+  "web-tools": { kind: "extension", pkg: "engine", source: ["extension", "web-tools.ts"], dist: ["assets", "extensions", "web-tools.js"] },
+  "sol-pi-executor": { kind: "extension", pkg: "engine", source: ["extension", "sol-pi-executor.ts"], dist: ["assets", "extensions", "sol-pi-executor.js"] },
+  "sol-pi-lead": { kind: "extension", pkg: "engine", source: ["extension", "sol-pi-lead.ts"], dist: ["assets", "extensions", "sol-pi-lead.js"] },
+  sandbox: { kind: "extension", pkg: "engine", source: ["extension", "sandbox.ts"], dist: ["assets", "extensions", "sandbox.js"] },
+  "child-skills": { kind: "copy", pkg: "engine", source: ["child-skills"], dist: ["assets", "child-skills"] },
+  "lead-skills": { kind: "copy", pkg: "lead", source: ["skills"], dist: ["assets", "lead-skills"] },
+  "hindsight-download": { kind: "copy", pkg: "supervisor", source: ["deploy", "hindsight-download.py"], dist: ["assets", "hindsight-download.py"] },
+} as const satisfies Record<string, RuntimeAsset>;
+
+export type RuntimeAssetName = keyof typeof RUNTIME_ASSETS;
+
+// 运行包的根目录有 release.json（supervisor 的 deploy/release.ts）。源码 checkout 里没有。
+export function isReleaseRuntime(root = projectRoot()): boolean {
+  return existsSync(join(root, "release.json"));
+}
+
+export function runtimeAsset(name: RuntimeAssetName, release = isReleaseRuntime()): string {
+  const asset: RuntimeAsset = RUNTIME_ASSETS[name];
+  return release ? join(distDir(), ...asset.dist) : packageSource(asset.pkg, ...asset.source);
+}
+
+// 每一项资源的路径，和 runtimeAsset 的解析一样。
+export function runtimeAssetPaths(release = isReleaseRuntime()): Array<{ name: RuntimeAssetName; path: string }> {
+  return (Object.keys(RUNTIME_ASSETS) as RuntimeAssetName[]).map((name) => ({ name, path: runtimeAsset(name, release) }));
+}
+
 // 缺省 ~/Library/Application Support/Bytezard Lead/（第 9 节决定 6）。还没迁移的开发机照旧用改名以前的目录（pre-rename.ts）。
 export function dataDir(): string {
   const dir = process.env.PLC_DATA_DIR ?? installedDataDir(homedir());

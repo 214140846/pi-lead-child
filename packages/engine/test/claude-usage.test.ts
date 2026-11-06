@@ -3,6 +3,7 @@
 // 旧代码把每一行 assistant 的 usage 当 delta 加起来（同一次响应按内容块拆成几行，每行都加），
 // 又把只算第二回合主线程的 result.usage 当 cumulative 加上去。
 // 这里用这个 Run 原始输出里的用量行，经 adapter、runItem 和 ingest 走一遍落库的路径。
+import { writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { tempDir } from "@pi-lead-child/core/testing";
@@ -56,6 +57,71 @@ describe("a Claude run's token usage", () => {
     expect(item.total_tokens).toBe(5_981_433);
     expect(item.total_cost_usd).toBeCloseTo(2.5841609, 7);
     expect(runTokenUsage(db, runId)).toBe(5_981_433);
+    // 按计费拆开的四部分（用户 2026-11-06），加起来等于总数。
+    expect(item).toMatchObject({
+      uncached_input_tokens: 134, cache_write_tokens: 296_699, cache_read_tokens: 5_631_822, output_tokens: 52_778,
+    });
+  });
+
+  // 续接 Run #118 的会话（--resume）：Claude Code 把会话存下的累计恢复进来，result 的 modelUsage 和 total_cost_usd
+  // 是「Run #118 + 这个进程」。以前这份累计又记进工单一次（#180 的 Run #306：2 次 API、164 万，记成了 2 亿）。
+  // 这个进程自己：未缓存 6、缓存写 1,000、缓存读 400,000、输出 900。
+  const OWN = { uncached: 6, cacheWrite: 1_000, cacheRead: 400_000, output: 900 };
+  const OWN_COST = 0.1234;
+  async function replayResumedAfter118(itemId: number, withSinceLast: boolean): Promise<number> {
+    const replay = join(dir, `resumed-${withSinceLast}.jsonl`);
+    const modelUsage = (parts: typeof OWN, cost: number) => ({
+      "claude-sonnet-5": {
+        inputTokens: parts.uncached, outputTokens: parts.output, cacheReadInputTokens: parts.cacheRead,
+        cacheCreationInputTokens: parts.cacheWrite, costUSD: cost,
+      },
+    });
+    const restored = { uncached: 134, cacheWrite: 296_699, cacheRead: 5_631_822, output: 52_778 };
+    const session = {
+      uncached: restored.uncached + OWN.uncached, cacheWrite: restored.cacheWrite + OWN.cacheWrite,
+      cacheRead: restored.cacheRead + OWN.cacheRead, output: restored.output + OWN.output,
+    };
+    const usage = {
+      input_tokens: OWN.uncached, cache_creation_input_tokens: OWN.cacheWrite,
+      cache_read_input_tokens: OWN.cacheRead, output_tokens: OWN.output,
+    };
+    await writeFile(replay, [
+      JSON.stringify({ type: "assistant", parent_tool_use_id: null, session_id: "claude-session-2",
+        message: { id: "msg-resumed", role: "assistant", content: [], usage: { ...usage, output_tokens: 1 } } }),
+      JSON.stringify({
+        type: "result", subtype: "success", is_error: false, session_id: "claude-session-2", usage,
+        modelUsage: modelUsage(session, 2.5841609 + OWN_COST), total_cost_usd: 2.5841609 + OWN_COST,
+        ...(withSinceLast ? { model_usage_since_last_result: modelUsage(OWN, OWN_COST) } : {}),
+      }),
+    ].join("\n"));
+    const { runId } = await runItem(db, itemId, {
+      dbPath: join(dir, "plc.db"), dataDir: dir, sessionDir: join(dir, "sessions"), prompt: "continue", lingerMs: 0,
+      resumeSessionId: "claude-session-1", forkSession: true,
+      runtime: new ClaudeRuntime({
+        bin: TSX, prefixArgs: FAKE_CLAUDE,
+        env: { FAKE_CLAUDE_SCENARIO: "replay", FAKE_CLAUDE_REPLAY: replay },
+      }),
+    });
+    return runId;
+  }
+
+  it.each([
+    ["model_usage_since_last_result", true],
+    ["the restored total subtracted (older Claude Code)", false],
+  ])("counts a resumed run once, from %s", async (_label, withSinceLast) => {
+    const { itemId } = await replayRun118();
+    const resumedRun = await replayResumedAfter118(itemId, withSinceLast);
+    const own = OWN.uncached + OWN.cacheWrite + OWN.cacheRead + OWN.output;
+
+    expect(runTokenUsage(db, resumedRun)).toBe(own);
+    const item = getItem(db, itemId)!;
+    expect(item.total_tokens).toBe(5_981_433 + own);
+    expect(item).toMatchObject({
+      uncached_input_tokens: 134 + OWN.uncached, cache_write_tokens: 296_699 + OWN.cacheWrite,
+      cache_read_tokens: 5_631_822 + OWN.cacheRead, output_tokens: 52_778 + OWN.output,
+    });
+    // 旧版本按价目的比例分成本：这里的价目和 Run #118 的一样，所以分出来的就是这个进程的成本。
+    expect(item.total_cost_usd).toBeCloseTo(2.5841609 + OWN_COST, withSinceLast ? 7 : 1);
   });
 
   // 预算告警读 items.total_tokens。旧代码的 17,071,923 让 600 万的预算在这个 Run 里报警。

@@ -16,7 +16,15 @@ import {
 
 // 一张工单累计 token 超过它时，给 Lead 一条预算告警。PLC_BUDGET_TOKENS 可以改它。
 // 2026-10-21 用户定为 400 万：token 数含缓存读写（docs/adr/0001-token-usage.md），旧的 200 万让一个普通的执行 Run 就告警。
+// 它只是没设预算时的默认值：工单自己（或者它的根工单）设了 token 预算时，阶梯按那个预算算（#262）。
 export const DEFAULT_TOKEN_BUDGET = 4_000_000;
+
+// 告警阶梯的基数：工单自己的 token 预算，没有时用根工单的，都没有时用默认值。
+export function alertTokenBudget(db: Db, itemId: number): number {
+  const item = getItem(db, itemId);
+  const root = item?.root_item_id != null && item.root_item_id !== item.id ? getItem(db, item.root_item_id) : undefined;
+  return item?.token_budget ?? root?.token_budget ?? Number(process.env.PLC_BUDGET_TOKENS ?? DEFAULT_TOKEN_BUDGET);
+}
 
 // 预算告警的档位：预算、2 倍、4 倍……返回 total 越过的最高一档；没超过预算时是 0。
 // 告警是工单的事，不是 Run 的事（2026-10-29）：以前每个 Run 从头算，同一张工单的每个新 Run 都告警一次，
@@ -28,18 +36,20 @@ export function budgetThresholdPassed(total: number, budget: number): number {
   return threshold;
 }
 
-// 这张工单已经告警过的最高档位。告警可能被去抖并进同一张工单的别的行（inbox 行上没有它），所以也读它的事件。
-// 旧的告警没有 threshold，按它当时的 budget 算。
-function notifiedBudgetThreshold(db: Db, itemId: number): number {
+// 这张工单在这个预算下已经告警过的最高档位。告警可能被去抖并进同一张工单的别的行（inbox 行上没有它），所以也读它的事件。
+// 旧的告警没有 threshold，按它当时的 budget 算。预算改了，阶梯从新预算重新算：只看同一个预算下的告警。
+function notifiedBudgetThreshold(db: Db, itemId: number, budget: number): number {
   const fromInbox = db.prepare(
     `SELECT MAX(COALESCE(json_extract(payload, '$.threshold'), json_extract(payload, '$.budget'))) AS t
-     FROM inbox WHERE dedup_scope = ? AND json_valid(payload) AND json_extract(payload, '$.kind') = 'token_budget_exceeded'`,
-  ).get(`item:${itemId}`) as { t: number | null };
+     FROM inbox WHERE dedup_scope = ? AND json_valid(payload) AND json_extract(payload, '$.kind') = 'token_budget_exceeded'
+       AND json_extract(payload, '$.budget') = ?`,
+  ).get(`item:${itemId}`, budget) as { t: number | null };
   const fromEvents = db.prepare(
     `SELECT MAX(COALESCE(json_extract(payload, '$.payload.threshold'), json_extract(payload, '$.payload.budget'))) AS t
      FROM events WHERE entity_key = ? AND kind = 'inbox.attention' AND json_valid(payload)
-       AND json_extract(payload, '$.inboxKind') = 'token_budget_exceeded'`,
-  ).get(itemEntityKey(db, itemId)) as { t: number | null };
+       AND json_extract(payload, '$.inboxKind') = 'token_budget_exceeded'
+       AND json_extract(payload, '$.payload.budget') = ?`,
+  ).get(itemEntityKey(db, itemId), budget) as { t: number | null };
   return Math.max(Number(fromInbox.t ?? 0), Number(fromEvents.t ?? 0));
 }
 
@@ -63,28 +73,37 @@ export function createIngestor(
     "UPDATE items SET last_activity_at = datetime('now') WHERE id = ?",
   );
   const addUsage = db.prepare(
-    "UPDATE items SET total_tokens = total_tokens + ?, total_cost_usd = total_cost_usd + ? WHERE id = ?",
+    `UPDATE items SET total_tokens = total_tokens + ?, total_cost_usd = total_cost_usd + ?,
+       uncached_input_tokens = uncached_input_tokens + ?, cache_write_tokens = cache_write_tokens + ?,
+       cache_read_tokens = cache_read_tokens + ?, output_tokens = output_tokens + ?
+     WHERE id = ?`,
   );
   let hadError = false;      // 本 run 出现过 stopReason=error
   // 最近一条 LLM 错误消息。llm_error blocker 在 Run 以完成结束时才升起（见 raiseLlmError）。
   let llmError: { stopReason: string; detail: string } | null = null;
   // 这张工单已经告警过的最高档位，只是缓存：库里的只会更高（同一张工单别的 Run 也会告警），所以要告警前再读一次库。
-  let budgetNotifiedUpTo = 0;
+  // 缓存记着它是哪个预算下的：Run 跑着时用户改了预算，阶梯换了，缓存不能再用。
+  let budgetNotified = { budget: 0, upTo: 0 };
   // 这个 Run 的用量账，规则和 runTokenUsage 相同（工单 #102）。items 上只加这本账总量的变化，变化可以是负的。
   const usage = createRunUsageLedger();
   let criticalToolFailure: CriticalToolFailure | null = null;
 
-  const recordUsage = (event: { type: "usage.updated"; mode: unknown; totalTokens: unknown; costUsd: unknown }) => {
+  const recordUsage = (event: Parameters<typeof usage.apply>[0] & { type: "usage.updated" }) => {
     const before = usage.total();
     usage.apply(event);
     const after = usage.total();
-    addUsage.run(after.tokens - before.tokens, after.costUsd - before.costUsd, ctx.itemId);
+    addUsage.run(
+      after.tokens - before.tokens, after.costUsd - before.costUsd,
+      after.uncachedInputTokens - before.uncachedInputTokens, after.cacheWriteTokens - before.cacheWriteTokens,
+      after.cacheReadTokens - before.cacheReadTokens, after.outputTokens - before.outputTokens,
+      ctx.itemId,
+    );
     if (typeof event.costUsd === "number") updateRun(db, ctx.runId, { costKnown: true });
-    const budget = Number(process.env.PLC_BUDGET_TOKENS ?? DEFAULT_TOKEN_BUDGET);
+    const budget = alertTokenBudget(db, ctx.itemId);
     const threshold = budgetThresholdPassed(getItem(db, ctx.itemId)!.total_tokens, budget);
-    if (threshold <= budgetNotifiedUpTo) return;
-    const notified = notifiedBudgetThreshold(db, ctx.itemId);
-    budgetNotifiedUpTo = Math.max(threshold, notified);
+    if (budget === budgetNotified.budget && threshold <= budgetNotified.upTo) return;
+    const notified = notifiedBudgetThreshold(db, ctx.itemId, budget);
+    budgetNotified = { budget, upTo: Math.max(threshold, notified) };
     if (notified >= threshold) return;
     // 马上叫醒 Lead：要不要停下、要不要告诉用户，由它判断。
     addInbox(db, {
@@ -297,8 +316,12 @@ export function createIngestor(
         case "message_end": {
           const m = event.message;
           if (m?.role === "assistant" && m.usage) {
+            const cacheReadTokens = Number(m.usage.cacheRead ?? 0);
+            const cacheWriteTokens = Number(m.usage.cacheWrite ?? 0);
             recordUsage({
               type: "usage.updated", mode: "delta", totalTokens: m.usage.totalTokens, costUsd: m.usage.cost?.total ?? 0,
+              inputTokens: Number(m.usage.input ?? 0) + cacheReadTokens + cacheWriteTokens,
+              outputTokens: m.usage.output, cacheReadTokens, cacheWriteTokens,
             });
           }
           if (m?.role === "assistant" && m.stopReason === "error") {

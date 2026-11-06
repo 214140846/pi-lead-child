@@ -126,54 +126,87 @@ export function createRuntimeEventStore(
 export interface RunUsage {
   tokens: number;
   costUsd: number;
+  // tokens 按计费不同的几部分拆开（ADR 0001，用户 2026-11-06）：未缓存的输入、缓存写、缓存读、输出。
+  // 没报缓存的用量（旧事件、不报缓存的 runtime）只知道输出，其余记成 unsplitTokens。几部分加起来等于 tokens。
+  uncachedInputTokens: number;
+  cacheWriteTokens: number;
+  cacheReadTokens: number;
+  outputTokens: number;
+  unsplitTokens: number;
 }
 
-// 一个 Run 的用量账。ingest 记 items.total_tokens 和 runTokenUsage 用同一本账（工单 #102，2026-10-21）。
+// 一个 Run 的用量账。ingest 记 items 的用量和 runTokenUsage 用同一本账（工单 #102，2026-10-21）。
 // 按 seq 的顺序喂 run.started 和 usage.updated，其他事件不影响它：
 // - delta：新增的用量，加上去。
 // - cumulative：这个 runtime 进程到目前的总量。它替换这个进程之前报的全部用量，包括 delta，也可以比上一条小。
 // - run.started：一个新的进程，例如过期会话在同一个 Run 里开的新会话。新进程从 0 重新累计，前面进程的用量保留。
 // token 的口径见 docs/adr/0001-token-usage.md：输入（含缓存读取和缓存写入）加输出。
 export interface RunUsageLedger {
-  apply(event: { type: string; mode?: unknown; totalTokens?: unknown; costUsd?: unknown }): void;
+  apply(event: {
+    type: string; mode?: unknown; totalTokens?: unknown; costUsd?: unknown;
+    inputTokens?: unknown; outputTokens?: unknown; cacheReadTokens?: unknown; cacheWriteTokens?: unknown;
+  }): void;
   total(): RunUsage;
 }
 
+const USAGE_PARTS = ["tokens", "costUsd", "uncachedInputTokens", "cacheWriteTokens", "cacheReadTokens", "outputTokens", "unsplitTokens"] as const;
+
+export function emptyRunUsage(): RunUsage {
+  return { tokens: 0, costUsd: 0, uncachedInputTokens: 0, cacheWriteTokens: 0, cacheReadTokens: 0, outputTokens: 0, unsplitTokens: 0 };
+}
+
+function addRunUsage(left: RunUsage, right: RunUsage): RunUsage {
+  const sum = emptyRunUsage();
+  for (const key of USAGE_PARTS) sum[key] = left[key] + right[key];
+  return sum;
+}
+
 export function createRunUsageLedger(): RunUsageLedger {
-  const earlier: RunUsage = { tokens: 0, costUsd: 0 };
-  const current: RunUsage = { tokens: 0, costUsd: 0 };
+  let earlier = emptyRunUsage();
+  let current = emptyRunUsage();
   const amount = (value: unknown): number => {
     const number = Number(value ?? 0);
     return Number.isFinite(number) && number > 0 ? number : 0;
   };
+  // 一条用量事件拆成几部分。报了缓存的：未缓存的输入是 inputTokens 减去缓存两部分；总数里多出来的记成未拆分。
+  const partsOf = (event: Parameters<RunUsageLedger["apply"]>[0]): Omit<RunUsage, "costUsd"> => {
+    const tokens = amount(event.totalTokens);
+    const outputTokens = Math.min(amount(event.outputTokens), tokens);
+    const split = typeof event.cacheReadTokens === "number" || typeof event.cacheWriteTokens === "number";
+    if (!split) {
+      return { tokens, uncachedInputTokens: 0, cacheWriteTokens: 0, cacheReadTokens: 0, outputTokens, unsplitTokens: tokens - outputTokens };
+    }
+    const cacheReadTokens = amount(event.cacheReadTokens);
+    const cacheWriteTokens = amount(event.cacheWriteTokens);
+    const uncachedInputTokens = Math.max(0, amount(event.inputTokens) - cacheReadTokens - cacheWriteTokens);
+    const known = uncachedInputTokens + cacheWriteTokens + cacheReadTokens + outputTokens;
+    return { tokens, uncachedInputTokens, cacheWriteTokens, cacheReadTokens, outputTokens, unsplitTokens: Math.max(0, tokens - known) };
+  };
   return {
     apply(event) {
       if (event.type === "run.started") {
-        earlier.tokens += current.tokens;
-        earlier.costUsd += current.costUsd;
-        current.tokens = 0;
-        current.costUsd = 0;
+        earlier = addRunUsage(earlier, current);
+        current = emptyRunUsage();
         return;
       }
       if (event.type !== "usage.updated") return;
       const cost = typeof event.costUsd === "number" ? amount(event.costUsd) : null;
+      const parts = partsOf(event);
       if (event.mode === "delta") {
-        current.tokens += amount(event.totalTokens);
-        current.costUsd += cost ?? 0;
+        current = addRunUsage(current, { ...parts, costUsd: cost ?? 0 });
       } else {
-        current.tokens = amount(event.totalTokens);
-        if (cost !== null) current.costUsd = cost;
+        current = { ...parts, costUsd: cost ?? current.costUsd };
       }
     },
     total() {
-      return { tokens: earlier.tokens + current.tokens, costUsd: earlier.costUsd + current.costUsd };
+      return addRunUsage(earlier, current);
     },
   };
 }
 
-// 一个 Run 用了多少 token：按 createRunUsageLedger 的规则重放它的事件，和 items.total_tokens 记账一样。
-// 一条用量都没有时是 null：不知道，不是 0。工单对话的输入框用它估算续接这个会话的成本（工单 08）。
-export function runTokenUsage(db: Db, runId: number): number | null {
+// 一个 Run 的用量，按 createRunUsageLedger 的规则重放它的事件，和 items 上的记账一样。
+// 一条用量都没有时是 null：不知道，不是 0。
+export function runUsageBreakdown(db: Db, runId: number): RunUsage | null {
   const rows = db.prepare(
     `SELECT event_type, payload FROM runtime_events
      WHERE run_id = ? AND event_type IN ('run.started', 'usage.updated') AND json_valid(payload)
@@ -182,7 +215,13 @@ export function runTokenUsage(db: Db, runId: number): number | null {
   if (!rows.some((row) => row.event_type === "usage.updated")) return null;
   const ledger = createRunUsageLedger();
   for (const row of rows) ledger.apply({ ...JSON.parse(row.payload), type: row.event_type });
-  return Math.round(ledger.total().tokens);
+  return ledger.total();
+}
+
+// 一个 Run 用了多少 token（总数）。工单对话的输入框用它估算续接这个会话的成本（工单 08）。
+export function runTokenUsage(db: Db, runId: number): number | null {
+  const usage = runUsageBreakdown(db, runId);
+  return usage === null ? null : Math.round(usage.tokens);
 }
 
 // 一个 Run 实际做了什么，压成几行（Lead 的 read_run_events，2026-10-15）：跑了哪些命令、说了什么、哪里失败。

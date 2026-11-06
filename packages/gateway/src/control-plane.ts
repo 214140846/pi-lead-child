@@ -39,6 +39,7 @@ import type {
   TicketStatus,
   TicketSummary,
   TicketReviewerInfo,
+  TicketUsage,
   TimelineResponse,
 } from "@pi-lead-child/protocol";
 import { foldTurnSurfaces, foldTurnToolCalls, isSystemTurnOrigin, LEAD_ACTIVITY_DISPOSITIONS, ticketNeedsUser, ticketTurn, type InboxView, type LeadActivityItem, type LeadActivityView, type LeadInterrupt, type ProjectOverview, type TicketTurn, type TurnPlacement } from "@pi-lead-child/protocol";
@@ -952,6 +953,22 @@ export function createControlPlaneService(db: Db, options: ControlPlaneOptions) 
       return listItems(db, { ...rest, stage: status }).map(itemSummary);
     },
 
+    // GET /v1/tickets/:id/usage（2026-11-06）：工单的 token 按计费拆开（ADR 0001，items 的 v64 列）。
+    getUsage(id: number): TicketUsage | undefined {
+      const item = getItem(db, id);
+      if (!item) return undefined;
+      const split = item.uncached_input_tokens + item.cache_write_tokens + item.cache_read_tokens + item.output_tokens;
+      return {
+        totalTokens: Math.round(item.total_tokens),
+        totalCostUsd: item.total_cost_usd,
+        uncachedInputTokens: item.uncached_input_tokens,
+        cacheWriteTokens: item.cache_write_tokens,
+        cacheReadTokens: item.cache_read_tokens,
+        outputTokens: item.output_tokens,
+        unsplitTokens: Math.max(0, Math.round(item.total_tokens - split)),
+      };
+    },
+
     // GET /v1/tickets/:id/reviewer（2026-10-20）：现在的核查员、所有候选能不能用、能不能换（engine 的 change-reviewer.ts）。
     // 健康账本按 daemon 注入的 profile 查（和派发 gate 一致）；没注入时按 runtime 的默认 profile 查。
     getReviewer(id: number): TicketReviewerInfo | undefined {
@@ -1030,8 +1047,9 @@ export function createControlPlaneService(db: Db, options: ControlPlaneOptions) 
       ).all(runId) as Array<{ payload: string }>;
       // 存的是内部形态（runId），线上 KernelRuntimeEvent 要的是 attemptId——直接 cast 是
       // 撒谎，strict schema 会在校验时打回。在这里显式翻译，这就是那道映射边界。
+      // usage.updated 在库里还带着缓存读、缓存写（ADR 0001），线上的形状没有它们：客户端整页严格校验，多一个键就读不了。
       return rows.map((row) => {
-        const { runId, ...rest } = JSON.parse(row.payload) as Record<string, unknown>;
+        const { runId, cacheReadTokens: _read, cacheWriteTokens: _write, ...rest } = JSON.parse(row.payload) as Record<string, unknown>;
         return { ...rest, attemptId: runId } as KernelRuntimeEvent;
       });
     },

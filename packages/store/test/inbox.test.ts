@@ -4,6 +4,7 @@ import { tempDir } from "@pi-lead-child/core/testing";
 import { openDb, type Db } from "../src/db.js";
 import { createItem } from "../src/items.js";
 import { addInbox, addLeadFollowUp, listInbox, markInbox } from "../src/inbox.js";
+import { listEvents } from "../src/events.js";
 
 let db: Db;
 let itemId: number;
@@ -54,6 +55,26 @@ describe("inbox DAO", () => {
       .find((r) => r.summary.includes("异常频繁"))!;
     expect(JSON.parse(fused.payload).suppressedCount).toBeGreaterThanOrEqual(2);
     expect(JSON.parse(fused.payload).lastSummary).toBe("b4");
+  });
+
+  // #266：熔断行被 Lead 处理掉以后，同一个小时里的下一条 blocker 找不到 pending 的熔断行，又开一行新的熔断，
+  // 打开熔断的那一条照常叫醒 Lead。blocker 一直来，熔断就一直叫醒 Lead，等于没有熔断。
+  // 时间窗里的熔断行不论处理没处理，后来的都折进它，只加计数，不再叫醒。
+  it("keeps folding into the fuse row after Lead has handled it", () => {
+    for (const summary of ["b1", "b2", "b3"]) addInbox(db, { itemId, severity: "blocker", source: "structural", summary });
+    const fuse = listInbox(db, { severity: "blocker" }).find((row) => row.summary.includes("异常频繁"))!;
+    markInbox(db, listInbox(db).map((row) => row.id), "consumed");
+
+    for (const summary of ["b4", "b5", "b6"]) {
+      expect(addInbox(db, { itemId, severity: "blocker", source: "structural", summary })).toEqual({ id: fuse.id, suppressed: true });
+    }
+    expect(listInbox(db, { severity: "blocker" }).filter((row) => row.summary.includes("异常频繁"))).toHaveLength(1);
+    expect(JSON.parse(listInbox(db).find((row) => row.id === fuse.id)!.payload)).toMatchObject({ suppressedCount: 4, lastSummary: "b6" });
+    const folded = listEvents(db, { kind: "inbox.blocker" })
+      .filter((event) => (event.payload as { delivery: string }).delivery === "folded");
+    expect(folded.map((event) => (event.payload as { fuseOpened?: boolean }).fuseOpened)).toEqual([true, false, false, false]);
+    // 只有打开熔断的那一条按 blocker 交给 Lead（tell），后来折进来的只进摘要（digest）。
+    expect(folded.map((event) => event.level)).toEqual(["tell", "digest", "digest", "digest"]);
   });
 
   it("never merges or fuses a lossless structural blocker", () => {

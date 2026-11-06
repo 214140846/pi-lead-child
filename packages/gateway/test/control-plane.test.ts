@@ -5,7 +5,8 @@ import { appendBody, createItem, markLightTask, setItemTime, transition } from "
 import { createRun, markRunStopped, updateRun } from "@pi-lead-child/store";
 import { addActivity } from "@pi-lead-child/store";
 import { addInbox, addLeadFollowUp, escalateLeadBacklog, listLeadBacklog, raiseBlocker } from "@pi-lead-child/store";
-import { ticketNeedsUser, type StandingOrderCondition } from "@pi-lead-child/protocol";
+import { KernelRuntimeEventSchema, ticketNeedsUser, type StandingOrderCondition } from "@pi-lead-child/protocol";
+import { Value } from "typebox/value";
 import { createApproval } from "@pi-lead-child/store";
 import { claimTriggerOccurrence, completeTriggerFire, createCronTrigger, getTrigger } from "@pi-lead-child/store";
 import { createMilestone, setAgendaNote } from "@pi-lead-child/store";
@@ -1452,5 +1453,29 @@ describe("the timeline", () => {
   it("refuses a range without an end or longer than 120 days", () => {
     expect(() => service().timeline({ ...range, to: range.from })).toThrow(/invalid timeline range/);
     expect(() => service().timeline({ ...range, to: "2027-06-01T00:00:00.000Z" })).toThrow(/invalid timeline range/);
+  });
+});
+
+// 用量事件在库里带着缓存读、缓存写（用户 2026-11-06），线上的 usage.updated 是严格的 schema，客户端整页校验：
+// 多一个键，已经发出去的客户端就读不了这个 Run 的事件。所以这两个字段只留在库里，线上的形状不变。
+describe("attempt events on the wire", () => {
+  it("keeps the strict usage.updated shape and leaves the cache parts in the store", () => {
+    const db = openDb(join(tempDir("plc-attempt-events-"), "plc.db"));
+    const itemId = createItem(db, { title: "t", brief: "b", createdBy: "user" });
+    const runId = createRun(db, { itemId, runtime: "claude" });
+    createRuntimeEventStore(db, { dataDir: tempDir("plc-attempt-events-data-") }).persist({
+      type: "usage.updated", runId, seq: 1, occurredAt: "2026-11-06T10:00:00.000Z", mode: "cumulative",
+      inputTokens: 1_210, outputTokens: 40, totalTokens: 1_250, costUsd: 0.01, cacheReadTokens: 1_000, cacheWriteTokens: 200,
+    });
+
+    const events = createControlPlaneService(db, { runtime: () => runtime() }).listKernelAttemptEvents(runId)!;
+    expect(events).toEqual([{
+      type: "usage.updated", attemptId: runId, seq: 1, occurredAt: "2026-11-06T10:00:00.000Z", mode: "cumulative",
+      inputTokens: 1_210, outputTokens: 40, totalTokens: 1_250, costUsd: 0.01,
+    }]);
+    expect(Value.Check(KernelRuntimeEventSchema, events[0])).toBe(true);
+    expect(JSON.parse((db.prepare("SELECT payload FROM runtime_events WHERE run_id = ?").get(runId) as { payload: string }).payload))
+      .toMatchObject({ cacheReadTokens: 1_000, cacheWriteTokens: 200 });
+    db.close();
   });
 });

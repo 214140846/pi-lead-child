@@ -536,6 +536,76 @@ describe("ClaudeRuntime", () => {
     ]);
   });
 
+  // 续接的进程（--resume）：Claude Code 把被续接会话存下的累计恢复进来，result 的 modelUsage 和 total_cost_usd
+  // 是「以前的进程 + 这个进程」。以前 adapter 把它当成这个进程的用量，同一份用量每续接一次就多算一次
+  // （#180 的 Run #306 只调了 2 次 API，用了 164 万，记成了 2 亿）。数字来自 Claude Code 2.1.318 上的实测：
+  // 第一个进程 2 / 3 / 24,098 / 24,756、$0.00519388，续接的进程自己 2 / 3 / 29,646 / 20,852、$0.00446856。
+  async function replayResumed(resultExtra: Record<string, unknown>) {
+    const dir = tempDir("plc-claude-resume-");
+    const replay = join(dir, "resume.jsonl");
+    const own = {
+      input_tokens: 2, cache_creation_input_tokens: 20_852, cache_read_input_tokens: 29_646, output_tokens: 3,
+      cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 20_852 },
+    };
+    await writeFile(replay, [
+      JSON.stringify({
+        type: "assistant", parent_tool_use_id: null, session_id: "claude-session-2",
+        message: { id: "msg-own", role: "assistant", model: "claude-haiku-5-5", content: [], usage: { ...own, output_tokens: 1 } },
+      }),
+      JSON.stringify({
+        type: "result", subtype: "success", is_error: false, session_id: "claude-session-2",
+        usage: own,
+        modelUsage: {
+          "claude-haiku-5-5": {
+            inputTokens: 4, outputTokens: 6, cacheReadInputTokens: 53_744, cacheCreationInputTokens: 45_608,
+            cacheCreationEphemeral5mInputTokens: 0, cacheCreationEphemeral1hInputTokens: 45_608, costUSD: 0.00966244,
+          },
+        },
+        total_cost_usd: 0.00966244,
+        ...resultExtra,
+      }),
+    ].join("\n"));
+    const { events } = await runFake("replay", { resumeSessionId: "claude-session-1", forkSession: true }, {
+      env: { FAKE_CLAUDE_REPLAY: replay },
+    });
+    return events.filter((event) => event.type === "usage.updated");
+  }
+
+  it("counts only the resumed process's own usage from model_usage_since_last_result", async () => {
+    const usage = await replayResumed({
+      model_usage_since_last_result: {
+        "claude-haiku-5-5": {
+          inputTokens: 2, outputTokens: 3, cacheReadInputTokens: 29_646, cacheCreationInputTokens: 20_852,
+          cacheCreationEphemeral5mInputTokens: 0, cacheCreationEphemeral1hInputTokens: 20_852, costUSD: 0.00446856,
+        },
+      },
+    });
+    expect(usage.at(-1)).toMatchObject({
+      mode: "cumulative",
+      inputTokens: 2 + 20_852 + 29_646,
+      outputTokens: 3,
+      totalTokens: 2 + 20_852 + 29_646 + 3,
+      cacheReadTokens: 29_646,
+      cacheWriteTokens: 20_852,
+    });
+    expect(usage.at(-1)!.costUsd).toBeCloseTo(0.00446856, 10);
+  });
+
+  // 旧版本的 Claude Code 没有 model_usage_since_last_result：第一条 result 时，恢复进来的那份等于 modelUsage 减去
+  // 这个进程自己的用量（本回合的 result.usage 加上子 agent 的响应）。成本按价目的比例分：缓存读 0.1、
+  // 5 分钟缓存写 1.25、1 小时缓存写 2、输出 5 倍于未缓存的输入（实测的两个进程都对得上）。
+  it("subtracts the restored session total when a resumed process has no per-result usage", async () => {
+    const usage = await replayResumed({});
+    expect(usage.at(-1)).toMatchObject({
+      inputTokens: 2 + 20_852 + 29_646,
+      outputTokens: 3,
+      totalTokens: 2 + 20_852 + 29_646 + 3,
+      cacheReadTokens: 29_646,
+      cacheWriteTokens: 20_852,
+    });
+    expect(usage.at(-1)!.costUsd).toBeCloseTo(0.00446856, 8);
+  });
+
   it("turns an error result into usage plus one failed terminal event", async () => {
     const { events, exit } = await runFake("result-error");
 

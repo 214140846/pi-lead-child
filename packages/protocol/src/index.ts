@@ -342,6 +342,20 @@ export const TicketReviewerInfoSchema = StrictObject({
 });
 export type TicketReviewerInfo = Static<typeof TicketReviewerInfoSchema>;
 
+// GET /v1/tickets/:id/usage（2026-11-06）：工单的 token 按计费不同的几部分拆开（ADR 0001）。
+// 单独一个接口，不放进 TicketDetail：TicketDetail 是严格校验的，加字段会让旧页面读不了工单。
+// 几部分加起来等于 totalTokens。unsplitTokens 是没有拆分的旧用量（这个版本以前记下的，或者 runtime 没报缓存）。
+export const TicketUsageSchema = StrictObject({
+  totalTokens: Type.Integer({ minimum: 0 }),
+  totalCostUsd: Type.Number({ minimum: 0 }),
+  uncachedInputTokens: Type.Integer({ minimum: 0 }),
+  cacheWriteTokens: Type.Integer({ minimum: 0 }),
+  cacheReadTokens: Type.Integer({ minimum: 0 }),
+  outputTokens: Type.Integer({ minimum: 0 }),
+  unsplitTokens: Type.Integer({ minimum: 0 }),
+});
+export type TicketUsage = Static<typeof TicketUsageSchema>;
+
 // POST /v1/tickets/:id/request-review 的响应：派出的那条 reviewer 请求，以及它核查的是哪次交付。
 export const TicketReviewRequestResultSchema = StrictObject({
   ticketId: Type.Integer({ minimum: 1 }),

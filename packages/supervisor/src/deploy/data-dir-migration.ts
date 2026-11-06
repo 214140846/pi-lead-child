@@ -10,15 +10,21 @@
 //   backup     daemon 还在运行时在线备份 plc.db 到 <旧目录>/backups/pre-rename-<时间>.db，输出备份路径
 //   scan       列出库和 config.json 里写着旧目录的表、列、行数和设置项
 //   drain      复用 supervisor 维护的排空判断：Lead 这一轮结束、没有接管不了的执行
-//   stop_old   bootout 两个旧任务，确认进程都退出了；旧 plist 改名为 .plist.pre-rename 留着
+//   stop_old   bootout 两个旧任务，等它们卸载完、进程都退出了；旧 plist 改名为 .plist.pre-rename 留着。
+//              以前的尝试留下的 com.bytezard.plc.hindsight 也 bootout 掉、删掉 plist（见下面 Hindsight 一段）
 //   move       rename 旧目录到新位置。不留指向旧路径的软链接：执行器沙箱的禁读清单按新路径生成，软链接会绕过它
 //   rewrite    一个事务里把库里的旧目录改成新目录；config.json 原子地重写
 //   start_new  把开发机的 Node 复制成 <新目录>/bin/lead-agent 并重签，建软链接 <新目录>/bin/Bytezard Lead；
-//              写新的两个 plist，bootstrap
+//              写新的 supervisor plist，bootstrap（同名任务还加载着时先 bootout，遇到 error 5、37 等它卸载完再试一次）
 //   health     plc.sock 回答 status，库的 schema 版本和迁移前一样。通过后删掉 .plist.pre-rename
 //
 // 回滚：stop_old 开始以后任何一步失败，就 bootout 新任务、删新 plist、把目录移回去、把库和 config.json 改回去、
 // 把旧 plist 改回原名并 bootstrap。回滚的每一步都输出一行。
+//
+// Hindsight：2026-11-05 起由 supervisor 运行（hindsight.ts 的 run.json），不再有独立的 launchd 任务。迁移只停掉旧的
+// com.pi-lead-child.hindsight（plist 留着 .pre-rename 给回滚用，健康检查通过后删掉），不再写、不再 bootstrap
+// com.bytezard.plc.hindsight。以前的版本起过这个任务（App 1.1.3 和更早的迁移，11-05 以前的 daemon），它还加载着、
+// 或者还在卸载时，bootstrap 同一个 label 返回 Bootstrap failed: 5: Input/output error，整次接管回滚（#261）。
 //
 // 库里改哪些列：只改代码当作路径或命令来用的列（LIVE_PATH_COLUMNS）。事件、消息、核查结论这类历史记录里写着旧目录，
 // 那是当时的事实，不改（有的表本来就只许追加）；scan 照样列出它们的行数。
@@ -29,7 +35,7 @@
 //   情况 A  改名以前的安装：同上，只是新目录里可以已经有 App 自己的 runtime/、shell/（逐项移过去）；旧 plist 可以不在；
 //           库的 schema 可以比安装包旧（新版本启动时升级它，停服务后另存一份 -stopped.db 给回滚用）。
 //   情况 B  已经迁移、跑开发 checkout：oldDir 和 newDir 相同（「原地」），数据不动，只换 com.bytezard.plc.supervisor。
-//           不做 scan、move、rewrite，不碰 Hindsight 的任务。
+//           不做 scan、move、rewrite，不碰 Hindsight 的任务：新的 daemon 启动时自己删掉独立的 Hindsight 任务。
 //   情况 C  已经是安装包、换了版本：同 B；回滚时还把 current 指回上一个版本。备份只留一份 backups/pre-upgrade.db
 //           （第 7.5.5 节）：schema 不变时在排空以前在线备份；schema 要升级时停服务以后备份，回滚用它恢复库。
 //           新的一份核对完整以后才换掉旧的一份，然后删掉以前按时间存的升级备份。不复制 plist（内容没变）。
@@ -136,6 +142,8 @@ export interface DataDirMigrationDeps {
   afterStep?(step: DataDirMigrationStep): void | Promise<void>;
   /** 测试注入：复制库（缺省是 backup.ts 的在线备份）。 */
   backupDatabase?(source: string, destination: string): Promise<void>;
+  /** 测试注入：等 launchd 卸载任务时每次等多久（缺省是 setTimeout）。 */
+  sleep?(ms: number): Promise<void>;
 }
 
 export interface DataDirMigrationResult {
@@ -149,6 +157,11 @@ export interface DataDirMigrationResult {
 }
 
 const CONFIG_FILE = "config.json";
+// launchctl bootout 发出停止信号就返回，任务要几秒才卸载完（Hindsight 下面挂着 uvx、Python 和 Postgres）。卸载完以前
+// bootstrap 同一个 label 失败：Bootstrap failed: 5: Input/output error（2026-10-26 实测），或者 37: Operation already in progress。
+const UNLOAD_POLL_MS = 250;
+const UNLOAD_TIMEOUT_MS = 30_000;
+const BOOTSTRAP_BUSY = /Bootstrap failed: (5|37):/;
 /** 情况 C 唯一的一份升级前备份，相对数据目录（第 7.5.5 节）。 */
 export const UPGRADE_BACKUP = join("backups", "pre-upgrade.db");
 const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -297,15 +310,6 @@ function writeAtomic(path: string, text: string, mode: number): void {
   renameSync(temp, path);
 }
 
-/** 旧的 Hindsight plist 换成新任务：Label 换成新的，旧目录（数据目录、日志、工作目录）换成新目录。 */
-export function renameHindsightPlist(xml: string, oldDir: string, newDir: string): string {
-  const labelled = xml.replace(
-    `<key>Label</key><string>${PRE_RENAME_HINDSIGHT_LABEL}</string>`,
-    `<key>Label</key><string>${HINDSIGHT_LABEL}</string>`,
-  );
-  return replaceDirPath(labelled, oldDir, newDir);
-}
-
 export async function runDataDirMigration(deps: DataDirMigrationDeps): Promise<DataDirMigrationResult> {
   const m = dataDirMigrationMessages(deps.locale);
   const { oldDir, newDir, service } = deps;
@@ -318,11 +322,11 @@ export async function runDataDirMigration(deps: DataDirMigrationDeps): Promise<D
   const oldHindsightPlist = join(deps.launchAgentsDir, `${PRE_RENAME_HINDSIGHT_LABEL}.plist`);
   const newSupervisorPlist = join(deps.launchAgentsDir, `${LAUNCHD_LABEL}.plist`);
   const newHindsightPlist = join(deps.launchAgentsDir, `${HINDSIGHT_LABEL}.plist`);
-  // 要停的旧任务（Hindsight 在前，回滚时先起 Hindsight、再起 supervisor）。原地时只换 supervisor，Hindsight 的任务不动：
-  // 新的 daemon 启动后按自己的命令重写它的 plist。
+  // 要停的旧任务（Hindsight 在前，回滚时先起 Hindsight、再起 supervisor）。原地时只换 supervisor，Hindsight 的任务不动。
   const oldServices: ReadonlyArray<readonly [label: string, plist: string]> = inPlace
     ? [[LAUNCHD_LABEL, newSupervisorPlist]]
     : [[PRE_RENAME_HINDSIGHT_LABEL, oldHindsightPlist], [PRE_RENAME_SUPERVISOR_LABEL, oldSupervisorPlist]];
+  // 回滚时 bootout 的新任务。不再 bootstrap 独立的 Hindsight 任务，但以前的尝试可能留下它：回滚时也停掉。
   const newLabels = inPlace ? [LAUNCHD_LABEL] : [LAUNCHD_LABEL, HINDSIGHT_LABEL];
   const suffix = inPlace ? ".pre-takeover" : ".pre-rename";
   // 情况 C：换了版本。备份只留一份（UPGRADE_BACKUP）。
@@ -332,6 +336,30 @@ export async function runDataDirMigration(deps: DataDirMigrationDeps): Promise<D
   const emit = (event: DataDirMigrationEvent) => deps.emit(event);
   const after = async (step: DataDirMigrationStep) => { await deps.afterStep?.(step); };
   const backupOptions = deps.backupDatabase ? { backup: deps.backupDatabase } : {};
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const isLoaded = async (label: string) => (await deps.launchctl(["print", `${gui}/${label}`])).ok;
+  // 等 launchd 卸载完：print 找不到这个任务为止。超时也接着往下做，后面的 bootstrap 失败时会说原因。
+  const waitUnloaded = async (label: string) => {
+    for (let waited = 0; waited < UNLOAD_TIMEOUT_MS; waited += UNLOAD_POLL_MS) {
+      if (!(await isLoaded(label))) return;
+      await sleep(UNLOAD_POLL_MS);
+    }
+  };
+  const bootout = async (label: string) => {
+    await deps.launchctl(["bootout", `${gui}/${label}`]);
+    await waitUnloaded(label);
+  };
+  // 和 launchd.ts 的 bootstrapAgent 一样：同名任务还加载着（以前的尝试留下的）时先 bootout，等它卸载完再 bootstrap。
+  // 遇到 error 5、37（还在卸载）时再等一次、重试一次。
+  const bootstrap = async (label: string, plist: string) => {
+    if (await isLoaded(label)) await bootout(label);
+    let result = await deps.launchctl(["bootstrap", gui, plist]);
+    if (!result.ok && BOOTSTRAP_BUSY.test(result.out)) {
+      await waitUnloaded(label);
+      result = await deps.launchctl(["bootstrap", gui, plist]);
+    }
+    return result;
+  };
 
   // ── precheck：不过就退出，什么都不改 ──
   emit({ step: "precheck", state: "running", message: m.precheck.running });
@@ -474,9 +502,9 @@ export async function runDataDirMigration(deps: DataDirMigrationDeps): Promise<D
     for (const [label, plist] of oldServices) {
       if (!existsSync(plist)) continue;
       await attempt(`bootstrap ${plist}`, async () => {
-        const result = await deps.launchctl(["bootstrap", gui, plist]);
+        const result = await bootstrap(label, plist);
         // 已经加载着（例如 bootout 本身失败了）也算好。
-        if (!result.ok && !(await deps.launchctl(["print", `${gui}/${label}`])).ok) throw new Error(result.out);
+        if (!result.ok && !(await isLoaded(label))) throw new Error(result.out);
       });
     }
     if (problems.length) throw new Error(problems.join("; "));
@@ -541,10 +569,13 @@ export async function runDataDirMigration(deps: DataDirMigrationDeps): Promise<D
     step = "stop_old";
     stopStarted = true;
     emit({ step, state: "running", message: m.stopOld.running });
-    for (const [label] of [...oldServices].reverse()) {
-      await deps.launchctl(["bootout", `${gui}/${label}`]);
-    }
+    for (const [label] of [...oldServices].reverse()) await bootout(label);
     await deps.waitStopped(oldDir);
+    // 以前的尝试留下的独立 Hindsight 任务（新名字）：它占着 Hindsight 的端口，supervisor 运行的 Hindsight 起不来。
+    if (!inPlace) {
+      if (await isLoaded(HINDSIGHT_LABEL)) await bootout(HINDSIGHT_LABEL);
+      rmSync(newHindsightPlist, { force: true });
+    }
     for (const [, plist] of oldServices) {
       if (!existsSync(plist)) continue;
       renameSync(plist, `${plist}${suffix}`);
@@ -626,17 +657,11 @@ export async function runDataDirMigration(deps: DataDirMigrationDeps): Promise<D
       // 安装包里已经有改名重签的 Node（<安装根>/current/bin/Bytezard Lead），不复制开发机的 Node。
       supervisorPlist = plistContent(desktopPlistOptions(service.root, logDir));
     }
-    const hindsightSource = `${oldHindsightPlist}${suffix}`;
-    if (!inPlace && existsSync(hindsightSource)) {
-      writeFileSync(newHindsightPlist, renameHindsightPlist(readFileSync(hindsightSource, "utf8"), oldDir, newDir));
-      newPlistsWritten = [...newPlistsWritten, newHindsightPlist];
-    }
+    // Hindsight 不另起任务：新的 supervisor 按 daemon 写的 run.json 运行它（hindsight.ts）。
     writeFileSync(newSupervisorPlist, supervisorPlist);
     newPlistsWritten = [...newPlistsWritten, newSupervisorPlist];
-    for (const plist of newPlistsWritten) {
-      const result = await deps.launchctl(["bootstrap", gui, plist]);
-      if (!result.ok) throw new Error(`launchctl bootstrap ${plist}: ${result.out}`);
-    }
+    const result = await bootstrap(LAUNCHD_LABEL, newSupervisorPlist);
+    if (!result.ok) throw new Error(`launchctl bootstrap ${newSupervisorPlist}: ${result.out}`);
     emit({ step, state: "done", message: m.startNew.done });
     await after(step);
 

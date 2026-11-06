@@ -27,7 +27,7 @@ import { join, resolve } from "node:path";
 import {
   DAEMON_ONLY_ENV_NAMES,
   captureLoginShellPath, dataDir, dbPath, defaultDataDir, distDir, envConfigPath, isPreRenameDataDir, loadEnvConfig,
-  packageSource, preRenameDataDir, projectRoot, saveLoginShellPath, workspaceDir,
+  isReleaseRuntime, packageSource, preRenameDataDir, projectRoot, runtimeAssetPaths, saveLoginShellPath, workspaceDir,
 } from "@pi-lead-child/core";
 import {
   activeLaunchdLabel, AGENT_BINARY, agentStatus, autoStartRefusal, bootstrapAgent, installAgentBinary, itemsBlockingMaintenance,
@@ -386,6 +386,14 @@ function selfcheck(): number {
   } catch (error) {
     checks.push({ name: "release.json", ok: false, detail: error instanceof Error ? error.message : String(error) });
   }
+  // pi 扩展、skill 目录和辅助脚本（工单 #260）：按这份代码运行时的解析检查，运行包里是 dist/assets/ 下的路径。
+  const release = isReleaseRuntime(PROJECT_ROOT);
+  const assets = runtimeAssetPaths(release);
+  const missing = assets.filter((asset) => !existsSync(asset.path));
+  checks.push({
+    name: "runtime assets", ok: missing.length === 0,
+    detail: missing.length ? `missing: ${missing.map((asset) => asset.path).join(", ")}` : `${assets.length} found in ${release ? "dist" : "source"}`,
+  });
   const ok = checks.every((check) => check.ok);
   process.stdout.write(`${JSON.stringify({ ok, root: PROJECT_ROOT, checks })}\n`);
   return ok ? 0 : 1;

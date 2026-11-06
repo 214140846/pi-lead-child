@@ -196,7 +196,6 @@ async function main(): Promise<void> {
   const dbBeforeRenamed = snapshotDb(join(oldDir, "plc.db"), { from: oldDir, to: newDir });
   const filesBefore = snapshotFiles(oldDir);
   const configBefore = readFileSync(join(oldDir, "config.json"), "utf8");
-  const hindsightPlistBefore = readFileSync(join(agents, `${OLD_HINDSIGHT}.plist`), "utf8");
   const schemaBefore = databaseSchemaVersion(join(oldDir, "plc.db"));
   const counted = (snapshot: TableSnapshot) => Object.fromEntries(
     ["items", "notes", "connections", "channel_lanes", "channel_cards", "memory_sync", "kv", "triggers", "watches", "standing_orders"]
@@ -245,8 +244,8 @@ async function main(): Promise<void> {
     newBackups: backups.length,
     backupMatchesDbBefore: diff(dbBefore, snapshotCopy(join(newDir, "backups", backups.find((name) => name.endsWith(".db"))!))).length === 0,
     slackConnectionsAfter: slackConnections(join(newDir, "plc.db")),
-    hindsightPlist: readFileSync(join(agents, `${HINDSIGHT_LABEL}.plist`), "utf8")
-      === replaceDirPath(hindsightPlistBefore.replace(`<string>${OLD_HINDSIGHT}</string>`, `<string>${HINDSIGHT_LABEL}</string>`), oldDir, newDir),
+    // Hindsight 由 supervisor 运行：接管以后没有独立的 Hindsight 任务（#261）。
+    noSeparateHindsightJob: !existsSync(join(agents, `${HINDSIGHT_LABEL}.plist`)) && !labels.has(HINDSIGHT_LABEL),
     supervisorPlistAtRuntime: readFileSync(join(agents, `${LAUNCHD_LABEL}.plist`), "utf8").includes(`<key>WorkingDirectory</key><string>${root}</string>`),
     oldPlistsGone: [OLD_SUPERVISOR, OLD_HINDSIGHT].every((label) => !existsSync(join(agents, `${label}.plist`)) && !existsSync(join(agents, `${label}.plist.pre-rename`))),
     labels: [...labels].sort(),

@@ -9,6 +9,7 @@ import {
   countDistinctToolStartedForItem,
   createRuntimeEventStore,
   runTokenUsage,
+  runUsageBreakdown,
 } from "../src/runtime-events.js";
 import type { RuntimeEvent } from "@pi-lead-child/runtime";
 
@@ -139,5 +140,32 @@ describe("a run's token usage", () => {
     store.persist({ ...event(restarted, 1), seq: 3 });
     store.persist(usage(restarted, 4, "cumulative", 30));
     expect(runTokenUsage(db, restarted)).toBe(130);
+  });
+
+  // 缓存读、缓存写和未缓存的输入计费完全不同（用户 2026-11-06）。账本按四部分记，没报缓存的旧事件记成「未拆分」。
+  it("splits a run's tokens into uncached input, cache writes, cache reads and output", () => {
+    const dir = tempDir("plc-run-usage-");
+    const db = openDb(join(dir, "plc.db"));
+    const itemId = createItem(db, { title: "t", brief: "b", createdBy: "system" });
+    const store = createRuntimeEventStore(db, { dataDir: dir });
+    const split = (runId: number, seq: number, mode: "delta" | "cumulative", parts: [number, number, number, number]) => ({
+      type: "usage.updated", runId, seq, occurredAt: `2026-11-06T10:00:0${seq}.000Z`, mode,
+      inputTokens: parts[0] + parts[1] + parts[2], outputTokens: parts[3],
+      totalTokens: parts[0] + parts[1] + parts[2] + parts[3],
+      cacheWriteTokens: parts[1], cacheReadTokens: parts[2], costUsd: null,
+    }) as RuntimeEvent;
+
+    const run = createRun(db, { itemId, runtime: "claude" });
+    store.persist(usage(run, 1, "cumulative", 500)); // 旧事件：只有总数，被下一条 cumulative 替换
+    store.persist(split(run, 2, "cumulative", [3, 200, 9_000, 40]));
+    store.persist({ ...event(run, 1), seq: 3 }); // 新进程
+    store.persist(split(run, 4, "delta", [1, 10, 100, 5]));
+    store.persist(usage(run, 5, "delta", 70)); // 没报缓存：只知道输出 0，其余未拆分
+
+    expect(runUsageBreakdown(db, run)).toEqual({
+      tokens: 9_243 + 116 + 70, costUsd: 0,
+      uncachedInputTokens: 4, cacheWriteTokens: 210, cacheReadTokens: 9_100, outputTokens: 45, unsplitTokens: 70,
+    });
+    expect(runTokenUsage(db, run)).toBe(9_243 + 116 + 70);
   });
 });

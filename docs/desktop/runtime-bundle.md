@@ -31,7 +31,7 @@ node --import tsx scripts/desktop/smoke-runtime.ts out/runtime
 本机打的包要排在最近一次发布之后，App 和运行包才会按新版本安装（设计文档第 8.5 节「版本号和构建号」）。`--after` 写最近发布的版本：
 
 1. 算出版本号和构建号：`node --import tsx scripts/desktop/local-version.ts --after 1.1.0`。它输出 `{"version":"1.1.1-local.202611050930","build":"202611050930"}`。
-2. 用这个版本号运行上面的 `pack-runtime.ts` 和 `smoke-runtime.ts`。
+2. 用这个版本号运行上面的 `pack-runtime.ts` 和 `smoke-runtime.ts`。要装到真的 App 上时，`--repository` 写真实的仓库：可以从已装运行包的 `release.json` 的 `updateSource.repository` 读。装好以后，App 按它检查更新。写成占位的名字时，App 找不到更新信息（2026-11-05 一次测试构建写了占位名，「检查更新」一直找不到新版）。
 3. 在 `desktop/` 里写版本号和构建信息，再打 dmg：
 
    ```sh

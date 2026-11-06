@@ -1,13 +1,13 @@
 // 冒烟脚本的完整流程：假的运行包。bin/lead-agent 是测试用的 Node 的硬链接（或副本），
 // supervisor.mjs 和 daemon.mjs 是假的：daemon 按同样的 socket 协议回答 status，supervisor 收到 SIGTERM 时先停 daemon 再退出。
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, linkSync, mkdirSync, readFileSync, symlinkSync, writeFileSync, chmodSync } from "node:fs";
+import { copyFileSync, existsSync, linkSync, mkdirSync, readFileSync, renameSync, symlinkSync, writeFileSync, chmodSync } from "node:fs";
 import { createServer } from "node:net";
 import { homedir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { tempDir } from "@pi-lead-child/core/testing";
-import { PLC_WRAPPER } from "../lib/pack.js";
+import { PLC_WRAPPER, RUNTIME_ASSET_FILES } from "../lib/pack.js";
 import { commandName, keychainWrites, smokeEnv, smokeRuntime, stubScript } from "../lib/smoke.js";
 
 const FAKE_SUPERVISOR = `
@@ -61,6 +61,51 @@ server.listen(join(process.env.PLC_DATA_DIR, "plc.sock"));
 process.on("SIGTERM", () => server.close(() => process.exit(0)));
 `;
 
+// 假的 pi：照 pi 1.1.0 的行为，-e 的扩展加载不了时报错退出，不回答；RPC 的 get_commands 列出 --skill 目录里的 skill。
+const FAKE_PI = `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+const args = process.argv.slice(2);
+if (args.includes("--version")) { console.log("1.1.0"); process.exit(0); }
+const mode = fs.readFileSync(path.join(__dirname, "..", "..", "mode"), "utf8").trim();
+const values = (flag) => args.flatMap((arg, i) => (args[i - 1] === flag ? [arg] : []));
+for (const extension of values("-e")) {
+  if (!fs.existsSync(extension) || mode === "pi-extension-error") {
+    console.error('Error: Failed to load extension "' + extension + '": Extension path does not exist');
+    process.exit(1);
+  }
+}
+const commands = mode === "pi-no-skills" ? [] : values("--skill").flatMap((dir) => fs.readdirSync(dir)
+  .filter((name) => fs.existsSync(path.join(dir, name, "SKILL.md")))
+  .map((name) => ({ name: "skill:" + name, source: "skill", sourceInfo: { path: path.join(dir, name, "SKILL.md") } })));
+let buffer = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => {
+  buffer += chunk;
+  for (let i = buffer.indexOf("\\n"); i >= 0; i = buffer.indexOf("\\n")) {
+    const command = JSON.parse(buffer.slice(0, i));
+    buffer = buffer.slice(i + 1);
+    process.stdout.write(JSON.stringify({ id: command.id, type: "response", command: command.type, success: true, data: { commands } }) + "\\n");
+  }
+});
+`;
+
+// 假的运维入口：只回答 selfcheck。
+const FAKE_OPS = `
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+const runtime = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+const mode = readFileSync(join(runtime, "mode"), "utf8").trim();
+if (process.argv[2] !== "selfcheck") process.exit(2);
+const ok = mode !== "selfcheck-fails";
+console.log(JSON.stringify({ ok, checks: [
+  { name: "better-sqlite3", ok: true, detail: "loaded" },
+  { name: "runtime assets", ok, detail: ok ? "8 found in dist" : "missing: ticket-tools.js" },
+] }));
+process.exit(ok ? 0 : 1);
+`;
+
 function write(path: string, data: string): void {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, data);
@@ -94,7 +139,13 @@ beforeAll(() => {
   write(join(runtime, "apps/cli/dist/cli.mjs"), "if (!process.argv.includes('--help')) process.exit(3); console.log('Usage: plc');\n");
   write(join(runtime, "apps/daemon/dist/supervisor.mjs"), FAKE_SUPERVISOR);
   write(join(runtime, "apps/daemon/dist/daemon.mjs"), FAKE_DAEMON);
-  write(join(runtime, "node_modules/fake-pi/cli.js"), "#!/usr/bin/env node\nconsole.log('1.1.0');\n");
+  write(join(runtime, "apps/daemon/dist/ops.mjs"), FAKE_OPS);
+  for (const file of RUNTIME_ASSET_FILES) {
+    if (file.endsWith("/child-skills")) write(join(runtime, file, "executor/skills/plc-diagnosing-bugs/SKILL.md"), "---\nname: plc-diagnosing-bugs\n---\n");
+    else if (file.endsWith("/lead-skills")) write(join(runtime, file, "genui-cards/SKILL.md"), "---\nname: genui-cards\n---\n");
+    else write(join(runtime, file), `// ${file}\n`);
+  }
+  write(join(runtime, "node_modules/fake-pi/cli.js"), FAKE_PI);
   mkdirSync(join(runtime, "node_modules/.bin"), { recursive: true });
   symlinkSync("../fake-pi/cli.js", join(runtime, "node_modules/.bin/pi"));
 });
@@ -181,6 +232,10 @@ describe("smokeRuntime", () => {
     process.env.PLC_DEV = "1";
     const result = await smokeRuntime({ runtimeDir: runtime, workDir: tempDir("plc-dsm-") });
     expect(result).toMatchObject({ ok: true, version: "1.3.0", piVersion: "1.1.0", processNames: { supervisor: "lead-agent", daemon: "lead-agent" } });
+    // pi 执行器和 Lead 的扩展、child-skills、Lead 的 skill 都在包里，pi 真的加载了它们（工单 #260）。
+    expect(result.runtimeAssets).toBe("8 found in dist");
+    expect(result.piLoad.extensions.sort()).toEqual(["sandbox.js", "sol-pi-executor.js", "sol-pi-lead.js", "ticket-tools.js", "web-tools.js"]);
+    expect(result.piLoad.skills.sort()).toEqual(["skill:genui-cards", "skill:plc-diagnosing-bugs"]);
     const pids = JSON.parse(readFileSync(join(runtime, "pids.json"), "utf8")) as { supervisor: number; daemon: number };
     expect(result.supervisorPid).toBe(pids.supervisor);
     expect(result.daemonPid).toBe(pids.daemon);
@@ -220,6 +275,38 @@ describe("smokeRuntime", () => {
       .rejects.toThrow(/2 秒内没有等到 plc\.sock 回答 status[\s\S]*supervisor 输出/);
     const pids = JSON.parse(readFileSync(join(runtime, "pids.json"), "utf8")) as { supervisor: number; daemon: number };
     await expect.poll(() => alive(pids.supervisor) || alive(pids.daemon), { timeout: 5_000 }).toBe(false);
+  });
+
+  // 工单 #260：1.1.1、1.1.2 的运行包里没有 pi 扩展，pi 执行器启动时报 "Pi extension path does not exist"。冒烟要拦住。
+  // 这几项在启动 supervisor 以前检查，不用 socket。
+  it("fails when a pi extension is missing from the bundle", async () => {
+    write(join(runtime, "mode"), "ok");
+    const file = join(runtime, "apps/daemon/dist/assets/extensions/ticket-tools.js");
+    renameSync(file, `${file}.away`);
+    try {
+      await expect(smokeRuntime({ runtimeDir: runtime, workDir: tempDir("plc-dsm-") }))
+        .rejects.toThrow(/运行包里缺少 .*apps\/daemon\/dist\/assets\/extensions\/ticket-tools\.js/);
+    } finally {
+      renameSync(`${file}.away`, file);
+    }
+  });
+
+  it("fails when pi cannot load the extensions", async () => {
+    write(join(runtime, "mode"), "pi-extension-error");
+    await expect(smokeRuntime({ runtimeDir: runtime, workDir: tempDir("plc-dsm-") }))
+      .rejects.toThrow(/pi 在回答 get_commands 以前退出了（1）：Error: Failed to load extension/);
+  });
+
+  it("fails when pi loads no skill from the child-skills or the Lead skills", async () => {
+    write(join(runtime, "mode"), "pi-no-skills");
+    await expect(smokeRuntime({ runtimeDir: runtime, workDir: tempDir("plc-dsm-") }))
+      .rejects.toThrow(/pi 没有从这些目录加载到 skill：.*child-skills\/executor\/skills、.*lead-skills/);
+  });
+
+  it("fails when the bundle's own selfcheck does not find the runtime assets", async () => {
+    write(join(runtime, "mode"), "selfcheck-fails");
+    await expect(smokeRuntime({ runtimeDir: runtime, workDir: tempDir("plc-dsm-") }))
+      .rejects.toThrow(/ops selfcheck 没有通过：.*runtime assets 失败（missing: ticket-tools\.js）/);
   });
 
   it("refuses a directory that is not a runtime bundle", async () => {

@@ -65,6 +65,8 @@ export type ShellUpdateStatus =
 export type UpdateCheckResult =
   | { kind: "available"; version: string }
   | { kind: "current" }
+  // 更新源上没有能用的 manifest（404，或者认不出来）：可能新版还在构建，也可能更新源写错了。不能说成已是最新。
+  | { kind: "no_info"; source: string }
   | { kind: "failed"; reason: string }
   | { kind: "no_source" };
 
@@ -238,8 +240,9 @@ export function createUpdater(deps: UpdaterDeps): Updater {
         if (!response.ok && response.status !== 404) throw new Error(`HTTP ${response.status}`);
         state = { ...state, checkedAt: now().toISOString(), available: update };
         save();
-        log(`checked: ${update ? `latest ${update.version}` : "no update information"}, this App ${deps.currentVersion}`);
+        log(`checked ${base}: ${update ? `latest ${update.version}` : "no update information"}, this App ${deps.currentVersion}`);
         if (!working) publish();
+        if (!update) return { kind: "no_info", source: base };
         return newer(update) ? { kind: "available", version: update.version } : { kind: "current" };
       } catch (error) {
         // 没网、超时：不记检查时间，下一个小时再试。

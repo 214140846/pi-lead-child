@@ -66,6 +66,12 @@ export const ticketDetailMessages = defineMessages({
       captionTotal: 'Total of all executions. Includes cache reads and writes.',
       tokenCount: (text: string) => `${text} tokens`,
       notRun: 'Not started',
+      uncachedInput: 'Uncached input',
+      cacheWrite: 'Cache writes',
+      cacheRead: 'Cache reads',
+      output: 'Output',
+      captionParts: 'Cache reads cost much less than uncached input, and output costs the most.',
+      unsplit: (text: string) => `${text} tokens from before this split have no breakdown.`,
     },
     tokens: (tokens: number) => (tokens >= 1_000_000
       ? `about ${(Math.round(tokens / 100_000) / 10).toLocaleString('en-US', { maximumFractionDigits: 1 })}M`
@@ -154,6 +160,12 @@ export const ticketDetailMessages = defineMessages({
       captionTotal: '所有执行合计，含缓存读写。',
       tokenCount: (text) => `${text} token`,
       notRun: '还没开跑',
+      uncachedInput: '未缓存输入',
+      cacheWrite: '缓存写',
+      cacheRead: '缓存读',
+      output: '输出',
+      captionParts: '缓存读比未缓存的输入便宜得多，输出最贵。',
+      unsplit: (text) => `有 ${text} token 是拆分以前记下的，没有明细。`,
     },
     tokens: (tokens) => `约 ${Math.round(tokens / 10_000).toLocaleString('en-US')} 万`,
     duration: {

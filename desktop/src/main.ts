@@ -401,6 +401,7 @@ export function startShell(electron: ShellElectron, options: ShellOptions): void
       return;
     }
     if (result.kind === "current") await show({ type: "info", message: m.upToDate, detail: m.upToDateDetail(app.getVersion()), buttons: [m.ok] });
+    else if (result.kind === "no_info") await show({ type: "warning", message: m.noInfo, detail: m.noInfoDetail, buttons: [m.ok] });
     else if (result.kind === "failed") await show({ type: "warning", message: m.failed, detail: m.failedDetail(result.reason), buttons: [m.ok] });
     else await show({ type: "warning", message: m.noSource, buttons: [m.ok] });
   };

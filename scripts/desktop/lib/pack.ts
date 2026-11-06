@@ -9,6 +9,7 @@ import { execFile } from "node:child_process";
 import { chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
+import { RUNTIME_ASSETS } from "@pi-lead-child/core";
 import { AGENT_BINARY, installAgent, type SignFn } from "./agent-bundle.js";
 import { copyExternals, externalClosure, type ClosureEntry, type Lockfile } from "./externals.js";
 import { assertMachOArch } from "./macho.js";
@@ -20,8 +21,16 @@ import {
 
 const execFileAsync = promisify(execFile);
 
+// 运行时按路径加载的文件（core 的 RUNTIME_ASSETS，工单 #260）：pi 扩展的 bundle、child-skills、Lead 的 skill 和辅助脚本。
+// 运行包里没有源码，少了哪一个，用到它的功能就起不来。扩展目录里的 package.json 让 pi 的加载器改写这些 bundle
+// （apps/daemon/scripts/build.ts），少了它 SoL-Pi 找不到 pi 的包。
+export const RUNTIME_ASSET_FILES: readonly string[] = [
+  ...Object.values(RUNTIME_ASSETS).map((asset) => ["apps/daemon/dist", ...asset.dist].join("/")),
+  "apps/daemon/dist/assets/extensions/package.json",
+];
+
 // 打包要用的构建产物。缺任何一个都说明还没构建，或者构建失败了。
-export const REQUIRED_BUILD_FILES = [
+export const REQUIRED_BUILD_FILES: readonly string[] = [
   "apps/daemon/dist/supervisor.mjs",
   "apps/daemon/dist/coordinatord.mjs",
   "apps/daemon/dist/ops.mjs",
@@ -30,7 +39,8 @@ export const REQUIRED_BUILD_FILES = [
   "apps/daemon/dist/launcher-shim.mjs",
   "apps/daemon/dist/web/index.html",
   "apps/cli/dist/cli.mjs",
-] as const;
+  ...RUNTIME_ASSET_FILES,
+];
 
 const SOURCE_MAP = /\.map$/;
 // dist 里不进运行包的东西：开发模式的构建记录（发布模式看 release.json），build:web 中途留下的临时目录，
@@ -132,6 +142,8 @@ export async function packRuntime(o: PackOptions): Promise<PackResult> {
     writeJson(join(runtimeDir, "apps", app, "package.json"), { name, private: true, type: "module" });
     copyDist(join(repoRoot, "apps", app, "dist"), join(runtimeDir, "apps", app, "dist"));
   }
+  const lost = RUNTIME_ASSET_FILES.filter((file) => !existsSync(join(runtimeDir, file)));
+  if (lost.length) throw new Error(`运行包里缺少运行时加载的文件：${lost.join("、")}`);
 
   const lock = JSON.parse(readFileSync(join(repoRoot, "package-lock.json"), "utf8")) as Lockfile;
   const externals = copyExternals({ repoRoot, lock, entries: externalClosure(lock, o.externals), dest: runtimeDir });

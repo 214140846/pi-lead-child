@@ -943,7 +943,7 @@ P2-*                       ← 对应的 P1
   5. 先 bootout 旧的 `com.pi-lead-child.supervisor` 和 `com.pi-lead-child.hindsight`，确认进程都退出了。旧 plist 改名为 `.plist.pre-rename` 留着，不删。
   6. 用 `rename` 把旧目录移到新位置（同一个卷，原子操作）。不留指向旧路径的软链接：执行器沙箱的禁读清单按新路径生成，软链接会绕过它。
   7. 在一个事务里把第 3 步找到的旧路径改成新路径。
-  8. 开发模式下，用 `scripts/desktop/lib/agent-bundle.ts` 的 `installAgent` 把开发机的 Node 复制到 `<数据目录>/bin/lead-agent` 并重新签名，建软链接 `<数据目录>/bin/Bytezard Lead`，plist 写这个软链接（第 8.7 节：只复制改名，登录项显示「Node.js Foundation」）。写新的 `com.bytezard.plc.supervisor` 和 `com.bytezard.plc.hindsight` plist，plist 用这份副本启动，然后 bootstrap。
+  8. 开发模式下，用 `scripts/desktop/lib/agent-bundle.ts` 的 `installAgent` 把开发机的 Node 复制到 `<数据目录>/bin/lead-agent` 并重新签名，建软链接 `<数据目录>/bin/Bytezard Lead`，plist 写这个软链接（第 8.7 节：只复制改名，登录项显示「Node.js Foundation」）。写新的 `com.bytezard.plc.supervisor` plist，plist 用这份副本启动，然后 bootstrap。Hindsight 不另起 launchd 任务，由 supervisor 运行（第 8.7 节）。以前的版本留下的 `com.bytezard.plc.hindsight` 任务在第 5 步停掉，它的 plist 删掉（#261：这个任务还加载着时，bootstrap 返回 error 5，整次接管回滚）。
   9. 健康检查：`plc.sock` 回答 `status`，schema 版本和迁移前一样。通过后删掉旧 plist 的 `.plist.pre-rename`。
   10. 回滚：第 5 步以后任何一步失败，就 bootout 新 label、删新 plist、把目录移回旧位置、用第 2 步的备份恢复库（第 7 步已经改过时）、把旧 plist 改回原名并 bootstrap。回滚的每一步都记日志。
 - 验收：

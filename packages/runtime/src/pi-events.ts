@@ -47,14 +47,19 @@ export function createPiEventMapper(options: PiEventMapperOptions): (native: any
   let lastError: { text: string; message: any } | null = null;
 
   // pi 的 message.usage 是这一次 API 调用的用量，不是累计（工单 #102：Run #111 的值从 59,152 掉到 41,950），所以按 delta 报。
+  // input 是未缓存的输入，cacheRead、cacheWrite 另算。inputTokens 按 ADR 0001 含缓存读写。
   const emitUsage = (message: any): void => {
     if (!message.usage) return;
+    const cacheReadTokens = Number(message.usage.cacheRead ?? 0);
+    const cacheWriteTokens = Number(message.usage.cacheWrite ?? 0);
     emit({
       type: "usage.updated",
       mode: "delta",
-      inputTokens: Number(message.usage.input ?? 0),
+      inputTokens: Number(message.usage.input ?? 0) + cacheReadTokens + cacheWriteTokens,
       outputTokens: Number(message.usage.output ?? 0),
       totalTokens: Number(message.usage.totalTokens ?? 0),
+      cacheReadTokens,
+      cacheWriteTokens,
       costUsd: typeof message.usage.cost?.total === "number" ? message.usage.cost.total : null,
     });
   };

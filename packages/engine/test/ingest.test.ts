@@ -314,6 +314,38 @@ describe("token budget alert", () => {
     expect(budgetAlerts()).toHaveLength(0);
   });
 
+  // note #347 和 #262：#259、#260 开单时设了 1000 万预算，告警却写「预算 4000000 的 2 倍」。阶梯按工单自己的预算算。
+  it("counts the thresholds from the ticket's own token budget", () => {
+    db.prepare("UPDATE items SET token_budget = 10000 WHERE id = ?").run(itemId);
+    const ing = createIngestor(db, { itemId, runId });
+    ing.onEvent(usage("cumulative", 8_000, null));
+    expect(budgetAlerts()).toHaveLength(0);
+    ing.onEvent(usage("cumulative", 25_000, null));
+    expect(budgetAlerts().map((row) => JSON.parse(row.payload))).toMatchObject([{ budget: 10_000, threshold: 20_000 }]);
+    expect(budgetAlerts()[0]!.summary).toContain("预算 10000 的 2 倍");
+  });
+
+  it("uses the root ticket's budget for a subticket without its own", () => {
+    const child = createItem(db, { title: "child", brief: "b", createdBy: "system", parentItemId: itemId, rootItemId: itemId });
+    db.prepare("UPDATE items SET token_budget = 10000 WHERE id = ?").run(itemId);
+    createIngestor(db, { itemId: child, runId: createRun(db, { itemId: child }) }).onEvent(usage("cumulative", 12_000, null));
+    expect(listInbox(db).filter((row) => row.item_id === child).map((row) => JSON.parse(row.payload)))
+      .toMatchObject([{ kind: "token_budget_exceeded", budget: 10_000, threshold: 10_000 }]);
+  });
+
+  // 用户调高了预算：阶梯从新预算重新算，旧预算下报过的档位不算数。
+  it("restarts the thresholds when the budget changes", () => {
+    const ing = createIngestor(db, { itemId, runId });
+    ing.onEvent(usage("cumulative", 4_500, null));
+    expect(budgetAlerts().map((row) => JSON.parse(row.payload).threshold)).toEqual([4_000]);
+    leadHandledAlerts();
+    db.prepare("UPDATE items SET token_budget = 3000 WHERE id = ?").run(itemId);
+    ing.onEvent(usage("cumulative", 6_500, null));
+    expect(budgetAlerts().map((row) => JSON.parse(row.payload))).toMatchObject([
+      { budget: 1_000, threshold: 4_000 }, { budget: 3_000, threshold: 6_000 },
+    ]);
+  });
+
   // daemon 重启后接管同一个 Run：重放的事件只重建用量账，之后的用量不再告警。
   it("does not alert again after the run is adopted by a restarted daemon", () => {
     const first = createIngestor(db, { itemId, runId });

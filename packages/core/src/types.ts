@@ -65,6 +65,8 @@ export interface Item {
   stage_changed_at: string;
   workdir: string | null; created_by: Actor; created_at: string; updated_at: string;
   last_activity_at: string | null; total_tokens: number; total_cost_usd: number;
+  // total_tokens 按计费拆开的几部分（v64）。total_tokens 减去它们是没有拆分的旧用量。
+  uncached_input_tokens: number; cache_write_tokens: number; cache_read_tokens: number; output_tokens: number;
   due_at: string | null; defer_until: string | null;
   remind_at: string | null; due_overdue_notified: number;
 }

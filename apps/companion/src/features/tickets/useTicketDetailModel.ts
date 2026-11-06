@@ -1,6 +1,6 @@
 import type {
   DeliverySummary, KernelIntervention, KernelInterventionRef, TicketActionId as TicketOperationId, TicketActionRunRequest,
-  TicketAttachment, TicketReviewerInfo,
+  TicketAttachment, TicketReviewerInfo, TicketUsage,
 } from '@pi-lead-child/protocol';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
@@ -371,6 +371,18 @@ export function useTicketDetailModel(
   }), [childTickets, enrichedTicket, locale]);
   // 工单信息和用量：建单、更新、截止、预算、累计的 token 和成本。
   const summary = tickets.find((item) => item.id === ticketId);
+  // token 按计费拆开（GET /v1/tickets/:id/usage）。用量变了再读一次；旧 daemon 没有这个接口时只显示总数。
+  const [usage, setUsage] = useState<{ ticketId: number; usage: TicketUsage } | null>(null);
+  const usageKey = `${detail?.totalTokens ?? ''}:${summary?.updatedAt ?? ''}`;
+  useEffect(() => {
+    if (!connected || !detail) return undefined;
+    const controller = new AbortController();
+    runtime.getTicketUsage(ticketId, controller.signal)
+      .then((next) => setUsage({ ticketId, usage: next }))
+      .catch(() => {});
+    return () => controller.abort();
+  }, [connected, Boolean(detail), usageKey, runtime, ticketId]);
+  const usageParts = usage?.ticketId === ticketId ? usage.usage : null;
   const facts = useMemo(() => detail ? {
     createdAt: detail.createdAt,
     createdBy: detail.createdBy ?? null,
@@ -380,7 +392,8 @@ export function useTicketDetailModel(
     totalCostUsd: detail.totalCostUsd,
     tokenBudget: workbench?.budget?.tokenBudget ?? null,
     costBudgetUsd: workbench?.budget?.costBudgetUsd ?? null,
-  } : null, [detail, summary?.dueAt, summary?.updatedAt, workbench?.budget]);
+    usageParts,
+  } : null, [detail, summary?.dueAt, summary?.updatedAt, workbench?.budget, usageParts]);
   // 执行者：最近一次执行 Run 用的 runtime、模型和强度。
   const executor = useMemo(() => {
     const latest = [...attempts].reverse().find((attempt) => attempt.role === 'executor');

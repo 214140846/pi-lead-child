@@ -268,6 +268,7 @@ const MEMORY_SYNC_MIGRATION_VERSION = 60;
 const WIDGETS_MIGRATION_VERSION = 61;
 const WIDGET_SOURCES_MIGRATION_VERSION = 62;
 const CONNECTION_LAUNCH_MIGRATION_VERSION = 63;
+const ITEM_USAGE_PARTS_MIGRATION_VERSION = 64;
 
 // v23 的列补齐必须发生在 exec(SCHEMA) 前：当前 DDL/索引会读取这些列，而 SQLite 的
 // CREATE TABLE IF NOT EXISTS 不会给既有表补列。跨字段的 reminder/workflow 约束由 SCHEMA
@@ -655,6 +656,22 @@ function migrateConnectionLaunch(db: Db): void {
   })();
 }
 
+// v64：工单的 token 按计费不同的几部分记（用户 2026-11-06）：未缓存的输入、缓存写、缓存读、输出。
+// 只加列，不重建 items：别的列和行原样保留，生命周期字段不动，不回填。以前记下的用量没有拆分，
+// total_tokens 减去这四列就是未拆分的部分。和 display_title 一样不进 C2 的 CHECK：提醒没有 Run，这四列一直是 0。
+// 新库的列由 SCHEMA 建，这里跳过。
+const ITEM_USAGE_PART_COLUMNS = ["uncached_input_tokens", "cache_write_tokens", "cache_read_tokens", "output_tokens"] as const;
+
+function migrateItemUsageParts(db: Db): void {
+  if (db.prepare("SELECT 1 FROM schema_migrations WHERE version=?").get(ITEM_USAGE_PARTS_MIGRATION_VERSION)) return;
+  db.transaction(() => {
+    const columns = tableColumns(db, "items");
+    for (const column of ITEM_USAGE_PART_COLUMNS) addColumn(db, "items", columns, column, "INTEGER NOT NULL DEFAULT 0");
+    db.prepare("INSERT INTO schema_migrations (version, name) VALUES (?, ?)")
+      .run(ITEM_USAGE_PARTS_MIGRATION_VERSION, "item-usage-parts-v1");
+  })();
+}
+
 // v38：派发请求和 Run 加一列 effort。只加列，不重建表，已有的列和行原样保留。
 // v39：工单加一列显示用的短标题。只加列，不重建 items：别的列和行原样保留。
 // 它不是执行列，不进 C2 的 CHECK（提醒也可以有短标题）。
@@ -813,6 +830,7 @@ export function migrateDb(db: Db): void {
   migrateWidgets(db);
   migrateWidgetSources(db);
   migrateConnectionLaunch(db);
+  migrateItemUsageParts(db);
 }
 
 const ITEM_MODEL_MIGRATION_VERSION = 14;
@@ -824,7 +842,7 @@ const RELATION_EXECUTION_GATE_MIGRATION_VERSION = 19;
 const OUTCOME_SNAPSHOT_MIGRATION_VERSION = 20;
 const TICKET_AGENT_EXECUTION_CONTINUATION_MIGRATION_VERSION = 21;
 const OUTCOME_RECOVERY_SCOPE_MIGRATION_VERSION = 22;
-export const LATEST_SCHEMA_VERSION = CONNECTION_LAUNCH_MIGRATION_VERSION;
+export const LATEST_SCHEMA_VERSION = ITEM_USAGE_PARTS_MIGRATION_VERSION;
 
 // 旧 status → 新 status。backlog 映射到 ready 而不是 draft：旧 backlog 是可以被直接派发的，
 // 映射到 draft 会让存量工单突然需要用户逐个确认，等于用迁移改变了既有行为。
@@ -2029,4 +2047,5 @@ export const SCHEMA_MIGRATION_VERSIONS: readonly number[] = [
   WIDGETS_MIGRATION_VERSION,
   WIDGET_SOURCES_MIGRATION_VERSION,
   CONNECTION_LAUNCH_MIGRATION_VERSION,
+  ITEM_USAGE_PARTS_MIGRATION_VERSION,
 ];

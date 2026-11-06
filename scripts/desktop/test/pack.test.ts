@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 import { tempDir } from "@pi-lead-child/core/testing";
 import { DAEMON_EXTERNALS } from "../../../apps/daemon/scripts/externals.js";
 import { AGENT_BINARY, AGENT_LAUNCHER, AGENT_SIGN_ID, AGENT_STAGING } from "../lib/agent-bundle.js";
-import { packRuntime, PLC_WRAPPER, REQUIRED_BUILD_FILES } from "../lib/pack.js";
+import { packRuntime, PLC_WRAPPER, REQUIRED_BUILD_FILES, RUNTIME_ASSET_FILES } from "../lib/pack.js";
 import { hashComponents, hashFiles, type ReleaseManifest, type UpdateManifest } from "../lib/release.js";
 import type { FetchLike } from "../lib/node-dist.js";
 import { CPU, thinMachO } from "./fixtures.js";
@@ -117,6 +117,12 @@ describe("packRuntime", () => {
     expect(JSON.parse(readFileSync(join(runtime, "package.json"), "utf8")).workspaces).toEqual([]);
     expect(JSON.parse(readFileSync(join(runtime, "apps/daemon/package.json"), "utf8"))).toEqual({ name: "@pi-lead-child/daemon", private: true, type: "module" });
     for (const file of REQUIRED_BUILD_FILES) expect(existsSync(join(runtime, file)), file).toBe(true);
+    // pi 执行器和 Lead 的扩展、child-skills、Lead 的 skill（工单 #260）：1.1.1、1.1.2 的运行包里没有它们。
+    expect(RUNTIME_ASSET_FILES).toEqual(expect.arrayContaining([
+      "apps/daemon/dist/assets/extensions/ticket-tools.js", "apps/daemon/dist/assets/extensions/sandbox.js",
+      "apps/daemon/dist/assets/extensions/sol-pi-lead.js", "apps/daemon/dist/assets/child-skills", "apps/daemon/dist/assets/lead-skills",
+    ]));
+    for (const file of RUNTIME_ASSET_FILES) expect(REQUIRED_BUILD_FILES, file).toContain(file);
     // 源码映射不进运行包，另打成附件（设计第 7.5.7 节）。
     expect(existsSync(join(runtime, "apps/daemon/dist/supervisor.mjs.map"))).toBe(false);
     expect(result.sourceMaps).toBe(join(out, "bytezard-lead-sourcemaps-1.3.0-arm64.tar.gz"));
@@ -217,6 +223,16 @@ describe("packRuntime", () => {
     let fetched = false;
     await expect(pack(repo, join(tempDir("plc-desktop-out-"), "out"), async () => { fetched = true; return new Response(""); }))
       .rejects.toThrow(/缺少构建产物：apps\/daemon\/dist\/web\/index\.html/);
+    expect(fetched).toBe(false);
+  });
+
+  // 工单 #260：运行包里少了 pi 扩展，pi 执行器启动时报 "Pi extension path does not exist"。打包时就要拦住。
+  it("fails before downloading anything when a pi extension bundle is missing", async () => {
+    const repo = fakeRepo();
+    execFileSync("rm", [join(repo, "apps/daemon/dist/assets/extensions/ticket-tools.js")]);
+    let fetched = false;
+    await expect(pack(repo, join(tempDir("plc-desktop-out-"), "out"), async () => { fetched = true; return new Response(""); }))
+      .rejects.toThrow(/缺少构建产物：apps\/daemon\/dist\/assets\/extensions\/ticket-tools\.js/);
     expect(fetched).toBe(false);
   });
 });

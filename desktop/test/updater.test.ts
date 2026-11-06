@@ -187,10 +187,11 @@ describe("checking for updates", () => {
     expect(ok.urls).toHaveLength(2);
   });
 
-  it("tells the menu what it found: a newer version, the latest one, a failure, or no update source", async () => {
+  it("tells the menu what it found: a newer version, the latest one, no update information, a failure, or no update source", async () => {
     expect(await setup({ latest: "1.1.0" }).updater.check()).toEqual({ kind: "available", version: "1.1.0" });
     expect(await setup({ latest: "1.0.0" }).updater.check()).toEqual({ kind: "current" });
-    expect(await setup({ latest: null }).updater.check()).toEqual({ kind: "current" });
+    // 2026-11-05：测试构建里的更新源是占位的仓库，清单 404，菜单却说「已是最新」。没有清单不算最新。
+    expect(await setup({ latest: null }).updater.check()).toEqual({ kind: "no_info", source: `https://github.com/${REPO}/releases/latest/download` });
     expect(await setup({ manifestStatus: 502 }).updater.check()).toEqual({ kind: "failed", reason: "HTTP 502" });
     const noSource = setup();
     writeFileSync(join(noSource.shellUserData, "..", "runtime", "current", "release.json"), JSON.stringify({ version: "1.0.0" }));

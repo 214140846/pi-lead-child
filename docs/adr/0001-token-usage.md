@@ -77,7 +77,7 @@ pi 的映射有相反的错误。pi 的 `message.usage` 是一次 API 调用的�
 - 工单的 token 和成本：读 `items.total_tokens` 和 `items.total_cost_usd`。
 - 一个 Run 的 token：读 `runTokenUsage`（control-plane 里的 `lastTokens`）。
 - 不要在 UI 里从事件重新加总。
-- 在 token 数旁边写明「含缓存读写」。
+- 在 token 数旁边写明「含缓存读写」。有拆分时，下面一行写四部分（见「按计费拆开」）。
 - 工单有 Codex 的 Run 时，成本不完整。写明「成本不含 Codex」，不要显示成 $0。
 
 ## 历史数据
@@ -97,6 +97,40 @@ pi 的映射有相反的错误。pi 的 `message.usage` 是一次 API 调用的�
 - 每个改了的 Run，事件末尾追加一条普通的 `usage.updated`（`cumulative`），让 `runTokenUsage` 得到重算的数。它只替换最后一个进程，所以它的值是「重算的总数减去前面各进程按账本算出的数」。
 - `items.total_tokens` 和 `total_cost_usd` 加上「重算的数减去旧 ingest 当时记下的数」。事件日志之前的用量（#1–#12 的早期 Run 没有事件）原样保留。
 - 每张改了的工单留一条 `token_usage_recomputed` 活动，写明前后的数和每个 Run 的变化。
+
+## 续接的进程和按计费拆开（2026-11-06）
+
+### 续接的 Claude 进程多算了一份
+
+`--resume` 起的 Claude 进程把被续接会话存下的累计恢复进来。这个进程的 `result.modelUsage` 和 `total_cost_usd` 是「以前的进程加上这个进程」。adapter 以前把它当成这个进程的用量，同一份用量每续接一次就多算一次。
+
+- 例子：#180 的 Run #306 只调了 2 次 API，用了 1,643,680 token、$0.55。它的第一条 result 报 198,772,839 token、$80.67，就是 Run #282 存下的累计。账本记成了 2 亿。
+- 从 2026-11-04 起，账本记的 Claude child 用量是 Claude Code 自己记录的约 3 倍。没有续接的 Run 两边完全一致。
+- 实测（Claude Code 2.1.318）：第一个进程 2 / 3 / 24,098 / 24,756（未缓存 / 输出 / 缓存读 / 缓存写），$0.00519388。续接的进程自己 2 / 3 / 29,646 / 20,852，它的 `modelUsage` 是两者之和，$0.00966244。
+
+决定：
+
+1. `result.model_usage_since_last_result`（2.1.318 有）是上一条 result 以后这个进程的用量和成本，不含恢复进来的那份。有它时，进程的总量是各条 result 的它之和。
+2. 旧版本没有这个字段：没续接时照旧用 `modelUsage`。续接时，第一条 result 定下恢复进来的那份：`modelUsage` 减去这个进程自己的用量（本回合的 `result.usage` 加上子 agent 的响应）。以后每条都减去它。成本按价目的比例分：缓存读是未缓存输入的 0.1 倍，5 分钟缓存写 1.25 倍，1 小时缓存写 2 倍，输出 5 倍。实测的两个进程按这个比例精确对得上。几个模型时按合计分，是近似。
+3. 以前记下的数不重算。
+
+### 按计费拆开
+
+缓存读、缓存写、未缓存的输入和输出的价钱差很多，只看总数判断不了花费（用户 2026-11-06）。总数的口径不变，另外记四部分：
+
+| 部分 | Claude | pi | Codex |
+| --- | --- | --- | --- |
+| 未缓存的输入 | `input_tokens` / `inputTokens` | `input` | `input_tokens − cached_input_tokens` |
+| 缓存写 | `cache_creation_input_tokens` | `cacheWrite` | 不报，记 0 |
+| 缓存读 | `cache_read_input_tokens` | `cacheRead` | `cached_input_tokens` |
+| 输出 | `output_tokens` | `output` | `output_tokens` |
+
+- `usage.updated` 在库里多两个可选字段：`cacheReadTokens`、`cacheWriteTokens`。它们是 `inputTokens` 里的两部分，`inputTokens` 照旧含缓存。pi 的 `inputTokens` 以前只有未缓存的输入，现在和别的 runtime 一样含缓存。
+- 线上的 `usage.updated`（`GET /v1/kernel/attempts/:id/events`）不带这两个字段：客户端整页严格校验，多一个键就读不了这个 Run 的事件。gateway 在映射边界去掉它们。
+- 账本（`createRunUsageLedger`）按四部分记。没报缓存的用量只知道输出，其余记成「未拆分」。几部分加起来等于总数。
+- `items` 加四列（schema v64）：`uncached_input_tokens`、`cache_write_tokens`、`cache_read_tokens`、`output_tokens`。以前的用量没有拆分，`total_tokens` 减去这四列是未拆分的部分。
+- 读的地方：`GET /v1/tickets/:id/usage`（单独一个接口，不进严格校验的 `TicketDetail`），工单详情的用量下面一行四个数，Lead 的 `get_ticket`。
+- 预算照旧按总数判断，这次不改。
 
 ## 已知的缺口
 

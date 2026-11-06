@@ -108,6 +108,34 @@ describe("runInstall", () => {
     expect(progress).toMatchObject({ stage: "ready", steps: { takeover: "done", service: "done", start: "done" } });
   });
 
+  // #261：接管失败、回滚以后，新的 supervisor plist 没了，旧名字的服务照常在跑。下次打开 App 时不等用户点「重试」，
+  // 再次打开的检查看到 plist 不指向这份 App，就再跑一遍 desktop-install，它会重新接管。
+  it("takes over again on the next start after a takeover rolled back, without a click", async () => {
+    const { paths, resources } = setup();
+    await installed(paths, resources, "1.3.0");
+    writeFileSync(paths.installStateFile, `${JSON.stringify({
+      version: 1, outcome: "failed", steps: {},
+      lastError: { step: "takeover", code: "takeover_rolled_back", message: "Bytezard Lead put everything back as it was." },
+    })}\n`);
+    // 回滚删掉了新的 supervisor plist。
+    const rolledBack = { ...paths, supervisorPlist: join(tempDir("plc-desktop-agents-"), "com.bytezard.plc.supervisor.plist") };
+    const ops = fakeOps([
+      { step: "detect", state: "done", message: "Found an installation with the old name.", takeover: "pre_rename" },
+      { step: "takeover", state: "running", phase: "stop_old", message: "Stopping the old service." },
+      { step: "takeover", state: "done", message: "Bytezard Lead took over your data and settings." },
+      { step: "done", state: "done", message: "Bytezard Lead is installed.", gatewayUrl: "http://127.0.0.1:47130" },
+    ]);
+    const progress = await runInstall(
+      {
+        paths, bundled: findBundledRuntime(resources), locale: "en", execFile: exec().execFile, spawnLines: ops.spawnLines,
+        daemonStatus: async () => null, serviceUsesThisRuntime: () => plistUsesRuntime(rolledBack),
+      },
+      () => {},
+    );
+    expect(ops.calls).toEqual([desktopInstallArgs(paths, "en")]);
+    expect(progress).toMatchObject({ stage: "ready", takeoverKind: "takeover", steps: { unpack: "done", takeover: "done" } });
+  });
+
   it("remembers from the detect step whether the row is a takeover or an upgrade", async () => {
     const run = async (takeover: string) => {
       const { paths, resources } = setup();

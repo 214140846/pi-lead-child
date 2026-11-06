@@ -3,7 +3,7 @@ import type { LeadEngine } from "./engine.js";
 import {
   SOL_PI_ENTRY_ENV, solPiPinnedCommit, solPiSettings, solPiSource, type SolPiSettings,
 } from "@pi-lead-child/engine";
-import { envConfigPath, packageSource } from "@pi-lead-child/core";
+import { envConfigPath, runtimeAsset } from "@pi-lead-child/core";
 import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import {
@@ -60,8 +60,8 @@ export const LEAD_BUILTIN_TOOLS = ["read", "grep", "find", "ls"] as const;
 // Lead 的全部内置工具：只读的四个、动手的三个和 codemode。
 export const LEAD_ALL_BUILTIN_TOOLS: readonly string[] = [...LEAD_BUILTIN_TOOLS, ...LEAD_HAND_TOOLS, LEAD_CODEMODE_TOOL];
 
-// Lead 自带的 skill 目录：每个子目录一个 SKILL.md。daemon 打包以后也从仓库里的源码目录读（packageSource）。
-export const LEAD_SKILLS_DIR = packageSource("lead", "skills");
+// Lead 自带的 skill 目录：每个子目录一个 SKILL.md。源码 checkout 里读源码目录，运行包里读 dist 里的副本（runtimeAsset）。
+export const LEAD_SKILLS_DIR = runtimeAsset("lead-skills");
 
 /** 这个 skill 是不是 Lead 自带的（在 LEAD_SKILLS_DIR 下）。 */
 export function isLeadOwnSkill(filePath: string): boolean {
@@ -429,7 +429,7 @@ export async function createLeadSession(opts: {
     // 用户装的 skill 不列进系统提示词，用 find_skill 找（hideUserSkillsFromPrompt）。
     skillsOverride: hideUserSkillsFromPrompt,
     ...(solPi.features.length > 0
-      ? { additionalExtensionPaths: [packageSource("engine", "extension", "sol-pi-lead.ts")] }
+      ? { additionalExtensionPaths: [runtimeAsset("sol-pi-lead")] }
       : {}),
   });
   await loader.reload();

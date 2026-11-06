@@ -48,12 +48,33 @@ function state(): State {
 // 新建一个直接在 os.tmpdir() 下的目录，并登记。根 setup 文件在这个测试文件结束时删除它。
 // 前缀必须以 plc- 开头，这样漏删的目录也在检查范围里；前缀只能是一个目录名的开头。
 export function tempDir(prefix = PREFIX): string {
-  if (!VALID_PREFIX.test(prefix) || prefix.includes("..")) {
-    throw new Error(`tempDir needs a prefix that starts with ${PREFIX} and names one folder, got ${JSON.stringify(prefix)}`);
-  }
+  checkPrefix(prefix);
   const dir = mkdtempSync(join(tmpdir(), prefix));
   state().registered.add(dir);
   return dir;
+}
+
+// 路径短的临时目录：建在 /tmp 下，和 tempDir 一样登记，测试文件结束时删除。
+// 用在要拼出 unix socket 路径的地方。macOS 的 socket 路径最多 103 字节，而主机的 TMPDIR 是 /var/folders/... 这种形式，
+// 有 49 字节。假 HOME 建在那里时，<home>/Library/Application Support/Bytezard Lead/supervisor.sock 超过上限（#267）。
+// 没有 /tmp 的系统上退回 os.tmpdir()。watchTempDirs 只看 os.tmpdir()：/tmp 下还有产品代码自己的 plc-ctl-* 目录。
+export function shortTempDir(prefix = PREFIX): string {
+  checkPrefix(prefix);
+  const dir = mkdtempSync(join(shortTmpRoot(), prefix));
+  state().registered.add(dir);
+  return dir;
+}
+
+const SHORT_TMP = "/tmp";
+
+function shortTmpRoot(): string {
+  return existsSync(SHORT_TMP) ? SHORT_TMP : tmpdir();
+}
+
+function checkPrefix(prefix: string): void {
+  if (!VALID_PREFIX.test(prefix) || prefix.includes("..")) {
+    throw new Error(`tempDir needs a prefix that starts with ${PREFIX} and names one folder, got ${JSON.stringify(prefix)}`);
+  }
 }
 
 // 删除登记的目录。删不掉的目录（例如权限被测试改掉）留在磁盘上，由 expectTempDirsRemoved 报告。

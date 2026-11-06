@@ -3,10 +3,10 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { tempDir } from "@pi-lead-child/core/testing";
+import { shortTempDir } from "@pi-lead-child/core/testing";
 import type { LoginShellPathResult } from "@pi-lead-child/core";
 import { LATEST_SCHEMA_VERSION } from "@pi-lead-child/store";
-import type { DesktopInstallDeps, DesktopInstallEvent } from "../src/deploy/desktop-install.js";
+import { MAX_SOCKET_PATH_BYTES, socketPathTooLong, type DesktopInstallDeps, type DesktopInstallEvent } from "../src/deploy/desktop-install.js";
 import { LAUNCHD_LABEL } from "../src/deploy/launchd.js";
 
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
@@ -41,9 +41,31 @@ export function runtimeComponents(overrides: Record<string, string> = {}): Recor
   return { node: "1".repeat(64), node_modules: "2".repeat(64), service: "3".repeat(64), web: "4".repeat(64), cli: "5".repeat(64), ...overrides };
 }
 
+// 数据目录里的 socket 路径不能超过 macOS 的上限（103 字节）。超过时产品代码在预检查就停下（socket_path_too_long），
+// 测试会以看不懂的方式失败，所以夹具先检查，并写明原因。
+export function expectShortSocketPath(dataDir: string): void {
+  const tooLong = socketPathTooLong(dataDir);
+  if (tooLong) {
+    throw new Error(`TMPDIR 太长 (TMPDIR is too long): the fake data folder makes the socket path ${tooLong.path} `
+      + `${tooLong.bytes} bytes, over the macOS limit of ${MAX_SOCKET_PATH_BYTES}. Make the fake HOME with fakeHome() or shortTempDir().`);
+  }
+}
+
+// 假 HOME，建在路径短的临时目录（/tmp）下。主机的 TMPDIR 有 49 字节，建在那里时
+// <home>/Library/Application Support/Bytezard Lead/supervisor.sock 超过 103 字节（#267）。
+export function fakeHome(prefix: string) {
+  const home = shortTempDir(prefix);
+  const supportDir = join(home, "Library", "Application Support");
+  const dataDir = join(supportDir, "Bytezard Lead");
+  expectShortSocketPath(dataDir);
+  return { home, supportDir, dataDir };
+}
+
 // 一份装好的运行包：<数据目录>/runtime/versions/1.3.0/，current 指向它（和壳一样是相对的软链接）。
-export function installedRuntime(parent = tempDir("plc-desktop-"), o: Parameters<typeof addRuntimeVersion>[2] = {}) {
-  const dataDir = join(parent, "Bytezard Lead");
+// 不给 parent 时建在路径短的临时目录下。故意给长路径的测试自己传 parent。
+export function installedRuntime(parent?: string, o: Parameters<typeof addRuntimeVersion>[2] = {}) {
+  const dataDir = join(parent ?? shortTempDir("plc-desktop-"), "Bytezard Lead");
+  if (parent === undefined) expectShortSocketPath(dataDir);
   const installRoot = join(dataDir, "runtime");
   const version = addRuntimeVersion(installRoot, "1.3.0", o);
   symlinkSync(join("versions", "1.3.0"), join(installRoot, "current"));
@@ -53,7 +75,7 @@ export function installedRuntime(parent = tempDir("plc-desktop-"), o: Parameters
 export type Runtime = ReturnType<typeof installedRuntime>;
 
 // 假的 launchd：记下调用顺序，按 bootstrap/bootout 数正在跑的 supervisor。desktop-install 自己的 launchd 和接管时
-// 迁移模块的 launchctl 共用同一份状态。
+// 迁移模块的 launchctl 共用同一份状态。和真的 launchd 一样，同一个 label 已经加载时 bootstrap 返回 error 5。
 export function fakeHost(runtime: Runtime, overrides: Partial<DesktopInstallDeps> = {}) {
   const calls: string[] = [];
   const events: DesktopInstallEvent[] = [];
@@ -82,12 +104,14 @@ export function fakeHost(runtime: Runtime, overrides: Partial<DesktopInstallDeps
         const label = args[0] === "bootstrap"
           ? /<key>Label<\/key><string>([^<]+)<\/string>/.exec(readFileSync(args[2]!, "utf8"))![1]!
           : args[1]!.split("/").at(-1)!;
-        calls.push(`launchctl ${args[0]} ${label}`);
+        // print 只是读：不记，调用顺序里只有改变状态的命令。
+        if (args[0] !== "print") calls.push(`launchctl ${args[0]} ${label}`);
         if (args[0] === "bootout") {
           const was = labels.delete(label);
           return { ok: was, out: was ? "" : "Could not find service" };
         }
         if (args[0] === "bootstrap") {
+          if (labels.has(label)) return { ok: false, out: "Bootstrap failed: 5: Input/output error" };
           labels.add(label);
           return { ok: true, out: "" };
         }

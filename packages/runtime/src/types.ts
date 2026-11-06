@@ -71,7 +71,10 @@ export type RuntimeEvent = RuntimeEventBase & (
   | { type: "tool.failed"; callId: string; name: string; error: string }
   | {
       type: "usage.updated"; mode: "delta" | "cumulative";
+      // inputTokens 含缓存读写（ADR 0001）。cacheReadTokens、cacheWriteTokens 是其中的两部分，未缓存的输入是剩下的。
+      // runtime 不报缓存时省略它们。
       inputTokens: number; outputTokens: number; totalTokens: number; costUsd: number | null;
+      cacheReadTokens?: number; cacheWriteTokens?: number;
     }
   | { type: "run.completed"; exitCode: number; reason?: string }
   // failure 由 adapter 根据原生输出给出（spec D1）。errorCode 是 runtime 自己报的码，只作诊断。

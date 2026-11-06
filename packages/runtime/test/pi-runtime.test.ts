@@ -61,6 +61,27 @@ describe("Pi runtime adapter", () => {
     ]);
   });
 
+  // pi 把输入拆成 input（未缓存）、cacheRead、cacheWrite。inputTokens 按 ADR 0001 含缓存读写，缓存两部分另外报。
+  it("reports cache reads and writes inside inputTokens", () => {
+    const events: RuntimeEventInput[] = [];
+    const map = createPiEventMapper({
+      runId: 7, runtime: "pi", model: null, emit: (event) => events.push(event), settle: () => {},
+    });
+    map({ type: "agent_start" });
+    map({
+      type: "message_end",
+      message: {
+        id: "m1", role: "assistant", content: [],
+        usage: { input: 12, output: 30, cacheRead: 900, cacheWrite: 58, totalTokens: 1_000, cost: { total: 0.002 } },
+      },
+    });
+
+    expect(events.find((event) => event.type === "usage.updated")).toEqual(expect.objectContaining({
+      mode: "delta", inputTokens: 12 + 900 + 58, outputTokens: 30, totalTokens: 1_000,
+      cacheReadTokens: 900, cacheWriteTokens: 58, costUsd: 0.002,
+    }));
+  });
+
   it("normalizes session, message, usage, tool, and terminal events", async () => {
     const runtime = new PiRuntime({ bin: TSX, prefixArgs: [FAKE_PI] });
     const handle = await runtime.start({

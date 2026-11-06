@@ -65,6 +65,8 @@ import {
   sourceLabels,
   splitRequestText,
   usageCaption,
+  usagePartsCaption,
+  usagePartsStats,
   usageStats,
   writerLabel,
   type ChildStage,
@@ -72,6 +74,7 @@ import {
   type DetailStage,
   type RememberedSections,
   type ReviewerStatus,
+  type UsageParts,
 } from './ticketDetailSections';
 import type { AttemptPresentation, LifecyclePresentation, RelationPresentation } from './ticketHistory';
 import type { TicketLogPresentation } from './ticketLogs';
@@ -109,6 +112,8 @@ export type TicketDetailFacts = {
   totalCostUsd: number;
   tokenBudget: number | null;
   costBudgetUsd: number | null;
+  // token 按计费拆开的几部分（GET /v1/tickets/:id/usage）。旧 daemon 没有这个接口时省略。
+  usageParts?: UsageParts | null;
 };
 
 export type TicketOperationState = {
@@ -656,6 +661,7 @@ export function TicketThread({
     totalCostUsd: facts?.totalCostUsd ?? null,
     running,
   };
+  const usageParts = usagePartsStats(facts?.usageParts, locale);
   const changeReviewer = findAction(actions, 'change_reviewer');
   const profileItems: FactItem[] = [
     {
@@ -691,6 +697,12 @@ export function TicketThread({
           <Column gap="card-row">
             <Stats variant="compact" items={usageStats(usage, locale)} />
             <Text size="note" tone="secondary">{usageCaption(running, locale)}</Text>
+            {usageParts.length > 0 && facts?.usageParts ? (
+              <>
+                <Stats variant="compact" items={usageParts} testID="ticket-usage-parts" />
+                <Text size="note" tone="secondary">{usagePartsCaption(facts.usageParts, locale)}</Text>
+              </>
+            ) : null}
           </Column>
         </Section>
         <Section testID="ticket-execution-plan" variant="part" title={m.plan} source={sources.child} summary={planSummary(executionPlan, undefined, locale) ?? undefined} summaryMono>

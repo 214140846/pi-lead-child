@@ -201,6 +201,32 @@ export function usageStats(input: UsageInput, locale: Locale = 'en'): StatItem[]
   ];
 }
 
+// token 按计费拆开的四部分（GET /v1/tickets/:id/usage，ADR 0001）。一部分都没有记下时（旧工单、旧 daemon）不画这一行。
+export type UsageParts = {
+  uncachedInputTokens: number;
+  cacheWriteTokens: number;
+  cacheReadTokens: number;
+  outputTokens: number;
+  unsplitTokens: number;
+};
+
+export function usagePartsStats(parts: UsageParts | null | undefined, locale: Locale = 'en'): StatItem[] {
+  if (!parts || parts.uncachedInputTokens + parts.cacheWriteTokens + parts.cacheReadTokens + parts.outputTokens === 0) return [];
+  const m = ticketDetailMessages(locale).usage;
+  return [
+    { label: m.uncachedInput, value: tokenText(parts.uncachedInputTokens, locale) },
+    { label: m.cacheWrite, value: tokenText(parts.cacheWriteTokens, locale) },
+    { label: m.cacheRead, value: tokenText(parts.cacheReadTokens, locale) },
+    { label: m.output, value: tokenText(parts.outputTokens, locale) },
+  ];
+}
+
+// 有明细时说明几部分的价差；有没拆分的旧用量时说出多少。
+export function usagePartsCaption(parts: UsageParts, locale: Locale = 'en'): string {
+  const m = ticketDetailMessages(locale).usage;
+  return parts.unsplitTokens > 0 ? `${m.captionParts} ${m.unsplit(tokenText(parts.unsplitTokens, locale))}` : m.captionParts;
+}
+
 export function usageCaption(running: boolean, locale: Locale = 'en'): string {
   const m = ticketDetailMessages(locale).usage;
   return running ? m.captionRunning : m.captionTotal;

@@ -213,11 +213,14 @@ describe("CodexRuntime", () => {
       role: "assistant",
       text: "work complete",
     });
+    // input_tokens 已含 cached_input_tokens（缓存读）。Codex 不报缓存写。
     expect(events[3]).toMatchObject({
       mode: "cumulative",
       inputTokens: 100,
       outputTokens: 40,
       totalTokens: 140,
+      cacheReadTokens: 25,
+      cacheWriteTokens: 0,
       costUsd: null,
     });
     expect(events.map((event) => event.seq)).toEqual([1, 2, 3, 4, 5]);

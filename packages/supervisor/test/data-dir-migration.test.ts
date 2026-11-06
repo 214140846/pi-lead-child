@@ -3,7 +3,6 @@
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { tempDir } from "@pi-lead-child/core/testing";
 import { createItem, createRun, openDb } from "@pi-lead-child/store";
 import { installAgentBinary } from "../src/deploy/agent-binary.js";
 import {
@@ -11,6 +10,7 @@ import {
   type DataDirMigrationDeps, type DataDirMigrationEvent, type DataDirMigrationStep,
 } from "../src/deploy/data-dir-migration.js";
 import { plistWorkingDirectory } from "../src/deploy/launchd.js";
+import { fakeHome } from "./desktop-fixtures.js";
 
 const OLD_SUPERVISOR = "com.pi-lead-child.supervisor";
 const OLD_HINDSIGHT = "com.pi-lead-child.hindsight";
@@ -44,9 +44,8 @@ interface Snapshot {
 }
 
 function fixture() {
-  const home = tempDir("plc-migrate-");
+  const { home, dataDir: newDir } = fakeHome("plc-migrate-");
   const oldDir = join(home, ".pi-lead-child");
-  const newDir = join(home, "Library", "Application Support", "Bytezard Lead");
   const agents = join(home, "Library", "LaunchAgents");
   const checkout = join(home, "src", "plc");
   mkdirSync(oldDir, { recursive: true });
@@ -70,24 +69,37 @@ function fixture() {
   writeFileSync(join(agents, `${OLD_SUPERVISOR}.plist`), plist(OLD_SUPERVISOR, oldDir));
   writeFileSync(join(agents, `${OLD_HINDSIGHT}.plist`), plist(OLD_HINDSIGHT, oldDir));
 
-  // 假的 launchd：bootstrap 读 plist 的 Label 记成已加载，bootout 去掉。
+  // 假的 launchd：bootstrap 读 plist 的 Label 记成已加载，bootout 去掉。和真的 launchd 一样：bootout 以后任务还要卸载一会儿
+  // （unloadPolls：print 还能看到它几次），同一个 label 已加载或者还在卸载时，bootstrap 返回 error 5。
   const loaded = new Set([OLD_SUPERVISOR, OLD_HINDSIGHT]);
+  const unloading = new Map<string, number>();
   const calls: string[] = [];
   let failBootstrapOf: string | null = null;
+  let unloadPolls = 0;
   const launchctl = async (args: string[]) => {
-    calls.push(args.join(" "));
+    if (args[0] !== "print") calls.push(args.join(" "));
+    const target = args[0] === "bootstrap"
+      ? /<key>Label<\/key><string>([^<]+)<\/string>/.exec(readFileSync(args[2]!, "utf8"))![1]!
+      : args[1]!.split("/").at(-1)!;
     if (args[0] === "bootout") {
-      const label = args[1]!.split("/").at(-1)!;
-      const was = loaded.delete(label);
+      const was = loaded.delete(target);
+      if (was && unloadPolls > 0) unloading.set(target, unloadPolls);
       return { ok: was, out: was ? "" : "Could not find service" };
     }
     if (args[0] === "bootstrap") {
-      const label = /<key>Label<\/key><string>([^<]+)<\/string>/.exec(readFileSync(args[2]!, "utf8"))![1]!;
-      if (label === failBootstrapOf) return { ok: false, out: "Bootstrap failed: 5: Input/output error" };
-      loaded.add(label);
+      if (target === failBootstrapOf || loaded.has(target) || unloading.has(target)) {
+        return { ok: false, out: "Bootstrap failed: 5: Input/output error" };
+      }
+      loaded.add(target);
       return { ok: true, out: "" };
     }
-    return { ok: loaded.has(args[1]!.split("/").at(-1)!), out: "" };
+    const left = unloading.get(target);
+    if (left !== undefined) {
+      if (left <= 1) unloading.delete(target);
+      else unloading.set(target, left - 1);
+      return { ok: true, out: "" };
+    }
+    return { ok: loaded.has(target), out: "" };
   };
 
   const events: DataDirMigrationEvent[] = [];
@@ -104,6 +116,7 @@ function fixture() {
     health: async () => {},
     emit: (event) => events.push(event),
     now: () => new Date("2026-11-04T10:00:00Z"),
+    sleep: async () => {},
     ...over,
   });
 
@@ -124,8 +137,10 @@ function fixture() {
   };
 
   return {
-    home, oldDir, newDir, agents, checkout, loaded, calls, events, deps, snapshot,
+    home, oldDir, newDir, agents, checkout, loaded, unloading, calls, events, deps, snapshot,
     failBootstrap: (label: string | null) => { failBootstrapOf = label; },
+    /** bootout 以后，print 还能看到这个任务几次（还在卸载）。 */
+    unloadSlowly: (polls: number) => { unloadPolls = polls; },
   };
 }
 
@@ -188,8 +203,8 @@ describe("runDataDirMigration", () => {
     expect(scan.history).toContainEqual({ table: "items", column: "body", rows: 1 });
     expect(scan.config).toEqual(["skills.dir"]);
 
-    // 新任务装好、旧任务停了；旧 plist 在健康检查通过后删掉。
-    expect([...f.loaded].sort()).toEqual([NEW_HINDSIGHT, NEW_SUPERVISOR]);
+    // 新的 supervisor 装好、旧任务停了；旧 plist 在健康检查通过后删掉。Hindsight 由 supervisor 运行，没有独立的任务。
+    expect([...f.loaded]).toEqual([NEW_SUPERVISOR]);
     expect(existsSync(join(f.agents, `${OLD_SUPERVISOR}.plist`))).toBe(false);
     expect(existsSync(join(f.agents, `${OLD_SUPERVISOR}.plist.pre-rename`))).toBe(false);
     expect(existsSync(join(f.agents, `${OLD_HINDSIGHT}.plist.pre-rename`))).toBe(false);
@@ -199,15 +214,12 @@ describe("runDataDirMigration", () => {
     expect(supervisor).toContain(`<string>${join(f.checkout, "apps", "daemon", "dist", "supervisor.mjs")}</string>`);
     expect(plistWorkingDirectory(supervisor)).toBe(f.checkout);
     expect(supervisor).toContain(join(f.newDir, "logs", "supervisor.out.log"));
-    const hindsight = readFileSync(join(f.agents, `${NEW_HINDSIGHT}.plist`), "utf8");
-    expect(hindsight).toContain(`<key>Label</key><string>${NEW_HINDSIGHT}</string>`);
-    expect(hindsight).toContain(`<key>PLC_DATA_DIR</key><string>${f.newDir}</string>`);
-    expect(hindsight).not.toContain(f.oldDir);
+    expect(existsSync(join(f.agents, `${NEW_HINDSIGHT}.plist`))).toBe(false);
     // 开发机的 Node 副本和登录项显示的软链接。
     expect(readFileSync(join(f.newDir, "bin", "lead-agent"), "utf8")).toBe("node");
     expect(f.calls).toEqual([
       `bootout gui/501/${OLD_SUPERVISOR}`, `bootout gui/501/${OLD_HINDSIGHT}`,
-      `bootstrap gui/501 ${join(f.agents, `${NEW_HINDSIGHT}.plist`)}`, `bootstrap gui/501 ${join(f.agents, `${NEW_SUPERVISOR}.plist`)}`,
+      `bootstrap gui/501 ${join(f.agents, `${NEW_SUPERVISOR}.plist`)}`,
     ]);
   });
 
@@ -292,7 +304,45 @@ describe("runDataDirMigration", () => {
     const again = await runDataDirMigration(f.deps());
     expect(again.ok).toBe(true);
     expect(existsSync(f.oldDir)).toBe(false);
-    expect([...f.loaded].sort()).toEqual([NEW_HINDSIGHT, NEW_SUPERVISOR]);
+    expect([...f.loaded]).toEqual([NEW_SUPERVISOR]);
+  });
+
+  // #261：App 1.1.3 接管时 bootstrap com.bytezard.plc.hindsight 返回 5，整次接管回滚。同名的独立 Hindsight 任务是以前的版本
+  // 留下的：还加载着，或者刚被 bootout、还在卸载。现在迁移不再起这个任务，只把它停掉、删掉 plist。
+  it.each([
+    ["is still loaded", (f: ReturnType<typeof fixture>) => { f.loaded.add(NEW_HINDSIGHT); }],
+    ["is still unloading", (f: ReturnType<typeof fixture>) => { f.unloading.set(NEW_HINDSIGHT, 3); }],
+  ] as const)("migrates when a com.bytezard.plc.hindsight job from an earlier attempt %s", async (_name, leftover) => {
+    const f = fixture();
+    writeFileSync(join(f.agents, `${NEW_HINDSIGHT}.plist`), plist(NEW_HINDSIGHT, f.newDir));
+    leftover(f);
+    f.unloadSlowly(3);
+
+    const result = await runDataDirMigration(f.deps());
+    expect(result).toMatchObject({ ok: true });
+    expect([...f.loaded]).toEqual([NEW_SUPERVISOR]);
+    expect(f.unloading.size).toBe(0);
+    expect(existsSync(join(f.agents, `${NEW_HINDSIGHT}.plist`))).toBe(false);
+    expect(f.calls.some((call) => call.startsWith("bootstrap") && call.includes(NEW_HINDSIGHT))).toBe(false);
+  });
+
+  it("waits for a com.bytezard.plc.supervisor job from an earlier attempt to unload before it starts the new one", async () => {
+    const f = fixture();
+    f.loaded.add(NEW_SUPERVISOR);
+    f.unloadSlowly(3);
+    const result = await runDataDirMigration(f.deps());
+    expect(result).toMatchObject({ ok: true });
+    expect(f.calls.slice(-2)).toEqual([`bootout gui/501/${NEW_SUPERVISOR}`, `bootstrap gui/501 ${join(f.agents, `${NEW_SUPERVISOR}.plist`)}`]);
+    expect([...f.loaded]).toEqual([NEW_SUPERVISOR]);
+  });
+
+  it("starts the old Hindsight again on rollback even when its job is still unloading", async () => {
+    const f = fixture();
+    // 旧任务卸载得很慢：stop_old 等它卸载完；回滚时也要等，不然 bootstrap 返回 5，旧的 Hindsight 就没起来。
+    f.unloadSlowly(3);
+    const result = await runDataDirMigration(f.deps({ health: async () => { throw new Error("plc.sock did not answer"); } }));
+    expect(result.code).toBe("rolled_back");
+    expect([...f.loaded].sort()).toEqual([OLD_HINDSIGHT, OLD_SUPERVISOR]);
   });
 
   it("does not start the old service when the folder cannot move back", async () => {

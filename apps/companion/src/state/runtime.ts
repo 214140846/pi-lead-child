@@ -76,6 +76,7 @@ import type {
   Scope,
   StartConnectionResponse,
   TicketReviewerInfo,
+  TicketUsage,
   DeliverySummary,
   TicketReviewRequest,
   UserItemActionId,
@@ -219,7 +220,7 @@ export type CompanionTransport = Pick<
   | 'ruleChangeConfirmation' | 'resolveRuleChangeConfirmation'
   | 'timerRequest' | 'resolveTimerRequest' | 'externalTimers' | 'watchTimers' | 'cancelTimer'
   | 'getOwnerAction' | 'disownOwnerAction'
-  | 'getTicketReviewer' | 'getTicketDeliveries'
+  | 'getTicketReviewer' | 'getTicketDeliveries' | 'getTicketUsage'
   | 'listTicketActions' | 'runTicketAction' | 'getTicketAcceptanceCriteria' | 'getTicketExecutionPlan'
   | 'getChatImage' | 'getTicketAttachments' | 'getTicketAttachment'
   | 'getLeadModels' | 'switchLeadModel'
@@ -777,6 +778,14 @@ export class CompanionStateRuntime {
   async getTicketReviewer(ticketId: number, signal?: AbortSignal): Promise<TicketReviewerInfo> {
     const read = this.dependencies.client.getTicketReviewer;
     if (typeof read !== 'function') throw new Error('this connection cannot read the ticket reviewer');
+    return read.call(this.dependencies.client, ticketId, signal);
+  }
+
+  // 这张工单的 token 按计费拆开（2026-11-06，GET /v1/tickets/:id/usage）。不缓存，工单变了以后再读一次。
+  // 旧 daemon 没有这个接口时报错，界面只显示总数。
+  async getTicketUsage(ticketId: number, signal?: AbortSignal): Promise<TicketUsage> {
+    const read = this.dependencies.client.getTicketUsage;
+    if (typeof read !== 'function') throw new Error('this connection cannot read the ticket usage');
     return read.call(this.dependencies.client, ticketId, signal);
   }
 

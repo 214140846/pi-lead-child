@@ -487,6 +487,16 @@ export function createWatchLightTask(
   return id;
 }
 
+// 工单的 token 按计费拆开（ADR 0001，v64）：缓存读比未缓存的输入便宜得多，输出贵得多，只看总数判断不了花费。
+// 没有拆分的旧用量记成「未拆分」。一部分都没有时不写。
+function usagePartsText(t: Item): string {
+  const parts = t.uncached_input_tokens + t.cache_write_tokens + t.cache_read_tokens + t.output_tokens;
+  if (parts === 0) return "";
+  const unsplit = Math.max(0, t.total_tokens - parts);
+  return `（未缓存输入 ${t.uncached_input_tokens}，缓存写 ${t.cache_write_tokens}，缓存读 ${t.cache_read_tokens}，`
+    + `输出 ${t.output_tokens}${unsplit ? `，未拆分的旧用量 ${unsplit}` : ""}）`;
+}
+
 // get_ticket 里的附件（工单 #231）：编号、名字、大小和来源，不带内容。没有附件时不写这一节。
 function attachmentLines(db: Db, itemId: number): string[] {
   const attachments = listTicketAttachments(db, itemId);
@@ -1704,7 +1714,7 @@ export function createLeadTools(deps: LeadDeps): ToolDefinition<any>[] {
                   : ""}`]
             : []),
           `brief: ${t.brief}`,
-          `workdir: ${t.workdir ?? "-"} | tokens=${t.total_tokens} | cost=$${t.total_cost_usd.toFixed(4)}`,
+          `workdir: ${t.workdir ?? "-"} | tokens=${t.total_tokens}${usagePartsText(t)} | cost=$${t.total_cost_usd.toFixed(4)}`,
           // 工单附件（工单 #231）：只有名字和来源，要看内容用 read_ticket_attachment。
           ...attachmentLines(db, t.id),
           // 谁核查、核查员是谁（工单 09）。

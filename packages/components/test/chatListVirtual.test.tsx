@@ -148,16 +148,31 @@ describe('the chat list on Legend List', () => {
     const { rerender } = renderUI(<List data={[block('a')]} followKey="m1" />);
     expect(legend.scrollToEnd).not.toHaveBeenCalled();
     rerender(<List data={[block('a'), block('b')]} followKey="m2" />);
+    // 本来就在底部：直接到底（工单 #259，见下面「sending a message while you are at the bottom」）。
+    expect(legend.scrollToEnd).toHaveBeenCalledWith({ animated: false });
+  });
+
+  it('scrolls smoothly back down when you send a message while you read further up', () => {
+    const { rerender } = renderUI(<List data={[block('a')]} followKey="m1" />);
+    act(() => legend.emit('isFollowingEnd', false));
+    act(() => legend.emit('isAtEnd', false));
+    rerender(<List data={[block('a'), block('b')]} followKey="m2" />);
     expect(legend.scrollToEnd).toHaveBeenCalledWith({ animated: true });
   });
 });
 
 // 浏览器的滚动区替身。和浏览器一样：scrollTop 按 scrollHeight - clientHeight 夹住；直接写 scrollTop 会打断正在进行的平滑滚动；
-// 平滑滚动每一帧走一段；requestAnimationFrame 的回调在画这一帧之前跑。frames 记下每一帧画出来的位置。
+// 平滑滚动从下一帧开始，每一帧走一段；requestAnimationFrame 的回调在画这一帧之前跑。frames 记下每一帧画出来的内容位置。
+// 也像 Legend List 一样对待新块的高度（工单 #259）：新块先按估算的高度排，下一帧量出真的高度。平滑滚动还在走时，
+// 「让最后一块贴底」的修正先记着（pending），行按修正前的位置画；滚动停下时一次补上。所以画出来的内容位置是 scrollTop + pending。
 function scroller(metrics: { scrollTop: number; scrollHeight: number; clientHeight: number }) {
   const node = document.createElement('div');
   let top = metrics.scrollTop;
   let smooth = false;
+  let pending = 0;
+  let measured: number | null = null;
+  let instant = false;
+  let smoothStarting = false;
   const state = { scrollHeight: metrics.scrollHeight, clientHeight: metrics.clientHeight };
   const bottom = () => state.scrollHeight - state.clientHeight;
   const clamp = (value: number) => Math.max(0, Math.min(value, bottom()));
@@ -175,8 +190,13 @@ function scroller(metrics: { scrollTop: number; scrollHeight: number; clientHeig
   return {
     node,
     frames,
-    // Legend List 的 scrollToEnd({ animated: true })：从现在的位置平滑滚到底。
-    scrollToEnd: () => { smooth = true; },
+    // Legend List 的 scrollToEnd：animated 时从现在的位置平滑滚到底；否则直接到底，落在算上新块的底部，在这一帧画出来之前到位，
+    // 新块量出来的修正也当场生效。
+    scrollToEnd: (options?: { animated?: boolean }) => {
+      smooth = options?.animated !== false;
+      smoothStarting = smooth;
+      instant = !smooth;
+    },
     // 你滚到了这里：浏览器发 scroll 事件。
     scrollTo(value: number) {
       top = clamp(value);
@@ -191,14 +211,33 @@ function scroller(metrics: { scrollTop: number; scrollHeight: number; clientHeig
     extend(by: number) {
       state.scrollHeight += by;
     },
-    // 浏览器画一帧：先跑 requestAnimationFrame 的回调，平滑滚动走一段，再画。
+    // 下一帧量出最后一块真的高度，比估算的差 by（矮了是负数）。
+    measureLast(by: number) {
+      measured = by;
+    },
+    // 浏览器画一帧：先跑 requestAnimationFrame 的回调，再量新块（ResizeObserver），平滑滚动走一段，最后画。
     frame() {
       for (const callback of callbacks.splice(0)) act(() => callback(0));
-      if (smooth) {
-        top = clamp(top + Math.max(1, (bottom() - top) / 2));
-        if (top >= bottom()) smooth = false;
+      if (measured !== null) {
+        state.scrollHeight += measured;
+        if (smooth) pending += measured;
+        else top = clamp(top);
+        measured = null;
       }
-      frames.push(top);
+      if (instant) {
+        top = bottom();
+        instant = false;
+      }
+      if (smoothStarting) {
+        smoothStarting = false;
+      } else if (smooth) {
+        top = clamp(top + Math.max(1, (bottom() - top) / 2));
+        if (top >= bottom()) {
+          smooth = false;
+          pending = 0;
+        }
+      }
+      frames.push(top + pending);
     },
     get bottom() { return bottom(); },
   };
@@ -221,7 +260,28 @@ describe('sending a message while you are at the bottom', () => {
     view.extend(100);
     for (let index = 0; index < 12; index += 1) view.frame();
 
-    expect(legend.scrollToEnd).toHaveBeenCalledWith({ animated: true });
+    expect(legend.scrollToEnd).toHaveBeenCalledWith({ animated: false });
+    expect(view.frames.at(-1)).toBe(view.bottom);
+    for (let index = 1; index < view.frames.length; index += 1) {
+      expect(view.frames[index]).toBeGreaterThanOrEqual(view.frames[index - 1]!);
+    }
+  });
+
+  // 工单 #259：发一行消息（输入框不变矮）也会先往下、再往上跳。你的消息和 Lead 那一轮的占位行一起进列表，占位行先按估算的高度排，
+  // 下一帧量出来矮了 48。以前这时列表正在平滑滚到底，Legend List 把修正记到滚动停下才补，画面先往回走 48，停下时再往上跳 48。
+  it('scrolls down to a one-line message without moving back when the new blocks turn out shorter than estimated', () => {
+    const view = scroller({ scrollTop: 1596, scrollHeight: 2218, clientHeight: 622 });
+    legend.node = view.node;
+    legend.scrollToEnd.mockImplementation(async (options?: { animated?: boolean }) => view.scrollToEnd(options));
+    const { rerender } = renderUI(<List data={[block('a'), block('b')]} followKey="m1" />);
+    act(() => view.scrollTo(1596));
+    view.frame();
+
+    rerender(<List data={[block('a'), block('b'), block('c'), block('d')]} followKey="m2" />);
+    view.extend(100 + 72);
+    view.measureLast(-48);
+    for (let index = 0; index < 12; index += 1) view.frame();
+
     expect(view.frames.at(-1)).toBe(view.bottom);
     for (let index = 1; index < view.frames.length; index += 1) {
       expect(view.frames[index]).toBeGreaterThanOrEqual(view.frames[index - 1]!);
@@ -238,7 +298,7 @@ describe('sending a message while you are at the bottom', () => {
     view.frame();
     expect(view.node.scrollTop).toBe(1500);
     expect(legend.scrollToEnd).toHaveBeenCalledTimes(1);
-    expect(legend.scrollToEnd).toHaveBeenCalledWith({ animated: true });
+    expect(legend.scrollToEnd).toHaveBeenCalledWith({ animated: false });
   });
 
   it('does not move you when a new block arrives while you read further up', () => {

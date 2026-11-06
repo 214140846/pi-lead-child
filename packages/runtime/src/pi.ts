@@ -1,7 +1,7 @@
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { packageSource, projectRoot } from "@pi-lead-child/core";
+import { projectRoot, runtimeAsset } from "@pi-lead-child/core";
 import { RpcClient, type RpcResponse } from "./rpc-client.js";
 import {
   cliEffortValue, parsePiModelList, parsePiSettingsDefault, parsePiThinkingLevels, piProviders, runDiscoveryCommand, type ModelDiscovery,
@@ -181,19 +181,19 @@ export class PiRuntime implements AgentRuntime {
     });
   }
 
-  // 扩展文件是 engine 包的源码：pi 用自己的加载器直接读 TypeScript，所以生产环境也指向源码。
+  // 扩展文件：源码 checkout 里是 engine 包的源码（pi 用自己的加载器直接读 TypeScript），运行包里是构建好的 bundle（runtimeAsset）。
   // SoL-Pi 的入口总是加载。它按 PLC_SOL_PI 决定开哪些机制，import pi 包管理器装好的 SoL-Pi
   // （PLC_SOL_PI_ENTRY，child 从 daemon 继承）。没装时它什么也不做。
   private get extensions(): string[] {
     const solPi = this.options.solPiExtension === undefined
-      ? packageSource("engine", "extension", "sol-pi-executor.ts")
+      ? runtimeAsset("sol-pi-executor")
       : this.options.solPiExtension;
     const sandbox = this.options.sandboxExtension === undefined
-      ? packageSource("engine", "extension", "sandbox.ts")
+      ? runtimeAsset("sandbox")
       : this.options.sandboxExtension;
     return [
-      this.options.ticketToolsExtension ?? packageSource("engine", "extension", "ticket-tools.ts"),
-      this.options.webToolsExtension ?? packageSource("engine", "extension", "web-tools.ts"),
+      this.options.ticketToolsExtension ?? runtimeAsset("ticket-tools"),
+      this.options.webToolsExtension ?? runtimeAsset("web-tools"),
       ...(solPi ? [solPi] : []),
       ...(sandbox ? [sandbox] : []),
     ];

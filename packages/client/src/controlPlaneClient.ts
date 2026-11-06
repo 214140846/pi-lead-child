@@ -217,6 +217,7 @@ import {
   TicketRelationMutationResultSchema,
   TicketReviewRequestResultSchema,
   TicketReviewerInfoSchema,
+  TicketUsageSchema,
   TicketSummarySchema,
   TicketDeliveryResponseSchema,
   DeliveryFileContentSchema,
@@ -318,6 +319,7 @@ import {
   type TicketReviewRequestResult,
   type TicketReviewRequest,
   type TicketReviewerInfo,
+  type TicketUsage,
   type TicketSummary,
   type WorkspaceActionResult,
   type WorkspaceControlActionId,
@@ -912,6 +914,11 @@ export class ControlPlaneClient {
 
   // 这张工单的核查员和可选的核查员（2026-10-20）。单独一个接口，不在 TicketSummary 里：
   // 工单列表是严格校验的，加字段会让旧页面整张列表加载失败。
+  // 这张工单的 token 按计费拆开（2026-11-06）。单独一个接口，原因同上：TicketDetail 是严格校验的。
+  async getTicketUsage(ticketId: number, signal?: AbortSignal): Promise<TicketUsage> {
+    return this.request(`/v1/tickets/${ticketId}/usage`, TicketUsageSchema, { signal });
+  }
+
   async getTicketReviewer(ticketId: number, signal?: AbortSignal): Promise<TicketReviewerInfo> {
     return this.request(`/v1/tickets/${ticketId}/reviewer`, TicketReviewerInfoSchema, { signal });
   }

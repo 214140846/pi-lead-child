@@ -1251,9 +1251,12 @@ export function buildLeadTimeline(
     const turnCards = message.role === 'assistant' && message.turnId
       ? cardsByTurn.get(message.turnId) ?? []
       : [];
+    // 列表的 key（工单 #259）：你在这台设备上发的消息用发送时就有的 clientMessageId。送达以后，本地消息换成 daemon 那一轮的消息，
+    // id 变了，key 不变：会话列表不把这一行卸掉再挂上、重新量一遍高度。万一同一个 clientMessageId 出现两次，后一条用自己的 id。
+    const sentKey = message.role === 'user' && message.clientCommandId ? `message:sent:${message.clientCommandId}` : null;
     const item: LeadTimelineItem = {
       kind: 'message',
-      key: `message:${message.id}`,
+      key: sentKey && !insertionOrder.has(sentKey) ? sentKey : `message:${message.id}`,
       messageId: message.id,
       cardIds: turnCards.map((card) => card.id),
     };

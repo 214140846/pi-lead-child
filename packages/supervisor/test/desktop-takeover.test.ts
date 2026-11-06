@@ -10,7 +10,7 @@ import {
   INSTALL_LOCK_FILE, runDesktopInstall, type DesktopInstallDeps,
 } from "../src/deploy/desktop-install.js";
 import { desktopPlistOptions, LAUNCHD_LABEL, plistContent, plistWorkingDirectory } from "../src/deploy/launchd.js";
-import { addRuntimeVersion, fakeHost, installedRuntime, installState, runtimeComponents, type Runtime } from "./desktop-fixtures.js";
+import { addRuntimeVersion, fakeHome, fakeHost, installedRuntime, installState, runtimeComponents, type Runtime } from "./desktop-fixtures.js";
 
 const OLD_SUPERVISOR = "com.pi-lead-child.supervisor";
 const OLD_HINDSIGHT = "com.pi-lead-child.hindsight";
@@ -81,8 +81,8 @@ function setSchemaBehind(dir: string): () => void {
 
 // 情况 A 的机器：旧目录和两个旧任务；App 已经在新目录里放了 runtime/ 和 shell/。
 function preRenameMachine(overrides: Partial<DesktopInstallDeps> = {}) {
-  const home = tempDir("plc-takeover-a-");
-  const runtime = installedRuntime(join(home, "Library", "Application Support"));
+  const { home, supportDir } = fakeHome("plc-takeover-a-");
+  const runtime = installedRuntime(supportDir);
   mkdirSync(join(runtime.dataDir, "shell"), { recursive: true });
   writeFileSync(join(runtime.dataDir, "shell", "lead-name.json"), "{\"name\":\"Paimon\"}\n");
   const oldDir = join(home, ".pi-lead-child");
@@ -144,12 +144,14 @@ describe("taking over an installation with the pre-rename names (case A)", () =>
     });
     expect(statSync(join(f.runtime.dataDir, "config.json")).mode & 0o777).toBe(0o600);
 
-    // 服务：plist 指向运行包，旧任务和旧 plist 都没了，Hindsight 换了新 label。
+    // 服务：plist 指向运行包，旧任务和旧 plist 都没了。Hindsight 由 supervisor 运行，没有独立的 launchd 任务。
     expect(readFileSync(f.plistPath, "utf8")).toBe(plistContent(desktopPlistOptions(f.runtime.root, join(f.runtime.dataDir, "logs"))));
     expect(existsSync(f.oldSupervisorPlist)).toBe(false);
     expect(existsSync(`${f.oldSupervisorPlist}.pre-rename`)).toBe(false);
-    expect(readFileSync(join(f.agentsDir, `${NEW_HINDSIGHT}.plist`), "utf8")).toContain(`<string>${NEW_HINDSIGHT}</string>`);
-    expect([...f.host.labels].sort()).toEqual([LAUNCHD_LABEL, NEW_HINDSIGHT].sort());
+    expect(existsSync(f.oldHindsightPlist)).toBe(false);
+    expect(existsSync(`${f.oldHindsightPlist}.pre-rename`)).toBe(false);
+    expect(existsSync(join(f.agentsDir, `${NEW_HINDSIGHT}.plist`))).toBe(false);
+    expect([...f.host.labels]).toEqual([LAUNCHD_LABEL]);
     expect(f.host.calls).toEqual(expect.arrayContaining(["drain", "health"]));
 
     // 安装页：识别的话、每一步的话，接管完成；launchd 一步看到 plist 已经是对的，不再重启。
@@ -210,6 +212,22 @@ describe("taking over an installation with the pre-rename names (case A)", () =>
     expect(await runDesktopInstall(f.deps)).toMatchObject({ ok: true, outcome: "installed" });
     expect(existsSync(f.oldDir)).toBe(false);
     expect(ledger(f.runtime.dataDir).items.map((item) => item.body)).toEqual(before.items.map((item) => item.body));
+  });
+
+  // #261：Ethan 从改名以前的安装升级到 1.1.3 时，以前的版本留下的 com.bytezard.plc.hindsight 还加载着，迁移 bootstrap
+  // 同一个 label 返回 error 5，整次接管回滚（takeover_rolled_back）。
+  it("takes over when a com.bytezard.plc.hindsight job from an earlier version is still loaded", async () => {
+    const f = preRenameMachine();
+    const leftover = join(f.agentsDir, `${NEW_HINDSIGHT}.plist`);
+    writeFileSync(leftover, devPlist(NEW_HINDSIGHT, f.runtime.dataDir, join(f.runtime.dataDir, "hindsight")));
+    f.host.labels.add(NEW_HINDSIGHT);
+
+    expect(await runDesktopInstall(f.deps)).toEqual({ ok: true, outcome: "installed", gatewayUrl: "http://127.0.0.1:47131" });
+    expect(existsSync(f.oldDir)).toBe(false);
+    expect([...f.host.labels]).toEqual([LAUNCHD_LABEL]);
+    expect(existsSync(leftover)).toBe(false);
+    expect(f.host.calls).not.toContain(`launchctl bootstrap ${NEW_HINDSIGHT}`);
+    expect(installState(f.runtime.installRoot)).toMatchObject({ outcome: "installed", lastError: null });
   });
 
   it("restores the database it copied after the stop when the new version upgraded it and then failed", async () => {

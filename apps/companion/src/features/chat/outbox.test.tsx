@@ -205,6 +205,26 @@ describe('the follow key of the conversation list', () => {
     expect(key()).toBe(sent);
   });
 
+  // 工单 #259：送达以后，本地消息（optimistic:<clientMessageId>:user）换成那一轮的消息（<会话>:<轮次>:user），id 变了。
+  // 列表的 key 以前跟着 id 变，这一行被卸掉再挂上，虚拟列表重新量它的高度。现在 key 用 clientMessageId，送达和送达后的刷新都不重挂。
+  it('keeps the row of your message mounted when it is delivered and the conversation is refreshed', async () => {
+    const storage = memoryKeyValue();
+    const { runtime, client, setState } = await mount(storage, async () => ({ turnId: 'turn-1' }));
+    setState('reconnecting');
+    await type('一行消息');
+    const row = userMessage('一行消息');
+    expect(row).not.toBeNull();
+    expect(runtime.control.getState().messageIdsBySession['lead-session']?.at(-1)).toMatch(/^optimistic:.+:user$/);
+
+    setState('connected');
+    await vi.waitFor(() => expect(bubbleStatus('一行消息')).toBe('Delivered'));
+    await vi.waitFor(() => expect(vi.mocked(client.getConversationTurns).mock.calls.length).toBeGreaterThanOrEqual(2));
+    await act(async () => { await runtime.whenIdle(); });
+    expect(runtime.control.getState().messageIdsBySession['lead-session']).toContain('lead-session:turn-1:user');
+    expect(userMessage('一行消息')).toBe(row);
+    expect(row!.isConnected).toBe(true);
+  });
+
   // 2026-11-04 预览发现：你往上翻着看历史，Lead 自己开了一轮（提醒、巡检、外部消息），列表被拽回了底部。
   // 那一轮的「你的消息」是实时事件先垫上的空消息，不是你发的；别的设备和外部来源的消息也不是这台设备发的。
   it('does not change when Lead starts a turn of its own or a message comes from somewhere else', () => {

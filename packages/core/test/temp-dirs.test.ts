@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { expectTempDirsRemoved, removeTempDirs, tempDir, watchTempDirs, type TempDirWatch } from "../testing/temp-dirs.js";
+import { expectTempDirsRemoved, removeTempDirs, shortTempDir, tempDir, watchTempDirs, type TempDirWatch } from "../testing/temp-dirs.js";
 
 const ROOT = fileURLToPath(new URL("../../..", import.meta.url));
 const FIXTURES = join(ROOT, "packages/core/test/fixtures/temp-dirs");
@@ -65,6 +65,37 @@ describe("tempDir", () => {
     expect(() => tempDir("findup-")).toThrow(/plc-/);
     expect(() => tempDir("plc-a/b-")).toThrow(/plc-/);
     expect(() => tempDir("plc-../escape-")).toThrow(/plc-/);
+  });
+});
+
+describe("shortTempDir", () => {
+  // 主机的 TMPDIR 是 /var/folders/... 这种形式，有 49 字节。socket 路径要拼在这个目录下，所以它不能跟着 TMPDIR 变长（#267）。
+  it("makes a new plc-* folder directly under /tmp even when TMPDIR is long, and removeTempDirs removes it", () => {
+    const longTmp = join(own(tempDir("plc-temp-dirs-")), "x".repeat(60));
+    mkdirSync(longTmp);
+    const saved = process.env.TMPDIR;
+    process.env.TMPDIR = longTmp;
+    let dir: string;
+    try {
+      expect(tmpdir()).toBe(longTmp);
+      dir = shortTempDir("plc-temp-dirs-");
+    } finally {
+      if (saved === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = saved;
+    }
+    expect(dirname(dir)).toBe("/tmp");
+    expect(basename(dir)).toMatch(/^plc-temp-dirs-[\w-]{6}$/);
+    expect(existsSync(dir)).toBe(true);
+    mkdirSync(join(dir, "Library", "Application Support"), { recursive: true });
+
+    removeTempDirs();
+    expect(existsSync(dir)).toBe(false);
+  });
+
+  it("accepts only a plc- prefix that names one folder", () => {
+    expect(() => shortTempDir("findup-")).toThrow(/plc-/);
+    expect(() => shortTempDir("plc-a/b-")).toThrow(/plc-/);
+    expect(() => shortTempDir("plc-../escape-")).toThrow(/plc-/);
   });
 });
 

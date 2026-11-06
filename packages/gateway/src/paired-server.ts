@@ -2637,6 +2637,16 @@ export async function startPairedServer(
         return;
       }
 
+      // 这张工单的 token 按计费拆开（2026-11-06）。只读，和工单详情一样只要 tickets:view。
+      const usageMatch = url.pathname.match(/^\/v1\/tickets\/(\d+)\/usage$/);
+      if (req.method === "GET" && usageMatch) {
+        requireAuth(req, "tickets:view");
+        const usage = service().getUsage(Number(usageMatch[1]));
+        if (!usage) throw new HttpError(404, "not_found", "ticket not found");
+        json(req, res, 200, usage);
+        return;
+      }
+
       // 工单附件（工单 #231，protocol 的 ticket-attachments.ts）：列表和一个附件的内容。只读，和工单详情一样只要 tickets:view。
       const attachmentsMatch = url.pathname.match(/^\/v1\/tickets\/(\d+)\/attachments$/);
       if (req.method === "GET" && attachmentsMatch) {

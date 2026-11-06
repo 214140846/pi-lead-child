@@ -5,7 +5,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { packageSource } from "@pi-lead-child/core";
+import { runtimeAsset } from "@pi-lead-child/core";
 import { HINDSIGHT_VERSION, hindsightDir, hindsightUvxArgs } from "./hindsight.js";
 
 export type ModelKind = "embedding" | "reranker";
@@ -25,8 +25,8 @@ export interface ModelDownloadState {
 
 const REPO = /^[A-Za-z0-9][A-Za-z0-9._-]{0,95}\/[A-Za-z0-9][A-Za-z0-9._-]{0,95}$/;
 const REVISION = /^[0-9a-f]{40}$/;
-// 下载脚本是源码：daemon 打包后也从仓库里运行它（和 pi 执行器的扩展文件一样）。
-export const DOWNLOAD_SCRIPT = packageSource("supervisor", "deploy", "hindsight-download.py");
+// 下载脚本：源码 checkout 里用源码，运行包里用 dist 里的副本（runtimeAsset，和 pi 执行器的扩展文件一样）。
+export const DOWNLOAD_SCRIPT = runtimeAsset("hindsight-download");
 
 export interface ModelDownloadsOptions {
   dataDir: string;

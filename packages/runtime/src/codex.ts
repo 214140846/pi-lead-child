@@ -329,12 +329,15 @@ export class CodexRuntime implements AgentRuntime {
           const inputTokens = numberField(value.usage, "input_tokens") ?? 0;
           const outputTokens = numberField(value.usage, "output_tokens") ?? 0;
           const totalTokens = numberField(value.usage, "total_tokens") ?? inputTokens + outputTokens;
+          // input_tokens 已含 cached_input_tokens（缓存读）。Codex 不报缓存写。
           emit({
             type: "usage.updated",
             mode: "cumulative",
             inputTokens,
             outputTokens,
             totalTokens,
+            cacheReadTokens: numberField(value.usage, "cached_input_tokens") ?? 0,
+            cacheWriteTokens: 0,
             costUsd: null,
           });
           return;

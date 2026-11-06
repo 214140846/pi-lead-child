@@ -8,7 +8,7 @@ import {
 } from "@pi-lead-child/store";
 import type { RunPurpose, RuntimeDisabledBy, RuntimeId } from "@pi-lead-child/core";
 import { addActivity } from "@pi-lead-child/store";
-import { addInbox, recordInboxEvent } from "@pi-lead-child/store";
+import { addInbox, itemEntityKey } from "@pi-lead-child/store";
 import { createCoordinator } from "./service.js";
 import { persistSelectedRuntime, selectChildRuntime } from "../runtime-catalog.js";
 import { runEffortFor, runModelFor, runProfileChoice } from "./run-choice.js";
@@ -111,6 +111,16 @@ export interface Dispatcher {
 // 没有这个时间的请求随时可以派发。读不懂的时间按已到期处理，请求不会永远卡在队列里。
 export function notBeforeReached(notBefore: string | null, at: Date): boolean {
   return notBefore === null || !(Date.parse(notBefore) > at.getTime());
+}
+
+// 预算拦下的派发请求的挂起原因（#266）。Lead 的工单详情和界面照原样显示它；开头的标记让 dispatcher 认出这是预算的挂起，
+// 预算够了时只清它，不清别的 gate 写的原因。
+const BUDGET_SUSPENSION_MARK = "预算超限：";
+export function budgetSuspensionReason(summary: string): string {
+  return `${BUDGET_SUSPENSION_MARK}${summary}。派发请求挂起，调高预算后自动恢复。`;
+}
+export function isBudgetSuspension(reason: string | null): boolean {
+  return reason?.startsWith(BUDGET_SUSPENSION_MARK) ?? false;
 }
 
 function expireReviewRequest(db: Db, row: { id: number; item_id: number; trigger: string }, reason: string): boolean {
@@ -365,24 +375,36 @@ export function createDispatcher(
      FROM items WHERE root_item_id=?`,
   ).get(rootId) as { tokens: number; cost: number };
 
-  const notifyBudget = (rootId: number, severity: "attention" | "blocker", summary: string) => {
-    const exists = db.prepare(
-      "SELECT 1 FROM inbox WHERE item_id=? AND summary=? AND state IN ('pending','delivered') LIMIT 1",
-    ).get(rootId, summary);
-    if (!exists) {
-      db.transaction(() => {
-        const inserted = db.prepare(
-          `INSERT INTO inbox (item_id, dedup_scope, severity, source, summary, payload)
-           VALUES (?, ?, ?, 'structural', ?, ?)`,
-        ).run(
-          rootId,
-          `item:${rootId}`, // 去抖分组键（spec §5.5）
-          severity, summary, JSON.stringify({ kind: "orchestration_budget" }),
-        );
-        // 双写（Lead 事件主干，工单 01）：这一行不经过 addInbox，在同一个事务里补记它的事件。
-        recordInboxEvent(db, Number(inserted.lastInsertRowid));
-      })();
-    }
+  // 预算的一轮从上一次改预算（set_budget 记的 budget_changed）算起，没改过时是 0。
+  // 同一轮里同一个原因只报一次：派发请求一直排着队，每次 claim 都会重算预算，
+  // 以前每次都按"现在没有未处理的同一条"判断，Lead 一处理完下一次 claim 又报一条（#262：11-05 两张单每隔约 10 秒一条）。
+  const budgetEpoch = (rootId: number): number => (db.prepare(
+    `SELECT COALESCE(MAX(id), 0) AS id FROM activities
+     WHERE item_id=? AND kind='decision' AND json_extract(payload, '$.decision')='budget_changed'`,
+  ).get(rootId) as { id: number }).id;
+
+  // 走 addInbox，所以去抖和熔断（常设指令 inbox.fuse_blockers）也管预算的 blocker。以前这里直接写 inbox 表，绕过了熔断。
+  const notifyBudget = (rootId: number, severity: "attention" | "blocker", summary: string, payload: Record<string, unknown>) => {
+    addInbox(db, {
+      itemId: rootId, severity, source: "structural", summary,
+      payload: { kind: "orchestration_budget", ...payload },
+    });
+  };
+
+  // 接近上限的提醒：每一轮、每种预算（token、USD）只报一次。摘要里带着用量，每次都不一样，不能按摘要去重；
+  // 提醒可能并进同一张工单的别的行，所以读事件。
+  const notifySoftBudget = (rootId: number, unit: "token" | "usd", summary: string) => {
+    const epoch = budgetEpoch(rootId);
+    const notified = db.prepare(
+      `SELECT 1 FROM events
+       WHERE entity_key=? AND kind='inbox.attention' AND json_valid(payload)
+         AND json_extract(payload, '$.inboxKind')='orchestration_budget'
+         AND json_extract(payload, '$.payload.level')='soft'
+         AND json_extract(payload, '$.payload.unit')=?
+         AND json_extract(payload, '$.payload.epoch')=?
+       LIMIT 1`,
+    ).get(itemEntityKey(db, rootId), unit, epoch);
+    if (!notified) notifyBudget(rootId, "attention", summary, { level: "soft", unit, epoch });
   };
 
   const blockRoot = (rootId: number, summary: string) => {
@@ -398,23 +420,25 @@ export function createDispatcher(
     }
     db.prepare("UPDATE items SET plan_state='failed', updated_at=datetime('now') WHERE id=?")
       .run(root.id);
+    // 派发请求挂起，留在队列里（budgetReady）：用户调高预算以后，下一次 claim 预算够了就放行，不用再建请求。
+    // 这一轮已经因为同一个原因拦过（例如同一张单的另一条请求），不再记活动，也不再报 blocker。
+    const epoch = budgetEpoch(root.id);
     const existing = db.prepare(
       `SELECT 1 FROM activities
-       WHERE item_id=? AND kind='decision'
+       WHERE item_id=? AND kind='decision' AND id>?
          AND json_extract(payload, '$.decision')='dispatch_blocked_by_budget'
          AND json_extract(payload, '$.summary')=?
        LIMIT 1`,
-    ).get(root.id, summary);
-    if (!existing) {
-      addActivity(db, {
-        itemId: root.id,
-        actor: "system",
-        kind: "decision",
-        payload: { decision: "dispatch_blocked_by_budget", summary },
-      });
-      touchItemActivity(root.id);
-    }
-    notifyBudget(root.id, "blocker", summary);
+    ).get(root.id, epoch, summary);
+    if (existing) return;
+    addActivity(db, {
+      itemId: root.id,
+      actor: "system",
+      kind: "decision",
+      payload: { decision: "dispatch_blocked_by_budget", summary },
+    });
+    touchItemActivity(root.id);
+    notifyBudget(root.id, "blocker", summary, { epoch });
   };
 
   const cancelRetryExhausted = (row: DispatchRequestRow): void => {
@@ -455,20 +479,20 @@ export function createDispatcher(
     });
   };
 
-  const budgetReady = (row: DispatchRequestRow): boolean => {
+  // 预算拦下这条请求的原因（同时报接近上限的提醒）；预算够时是 null。
+  const budgetRefusal = (row: DispatchRequestRow): { rootId: number; summary: string } | null => {
     const item = getItem(db, row.item_id);
-    if (!item) return false;
+    if (!item) return null;
     // root_item_id 可空（自根行 insert-then-update 的中间态、以及 reminder 恒为 NULL），
     // 空即"自己就是根"。
     const root = getItem(db, item.root_item_id ?? item.id) ?? item;
     const usage = rootUsage(root.id);
     if (root.token_budget !== null) {
       if (usage.tokens >= root.token_budget) {
-        blockRoot(root.id, `工单 #${root.id} 已达到 token 预算上限 ${root.token_budget}`);
-        return false;
+        return { rootId: root.id, summary: `工单 #${root.id} 已达到 token 预算上限 ${root.token_budget}` };
       }
       if (usage.tokens >= root.token_budget * softBudgetRatio) {
-        notifyBudget(root.id, "attention", `工单 #${root.id} token 预算接近上限（${usage.tokens}/${root.token_budget}）`);
+        notifySoftBudget(root.id, "token", `工单 #${root.id} token 预算接近上限（${usage.tokens}/${root.token_budget}）`);
       }
     }
     if (root.cost_budget_usd !== null) {
@@ -476,18 +500,52 @@ export function createDispatcher(
         role: row.role === "reviewer" ? "reviewer" : "executor",
       }).runtime;
       if (!hasCostEstimator(runtime, row.model)) {
-        blockRoot(root.id, `工单 #${root.id} 配置了 USD 预算，但 runtime ${runtime} 无成本估算器`);
-        return false;
+        return { rootId: root.id, summary: `工单 #${root.id} 配置了 USD 预算，但 runtime ${runtime} 无成本估算器` };
       }
       if (usage.cost >= root.cost_budget_usd) {
-        blockRoot(root.id, `工单 #${root.id} 已达到 USD 预算上限 ${root.cost_budget_usd}`);
-        return false;
+        return { rootId: root.id, summary: `工单 #${root.id} 已达到 USD 预算上限 ${root.cost_budget_usd}` };
       }
       if (usage.cost >= root.cost_budget_usd * softBudgetRatio) {
-        notifyBudget(root.id, "attention", `工单 #${root.id} USD 预算接近上限（${usage.cost}/${root.cost_budget_usd}）`);
+        notifySoftBudget(root.id, "usd", `工单 #${root.id} USD 预算接近上限（${usage.cost}/${root.cost_budget_usd}）`);
       }
     }
-    return true;
+    return null;
+  };
+
+  // 预算拦下的请求挂起，原因写在 suspended_reason 上（#266）。原因里带着预算的值：用户改了预算、还是不够时，原因变了，
+  // 再走一次 blockRoot（新的一轮，报一次）；原因没变时这一拍什么都不写。
+  // 以前请求一直 pending 不挂起，每一拍都重算、改工单（blockRoot），11-05 #263 的核查请求每 5–10 秒一次。
+  const budgetReady = (row: DispatchRequestRow): boolean => {
+    const refusal = budgetRefusal(row);
+    if (!refusal) {
+      // 用户调高了预算：清掉预算的挂起原因，后面的 gate 照常判断。别的原因（runtime 不可用等）不在这里清。
+      if (isBudgetSuspension(row.suspended_reason) && row.suspended_incident_id === null) {
+        db.prepare(
+          `UPDATE dispatch_requests SET suspended_reason=NULL, updated_at=datetime('now')
+           WHERE id=? AND state='pending' AND suspended_incident_id IS NULL`,
+        ).run(row.id);
+        row.suspended_reason = null;
+      }
+      return true;
+    }
+    const reason = budgetSuspensionReason(refusal.summary);
+    if (row.suspended_reason === reason && row.suspended_incident_id === null) return false;
+    db.transaction(() => {
+      blockRoot(refusal.rootId, refusal.summary);
+      db.prepare(
+        `UPDATE dispatch_requests SET suspended_reason=?, suspended_incident_id=NULL, updated_at=datetime('now')
+         WHERE id=? AND state='pending'`,
+      ).run(reason, row.id);
+      addActivity(db, {
+        itemId: row.item_id,
+        actor: "system",
+        kind: "decision",
+        payload: { decision: "dispatch_suspended_by_budget", dispatchRequestId: row.id, rootItemId: refusal.rootId, message: reason },
+      });
+    })();
+    row.suspended_reason = reason;
+    row.suspended_incident_id = null;
+    return false;
   };
 
   const concurrencyReady = (row: DispatchRequestRow): boolean => {

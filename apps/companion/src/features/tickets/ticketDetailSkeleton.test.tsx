@@ -211,6 +211,32 @@ describe('the ticket detail skeleton', () => {
     expect(within(thread).getByTestId('ticket-history-story').textContent).toContain('System record');
   });
 
+  // token 按计费拆开（用户 2026-11-06）：缓存读、缓存写、未缓存输入和输出的价钱差很多，用量一块下面再画一行四个数。
+  it('shows the four billed parts of the tokens under the usage, and nothing without a breakdown', () => {
+    const facts = {
+      createdAt: '2026-10-21T07:02:00.000Z', createdBy: 'lead' as const, updatedAt: '2026-10-21T07:06:00.000Z', dueAt: null,
+      totalTokens: 6_081_433, totalCostUsd: 2.58, tokenBudget: null, costBudgetUsd: null,
+      usageParts: {
+        uncachedInputTokens: 134, cacheWriteTokens: 296_699, cacheReadTokens: 5_631_822, outputTokens: 52_778, unsplitTokens: 100_000,
+      },
+    };
+    const thread = renderThread(summary({ stage: 'active', status: 'active' }), { facts });
+    const usage = within(thread).getByTestId('ticket-execution-usage').textContent;
+    expect(within(thread).getByTestId('ticket-usage-parts')).toBeTruthy();
+    expect(usage).toContain('Uncached input');
+    expect(usage).toContain('Cache reads');
+    expect(usage).toContain('about 5.6M');
+    expect(usage).toContain('about 100K tokens from before this split have no breakdown.');
+    cleanup();
+
+    const zh = renderThread(summary({ stage: 'active', status: 'active' }), { facts }, 'zh');
+    expect(within(zh).getByTestId('ticket-execution-usage').textContent).toContain('缓存读');
+    cleanup();
+
+    const old = renderThread(summary({ stage: 'active', status: 'active' }));
+    expect(within(old).queryByTestId('ticket-usage-parts')).toBeNull();
+  });
+
   it('has no 这张工单 heading and calls the relation entry 关联工单', () => {
     const thread = renderThread(summary({ stage: 'active', status: 'active' }), {
       actions: [ticketAction('link', { label: 'Link ticket' })],

@@ -135,25 +135,29 @@ function VirtualChatList<T>({
   // web（工单 #251）：发多行消息、带图片发消息时，输入框在同一刻变矮，列表的可视区变高。这时新消息还没画出来，
   // 浏览器把 scrollTop 夹到旧内容的底部，旧内容整体往下移；接着再滚到底，看起来先往下、再往上。
   // 这个 effect 跑的时候，Legend List 还没把新消息的高度写进页面；到下一帧画出来之前才写好。
-  // 所以在那一帧画之前，先回到被拉回之前的位置，再从那里平滑滚到底：只往一个方向动。
+  // 所以在那一帧画之前，先回到被拉回之前的位置，再从那里滚到底：只往一个方向动。
+  // 工单 #259：你本来就在底部时，直接到底，不用平滑滚动。新的块（你的消息、Lead 那一轮的占位行）刚进列表时按估算的高度排，
+  // 下一帧才量出真的高度。平滑滚动还在走的时候，Legend List 把「让最后一块贴底」的修正（例如矮了 48）先记着，等滚动停下才一次补上，
+  // 补的那一帧整个列表往上跳。直接到底时这个修正当场生效，画出来之前就到位了。你往上翻着的时候，照旧平滑滚回底部。
   const firstFollowKey = useRef(true);
   useEffect(() => {
     if (firstFollowKey.current) {
       firstFollowKey.current = false;
       return undefined;
     }
+    const animated = !following();
     setNewBelow(false);
-    void listRef.current?.scrollToEnd({ animated: true });
+    void listRef.current?.scrollToEnd({ animated });
     const node = Platform.OS === 'web' ? listRef.current?.getScrollableNode() as HTMLElement | null | undefined : null;
     const before = lastScrollTop.current;
     if (!node || before === null || node.scrollTop >= before) return undefined;
     const frame = requestAnimationFrame(() => {
       if (node.scrollTop >= before) return;
       node.scrollTop = Math.min(before, node.scrollHeight - node.clientHeight);
-      void listRef.current?.scrollToEnd({ animated: true });
+      void listRef.current?.scrollToEnd({ animated });
     });
     return () => cancelAnimationFrame(frame);
-  }, [followKey]);
+  }, [followKey, following]);
 
   // web：你按下的那一块，在会话栏变宽、变窄（工单面板打开、关闭）以后留在原来的高度。
   useEffect(() => {
