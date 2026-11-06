@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // 会话输入框右下角的模型选择（2026-10-26）：写着 Lead 正在用的模型 id 和推理强度；点开是按来源分组的模型（as1、as4 各一组）
-// 和推理强度。选一个就换（和 Lead 的 switch_lead_model 是同一个操作）；马上换好时浮层关上，模型名跟着变。
+// 和推理强度；上面一个搜索框，左栏是 provider（PR #11，2026-11-06）。选一个就换（和 Lead 的 switch_lead_model 是同一个操作）；马上换好时浮层关上，模型名跟着变。
 import type { LeadModelCatalog, LeadModelChoice, LeadModelOption, LeadStatus, Overview } from '@pi-lead-child/protocol';
 import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
@@ -52,10 +52,10 @@ const catalog: LeadModelCatalog = {
   ],
 };
 
-function setup(options: { applied?: 'now' | 'after_turn'; fail?: string } = {}) {
+function setup(options: { applied?: 'now' | 'after_turn'; fail?: string; catalog?: LeadModelCatalog } = {}) {
   const switched: LeadModelChoice[] = [];
   const client = {
-    getLeadModels: vi.fn(async () => catalog),
+    getLeadModels: vi.fn(async () => options.catalog ?? catalog),
     switchLeadModel: vi.fn(async (choice: LeadModelChoice) => {
       if (options.fail) throw new Error(options.fail);
       switched.push(choice);
@@ -102,6 +102,50 @@ describe('the model picker in the composer', () => {
     expect(screen.getByTestId('lead-model-effort-high').getAttribute('aria-pressed')).toBe('true');
     // 最上面写着正在用的是哪个账号的哪个模型。
     expect(screen.getByTestId('lead-model-selected').textContent).toBe('In use: as4 · anthropic · claude-sonnet-5 high');
+  });
+
+  it('filters as you type without changing the section titles, and switches from a search result', async () => {
+    const { switched } = setup();
+    await open();
+    await act(async () => { fireEvent.change(screen.getByTestId('lead-model-search'), { target: { value: 'OPUS' } }); });
+    expect(groupTitles()).toEqual(['as4 · anthropic']);
+    await act(async () => { fireEvent.click(screen.getByTestId('lead-model-option-vibeproxy/as4/claude-opus-5-5')); });
+    expect(switched).toEqual([{ model: 'vibeproxy/as4/claude-opus-5-5', effort: 'high' }]);
+  });
+
+  it('says so when nothing matches, and keeps the in-use line', async () => {
+    setup();
+    await open();
+    await act(async () => { fireEvent.change(screen.getByTestId('lead-model-search'), { target: { value: 'zzz' } }); });
+    expect(screen.getByTestId('lead-model-no-match')).toBeTruthy();
+    expect(groupTitles()).toEqual([]);
+    expect(screen.getByTestId('lead-model-selected').textContent).toBe('In use: as4 · anthropic · claude-sonnet-5 high');
+  });
+
+  it('lists the providers in the left rail and shows only the picked one', async () => {
+    const magpie: LeadModelOption = {
+      model: 'magpie/deepseek/deepseek-v4', provider: 'magpie', id: 'deepseek/deepseek-v4', prefix: null, source: 'deepseek', name: null,
+      image: false, efforts: [], defaultEffort: null, blockedUntil: null,
+    };
+    setup({ catalog: { ...catalog, models: [...catalog.models, magpie] } });
+    await open();
+    const rail = Array.from(screen.getByTestId('lead-model-providers').querySelectorAll('[data-testid^="lead-model-provider-"]'))
+      .map((element) => element.getAttribute('data-testid')!.slice('lead-model-provider-'.length));
+    expect(rail).toEqual(['all', 'vibeproxy', 'magpie']);
+    expect(screen.getByTestId('lead-model-provider-all').getAttribute('aria-pressed')).toBe('true');
+    // 全部模型：有两个 provider，标题前面写 provider。
+    expect(groupTitles()).toEqual(['vibeproxy · as1 · anthropic', 'vibeproxy · as4 · anthropic', 'vibeproxy · anthropic', 'vibeproxy · antigravity', 'magpie']);
+    await act(async () => { fireEvent.click(screen.getByTestId('lead-model-provider-magpie')); });
+    expect(screen.getByTestId('lead-model-provider-magpie').getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByTestId('lead-model-provider-magpie').getAttribute('aria-label')).toBe('magpie, 1 model');
+    // 只画 magpie：标题不再写 provider，它只有一种通道，分段没有标题。
+    expect(groupTitles()).toEqual(['']);
+    expect(screen.getByTestId('lead-model-option-magpie/deepseek/deepseek-v4')).toBeTruthy();
+    // 这个 provider 里搜不到：空状态，不跳回全部。
+    await act(async () => { fireEvent.change(screen.getByTestId('lead-model-search'), { target: { value: 'sonnet' } }); });
+    expect(screen.getByTestId('lead-model-no-match')).toBeTruthy();
+    await act(async () => { fireEvent.click(screen.getByTestId('lead-model-provider-all')); });
+    expect(groupTitles()).toEqual(['vibeproxy · as1 · anthropic', 'vibeproxy · as4 · anthropic', 'vibeproxy · anthropic']);
   });
 
   it('switches to another model, keeping the effort when it supports it, and closes', async () => {

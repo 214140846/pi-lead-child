@@ -1,4 +1,4 @@
-import { Badge, Box, Button, Chip, Column, Icon, Popover, Pressable, Row, Text } from '@pi-lead-child/components';
+import { Badge, Box, Button, Chip, Column, Icon, Popover, Pressable, Row, Text, TextField } from '@pi-lead-child/components';
 import { parseLeadModelSpec, type LeadModelCatalog, type LeadModelChoice, type LeadModelOption } from '@pi-lead-child/protocol';
 import { useEffect, useState } from 'react';
 
@@ -7,11 +7,14 @@ import { useLocale, useMessages } from '@/i18n';
 import { useCompanionRuntime } from '@/state/CompanionStateProvider';
 
 import { leadModelMessages } from './leadModel.messages';
-import { effortForModel, groupLeadModels, leadModelLabel } from './leadModelGroups';
+import { effortForModel, groupLeadModels, leadModelLabel, leadModelProviders } from './leadModelGroups';
 
 // 会话输入框右下角的模型名（2026-10-26，参考 Kimi）：写着 Lead 正在用的模型 id 和推理强度，点开换模型。
-// 浮层里先是推理强度，再是按来源分组的模型（as1、as4 各一组，见 ./leadModelGroups）。换模型和 Lead 的
+// 浮层里先是推理强度，再是搜索框，下面左栏是 provider、右边是这个 provider 按「账号 · 通道」分的段（见 ./leadModelGroups）。换模型和 Lead 的
 // switch_lead_model 是同一个操作：Lead 空闲时马上换，正在回答时这一轮结束后换，不用重启。
+// 浮层宽 560：左栏 provider（144）加右边的模型列表。
+const POPOVER_WIDTH = 560;
+
 export function LeadModelPicker({ current }: { current: string | null | undefined }) {
   const m = useMessages(leadModelMessages);
   const accounts = useModelAccounts();
@@ -27,7 +30,7 @@ export function LeadModelPicker({ current }: { current: string | null | undefine
       testID="lead-model"
       label={m.pickerLabel(`${label.id}${label.effort ? ` ${label.effort}` : ''}`)}
       title={m.pickerTitle}
-      width={400}
+      width={POPOVER_WIDTH}
       trigger={(
         // 参考 Claude Code 的模型名：平时只是文字，鼠标放上去出现圆角的浅灰底，看起来像一个按钮，知道这里能点。
         // spacing-exempt: 按钮的规格，左右 8、上下 6，高 28（文字行高 16）
@@ -79,7 +82,7 @@ export function LeadModelResendLink({ onSwitched }: { onSwitched: () => void }) 
       testID="lead-model-resend"
       label={m.resend}
       title={m.resend}
-      width={400}
+      width={POPOVER_WIDTH}
       trigger={<Text testID="lead-model-resend-button" size="secondary" weight="semibold" tone="accent">{m.resend}</Text>}
     >
       {(close) => <LeadModelPanel close={close} onSwitched={onSwitched} />}
@@ -96,6 +99,9 @@ function LeadModelPanel({ close, onSwitched }: { close: () => void; onSwitched?:
   // 正在换的那一个（换好之前按钮都不能点），和换完以后的一句话。
   const [switching, setSwitching] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ tone: 'secondary' | 'danger'; text: string } | null>(null);
+  const [search, setSearch] = useState('');
+  // 左栏选中的 provider；null 是全部模型。
+  const [provider, setProvider] = useState<string | null>(null);
 
   useEffect(() => {
     let live = true;
@@ -146,7 +152,10 @@ function LeadModelPanel({ close, onSwitched }: { close: () => void; onSwitched?:
   };
 
   const pending = selected.model !== catalog.current.model || selected.effort !== catalog.current.effort;
+  // 「正在用」那一行按全部分组算：搜索、左栏都不影响它。
   const groups = groupLeadModels(catalog.models);
+  const providers = leadModelProviders(catalog.models);
+  const shown = groupLeadModels(catalog.models, { query: search, provider });
   // 选着的模型可能在列表很下面：最上面写一行它是哪个来源的哪个模型，不用翻下去找。
   const selectedGroup = groups.find((group) => group.models.some((model) => model.model === selected.model));
   const selectedId = selectedOption?.prefix ? selectedOption.id.slice(selectedOption.prefix.length + 1) : parseLeadModelSpec(selected.model).id;
@@ -177,22 +186,58 @@ function LeadModelPanel({ close, onSwitched }: { close: () => void; onSwitched?:
           </Row>
         </Column>
       ) : null}
-      {groups.map((group) => (
-        <Column key={group.key} gap="group-label" testID={`lead-model-group-${group.title}`}>
-          {group.title ? <Text size="eyebrow" tone="muted">{group.title}</Text> : null}
-          <Column>
-            {group.models.map((model) => (
-              <ModelRow
-                key={model.model}
-                model={model}
-                selected={model.model === selected.model}
-                busy={switching !== null}
-                onPress={() => choose({ model: model.model, effort: effortForModel(model, selected.effort) })}
-              />
-            ))}
-          </Column>
+      <TextField
+        testID="lead-model-search"
+        accessibilityLabel={m.searchLabel}
+        value={search}
+        onChangeText={setSearch}
+        placeholder={m.searchPlaceholder}
+        variant="filled"
+        size="sm"
+        autoCapitalize="none"
+        autoCorrect={false}
+      />
+      <Row gap="inline-item" items="flex-start">
+        {/* spacing-exempt: 左栏宽 144，放得下 vibeproxy 这类服务商名 */}
+        <Column testID="lead-model-providers" aria-label={m.providers} w={144} gap="nav-item">
+          <ProviderButton testID="lead-model-provider-all" label={m.allModels} selected={provider === null} onPress={() => setProvider(null)} />
+          {providers.map((entry) => (
+            <ProviderButton
+              key={entry.provider}
+              testID={`lead-model-provider-${entry.provider}`}
+              label={entry.provider}
+              count={entry.count}
+              accessibilityLabel={m.providerLabel(entry.provider, entry.count)}
+              selected={provider === entry.provider}
+              onPress={() => setProvider(entry.provider)}
+            />
+          ))}
         </Column>
-      ))}
+        <Column flex={1} minW={0} gap="card-section">
+          {shown.length === 0 ? <Text testID="lead-model-no-match" size="note" tone="muted">{m.noMatch}</Text> : null}
+          {shown.map((group) => (
+            <Column key={group.key} gap="group-label" testID={`lead-model-group-${group.title}`}>
+              {group.title ? (
+                <Row items="center" gap="icon-label">
+                  <Text size="eyebrow" tone="muted">{group.title}</Text>
+                  <Text size="meta" tone="faint">{group.count}</Text>
+                </Row>
+              ) : null}
+              <Column>
+                {group.models.map((model) => (
+                  <ModelRow
+                    key={model.model}
+                    model={model}
+                    selected={model.model === selected.model}
+                    busy={switching !== null}
+                    onPress={() => choose({ model: model.model, effort: effortForModel(model, selected.effort) })}
+                  />
+                ))}
+              </Column>
+            </Column>
+          ))}
+        </Column>
+      </Row>
     </Column>
   );
 }
@@ -200,6 +245,30 @@ function LeadModelPanel({ close, onSwitched }: { close: () => void; onSwitched?:
 function describe(choice: LeadModelChoice): string {
   const id = parseLeadModelSpec(choice.model).id;
   return choice.effort ? `${id} ${choice.effort}` : id;
+}
+
+// 左栏的一格：服务商名，右边写它一共几个模型。选中的一格浅灰底、文字用强调色（不只靠颜色：aria-pressed）。
+function ProviderButton({ label, count, accessibilityLabel, selected, onPress, testID }: {
+  label: string; count?: number; accessibilityLabel?: string; selected: boolean; onPress: () => void; testID: string;
+}) {
+  return (
+    <Pressable
+      testID={testID}
+      aria-label={accessibilityLabel ?? label}
+      aria-pressed={selected}
+      feedback="highlight"
+      onPress={onPress}
+      rounded="md"
+      px="row-x"
+      py="row-y"
+      bg={selected ? 'surface-muted' : 'transparent'}
+    >
+      <Row items="center" gap="inline-item">
+        <Text flex={1} minW={0} size="label" weight={selected ? 'semibold' : 'regular'} tone={selected ? 'accent' : 'secondary'} numberOfLines={1}>{label}</Text>
+        {count === undefined ? null : <Text size="meta" tone="muted">{count}</Text>}
+      </Row>
+    </Pressable>
+  );
 }
 
 function ModelRow({ model, selected, busy, onPress }: {
